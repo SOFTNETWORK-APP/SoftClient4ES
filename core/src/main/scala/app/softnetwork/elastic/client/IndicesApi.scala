@@ -794,27 +794,50 @@ trait IndicesApi extends ElasticClientHelpers {
             )
           )
         else Right(())
-      jsonQuery = delete.where match {
+      jsonQuery <- (delete.where match {
         case None =>
           logger.info(
             s"SQL delete query has no WHERE clause, deleting all documents from index '$index'"
           )
-          """{"query": {"match_all": {}}}"""
+          Right("""{"query": {"match_all": {}}}""")
         case Some(where) =>
           implicit val timestamp: Long = System.currentTimeMillis()
-          val search: String =
+          // #276 -- the same temporal-literal resolution the equivalent SELECT gets
+          resolveDmlTemporalLiterals(
             SingleSearch(
               from = From(tables = Seq(delete.table)),
               where = Some(where),
               deleteByQuery = true
-            )
-          logger.info(s"✅ Converted SQL delete query to search for deleteByQuery: $search")
-          search
-      }
+            ),
+            "deleteByQuery"
+          ).map { resolved =>
+            val search: String = resolved
+            logger.info(s"✅ Converted SQL delete query to search for deleteByQuery: $search")
+            search
+          }
+      }): Either[ElasticError, String]
       deleted <- runDeleteByQuery(index, jsonQuery, refresh)
     } yield deleted
     finalizeDeleteByQuery(index, result)
   }
+
+  /** Issue #276 -- resolve the WHERE clause's temporal literals for a DELETE / UPDATE by-query
+    * search body exactly as [[SearchApi.resolveTemporalLiterals]] does for a SELECT (same rule,
+    * same schema-absent boundaries), so `DELETE FROM t WHERE ts >= '2026-06-04 00:00:00'` affects
+    * the rows the equivalent SELECT matches instead of failing with a raw shard error.
+    */
+  private def resolveDmlTemporalLiterals(
+    single: SingleSearch,
+    operation: String
+  ): Either[ElasticError, SingleSearch] =
+    this match {
+      case api: SearchApi =>
+        api.resolveTemporalLiterals(single) match {
+          case ElasticSuccess(resolved) => Right(resolved)
+          case ElasticFailure(error)    => Left(error.copy(operation = Some(operation)))
+        }
+      case _ => Right(single)
+    }
 
   private def validateDeleteIndex(index: String): Either[ElasticError, Unit] =
     validateIndexName(index)
@@ -979,30 +1002,35 @@ trait IndicesApi extends ElasticClientHelpers {
       })
 
       // 4. Build the JSON query to execute
-      jsonQuery <- Right(parsed match {
+      jsonQuery <- (parsed match {
         case Left(u: Update) =>
           u.where match {
             case None =>
               logger.info(
                 s"SQL update query has no WHERE clause, updating all documents from index '$index'"
               )
-              """{"query": {"match_all": {}}}"""
+              Right("""{"query": {"match_all": {}}}""")
 
             case Some(where) =>
               implicit val timestamp: Long = System.currentTimeMillis()
-              val search: String =
+              // #276 -- the same temporal-literal resolution the equivalent SELECT gets
+              resolveDmlTemporalLiterals(
                 SingleSearch(
                   from = From(tables = Seq(Table(u.table))),
                   where = Some(where),
                   updateByQuery = true
-                )
-              logger.info(s"✅ Converted SQL update query to search for updateByQuery: $search")
-              search
+                ),
+                "updateByQuery"
+              ).map { resolved =>
+                val search: String = resolved
+                logger.info(s"✅ Converted SQL update query to search for updateByQuery: $search")
+                search
+              }
           }
 
         case Right(jsonOrConverted) =>
-          jsonOrConverted
-      })
+          Right(jsonOrConverted)
+      }): Either[ElasticError, String]
 
       // 5. Load user pipeline if provided
       userPipeline <- pipelineId match {
@@ -1529,9 +1557,16 @@ trait IndicesApi extends ElasticClientHelpers {
                 )
               else {
                 implicit val timestamp: Long = System.currentTimeMillis()
-                val query: String = search.copy(deleteByQuery = false)
-                logger.info(s"✅ Converted SQL search query to JSON for updateByQuery: $query")
-                ElasticSuccess(Right(query))
+                resolveDmlTemporalLiterals(
+                  search.copy(deleteByQuery = false),
+                  "updateByQuery"
+                ) match {
+                  case Right(resolved) =>
+                    val query: String = resolved
+                    logger.info(s"✅ Converted SQL search query to JSON for updateByQuery: $query")
+                    ElasticSuccess(Right(query))
+                  case Left(error) => ElasticFailure(error)
+                }
               }
 
             case _ =>
@@ -1649,14 +1684,20 @@ trait IndicesApi extends ElasticClientHelpers {
 
                 case Some(where) =>
                   implicit val timestamp: Long = System.currentTimeMillis()
-                  val search: String =
+                  resolveDmlTemporalLiterals(
                     SingleSearch(
                       from = From(tables = Seq(deleteStmt.table)),
                       where = Some(where),
                       deleteByQuery = true
+                    ),
+                    "deleteByQuery"
+                  ).map { resolved =>
+                    val search: String = resolved
+                    logger.info(
+                      s"✅ Converted SQL delete query to search for deleteByQuery: $search"
                     )
-                  logger.info(s"✅ Converted SQL delete query to search for deleteByQuery: $search")
-                  Right(search)
+                    search
+                  }
               }
 
           case search: SingleSearch =>
@@ -1672,9 +1713,12 @@ trait IndicesApi extends ElasticClientHelpers {
               )
             else {
               implicit val timestamp: Long = System.currentTimeMillis()
-              val query: String = search.copy(deleteByQuery = true)
-              logger.info(s"✅ Converted SQL search query to search for deleteByQuery: $query")
-              Right(query)
+              resolveDmlTemporalLiterals(search.copy(deleteByQuery = true), "deleteByQuery").map {
+                resolved =>
+                  val query: String = resolved
+                  logger.info(s"✅ Converted SQL search query to search for deleteByQuery: $query")
+                  query
+              }
             }
 
           case _ =>

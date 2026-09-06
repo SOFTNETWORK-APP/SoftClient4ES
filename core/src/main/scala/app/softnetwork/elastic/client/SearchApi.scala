@@ -96,10 +96,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * `loadSchema` caches successes only, so a source it cannot resolve -- an ALIAS on the es8/es9
     * clients (`executeGetIndex` looks the alias up as a key and finds nothing), an unknown index
     * without a template -- would otherwise cost one failed lookup (two round trips + WARN lines)
-    * per statement. [[temporalLiteralSchemaMisses]] remembers such a source for
-    * [[temporalLiteralSchemaMissTtlMs]] and skips the lookup; the literal is verbatim either way.
+    * per statement. [[temporalLiteralSchemaMisses]] remembers a 404 miss for
+    * [[temporalLiteralSchemaMissTtlMs]] and skips the lookup; the literal is verbatim either way. A
+    * NON-404 failure (a transient 5xx, a thrown lookup) is never remembered, so a cluster blip
+    * cannot disable the resolution for the TTL.
+    *
+    * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
     */
-  protected def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
+  private[client] def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
     if (!TemporalLiterals.hasCandidates(single)) return ElasticResult.success(single)
     single.sources.distinct match {
       case Seq(source) if !source.contains("*") && !source.contains(",") =>
@@ -129,13 +133,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                     )
                 }
               case Success(ElasticFailure(error)) =>
-                temporalLiteralSchemaMisses.put(source, System.currentTimeMillis())
+                if (error.statusCode.contains(404)) rememberTemporalLiteralSchemaMiss(source)
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
                 ElasticResult.success(single)
               case Failure(e) =>
-                temporalLiteralSchemaMisses.put(source, System.currentTimeMillis())
                 logger.debug(
                   s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
                 )
@@ -147,22 +150,45 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     }
   }
 
-  /** Sources whose schema could not be loaded, with the time of the miss (see
-    * [[resolveTemporalLiterals]]). Per client instance, like the schema cache it shadows.
+  /** Sources whose schema answered 404, with the time of the miss (see
+    * [[resolveTemporalLiterals]]). Per client instance, like the schema cache it shadows. Keys are
+    * caller-supplied FROM names, so the map is bounded the way #238's `shardCountCache` is: above
+    * [[temporalLiteralSchemaMissPurgeThreshold]] entries an insert also purges the expired ones,
+    * and if it is STILL above four times the threshold (a client probing thousands of distinct
+    * unknown names inside one TTL) it is cleared -- the worst case is then today's cost, one failed
+    * lookup per statement, never unbounded memory.
     */
   private val temporalLiteralSchemaMisses =
     new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
+  private val temporalLiteralSchemaMissPurgeThreshold = 256
+
   /** How long a failed schema lookup is remembered -- the schema cache's own default TTL. */
   protected def temporalLiteralSchemaMissTtlMs: Long = 5 * 60 * 1000L
+
+  /** Current size of the negative cache (tests). */
+  private[client] def temporalLiteralSchemaMissCount: Int = temporalLiteralSchemaMisses.size()
 
   private def temporalLiteralSchemaMissed(source: String): Boolean =
     Option(temporalLiteralSchemaMisses.get(source)).exists { missedAt =>
       System.currentTimeMillis() - missedAt < temporalLiteralSchemaMissTtlMs
     }
 
+  private def rememberTemporalLiteralSchemaMiss(source: String): Unit = {
+    val now = System.currentTimeMillis()
+    temporalLiteralSchemaMisses.put(source, now)
+    if (temporalLiteralSchemaMisses.size() > temporalLiteralSchemaMissPurgeThreshold) {
+      val ttl = temporalLiteralSchemaMissTtlMs
+      temporalLiteralSchemaMisses
+        .entrySet()
+        .removeIf((e: java.util.Map.Entry[String, java.lang.Long]) => now - e.getValue >= ttl)
+      if (temporalLiteralSchemaMisses.size() > temporalLiteralSchemaMissPurgeThreshold * 4)
+        temporalLiteralSchemaMisses.clear()
+    }
+  }
+
   /** [[resolveTemporalLiterals]] over every request of a `UNION ALL`; the first rejection wins. */
-  protected def resolveTemporalLiterals(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+  private[client] def resolveTemporalLiterals(multiple: MultiSearch): ElasticResult[MultiSearch] = {
     val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
     multiple.requests.foldLeft(zero) {
       case (ElasticSuccess(acc), request) =>

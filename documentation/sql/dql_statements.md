@@ -298,21 +298,29 @@ WHERE event_ts >= '2026-06-04 00:00:00'
 WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default format accepts
 ```
 
-- Under the default format (`strict_date_optional_time||epoch_millis`) the space separator is
-  rewritten to `T`; fraction digits and a trailing zone offset are preserved. ISO literals,
-  date-only literals, epoch milliseconds and date math (`now-1d/d`) are forwarded verbatim.
+- Under a format that accepts ISO dates (the default `strict_date_optional_time||epoch_millis`,
+  `date_optional_time`, `strict_date_optional_time_nanos`) the space separator is rewritten to `T`;
+  fraction digits and a trailing zone are preserved. ISO literals, date-only literals, epoch
+  numbers and date math (`now-1d/d`, `2026-06-04||/M` -- whose date part is normalised the same way)
+  are forwarded verbatim.
 - A column with a custom `format` (for example `yyyy-MM-dd HH:mm:ss`) keeps working as before: a
   literal its format already parses is never rewritten.
-- A literal that cannot be a date under the default format fails with an error naming the literal
-  and the field (HTTP 400) instead of a raw Elasticsearch `search_phase_execution_exception`.
+- Under the default (strict) format a literal that cannot be a date at all (`'not-a-date'`) or
+  carries an invalid calendar or time value (`'2026-02-30'`, `'2026-06-04 24:00:00'`) fails with
+  an error naming the literal and the field (HTTP 400) instead of a raw Elasticsearch
+  `search_phase_execution_exception`. A literal that starts like a date but has a shape the
+  resolver does not model (a zone id, a signed year, `2026-6-4`) is forwarded verbatim and
+  Elasticsearch decides; under `date_optional_time` or a custom format nothing is ever rejected.
+- The same resolution applies to the `WHERE` clause of `UPDATE` and `DELETE`.
 - `keyword`/`text` columns, `LIKE`/`RLIKE` patterns, function-wrapped columns (`YEAR(event_ts)`),
-  `date_nanos` columns and `HAVING` conditions are never touched.
+  `date_nanos` columns, columns qualified with a `JOIN` alias (the FROM table's own columns are
+  resolved) and `HAVING` conditions are never touched.
 - The resolution needs the index mapping, loaded through the schema cache (one lookup per index
-  every 5 minutes, and only for statements whose `WHERE` compares a string literal to a column).
-  When the statement reads several indices or a wildcard, joins another index (`JOIN` sources keep
-  their literals), or the mapping cannot be loaded (an index alias, for instance), the literal is
-  forwarded verbatim as in previous releases; a failed mapping lookup is remembered for 5 minutes
-  so it is not retried on every statement.
+  every 5 minutes, and only for statements whose `WHERE` compares a string literal to a column). It
+  does not apply when the statement reads several indices or a wildcard, or when the mapping cannot
+  be loaded -- in particular **through an index alias**, whose mapping the client cannot resolve
+  today: there the literal is forwarded verbatim as in previous releases, and a failed mapping
+  lookup is remembered for 5 minutes so it is not retried on every statement.
 
 ---
 

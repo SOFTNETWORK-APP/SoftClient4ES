@@ -22,7 +22,7 @@ import app.softnetwork.elastic.sql.schema.{Column, Schema}
 import app.softnetwork.elastic.sql.`type`.{SQLTemporal, SQLTime, SQLType}
 
 import java.time.format.DateTimeFormatter
-import java.time.{LocalDate, LocalTime, ZoneOffset}
+import java.time.{LocalDate, LocalTime}
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -46,20 +46,30 @@ import scala.util.matching.Regex
   * touched.
   *
   * The rule per literal, in order (see [[FieldFormat]] for the format vocabulary):
-  *   1. a number (`epoch_millis` / `epoch_second`) or a date-math expression (`now-1d/d`,
-  *      `2026-06-04||/M`) is forwarded verbatim;
+  *   1. a number (`epoch_millis` / `epoch_second`) or `now`-anchored date math is forwarded
+  *      verbatim; a `||` date-math literal has its HEAD normalised by this same rule and its math
+  *      kept (`2026-06-04 10:30:15||+1d` -> `2026-06-04T10:30:15||+1d`) and is never rejected;
   *   1. a literal one of the mapping's CUSTOM patterns already parses is forwarded verbatim -- a
   *      `format: "yyyy-MM-dd HH:mm:ss"` column parses the space form TODAY and must keep working;
-  *   1. if the mapping accepts an ISO optional-time built-in: a calendar literal (`yyyy-MM-dd`,
-  *      optionally followed by a `T` or a SPACE, a time and a zone) is validated with `java.time`;
-  *      the SQL space form is then rewritten with a `T` (fraction digits preserved, a lower-case
-  *      `z` upper-cased, nothing else changes) and an already-ISO one is forwarded verbatim; other
-  *      ISO shapes (`yyyy`, `yyyy-MM`, ordinal and week dates) are forwarded verbatim;
-  *   1. anything else -- an unrecognised shape or an invalid calendar value -- is REJECTED with a
-  *      message naming the literal, the field and the format, but only when every alternative of
-  *      the format is one this object fully emulates (the ISO optional-time and epoch names). With
-  *      a custom or unrecognised built-in in the list we cannot prove Elasticsearch rejects the
-  *      literal, so it is forwarded verbatim.
+  *   1. if the mapping accepts an ISO optional-time built-in: a literal of the RECOGNISED calendar
+  *      shape -- `yyyy-MM-dd`, optionally followed by a `T` or ONE SPACE, a time `HH[:mm[:ss[.f]]]`
+  *      and a zone (`Z`, an offset or a zone id) -- has its date and time validated with
+  *      `java.time`; the space form is then rewritten with a `T` (fraction digits and zone kept, a
+  *      lower-case `z` upper-cased); an ISO form is forwarded verbatim. A literal that merely
+  *      STARTS like an ISO date (a signed or 5-digit year, `2026-6-4`, `T1:02:03`, an ordinal or
+  *      week date, a tail this recogniser does not model) is forwarded verbatim: Elasticsearch
+  *      decides;
+  *   1. a literal is REJECTED -- with a message naming the literal, the field and the format --
+  *      only when it cannot be an ISO date at all (it does not even start with a year) or carries
+  *      an INVALID recognised calendar/time component (`2026-02-30`, `T24:00:00`), and only when
+  *      every alternative of the format is one whose grammar this recogniser approximates closely
+  *      enough: the STRICT ISO optional-time names and the epoch names. Under the non-strict
+  *      `date_optional_time`, a custom pattern or an unrecognised built-in nothing is rejected.
+  *
+  * The accept set was measured against the real Elasticsearch parsers of 6.8.23, 7.17.29, 8.18.3
+  * and 9.0.3 (`DateFormatter.forPattern(spec).toDateMathParser()`): every REJECT above fails on all
+  * four, every VERBATIM is a no-op, every rewritten value is accepted on all four (a zone id after
+  * the time is 7+ only -- as it is when the user types the `T` form).
   *
   * The schema-absent path (no schema attached, statement over several indices, wildcard source,
   * schema lookup failure) is the CALLER's decision and means "forward verbatim" -- this object
@@ -73,9 +83,18 @@ object TemporalLiterals {
   /** Longest literal echoed back in a rejection message; longer ones are cut head + tail. */
   val MaxLiteralExcerpt: Int = 120
 
-  /** The ISO optional-time built-ins: date mandatory, `T`-separated time optional. */
+  /** The ISO optional-time built-ins: date mandatory, `T`-separated time optional. The space-form
+    * rewrite applies under any of them (the lenient parser accepts the `T` form too -- measured).
+    */
   private val IsoOptionalTimeFormats: Set[String] =
     Set("strict_date_optional_time", "date_optional_time", "strict_date_optional_time_nanos")
+
+  /** The STRICT names -- the only ones whose grammar the recogniser below approximates closely
+    * enough to REJECT a literal. The non-strict `date_optional_time` also takes `2026-6-4`,
+    * `2026-06-04T1:02:03` and `12026-06-04` (measured on ES 6.8 / 7.17 / 8.18 / 9.0).
+    */
+  private val StrictIsoFormats: Set[String] =
+    Set("strict_date_optional_time", "strict_date_optional_time_nanos")
 
   private val EpochFormats: Set[String] = Set("epoch_millis", "epoch_second")
 
@@ -84,26 +103,26 @@ object TemporalLiterals {
     */
   private val BuiltInName: Regex = "^[a-z][a-z0-9_]*$".r
 
-  private val NumericLiteral: Regex = "^-?\\d+(?:\\.\\d+)?$".r
+  /** A number, read leniently: ES 6.8's Joda parser also takes `+1` and `1e3`. */
+  private val NumericLiteral: Regex = "^[+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$".r
 
   /** Elasticsearch date math anchored on `now`: `now`, `now-1d`, `now+1h/h`, `now/d`. */
   private val NowDateMath: Regex = "^now(?:[+-]\\d+[yMwdhHms]|/[yMwdhHms])*$".r
 
-  // `strict_date_optional_time` grammar, read as a lenient SUPERSET so that a spelling
-  // Elasticsearch accepts is never rejected here.
+  /** Starts like an ISO date: an optionally signed year of at least four digits. */
+  private val DateLikeStart: Regex = "^[+-]?\\d{4}".r
+
   private val IsoTime = "\\d{2}(?::\\d{2}(?::\\d{2}(?:[.,]\\d{1,9})?)?)?"
-  private val IsoZone = "(?:[Zz]|[+-]\\d{2}(?::?\\d{2})?)?"
 
-  /** A calendar date, optionally followed by a `T` OR a SPACE, a time and a zone. */
-  private val CalendarLiteral: Regex =
-    ("^(\\d{4}-\\d{2}-\\d{2})(?:([ T])(" + IsoTime + ")(" + IsoZone + "))?$").r
-
-  /** The other shapes the ISO optional-time parsers accept (year, year-month, the ordinal
-    * `yyyy-DDD` and week `yyyy-Www[-e]` dates of the Joda parser behind ES 6.8, a date followed
-    * directly by a zone) -- forwarded verbatim, not validated.
+  /** `Z`, an offset (`+01`, `+0100`, `+01:00`, `+01:00:00`) or a zone id (`UTC`, `Europe/Paris`).
     */
-  private val OtherIsoLiteral: Regex =
-    ("^(?:\\d{4}(?:-\\d{2})?|\\d{4}-\\d{3}|\\d{4}-W\\d{2}(?:-\\d)?|\\d{4}-\\d{2}-\\d{2})" + IsoZone + "$").r
+  private val IsoZone = "Z|z|[+-]\\d{2}(?::?\\d{2}(?::?\\d{2})?)?|[A-Za-z][A-Za-z0-9_+\\-/]*"
+
+  /** The RECOGNISED calendar shape: a strict `yyyy-MM-dd`, optionally followed by a `T` or ONE
+    * space, an optional time and an optional zone. Groups: date, separator, time, zone.
+    */
+  private val CalendarLiteral: Regex =
+    ("^(\\d{4}-\\d{2}-\\d{2})(?:([ T])(" + IsoTime + ")?(" + IsoZone + ")?)?$").r
 
   /** A `date` column's effective mapping `format`, split on `||`. */
   final case class FieldFormat(spec: String) {
@@ -113,16 +132,18 @@ object TemporalLiterals {
 
     private def isIso(alternative: String): Boolean = IsoOptionalTimeFormats.contains(alternative)
 
+    private def isStrictIso(alternative: String): Boolean = StrictIsoFormats.contains(alternative)
+
     private def isEpoch(alternative: String): Boolean = EpochFormats.contains(alternative)
 
     /** At least one alternative accepts the `T`-separated ISO form we normalise to. */
     val acceptsIsoOptionalTime: Boolean = alternatives.exists(isIso)
 
-    /** Every alternative is one this object can emulate exactly -- the ONLY case in which a literal
-      * may be rejected rather than forwarded verbatim.
+    /** Every alternative is a STRICT ISO optional-time or an epoch name -- the ONLY case in which a
+      * literal may be rejected rather than forwarded verbatim.
       */
     val fullyUnderstood: Boolean =
-      alternatives.nonEmpty && alternatives.forall(a => isIso(a) || isEpoch(a))
+      alternatives.nonEmpty && alternatives.forall(a => isStrictIso(a) || isEpoch(a))
 
     /** The alternatives that are custom `DateTimeFormatter` patterns (not built-in names). */
     val customPatterns: Seq[String] =
@@ -155,9 +176,7 @@ object TemporalLiterals {
       }
   }
 
-  /** `now`-anchored or `||`-suffixed date math is resolved by Elasticsearch itself. The `||` form
-    * is accepted leniently (its date part is parsed by the field's format, whatever that is).
-    */
+  /** `now`-anchored or `||`-suffixed date math is resolved by Elasticsearch itself. */
   def isDateMath(literal: String): Boolean =
     NowDateMath.pattern.matcher(literal).matches() || literal.contains("||")
 
@@ -172,22 +191,51 @@ object TemporalLiterals {
     field: String,
     format: FieldFormat
   ): Either[String, Option[String]] = {
-    if (NumericLiteral.pattern.matcher(literal).matches() || isDateMath(literal)) Right(None)
-    else if (format.acceptsAsCustom(literal)) Right(None)
-    else if (!format.acceptsIsoOptionalTime) Right(None)
-    else
-      literal match {
-        case CalendarLiteral(date, null, _, _) =>
-          if (validDate(date)) Right(None) else rejectOrForward(literal, field, format)
-        case CalendarLiteral(date, separator, time, zone) =>
-          if (validDate(date) && validTime(time) && validZone(zone)) {
-            if (separator == " ") Right(Some(date + "T" + time + zone.toUpperCase))
-            else Right(None)
-          } else rejectOrForward(literal, field, format)
-        case _ if OtherIsoLiteral.pattern.matcher(literal).matches() => Right(None)
-        case _ => rejectOrForward(literal, field, format)
-      }
+    if (
+      NumericLiteral.pattern.matcher(literal).matches() ||
+      NowDateMath.pattern.matcher(literal).matches()
+    ) Right(None)
+    else {
+      val math = literal.indexOf("||")
+      if (math >= 0) {
+        // Date math anchored on a date: normalise the HEAD by the same rule, keep the math, and
+        // never reject -- the math tail is Elasticsearch's to judge.
+        normalizeLiteral(literal.substring(0, math), field, format) match {
+          case Right(Some(head)) => Right(Some(head + literal.substring(math)))
+          case _                 => Right(None)
+        }
+      } else if (format.acceptsAsCustom(literal)) Right(None)
+      else if (!format.acceptsIsoOptionalTime) Right(None)
+      else
+        literal match {
+          case CalendarLiteral(date, separator, time, zone) =>
+            calendar(literal, date, Option(separator), Option(time), Option(zone), field, format)
+          case _ if DateLikeStart.findPrefixOf(literal).isDefined =>
+            // Starts like an ISO date but carries a shape this recogniser does not model: let
+            // Elasticsearch decide, never reject.
+            Right(None)
+          case _ => rejectOrForward(literal, field, format)
+        }
+    }
   }
+
+  private def calendar(
+    literal: String,
+    date: String,
+    separator: Option[String],
+    time: Option[String],
+    zone: Option[String],
+    field: String,
+    format: FieldFormat
+  ): Either[String, Option[String]] =
+    if (!validDate(date) || !time.forall(validTime)) rejectOrForward(literal, field, format)
+    else
+      (separator, time) match {
+        case (Some(" "), Some(t)) =>
+          val z = zone.map(z => if (z == "z") "Z" else z).getOrElse("")
+          Right(Some(date + "T" + t + z))
+        case _ => Right(None)
+      }
 
   private def rejectOrForward(
     literal: String,
@@ -203,9 +251,6 @@ object TemporalLiterals {
     val parseableTime = if (isoTime.length == 2) isoTime + ":00" else isoTime
     Try(LocalTime.parse(parseableTime)).isSuccess
   }
-
-  private def validZone(zone: String): Boolean =
-    zone.isEmpty || Try(ZoneOffset.of(zone.toUpperCase)).isSuccess
 
   /** The literal as echoed in a rejection: control characters and line separators collapsed to a
     * space (the message reaches a log record, a `SQLException` and a terminal), the length bounded

@@ -157,6 +157,49 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
   }
 
+  it should "remember only 404 misses, never a transient failure" in {
+    val client = new RecordingClient {
+      override def loadSchema(index: String): ElasticResult[Schema] =
+        if (index.startsWith("flaky")) {
+          schemaLookups += 1
+          ElasticResult.failure(
+            ElasticError(
+              message = "cluster hiccup",
+              statusCode = Some(503),
+              index = Some(index),
+              operation = Some("loadSchema")
+            )
+          )
+        } else super.loadSchema(index)
+    }
+    val statement =
+      SelectStatement(s"SELECT id FROM flaky_events WHERE event_ts >= '$spaceForm' LIMIT 5")
+    client.search(statement)
+    client.search(statement)
+    client.schemaLookups shouldBe 2 // a 503 is retried on the next statement
+    client.temporalLiteralSchemaMissCount shouldBe 0
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
+  }
+
+  it should "bound the negative cache: purge expired misses above the threshold, clear it above the cap" in {
+    val expiring = new RecordingClient
+    expiring.missTtlMs = 0L // every miss is expired at once
+    (1 to 300).foreach { i =>
+      expiring.search(
+        SelectStatement(s"SELECT id FROM unknown_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
+      )
+    }
+    expiring.temporalLiteralSchemaMissCount should be < 257 // the purge ran at least once
+
+    val flooding = new RecordingClient // default TTL: nothing expires, only the cap can act
+    (1 to 1100).foreach { i =>
+      flooding.search(
+        SelectStatement(s"SELECT id FROM probe_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
+      )
+    }
+    flooding.temporalLiteralSchemaMissCount should be <= 1024
+  }
+
   it should "not look the schema up at all when the WHERE carries no candidate literal" in {
     val client = seeded()
     client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))

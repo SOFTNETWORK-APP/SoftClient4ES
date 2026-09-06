@@ -61,6 +61,9 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
 
   private val customIndex = "temporal_literal_custom"
 
+  /** Mutated by the DML cases (UPDATE then DELETE), so it gets its own copy of the rows. */
+  private val dmlIndex = "temporal_literal_dml"
+
   /** Eight timestamps (UTC), ids `e1`..`e8`; `>= 2026-06-04T00:00:00` selects `e4`..`e8`. */
   private val timestamps: Seq[String] = Seq(
     "2026-06-01T00:00:00",
@@ -103,6 +106,8 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     client.setMapping(defaultIndex, defaultMapping).get shouldBe true
     client.createIndex(customIndex, settings = settings).get shouldBe true
     client.setMapping(customIndex, customMapping).get shouldBe true
+    client.createIndex(dmlIndex, settings = settings).get shouldBe true
+    client.setMapping(dmlIndex, defaultMapping).get shouldBe true
 
     val defaultDocs = timestamps.zipWithIndex.map { case (ts, i) =>
       // `label` holds the SQL spelling of the same instant: the keyword negative control
@@ -129,11 +134,13 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
 
     load(defaultIndex, defaultDocs)
     load(customIndex, customDocs)
+    load(dmlIndex, defaultDocs)
   }
 
   override def afterAll(): Unit = {
     client.deleteIndex(defaultIndex)
     client.deleteIndex(customIndex)
+    client.deleteIndex(dmlIndex)
     super.afterAll()
   }
 
@@ -218,6 +225,24 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     ) shouldBe Set("e2", "e3", "e4")
     gatewayIds(s"SELECT id FROM $customIndex WHERE event_ts >= '2026-06-04 00:00:00'") shouldBe
     fromJune4
+  }
+
+  // ---- DML: the same WHERE, the same rows (review R4-4) --------------------------------------------
+
+  private def runDml(sql: String): Unit =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(_)     => client.refresh(dmlIndex)
+      case ElasticFailure(error) => fail(s"DML failed: ${error.message}\n$sql")
+    }
+
+  "UPDATE with a space-form date literal" should "update the rows the equivalent SELECT matches" in {
+    runDml(s"UPDATE $dmlIndex SET amount = 100 WHERE event_ts >= '2026-06-04 00:00:00'")
+    searchIds(s"SELECT id FROM $dmlIndex WHERE amount = 100") shouldBe fromJune4
+  }
+
+  "DELETE with a space-form date literal" should "delete the rows the equivalent SELECT matches" in {
+    runDml(s"DELETE FROM $dmlIndex WHERE event_ts < '2026-06-04 00:00:00'")
+    searchIds(s"SELECT id FROM $dmlIndex") shouldBe fromJune4
   }
 
   // ---- AC 6: unparseable literal is a named 400, not a raw shard failure -------------------------

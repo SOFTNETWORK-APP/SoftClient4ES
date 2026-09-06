@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.schema.Index
@@ -15,6 +31,12 @@ import scala.collection.immutable.ListMap
   * columns. The bridge emission is asserted in `TemporalLiteralQuerySpec` (bridge module) and the
   * core seam in `TemporalLiteralSearchSpec` (core module); this spec pins the RULES.
   */
+/** What the oracle expects of a literal: forwarded, rejected, or rewritten to `to`. */
+sealed trait Expected
+case object Verbatim extends Expected
+case object Reject extends Expected
+final case class Rewrite(to: String) extends Expected
+
 class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
 
   private val default = FieldFormat(TemporalLiterals.DefaultDateFormat)
@@ -62,6 +84,12 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     nanos.fullyUnderstood shouldBe true
   }
 
+  it should "accept the ISO form under the non-strict date_optional_time but never reject under it" in {
+    val lenient = FieldFormat("date_optional_time")
+    lenient.acceptsIsoOptionalTime shouldBe true
+    lenient.fullyUnderstood shouldBe false
+  }
+
   it should "strip the Elasticsearch 7 java-time '8' prefix from a custom pattern" in {
     FieldFormat("8yyyy-MM-dd").acceptsAsCustom("2026-06-04") shouldBe true
   }
@@ -77,76 +105,157 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     ) shouldBe custom
   }
 
-  // ---- normalizeLiteral ------------------------------------------------------------------------
+  // ---- normalizeLiteral: the four-major oracle -------------------------------------------------
+  //
+  // Every row below was checked against the REAL Elasticsearch parsers of 6.8.23 (Joda), 7.17.29,
+  // 8.18.3 and 9.0.3 (`DateFormatter.forPattern(spec).toDateMathParser().parse(...)`, the parser a
+  // range/term value goes through). Contract: a `Reject` row FAILS on all four; a `Rewrite` row
+  // produces a value every major accepts (a zone id after the time is 7+ only -- exactly as when
+  // the user types the `T` form); a `Verbatim` row is a no-op, whatever Elasticsearch then says.
+  // The rule may REJECT only what cannot be an ISO date at all or carries an invalid recognised
+  // calendar/time component -- never a shape it merely does not model.
 
-  "normalizeLiteral" should "rewrite the SQL space form to the T form under the default format" in {
-    norm("2026-06-04 00:00:00.000000") shouldBe Right(Some("2026-06-04T00:00:00.000000"))
-    norm("2026-06-04 00:00:00") shouldBe Right(Some("2026-06-04T00:00:00"))
-    norm("2026-06-04 00:00") shouldBe Right(Some("2026-06-04T00:00"))
-    norm("2026-06-04 10") shouldBe Right(Some("2026-06-04T10"))
-    norm("2026-06-04 00:00:00.123+02:00") shouldBe Right(Some("2026-06-04T00:00:00.123+02:00"))
-    norm("2026-06-04 00:00:00+0200") shouldBe Right(Some("2026-06-04T00:00:00+0200"))
-    norm("2026-06-04 00:00:00Z") shouldBe Right(Some("2026-06-04T00:00:00Z"))
-    norm("2026-06-04 00:00:00z") shouldBe Right(Some("2026-06-04T00:00:00Z")) // zone upper-cased
-    norm("2026-06-04 23:59:59,5") shouldBe Right(Some("2026-06-04T23:59:59,5"))
-    norm("2026-06-04 00:00:00.123456789") shouldBe Right(Some("2026-06-04T00:00:00.123456789"))
-  }
-
-  it should "leave every ISO spelling untouched" in {
-    Seq(
-      "2026-06-04T00:00:00",
-      "2026-06-04T00:00:00.000000",
-      "2026-06-04T00:00:00Z",
-      "2026-06-04T10:30:15.123456789+01:00",
-      "2026-06-04T10",
-      "2026-06-04",
-      "2026-06",
-      "2026-155",
-      "2026-W23-4"
-    ).foreach(literal => withClue(literal)(norm(literal) shouldBe Right(None)))
-  }
-
-  it should "leave epoch numbers and date math untouched" in {
-    Seq(
-      "1780531200000",
-      "-1",
-      "1780531200",
-      "1780531200000.5",
-      "now",
-      "now-1d/d",
-      "now+1h",
-      "now+1M/M",
-      "now/d",
-      "2026-06-04||/M",
-      "2026-06-04 00:00:00||+1d"
-    ).foreach(literal => withClue(literal)(norm(literal) shouldBe Right(None)))
-  }
-
-  it should "reject an unparseable literal under the default format, naming the literal and the field" in {
-    Seq(
-      "not-a-date",
-      "nowhere", // starts with `now` but is not date math
-      "NOW-1d", // Elasticsearch date math is lower-case
-      "2026-13-45 99:99:99",
-      "2026-06-04 24:00:00",
-      "2026-13-45T00:00:00", // T form with an invalid calendar value
-      "2026-02-30", // date-only with an invalid calendar value
-      "",
-      "04/06/2026",
-      "2026-06-04 00:00:00 UTC",
-      "2026-06-04  00:00:00" // two spaces
-    ).foreach { literal =>
-      norm(literal) match {
-        case Left(reason) =>
-          withClue(literal) {
+  private def check(format: FieldFormat, oracle: Seq[(String, Expected)]): Unit =
+    oracle.foreach { case (literal, expected) =>
+      withClue(s"'$literal' under '${format.spec}': ") {
+        (norm(literal, format), expected) match {
+          case (Right(None), Verbatim)       => succeed
+          case (Right(Some(v)), Rewrite(to)) => v shouldBe to
+          case (Left(reason), Reject) =>
             reason should include(s"'$literal'")
             reason should include(s"'$field'")
-            reason should include(TemporalLiterals.DefaultDateFormat)
+            reason should include(format.spec)
             reason should not startWith "Internal parser error"
-          }
-        case other => fail(s"'$literal' should be rejected, got $other")
+          case (actual, _) => fail(s"expected $expected, got $actual")
+        }
       }
     }
+
+  private val strictOracle: Seq[(String, Expected)] = Seq(
+    // -- the SQL space form is rewritten to the T form (fraction and zone kept, `z` upper-cased)
+    "2026-06-04 10:30:15"           -> Rewrite("2026-06-04T10:30:15"),
+    "2026-06-04 10:30:15.000000"    -> Rewrite("2026-06-04T10:30:15.000000"),
+    "2026-06-04 00:00"              -> Rewrite("2026-06-04T00:00"),
+    "2026-06-04 10"                 -> Rewrite("2026-06-04T10"),
+    "2026-06-04 10:30:15.123+02:00" -> Rewrite("2026-06-04T10:30:15.123+02:00"),
+    "2026-06-04 10:30:15+0100"      -> Rewrite("2026-06-04T10:30:15+0100"),
+    "2026-06-04 10:30:15+01"        -> Rewrite("2026-06-04T10:30:15+01"),
+    "2026-06-04 10:30:15+01:00:00"  -> Rewrite("2026-06-04T10:30:15+01:00:00"),
+    "2026-06-04 10:30:15Z"          -> Rewrite("2026-06-04T10:30:15Z"),
+    "2026-06-04 10:30:15z"          -> Rewrite("2026-06-04T10:30:15Z"),
+    "2026-06-04 23:59:59,5"         -> Rewrite("2026-06-04T23:59:59,5"),
+    "2026-06-04 10:30:15.123456789" -> Rewrite("2026-06-04T10:30:15.123456789"),
+    "2026-06-04 10:30:15UTC"        -> Rewrite("2026-06-04T10:30:15UTC"),
+    "2026-06-04 10:30:15||+1d"      -> Rewrite("2026-06-04T10:30:15||+1d"),
+    // -- ISO forms Elasticsearch accepts: verbatim
+    "2026-06-04"                      -> Verbatim,
+    "2026-06"                         -> Verbatim,
+    "2026"                            -> Verbatim,
+    "2026-06-04T"                     -> Verbatim,
+    "2026-06-04T10"                   -> Verbatim,
+    "2026-06-04T10:30"                -> Verbatim,
+    "2026-06-04T10:30:15"             -> Verbatim,
+    "2026-06-04T10:30:15.1"           -> Verbatim,
+    "2026-06-04T10:30:15.123456789"   -> Verbatim,
+    "2026-06-04T10:30:15,5"           -> Verbatim,
+    "2026-06-04T10:30:15Z"            -> Verbatim,
+    "2026-06-04T10:30:15z"            -> Verbatim, // 6.8 only -- Elasticsearch decides
+    "2026-06-04T10:30:15+01:00"       -> Verbatim,
+    "2026-06-04T10:30:15+0100"        -> Verbatim,
+    "2026-06-04T10:30:15+01"          -> Verbatim,
+    "2026-06-04T10:30:15-05:30"       -> Verbatim,
+    "2026-06-04T10:30:15+01:00:00"    -> Verbatim, // offset with seconds
+    "2026-06-04T10:30:15UTC"          -> Verbatim, // zone id, 7+ only
+    "2026-06-04T10:30:15Europe/Paris" -> Verbatim, // region id, 7+ only
+    "-0001-06-04"                     -> Verbatim, // negative year
+    // -- starts like a date but carries a shape the recogniser does not model: verbatim
+    "2026-155"                       -> Verbatim, // ordinal date, 6.8 only
+    "2026-W23-4"                     -> Verbatim, // week date, 6.8 only
+    "+12026-06-04"                   -> Verbatim,
+    "12026-06-04"                    -> Verbatim,
+    "2026-6-4"                       -> Verbatim,
+    "2026-06-04T1:02:03"             -> Verbatim,
+    "2026-06-04t10:30:15"            -> Verbatim, // lower-case t, 6.8 only
+    "2026-06-04Z"                    -> Verbatim,
+    "2026-06-04+01:00"               -> Verbatim,
+    "2026-06-04 10:30:15 UTC"        -> Verbatim, // a space before the zone: not ours
+    "2026-06-04  10:30:15"           -> Verbatim, // two spaces: not ours
+    "2026-06-04T10:30:15.1234567890" -> Verbatim,
+    // -- numbers and date math: verbatim
+    "1780531200000"   -> Verbatim,
+    "1780531200"      -> Verbatim,
+    "1.5"             -> Verbatim,
+    "1780531200000.5" -> Verbatim,
+    "-1"              -> Verbatim,
+    "+1"              -> Verbatim, // 6.8 only
+    "1e3"             -> Verbatim, // 6.8 only
+    "now"             -> Verbatim,
+    "now-1d/d"        -> Verbatim,
+    "now+1h"          -> Verbatim,
+    "now+1M/M"        -> Verbatim,
+    "now/d"           -> Verbatim,
+    "2026-06-04||/d"  -> Verbatim,
+    // -- rejected: fails on every major, and the message names the literal and the field
+    ""                    -> Reject,
+    "not-a-date"          -> Reject,
+    "nowhere"             -> Reject,
+    "NOW-1d"              -> Reject, // date math is lower-case
+    "now-1D"              -> Reject, // no such unit
+    "04/06/2026"          -> Reject,
+    "2026-02-30"          -> Reject,
+    "2026-06-04T24:00:00" -> Reject,
+    "2026-13-45T00:00:00" -> Reject,
+    "2026-06-04 24:00:00" -> Reject,
+    "2026-13-45 99:99:99" -> Reject
+  )
+
+  "normalizeLiteral" should "agree with the four Elasticsearch parsers under the default format" in {
+    check(default, strictOracle)
+  }
+
+  it should "behave the same under strict_date_optional_time_nanos" in {
+    check(nanos, strictOracle)
+  }
+
+  it should "never reject under the non-strict date_optional_time, but still fix the space form" in {
+    check(
+      FieldFormat("date_optional_time"),
+      Seq(
+        "2026-06-04 10:30:15" -> Rewrite("2026-06-04T10:30:15"),
+        "2026-06-04 00:00:00" -> Rewrite("2026-06-04T00:00:00"),
+        "2026-6-4"            -> Verbatim, // accepted by the lenient parser on every major
+        "2026-06-04T1:02:03"  -> Verbatim,
+        "12026-06-04"         -> Verbatim,
+        "-0001-06-04"         -> Verbatim,
+        "2026-06-04T10:30:15" -> Verbatim,
+        "not-a-date"          -> Verbatim, // not fully understood => Elasticsearch decides
+        "2026-02-30"          -> Verbatim,
+        ""                    -> Verbatim
+      )
+    )
+  }
+
+  it should "never reject under a custom or opaque format" in {
+    check(
+      custom,
+      Seq(
+        "not-a-date"          -> Verbatim,
+        "2026-06-04 00:00:00" -> Verbatim, // parity: the custom pattern parses it
+        "2026-06-04T00:00:00" -> Verbatim // not ours to fix: no ISO alternative
+      )
+    )
+    check(opaque, Seq("not-a-date" -> Verbatim, "2026-06-04 00:00:00" -> Verbatim))
+  }
+
+  it should "prefer parity with a custom alternative, and still fix the space form where ISO is accepted" in {
+    check(
+      mixed,
+      Seq(
+        "2026-06-04 00:00:00" -> Verbatim, // the custom pattern parses it
+        "2026-06-04 00:00"    -> Rewrite("2026-06-04T00:00"), // custom needs seconds
+        "garbage"             -> Verbatim // not fully understood => never rejected
+      )
+    )
   }
 
   it should "bound and sanitise the literal echoed in the rejection" in {
@@ -167,26 +276,6 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"expected a rejection, got $other")
     }
     TemporalLiterals.excerpt("short") shouldBe "short"
-  }
-
-  it should "never reject under a custom or opaque format" in {
-    norm("not-a-date", custom) shouldBe Right(None)
-    norm("2026-06-04 00:00:00", custom) shouldBe Right(None) // parity: the custom pattern parses it
-    norm("2026-06-04T00:00:00", custom) shouldBe Right(None) // not ours to fix: no ISO alternative
-    norm("not-a-date", opaque) shouldBe Right(None)
-    norm("2026-06-04 00:00:00", opaque) shouldBe Right(None)
-  }
-
-  it should "prefer parity with a custom alternative, and still fix the space form where ISO is accepted" in {
-    norm("2026-06-04 00:00:00", mixed) shouldBe Right(None) // the custom pattern parses it
-    norm("2026-06-04 00:00", mixed) shouldBe Right(Some("2026-06-04T00:00")) // custom needs seconds
-    norm("garbage", mixed) shouldBe Right(None) // not fully understood => never rejected
-  }
-
-  it should "rewrite the space form under the date_nanos default format too" in {
-    norm("2026-06-04 00:00:00.123456789", nanos) shouldBe Right(
-      Some("2026-06-04T00:00:00.123456789")
-    )
   }
 
   // ---- statement level ---------------------------------------------------------------------------
