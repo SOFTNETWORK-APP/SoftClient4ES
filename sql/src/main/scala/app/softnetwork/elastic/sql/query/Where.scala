@@ -823,11 +823,14 @@ case class InExpr[R, +T <: Value[R]](
     s"$painlessNot${identifier.painless(context)}$painlessOp(${painlessValue(context)})"
   }
 
-  // `[v1,v2].contains(params.<metric>)` -- the guarded bucket form of `<aggregate> IN (v1, v2)`.
-  // IN is a ComparisonOperator, so `painlessNot` is "" (a comparison folds its NOT into the
-  // operator, which this form never uses): the negation is rendered here.
+  // `params.<metric> == v1 || params.<metric> == v2` -- the guarded bucket form of
+  // `<aggregate> IN (v1, v2)`. NOT `[v1,v2].contains(p)`: a buckets_path value arrives as a boxed
+  // Double and the literals are Integers, so `List.contains` (Java `equals`) never matched --
+  // measured live, `MAX(age) IN (40, 50)` returned no bucket. Painless `==` promotes numerics and
+  // uses `equals` for strings. IN is a ComparisonOperator, so `painlessNot` is "" (a comparison
+  // folds its NOT into the operator, which this form never uses): the negation is rendered here.
   override protected def bucketPipelineCheck(param: String): String = {
-    val membership = s"${values.painless(None)}.contains($param)"
+    val membership = values.values.map(v => s"$param == ${v.painless(None)}").mkString(" || ")
     if (maybeNot.isDefined) s"!($membership)" else membership
   }
 

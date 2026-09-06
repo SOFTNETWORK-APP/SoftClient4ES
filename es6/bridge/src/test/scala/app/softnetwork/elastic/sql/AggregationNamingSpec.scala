@@ -254,7 +254,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : ([1,2].contains(params.max_x)))"}}}}}}}"""
+      """"script":{"source":"(params.max_x == null ? false : (params.max_x == 1 || params.max_x == 2))"}}}}}}}"""
     ).mkString
   }
 
@@ -264,7 +264,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : (!([1,2].contains(params.max_x))))"}}}}}}}"""
+      """"script":{"source":"(params.max_x == null ? false : (!(params.max_x == 1 || params.max_x == 2)))"}}}}}}}"""
     ).mkString
   }
 
