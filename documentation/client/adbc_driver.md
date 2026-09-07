@@ -113,6 +113,34 @@ Set this as the statement's SQL (`stmt.setSqlQuery(...)`) and read the Arrow str
 
 ---
 
+## JDK 16 and later: one required flag
+
+The ADBC driver is Arrow-native in process, and Apache Arrow reaches into `java.nio` to address off-heap memory. **JDK 16 and later deny that access by default** ([JEP 396](https://openjdk.org/jeps/396)), so a modern JVM must be started with:
+
+```
+--add-opens=java.base/java.nio=ALL-UNNAMED
+```
+
+Unlike the [JDBC driver](jdbc.md) — where only the cross-index JOIN goes through Arrow — ADBC hands back Arrow batches for **every** query, so the flag is a prerequisite for the driver as a whole, not for one feature.
+
+**Below JDK 16 no flag is needed, but the floor is JDK 11**: the Arrow release bundled here is compiled for Java 11.
+
+Without the flag, Arrow's allocator constructs successfully and then fails on the first vector it fills, reporting:
+
+```
+Failed to initialize MemoryUtil. You must start Java with
+`--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED`
+(See https://arrow.apache.org/docs/java/install.html)
+```
+
+Arrow's own message names its module first, which matters when Arrow is on the module path. On a classpath deployment — which is how these fat JARs ship — `--add-opens=java.base/java.nio=ALL-UNNAMED` alone is sufficient; both forms work.
+
+In a JVM you do not launch yourself (an application server, a notebook kernel, a BI tool) the same flag can be supplied through the `JAVA_TOOL_OPTIONS` environment variable, or through whatever mechanism that host provides for its own JVM arguments. **The per-tool procedure has not yet been verified for any specific host**, so this page does not print one.
+
+> **A JAR manifest cannot do this for you:** the JVM honours a manifest's `Add-Opens` attribute only for the jar named on a `java -jar` launch — never for a jar loaded from an application's or a tool's classpath.
+
+---
+
 ## Configuration
 
 ```hocon

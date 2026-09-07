@@ -153,6 +153,95 @@ For the full JOIN matrix, see the Cross-Index JOIN walkthrough (`../sql/joins.md
 
 ---
 
+## Cross-index JOIN on JDK 16 and later
+
+The JOIN engine is built on Apache Arrow, which reaches into `java.nio` to address off-heap memory. **JDK 16 and later deny that access by default** ([JEP 396](https://openjdk.org/jeps/396)), so on a modern JVM the cross-index JOIN — and only the cross-index JOIN — needs one flag:
+
+```
+--add-opens=java.base/java.nio=ALL-UNNAMED
+```
+
+That one flag is the whole requirement: it is verified by a test that runs Arrow with that flag and no other module open. Everything else in the driver (queries, DDL, DML, `SHOW`, metadata browsing) works without it.
+
+This bites in practice because a BI tool starts its own JVM and chooses its own flags — Tableau, for instance, bundles Zulu 17.
+
+**Below JDK 16 no flag is needed, but the floor is JDK 11**: the Arrow release this driver bundles is compiled for Java 11, so JDK 8, 9 and 10 cannot run the JOIN engine at all. The rest of the driver is JDK 8 bytecode.
+
+If the flag is missing, the driver normally refuses the JOIN immediately with a message naming the flag, rather than running the query and failing later:
+
+> Cross-index JOIN is unavailable in this JVM: Apache Arrow cannot reach its off-heap memory layer because JDK 16 and later deny the reflective access it needs. Add `--add-opens=java.base/java.nio=ALL-UNNAMED` to the JVM's startup arguments. …
+
+("Normally" because the check is deliberately fail-open: a JVM it cannot read confidently is allowed to try, and Apache Arrow's own error is reported if it then fails.)
+
+The same flag can also be supplied to a JVM you do not launch through the `JAVA_TOOL_OPTIONS` environment variable, or through whatever mechanism the host provides for its own JVM arguments. **We have not yet verified the per-tool procedure for any specific BI tool**, so this page does not print one — the flag and the constraint are what is documented until that verification is done.
+
+> **Not a fix:** the fat JAR's manifest carries an `Add-Opens` attribute, but the JVM honours that **only** for the jar named on a `java -jar` launch. These jars have no `Main-Class`, and a driver JAR loaded from a tool's driver folder is not that jar either, so the attribute does nothing today. The flag on the host JVM is the fix.
+
+Apache Arrow's own message, if you see it in a log, names a longer form of the same flag:
+
+```
+Failed to initialize MemoryUtil. You must start Java with
+`--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED`
+(See https://arrow.apache.org/docs/java/install.html)
+```
+
+Both work here. Arrow names its own module first, which matters when Arrow is on the module path; this driver ships as a classpath fat JAR, where `ALL-UNNAMED` alone is what is needed and is the shorter thing to type.
+
+---
+
+## Prepared statements
+
+Elasticsearch has no server-side prepared statements, so the driver substitutes bound parameters into the statement text **on the client, before the engine parses it**. That model is worth understanding because it decides what can and cannot be bound:
+
+- **Values are escaped; identifiers are not bindable.** Every value is rendered as a SQL literal using the engine's own escaping, so a bound value becomes exactly one literal — or, for `setArray`, a list of literals whose commas and parentheses the driver writes. It never becomes anything else. There is no setter that injects a table or column name.
+- **A `?` is only a placeholder outside quotes and comments.** `WHERE label = 'what?' AND name = ?` has exactly one parameter; the `?` inside the literal is left alone.
+- **One statement per `PreparedStatement`.** A template containing more than one statement is refused when it is prepared. That is the JDBC contract, and it is also what makes the length bound below true: with more than one statement the engine parses on a different thread whose stack the driver does not control.
+- **Parameters are length-bounded.** A bound value may render to at most **8192 characters** (after escaping — an apostrophe or a backslash contributes two). Above that the driver raises a `SQLException` naming the limit rather than building a statement the engine's parser cannot read. Store long text in the document and filter on a shorter key, or narrow the value.
+- **A parameter you never set is an error**, not an implicit `NULL`, and an index with no matching placeholder is refused at set time. Use `setNull` to bind SQL `NULL` deliberately.
+
+> **Known limitation, plain `Statement` only:** a multi-statement string executed through `Statement` (not `PreparedStatement`) with a very long literal typed directly into the SQL can still exhaust the parser's stack, and reports a timeout rather than a parse error. Bound parameters are not affected. Split such SQL into separate statements.
+
+```java
+PreparedStatement ps = conn.prepareStatement("SELECT * FROM demo WHERE name = ?");
+ps.setString(1, "O'Brien");        // renders 'O\'Brien' — one literal, quotes and all
+ResultSet rs = ps.executeQuery();
+```
+
+### Binding a list with `setArray`
+
+An array is renderable only where the grammar accepts a value list — the `IN` position:
+
+```java
+PreparedStatement ps = conn.prepareStatement("SELECT * FROM demo WHERE id IN (?)");
+ps.setArray(1, conn.createArrayOf("VARCHAR", new Object[] { "a", "b" }));
+```
+
+which becomes:
+
+```sql
+SELECT * FROM demo WHERE id IN ('a','b')
+```
+
+`... IN ?` (without the parentheses) works too — the driver adds them. Anywhere else, and for a shape the grammar rejects, `setArray` raises a `SQLException` that says which: an **empty** array, an array containing **NULL**, an array of **booleans**, an array mixing **text and numbers**, and an array mixing **whole numbers and decimals**. Bind a homogeneous, non-empty array of text or numbers.
+
+### Character streams
+
+`setAsciiStream`, `setCharacterStream` and `setNCharacterStream` are supported and read into the statement text under the same 8192-character bound; longer content raises a `SQLException` rather than being silently truncated. The overloads that take a `length` bind exactly that many characters, and raise a `SQLException` if the stream ends sooner.
+
+### Permanently unsupported setters
+
+These are not "not yet" — under a text-substitution model there is no correct rendering for them, so they throw `SQLFeatureNotSupportedException` and always will:
+
+| Setter | Why |
+|---|---|
+| `setBinaryStream`, `setBlob`, `setClob`, `setNClob` | the grammar has no binary literal and no LOB locator; use `setBytes`, which renders Base64 text |
+| `setRef`, `setRowId`, `setSQLXML`, `setURL` | no literal form in the grammar |
+| `setUnicodeStream` | deprecated by the JDBC specification itself |
+
+`setObject` also refuses a raw array, a collection, a `Reader` or an `InputStream`: those have no literal form, and rendering their `toString` would produce a query that runs and silently matches nothing. Use `createArrayOf` plus `setArray`, or the stream setters.
+
+---
+
 ## Java Example
 
 ```java
