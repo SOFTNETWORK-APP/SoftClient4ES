@@ -51,14 +51,19 @@ case class Field(
   /** The name this SELECT item appears under in a result row -- its alias when it has one, else its
     * source field.
     *
-    * 🔴 ONE definition, because two places have to agree about it and did not: `SearchApi`'s
-    * requested-output names (which drive `rowNormalizer`, and therefore which columns exist and in
-    * what order) and `SingleSearch.rowInvariantProjection` (which supplies the VALUE of a constant
-    * column). Keying the projection off `identifierName` instead put `SELECT category, 2 FROM t
-    * GROUP BY category` under `2` while the row wanted `__c2`, so the requested column came back
-    * NULL and a bogus `2` column was invented beside it. Both callers now read this, over
-    * `Select.fieldsWithComputedAliases`, so a `__cN` computed for an un-aliased expression is the
-    * same on both sides by construction.
+    * 🔴 Introduced because places that MUST agree about it did not: `SearchApi`'s requested-output
+    * names (which drive `rowNormalizer`, and therefore which columns exist and in what order),
+    * `SingleSearch.rowInvariantProjection` (which supplies the VALUE of a constant column), the
+    * non-aggregated-field validator, the ranking-window alias maps and `scriptName` (the bridge's
+    * `script_fields` key). Keying the projection off `identifierName` instead put `SELECT category,
+    * 2 FROM t GROUP BY category` under `2` while the row wanted `__c2`, so the requested column
+    * came back NULL and a bogus `2` column was invented beside it.
+    *
+    * ⚠️ NOT yet the only definition in the codebase: the same expression is still written out in
+    * `schema/package.scala`, `IndicesApi`, `HandshakeEvaluator` and extensions' `RequiredField` --
+    * a follow-up, not a claim. `FromlessSelect.columnNames` is deliberately different and must stay
+    * so. Route any NEW consumer through this rather than re-deriving it: every key-desync defect in
+    * issue #253's story was one expression with two spellings.
     */
   lazy val outputName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
 
@@ -121,7 +126,10 @@ case class Field(
 
   def script: Option[String] = identifier.script
 
-  lazy val scriptName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
+  // The bridge's `script_fields` key -- the OTHER half of the coupling `outputName` exists to
+  // single-source. It kept a byte-identical second definition of the same expression 61 lines away;
+  // they agreed only by coincidence.
+  lazy val scriptName: String = outputName
 
   override def validate(): Either[String, Unit] = identifier.validate()
 

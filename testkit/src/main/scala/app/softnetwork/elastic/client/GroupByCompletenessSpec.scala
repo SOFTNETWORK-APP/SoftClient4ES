@@ -365,17 +365,40 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     implicit val unionCtx: ConversionContext = NativeContext
     client.search(
       SelectStatement(
-        "SELECT category, 2 AS flag FROM group_by_completeness WHERE amount <= 1 GROUP BY category" +
+        "SELECT category, 2 AS flag FROM group_by_completeness WHERE amount >= 2 GROUP BY category" +
         " UNION ALL " +
-        "SELECT category, 3 AS flag FROM group_by_completeness WHERE amount <= 2 GROUP BY category"
+        "SELECT category, 3 AS flag FROM group_by_completeness WHERE amount >= 3 GROUP BY category"
       )
     ) match {
       case ElasticSuccess(response) =>
-        val flags = response.results.map(_("flag").toString).toSet
+        // 🔴 Pair the constant with a leg-distinguishing ROW COUNT: `Set("2","3")` alone would pass
+        // if the legs' seeds were swapped (an off-by-one in the per-leg lookup). `cat_i` holds
+        // amounts 1..i, so `amount >= 2` matches cat_02..cat_37 (36 groups) and `amount >= 3`
+        // matches cat_03..cat_37 (35) -- counts that differ, and differ from each other.
+        val byFlag = response.results.groupBy(_("flag").toString).map { case (k, v) => k -> v.size }
         withClue(s"rows=${response.results.take(4)}: ") {
-          flags shouldBe Set("2", "3")
+          byFlag shouldBe Map("2" -> (categories - 1), "3" -> (categories - 2))
         }
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "return NO row when the grouping matches nothing" in {
+    // 🔴 The aggregation fold seeded itself with one EMPTY row, so a `WHERE` that excludes
+    // everything produced a phantom all-NULL row -- and with a seeded constant that phantom carried
+    // REAL values. Asserted for the aggregate-free, constant-bearing and aggregate-bearing
+    // spellings alike: the guard takes no "except".
+    implicit val emptyCtx: ConversionContext = NativeContext
+    Seq(
+      "SELECT category FROM group_by_completeness WHERE amount > 9999 GROUP BY category",
+      "SELECT category, 2 AS flag FROM group_by_completeness WHERE amount > 9999 GROUP BY category",
+      "SELECT category, COUNT(*) AS c FROM group_by_completeness WHERE amount > 9999 GROUP BY category"
+    ).foreach { sql =>
+      client.search(SelectStatement(sql)) match {
+        case ElasticSuccess(response) =>
+          withClue(s"[$sql] rows=${response.results}: ") { response.results shouldBe empty }
+        case ElasticFailure(error) => fail(s"[$sql] Query failed: ${error.message}")
+      }
     }
   }
 

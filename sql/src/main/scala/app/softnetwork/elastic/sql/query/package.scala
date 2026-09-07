@@ -321,13 +321,23 @@ package object query {
       * route, which is the very thing this fixes.
       */
     lazy val rowInvariantProjection: ListMap[String, Any] = {
-      // No de-duplication against other SELECT items: the constants SEED `parseAggregations`'
-      // `parentContext`, so anything Elasticsearch computes is merged on the RIGHT of `++` and
-      // therefore WINS -- including a computed null, which a "never overwrite a non-null value"
-      // guard could not express. Precedence is structural, not a rule to remember.
+      // 🔴 A constant is NOT declared for a name some other SELECT item owns, and this guard is
+      // load-bearing rather than belt-and-braces. Seeding makes Elasticsearch win only when it
+      // actually EMITS a value: `extractMetrics` writes no entry for a null-valued metric, so
+      // nothing lands on the right of `++` and the constant would survive. MEASURED against a
+      // response whose `m` is `{"value": null}`, `SELECT category, 2 AS m, MAX(amount) AS m ...
+      // GROUP BY category` returned `m = 2` where SQL says NULL. Precedence at the merge is
+      // therefore necessary but not sufficient; the collision is excluded HERE, where the statement
+      // is known, so the merge never has to arbitrate it.
+      val claimedElsewhere =
+        select.fieldsWithComputedAliases
+          .filterNot(f => SingleSearch.isRowInvariantLiteral(f.identifier))
+          .map(_.outputName)
+          .toSet
       ListMap(
         select.fieldsWithComputedAliases
           .filter(f => SingleSearch.isRowInvariantLiteral(f.identifier))
+          .filterNot(f => claimedElsewhere.contains(f.outputName))
           .map { f =>
             val value = f.identifier.functions.headOption match {
               case Some(v: Value[_]) => v.value
@@ -493,9 +503,7 @@ package object query {
             val nonAggregatedFields =
               select.fields.filterNot(f => f.hasAggregation)
             val invalidFields = nonAggregatedFields
-              .filterNot(f =>
-                buckets.exists(b => b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
-              )
+              .filterNot(f => buckets.exists(_.name == f.outputName))
               // FOLD-IN 1: a ROW-INVARIANT literal is legal beside a GROUP BY in standard SQL --
               // it cannot vary within a group, so it needs no bucket. It is not merely accepted:
               // `rowInvariantProjection` carries its VALUE into every aggregation row, because a

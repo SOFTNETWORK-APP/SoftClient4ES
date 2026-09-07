@@ -164,13 +164,14 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     parsed("SELECT category, ? AS p FROM t").rowInvariantProjection shouldBe empty
   }
 
-  it should "still declare a constant whose name an aggregation also claims" in {
-    // Precedence is settled downstream, not here: the constants SEED the aggregation recursion, so
-    // anything Elasticsearch computes overwrites them (asserted in `ElasticConversionSpec`). The
-    // AST layer therefore just reports what the statement declares.
+  it should "never declare a constant whose name another SELECT item owns" in {
+    // 🔴 Merge precedence alone is NOT enough: `extractMetrics` emits no entry for a null-valued
+    // metric, so nothing would land on the right of `++` and the constant would survive --
+    // MEASURED, `SELECT category, 2 AS m, MAX(amount) AS m ... GROUP BY category` returned `m = 2`
+    // where SQL says NULL. The collision is excluded here, where the statement is known.
     parsed(
       "SELECT category, 2 AS m, MAX(amount) AS m FROM t GROUP BY category"
-    ).rowInvariantProjection shouldBe ListMap("m" -> 2L)
+    ).rowInvariantProjection shouldBe empty
   }
 
   it should "reject a GROUP BY over an unbound query parameter" in {

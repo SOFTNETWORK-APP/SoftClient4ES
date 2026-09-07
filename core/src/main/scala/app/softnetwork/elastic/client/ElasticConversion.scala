@@ -170,6 +170,16 @@ trait ElasticConversion {
     Try {
       val responses = jsonArray.elements().asScala.toList
 
+      // 🔴 One seed per response, or none at all. A short `rowInvariants` would silently give the
+      // unmatched legs a NULL constant column -- the defect class issue #253 exists to close --
+      // so a misalignment fails here instead of reaching the caller. `Seq.empty` is the only
+      // legitimate short form and means "this caller declares no constants" (every scroll page).
+      require(
+        rowInvariants.isEmpty || rowInvariants.size == responses.size,
+        s"rowInvariants must carry one entry per response (got ${rowInvariants.size} " +
+        s"for ${responses.size} responses)"
+      )
+
       // Collect all errors
       val errors = responses.zipWithIndex.collect {
         case (response, idx) if response.has("error") =>
@@ -240,6 +250,36 @@ trait ElasticConversion {
       }
     }
 
+  /** Cross-join the per-root aggregation rows into result rows.
+    *
+    * 🔴 NO ROWS IN, NO ROWS OUT. The fold's initial value is one EMPTY row, so an aggregation that
+    * matched nothing -- `"buckets": []` over an empty index or a `WHERE` that excludes everything
+    * -- used to fall straight through it and yield that seed, which `rowNormalizer` then
+    * null-filled into a phantom all-NULL row. MEASURED: `SELECT category FROM t GROUP BY category`
+    * over an empty index returned 1 row of `ListMap(category -> null)`, and with issue #253's
+    * seeded constants the phantom row carried REAL values, which is worse.
+    *
+    * The phantom predates 0.22.0 for the aggregate-BEARING spelling; issue #253 moved the
+    * aggregate-free spelling off the scroll path (which returned no rows) onto this one. The guard
+    * is applied to BOTH, because a rule justified by correctness takes no "except" -- one all-null
+    * row is wrong for either spelling.
+    */
+  private def combineAggregationRows(
+    rows: Seq[ListMap[String, Any]]
+  ): Seq[ListMap[String, Any]] =
+    if (rows.isEmpty) Seq.empty
+    else
+      rows
+        .groupBy(_.getOrElse("bucket_root", "").toString)
+        .values
+        .foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
+          for {
+            accMap   <- acc
+            groupMap <- group
+          } yield accMap ++ groupMap
+        }
+        .map(_ - "bucket_root")
+
   /** convert JsonNode to Rows
     */
   /** `rowInvariants` are the statement's ROW-INVARIANT SELECT items -- constants, which cannot vary
@@ -288,30 +328,12 @@ trait ElasticConversion {
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
         val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
-        val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
-          ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values
-          .foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
-            for {
-              accMap   <- acc
-              groupMap <- group
-            } yield accMap ++ groupMap
-          }
-          .map(_ - "bucket_root")
+        combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
         val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
-        val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
-          ret.groupBy(_.getOrElse("bucket_root", "").toString)
-        groupedRows.values
-          .foldLeft(Seq(ListMap.empty[String, Any])) { (acc, group) =>
-            for {
-              accMap   <- acc
-              groupMap <- group
-            } yield accMap ++ groupMap
-          }
-          .map(_ - "bucket_root")
+        combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations

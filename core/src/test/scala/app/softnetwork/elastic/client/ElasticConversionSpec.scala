@@ -1668,17 +1668,71 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
     groupedRows(ListMap.empty).foreach(r => r.keys.toSeq shouldBe Seq("category", "n"))
   }
 
-  it should "LOSE to a value Elasticsearch computed under the same name" in {
-    // Precedence is structural, not a rule to remember: the seed goes in FIRST and the recursion
-    // merges bucket keys and metrics on the RIGHT of `++`, so anything Elasticsearch actually
-    // produced overwrites the constant -- including a computed null, which is the case a
-    // "never overwrite a non-null value" guard could not express.
+  it should "LOSE to a value Elasticsearch actually EMITTED under the same name" in {
+    // The seed goes in FIRST and the recursion merges bucket keys and metrics on the RIGHT of `++`,
+    // so anything Elasticsearch produced overwrites the constant.
     val rows = groupedRows(ListMap[String, Any]("n" -> 999L, "category" -> "seeded"))
     rows.map(_("n")) shouldBe Seq(2, 1)
     rows.map(_("category")) shouldBe Seq("a", "b")
   }
 
-  it should "be ordered by the requested output fields, not by insertion" in {
+  it should "SURVIVE a metric Elasticsearch computed as NULL — which is why the AST guard exists" in {
+    // 🔴 The limit of merge precedence, and the reason `SingleSearch.rowInvariantProjection` still
+    // refuses to declare a constant for a name another SELECT item owns. `extractMetrics` writes NO
+    // entry for a null-valued metric, so nothing lands on the right of `++` and the constant
+    // survives: "Elasticsearch always wins" is true only where Elasticsearch EMITS. Without the AST
+    // guard, `SELECT category, 2 AS m, MAX(amount) AS m ... GROUP BY category` would return `m = 2`
+    // where SQL says NULL.
+    val withNullMetric = """{
+                    |  "took": 5,
+                    |  "hits": { "total": { "value": 2 }, "hits": [] },
+                    |  "aggregations": {
+                    |    "category": {
+                    |      "buckets": [
+                    |        { "key": "a", "doc_count": 1, "m": { "value": null } },
+                    |        { "key": "b", "doc_count": 1, "m": { "value": 3 } }
+                    |      ]
+                    |    }
+                    |  }
+                    |}""".stripMargin
+    val rows = parseSingleSearchResponse(
+      mapper.readTree(withNullMetric),
+      ListMap.empty,
+      ListMap.empty,
+      rowInvariants = ListMap[String, Any]("m" -> 2L)
+    ).get
+    rows.map(_("m")) shouldBe Seq(2L, 3)
+  }
+
+  it should "produce NO row when the aggregation matched nothing" in {
+    // 🔴 The fold's initial value is one EMPTY row, so an empty `buckets` array used to fall
+    // through it and yield a phantom all-NULL row -- and with a seeded constant that phantom
+    // carried REAL values. Pinned on the SEEDED path so it cannot be lost again.
+    val empty = """{
+                    |  "took": 1,
+                    |  "hits": { "total": { "value": 0 }, "hits": [] },
+                    |  "aggregations": { "category": { "buckets": [] } }
+                    |}""".stripMargin
+    parseSingleSearchResponse(
+      mapper.readTree(empty),
+      ListMap.empty,
+      ListMap.empty,
+      Seq("category", "flag"),
+      rowInvariants = ListMap[String, Any]("flag" -> 2L)
+    ).get shouldBe Seq.empty
+
+    // and with no constants at all — the aggregate-BEARING spelling, phantom since before 0.22.0
+    parseSingleSearchResponse(
+      mapper.readTree(empty),
+      ListMap.empty,
+      ListMap.empty,
+      Seq("category")
+    ).get shouldBe Seq.empty
+  }
+
+  // NOTE: this pins `rowNormalizer`'s ordering, NOT the seeding — it stays green with seeding
+  // disabled. It lives here because the seeded constants are what made the question worth asking.
+  it should "leave rowNormalizer's output ordering intact when constants are seeded" in {
     // Seeded constants enter the map before the bucket keys; `rowNormalizer` puts the row back into
     // SELECT order at the end of `jsonToRows`.
     // `rowNormalizer` puts the REQUESTED fields first, in order, and appends anything extra the

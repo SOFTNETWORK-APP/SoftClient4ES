@@ -1674,7 +1674,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val rankingWindows: Seq[(String, RankingWindow)] =
       request.windowFields.flatMap { f =>
         f.identifier.windows.collect { case r: RankingWindow =>
-          f.fieldAlias.map(_.alias).getOrElse(f.sourceField) -> r
+          f.outputName -> r
         }
       }
 
@@ -1882,7 +1882,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val rankingAliases: Seq[String] =
       request.windowFields.flatMap { f =>
         f.identifier.windows.collect { case _: RankingWindow =>
-          f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+          f.outputName
         }
       }
 
