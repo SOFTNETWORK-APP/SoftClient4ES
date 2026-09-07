@@ -23,6 +23,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
+import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
@@ -31,6 +32,11 @@ import org.slf4j.{Logger, LoggerFactory}
 import scala.language.implicitConversions
 
 case class CategoryCount(category: String, cnt: Long)
+
+// Issue #253 result shapes: an aggregate-free GROUP BY projects the bucket keys only.
+case class CategoryOnly(category: String)
+case class CategoryAmount(category: String, amount: Int)
+case class CategoryAliased(cat: String)
 
 /** Regression test for issue #205: `GROUP BY` with no `LIMIT` must return EVERY group.
   *
@@ -150,6 +156,129 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
           val c = categories - i
           f"cat_$c%02d" -> c.toLong
         }
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Issue #253 -- GROUP BY with NO aggregate in the SELECT list returns
+  // one row per GROUP, not one row per DOCUMENT.
+  //
+  // Before the fix the statement was row-shaped (`returnsRows` was true because `sqlAggregations`
+  // was empty), so it was routed to the scroll / capped-scroll path and came back with
+  // per-document rows -- 703 here, and 10,000 on the reporter's 200k fixture. The oracle below is
+  // the GROUP count (37), deliberately different from BOTH the document count (703) and the ES
+  // terms default (10), so neither failure mode can pass.
+  // ------------------------------------------------------------------
+
+  "GROUP BY with no aggregate" should "return exactly one row per group" in {
+    client.searchAs[CategoryOnly](
+      "SELECT category FROM group_by_completeness GROUP BY category"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size categories.toLong // 37 groups, not 703 documents
+        rows.map(_.category).distinct should have size categories.toLong
+        rows.map(_.category).toSet shouldBe (1 to categories).map(c => f"cat_$c%02d").toSet
+        log.info(s"OK ${rows.size} groups from $index (documents indexed: $totalDocs)")
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "still bound the group count with an explicit LIMIT" in {
+    // LIMIT on a GROUP BY is the terms SIZE (a bucket count), aggregate or not -- unchanged
+    // semantics, pinned so the #253 fix cannot drift it into a row count.
+    client.searchAs[CategoryOnly](
+      "SELECT category FROM group_by_completeness GROUP BY category LIMIT 5"
+    ) match {
+      case ElasticSuccess(rows)  => rows should have size 5
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "return one row per COMBINATION for a multi-column aggregate-free GROUP BY" in {
+    // `cat_i` holds exactly i docs with amounts 1..i, so every document IS a distinct
+    // (category, amount) pair: the exact oracle is `totalDocs` = sum(1..37) = 703.
+    client.searchAs[CategoryAmount](
+      "SELECT category, amount FROM group_by_completeness GROUP BY category, amount"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size totalDocs.toLong
+        rows.map(r => (r.category, r.amount)).distinct should have size totalDocs.toLong
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "order an aggregate-free GROUP BY by the bucket key" in {
+    client.searchAs[CategoryOnly](
+      "SELECT category FROM group_by_completeness GROUP BY category ORDER BY category DESC LIMIT 3"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.category) shouldBe (0 until 3).map(i => f"cat_${categories - i}%02d")
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "resolve an ordinal GROUP BY / ORDER BY to the n-th SELECT item (OQ-1)" in {
+    // Tableau's own shape: `... GROUP BY 1 ORDER BY 1 ASC`.
+    // ⚠️ RED pre-fix for a NON-obvious reason, which is what makes it a strong gate: the
+    // `GROUP BY 1` already resolved, but the `ORDER BY 1` was silently dropped, so the terms
+    // aggregation fell back to its default doc_count-descending order and `LIMIT 3` returned the
+    // THREE BIGGEST categories (cat_37, cat_36, cat_35 -- `cat_i` holds `i` docs) instead of the
+    // three smallest by key. The assertion is on the KEY order, which is exact on a multi-shard
+    // index; a doc_count-ordered top-N would be shard-approximate.
+    client.searchAs[CategoryOnly](
+      "SELECT category FROM group_by_completeness GROUP BY 1 ORDER BY 1 ASC LIMIT 3"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.category) shouldBe Seq("cat_01", "cat_02", "cat_03")
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "resolve a GROUP BY select-alias to the aliased field (FOLD-IN 2)" in {
+    // Pre-fix failure mode: terms on the non-existent field "cat" => ZERO rows with HTTP 200 --
+    // the strongest possible RED (an empty success, not an error). The 37-group oracle is the same
+    // as the plain #253 test's, so the two must agree exactly. The result binds the ALIAS (the
+    // bucket is named "cat" -- name = identifier.fieldAlias), hence CategoryAliased.
+    client.searchAs[CategoryAliased](
+      "SELECT category AS cat FROM group_by_completeness GROUP BY cat"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size categories.toLong
+        rows.map(_.cat).toSet shouldBe (1 to categories).map(c => f"cat_$c%02d").toSet
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "group by a row-invariant constant, which is exactly ONE group (FOLD-IN 1)" in {
+    // The Tableau capability-probe shape (`SELECT SUM(1) AS COL, 2 AS COL2 ... GROUP BY 2`) reduced
+    // to what makes it work: a bucket whose identifier is a CONSTANT has no field to name, so it
+    // must be emitted as a SCRIPTED `terms`. Before that, the emitted aggregation carried neither
+    // `field` nor `script` and Elasticsearch rejects such a request outright -- which is why this
+    // assertion has to run against a real cluster and not against the generated JSON alone.
+    // A constant is the same for every document, so the oracle is ONE group over all 703 of them.
+    // ⚠️ Asserted on the RAW row, not through `searchAs`: the macro types a bare integer literal
+    // as BIGINT and therefore demands a `Long` field, while the value arrives as Jackson's
+    // smallest type (an Integer), so the generated decoder rejects it. That binding mismatch is
+    // pre-existing for any literal column and is recorded separately -- it must not be allowed to
+    // hide whether the AGGREGATION is right, which is what this test is for.
+    implicit val ctx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement("SELECT 2 AS flag FROM group_by_completeness GROUP BY flag")
+    ) match {
+      case ElasticSuccess(response) =>
+        response.results should have size 1L
+        response.results.head.keys.toSeq shouldBe Seq("flag")
+        response.results.head("flag").toString shouldBe "2"
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")

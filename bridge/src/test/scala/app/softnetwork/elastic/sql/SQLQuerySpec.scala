@@ -4609,4 +4609,141 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     backtick.query shouldBe ansi.query
   }
 
+  // ---- issue #253: an aggregate-free GROUP BY is a terms aggregation, not a document query ----
+
+  it should "translate an aggregate-free GROUP BY into a terms aggregation (issue #253)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "category": {
+        |      "terms": { "field": "category", "size": 65536, "min_doc_count": 1 }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "size an aggregate-free GROUP BY from an explicit LIMIT" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category LIMIT 5")
+    // the TERMS size is the LIMIT (a bucket count); the request itself stays "size":0
+    select.query should include(""""size":5""")
+    select.query should include(""""size":0""")
+  }
+
+  it should "nest one terms level per column for a multi-column aggregate-free GROUP BY" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT country, category FROM Table GROUP BY country, category")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "country": {
+        |      "terms": { "field": "country", "size": 65536, "min_doc_count": 1 },
+        |      "aggs": {
+        |        "category": {
+        |          "terms": { "field": "category", "size": 65536, "min_doc_count": 1 }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "order an aggregate-free GROUP BY by the bucket key, not by a document sort" in {
+    // The document `sortBy` is gated on `aggregates.isEmpty && buckets.isEmpty`, so a
+    // bucket-bearing statement must produce a terms `order` and NO top-level "sort".
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category ORDER BY category DESC")
+    val query = select.query
+    println(query)
+    query should include(""""order":{"_key":"desc"}""")
+    query should not include """"sort":"""
+  }
+
+  it should "emit no bucket_selector for a HAVING with no aggregate over an aggregate-free GROUP BY" in {
+    // `metricSelectorForBucket` strips "1 == 1" to the empty string, so the HAVING becomes a terms
+    // exclude and no bucket_selector is produced.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category HAVING category <> 'x'")
+    val query = select.query
+    println(query)
+    query should not include "bucket_selector"
+    query should include("exclude")
+  }
+
+  it should "resolve a GROUP BY select-alias to the aliased FIELD in the emitted terms (FOLD-IN 2)" in {
+    // Pre-fix this emitted terms { field: "pays" } on a NON-EXISTENT field, which Elasticsearch
+    // answers with zero buckets and HTTP 200. The aggregation is NAMED after the alias and reads
+    // the aliased COLUMN.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT country AS pays FROM Table GROUP BY pays")
+    val query = select.query
+    println(query)
+    query should include(""""pays":{"terms":{"field":"country"""")
+    query should not include """"field":"pays""""
+    // and it is byte-identical to the explicit spelling apart from nothing at all
+    val explicit: ElasticSearchRequest =
+      SelectStatement("SELECT country AS pays FROM Table GROUP BY country")
+    query shouldBe explicit.query
+  }
+
+  it should "resolve an ordinal GROUP BY / ORDER BY into the terms field and order" in {
+    // `ORDER BY <n>` used to be a Painless sort over a constant (row path) or an unmatched
+    // bucket-order key (GROUP BY path) — silently dropped either way. Pinning the emitted JSON is
+    // the only assertion that can see the difference.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY 1 ORDER BY 1 ASC LIMIT 3")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "category": {
+        |      "terms": {
+        |        "field": "category",
+        |        "size": 3,
+        |        "min_doc_count": 1,
+        |        "order": { "_key": "asc" }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "order buckets by the METRIC when the ordinal names an aggregate" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category, COUNT(*) AS c FROM Table GROUP BY 1 ORDER BY 2 DESC")
+    val query = select.query
+    println(query)
+    query should include(""""order":{"c":"desc"}""")
+  }
+
+  it should "script a bucket over a row-invariant literal, which has no field to name" in {
+    // FOLD-IN 1's corpus shape: `GROUP BY 2` names `2 AS COL2`, so the bucket identifier has an
+    // EMPTY name. Without `Bucket.shouldBeScripted` covering the literal, the emitted terms carried
+    // neither `field` nor `script` — which Elasticsearch rejects outright. A scripted terms over a
+    // constant is one bucket, which is what `GROUP BY <constant>` means.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT SUM(1) AS COL, 2 AS COL2 FROM Table GROUP BY 2")
+    val query = select.query
+    println(query)
+    query should include(
+      """"COL2":{"terms":{"size":65536,"script":{"lang":"painless","source":"2"}"""
+    )
+  }
+
 }

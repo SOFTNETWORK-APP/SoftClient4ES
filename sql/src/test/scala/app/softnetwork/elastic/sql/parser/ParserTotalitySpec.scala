@@ -416,39 +416,31 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   // --- the residual the grammar cannot own (boundary catch) ---------------------------------
 
   // `single` calls `.update()` inside its action, so the AST-update pass runs during the PARSE.
-  // Two sites CRASH there, MEASURED: `SingleSearch.bucketNames` (query/package.scala:125) with a
-  // bare `select.fields(n - 1)` INDEX - no `throw` token, which is why the source scan below
-  // cannot see it - and `Bucket.update` (query/GroupBy.scala:76, IllegalArgumentException, reached
-  // only by `GROUP BY -1`, because bucketNames' `\d+` regex matches the `1` inside `-1`).
+  // Two sites used to CRASH there: `SingleSearch.bucketNames` with a bare `select.fields(n - 1)`
+  // INDEX - no `throw` token, which is why the source scan below cannot see it - and
+  // `Bucket.update` (IllegalArgumentException, reached only by `GROUP BY -1`, because bucketNames'
+  // old `\d+` regex matched the `1` inside `-1`).
   //
-  // Ordinal-bucket SEMANTICS are story 21.3 / #253. When 21.3 lands it rejects these in
-  // `validate()`, which returns a `Left` WITHOUT reaching the boundary catch, so the
-  // `InternalParseFailure` assertions below go red. RETARGET them to 21.3's message; do NOT delete
-  // the tests. The `noException` + `isLeft` halves are this story's contract and must NEVER be
-  // relaxed, whatever the reason string becomes.
+  // 🔴 RETARGETED by story 21.3 / #253, exactly as this block instructed: ordinal-bucket semantics
+  // now live in `Bucket.validate()`, so these inputs come back as VALIDATOR rejections that never
+  // reach the boundary catch. The `noException` + `isLeft` halves are story 21.4's contract and
+  // have NOT been relaxed - only the route and the reason string changed, which is why `rejects`
+  // (which asserts the message does NOT carry the boundary label) is the stronger assertion here.
   it should "not let an AST-side throw escape (GROUP BY ordinal out of range)" in {
-    rejectsInternally("SELECT a, b FROM t GROUP BY 0", "IndexOutOfBounds")
-    rejectsInternally("SELECT a, b FROM t GROUP BY 9")
+    rejects("SELECT a, b FROM t GROUP BY 0", "GROUP BY position 0")
+    rejects("SELECT a, b FROM t GROUP BY 9", "GROUP BY position 9")
   }
 
   it should "not let an AST-side throw escape (non-positive GROUP BY ordinal)" in {
-    rejectsInternally("SELECT a, b FROM t GROUP BY -1", "IllegalArgument")
+    rejects("SELECT a, b FROM t GROUP BY -1", "GROUP BY position -1")
   }
 
-  // 🔴 THIS ROW IS NOT AN ENDORSEMENT - `SELECT city2 FROM t GROUP BY city2` is a VALID query.
-  // `city2` is an ordinary column, not an ordinal, but `SingleSearch.bucketNames`
-  // (query/package.scala:120-132) detects an "ordinal" by running `\d+` over the RENDERED column
-  // name, guarded only by "the name contains no space" - so it matches the `2` in `city2` and
-  // indexes `select.fields(2 - 1)` on a ONE-column SELECT. Every column whose name contains a
-  // digit (`city2`, `q4`, `field_2`) is a candidate.
-  //
-  // On `main` this CRASHES `Parser.apply` with IndexOutOfBoundsException: 1. 21.4 only stops the
-  // crash escaping; the SEMANTICS are story 21.3 / #253's defect 2 and PD-4 forbids fixing them
-  // here. Local record: docs/issues/local-21.4-group-by-digit-suffixed-column.md.
-  // When 21.3 lands, this query must PARSE - at which point this test is deleted, not retargeted.
-  it should "not let an AST-side throw escape for a VALID query (21.3 defect 2, not endorsed)" in {
-    rejectsInternally("SELECT city2 FROM t GROUP BY city2", "IndexOutOfBounds")
-  }
+  // 🔴 The row that used to sit here pinned the CRASH on `SELECT city2 FROM t GROUP BY city2` - a
+  // VALID query that `bucketNames` mis-read as ordinal 2 because it ran `\d+` over the RENDERED
+  // name. Its own instruction was "when 21.3 lands, this query must PARSE - at which point this
+  // test is deleted, not retargeted", because it pinned a DEFECT and not a contract. 21.3 landed;
+  // the row is gone. The query's correct behaviour is asserted in
+  // `sql/.../query/GroupByOrdinalSpec.scala` ("a bucket whose column name contains a digit").
 
   // --- the prologue, which is NOT part of the grammar ----------------------------------------
 
@@ -476,7 +468,12 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   // parser fault ever produces. A grammar rejection keeps `cause = None` - a user's syntax error
   // has no interesting stack, and attaching one puts a parser internal in front of a BI user.
   it should "carry the cause on an internal fault and not on a grammar rejection" in {
-    Parser("SELECT a, b FROM t GROUP BY 0").swap.toOption.flatMap(_.cause) shouldBe defined
+    // The internal-fault witness used to be `GROUP BY 0`; story 21.3 turned that into a VALIDATOR
+    // rejection, so the witness is now the null input `normalize` dereferences before `parse` runs
+    // (the same one `rejectsInternally` uses above). The boundary catch is no less necessary for
+    // having one fewer known trigger: it guards the whole AST surface `.update()` drags in.
+    Parser(null.asInstanceOf[String]).swap.toOption.flatMap(_.cause) shouldBe defined
+    Parser("SELECT a, b FROM t GROUP BY 0").swap.toOption.flatMap(_.cause) shouldBe empty
     Parser("SELECT a FROM t WHERE (b = 1").swap.toOption.flatMap(_.cause) shouldBe empty
     Parser("SELECT * FRM users").swap.toOption.flatMap(_.cause) shouldBe empty
   }

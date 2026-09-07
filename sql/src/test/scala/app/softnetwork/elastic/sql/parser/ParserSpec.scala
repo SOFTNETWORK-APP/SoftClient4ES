@@ -4432,4 +4432,23 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     ).isLeft shouldBe true
   }
 
+  // ---- issue #253: ordinal positions normalise to the resolved item on render ----
+
+  it should "normalise an ordinal GROUP BY to the resolved column on render" in {
+    // Established house behaviour (SQLQuerySpec "handle group by index" already relies on it): the
+    // ordinal spelling is not preserved in the AST, so `.sql` re-emits the column. Pin it, so the
+    // normalisation is a decision and not an accident, and prove the render RE-PARSES equal.
+    val ordinalForm = "SELECT country, category FROM t GROUP BY 2, 1"
+    val rendered = Parser(ordinalForm).map(_.sql).getOrElse(fail("did not parse"))
+    rendered should include("GROUP BY category, country")
+    Parser(rendered).map(_.sql).getOrElse("") shouldBe rendered
+  }
+
+  it should "normalise an ordinal ORDER BY to the resolved column on render" in {
+    val ordinalForm = "SELECT country, category FROM t GROUP BY country, category ORDER BY 1 ASC"
+    val rendered = Parser(ordinalForm).map(_.sql).getOrElse(fail("did not parse"))
+    rendered should include("ORDER BY country ASC")
+    Parser(rendered).map(_.sql).getOrElse("") shouldBe rendered
+  }
+
 }
