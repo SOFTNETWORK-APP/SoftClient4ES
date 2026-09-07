@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql.parser.function
 
 import app.softnetwork.elastic.sql.function.convert.{Cast, CastOperator, Convert, TryCast}
 import app.softnetwork.elastic.sql.{Alias, Identifier}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.parser.Parser
 
 package object convert {
@@ -50,6 +51,24 @@ package object convert {
         i.withFunctions(Convert(i, targetType = t) +: i.functions)
       }
 
+    /** MySQL's `CONVERT(expr USING <charset>)`.
+      *
+      * Elasticsearch stores UTF-8 throughout, so a charset conversion is a no-op; the charset name
+      * is parsed and DISCARDED, and the statement renders as `CONVERT(expr, VARCHAR)` so the drop
+      * is visible in every artifact that echoes it.
+      *
+      * Registered AFTER `convert_identifier`, which fails at its `separator` on this shape and lets
+      * `|` move on: the non-backtracking rule bites only INSIDE a committed alternation, never
+      * across sibling alternatives of the outer `|`.
+      */
+    def convert_using_identifier: PackratParser[Identifier] =
+      Convert.regex ~ start ~ (identifierWithTransformation |
+      identifierWithIntervalFunction |
+      identifierWithFunction |
+      identifier) ~ keyword("USING") ~ ident ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ =>
+        i.withFunctions(Convert(i, targetType = SQLTypes.Varchar) +: i.functions)
+      }
+
     def convert_transact_sql_identifier: PackratParser[Identifier] =
       Convert.regex ~ start ~> sql_type ~ separator ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
@@ -69,6 +88,7 @@ package object convert {
       (cast_identifier |
       try_cast_identifier |
       convert_identifier |
+      convert_using_identifier |
       convert_transact_sql_identifier) ~ rep(
         intervalFunction
       ) ^^ { case id ~ funcs =>

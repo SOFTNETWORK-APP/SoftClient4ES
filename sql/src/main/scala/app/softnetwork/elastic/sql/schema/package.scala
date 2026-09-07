@@ -1060,7 +1060,12 @@ package object schema {
       val esType = SQLTypeUtils.elasticType(dataType)
       root.put("type", esType)
       dataType match {
-        case SQLTypes.Varchar | SQLTypes.Text => // do not set null_value for text types
+        // `Char` joins them because story 21.5 gave it the same `elasticType` ("text"), and
+        // Elasticsearch refuses `null_value` on a `text` field. The rule is "a text-mapped column
+        // takes no null_value", with no "except" — leaving CHAR out would emit a mapping ES
+        // rejects, which is a worse outcome than the `object` mapping it replaces.
+        case SQLTypes.Varchar | SQLTypes.Text | SQLTypes.Char =>
+        // do not set null_value for text types
         case _ =>
           defaultValue.foreach {
             case IngestTimestampValue => () // do not set null_value for ingest timestamp

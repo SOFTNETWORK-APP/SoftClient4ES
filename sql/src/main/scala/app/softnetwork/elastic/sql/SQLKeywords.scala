@@ -450,7 +450,11 @@ object SQLKeywords {
     "YEAR"
   )
 
-  /** SQL type names accepted by `TypeParser` (parser/type/package.scala:91-164). */
+  /** SQL type names accepted by `TypeParser` (parser/type/package.scala, `sql_type` and its
+    * alternatives). Type names live here and NEVER in `statementWords`: `SQLKeywordsSpec`'s
+    * reverse-direction anti-drift test requires every `statementWords` entry to be backed by a
+    * `keyword("...")` literal in the parser, and a type name is a regex, not a keyword.
+    */
   val typeWords: Set[String] = Set(
     "ARRAY",
     "BIGINT",
@@ -460,6 +464,8 @@ object SQLKeywords {
     "CHAR",
     "DATE",
     "DATETIME",
+    "DEC",
+    "DECIMAL",
     "DOUBLE",
     "FLOAT",
     "GEOPOINT",
@@ -468,8 +474,10 @@ object SQLKeywords {
     "INTEGER",
     "KEYWORD",
     "LONG",
+    "NUMERIC",
     "REAL",
     "SHORT",
+    "SIGNED",
     "SMALLINT",
     "STRING",
     "STRUCT",
@@ -477,6 +485,7 @@ object SQLKeywords {
     "TIME",
     "TIMESTAMP",
     "TINYINT",
+    "UNSIGNED",
     "VARBINARY",
     "VARCHAR"
   )

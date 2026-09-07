@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.macros
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes, SQLVarchar}
 import app.softnetwork.elastic.sql.function.aggregate.{COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{MultiSearch, SingleSearch}
@@ -709,7 +709,12 @@ trait SQLQueryValidator {
         underlyingType =:= typeOf[String] || // CHAR(n) → String
           underlyingType =:= typeOf[Char] // CHAR(1) → Char
 
-      case SQLTypes.Varchar =>
+      // `_: SQLVarchar`, not the `Varchar` case object: story 21.5 makes `CAST(x AS TEXT)` and
+      // `AS KEYWORD` reachable from a DQL cast, and case-object equality would drop both into the
+      // permissive `case _ => true` fallback below — a newly-opened hole rather than a check.
+      // `Text` and `Keyword` both extend `SQLVarchar`; `Char` does not, so its own arm above stays
+      // reachable and keeps allowing `Char`.
+      case _: SQLVarchar =>
         underlyingType =:= typeOf[String]
 
       case SQLTypes.Boolean =>
@@ -753,7 +758,7 @@ trait SQLQueryValidator {
       case SQLTypes.Int      => "Int, Long, Option[Int], Option[Long]"
       case SQLTypes.BigInt   => "Long, BigInt, Option[Long], Option[BigInt]"
       case SQLTypes.Double | SQLTypes.Real => "Double, Float, Option[Double], Option[Float]"
-      case SQLTypes.Varchar                => "String, Option[String]"
+      case _: SQLVarchar                   => "String, Option[String]"
       case SQLTypes.Char                   => "String, Char, Option[String], Option[Char]"
       case SQLTypes.Boolean                => "Boolean, Option[Boolean]"
       case SQLTypes.Time                   => "java.time.LocalTime, java.time.Instant"

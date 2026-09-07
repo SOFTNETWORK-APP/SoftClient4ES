@@ -33,6 +33,34 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  // Story 21.5 (#275) makes TEXT and KEYWORD reachable as DQL cast targets. They must land on the
+  // macro's String arm, not in its permissive `case _ => true` fallback — a newly reachable target
+  // that nothing validates is a hole this story would otherwise have opened.
+  it should "VALIDATE the newly reachable TEXT / KEYWORD cast targets as String" in {
+    assertCompiles("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Strings
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      TestElasticClientApi.searchAs[Strings](
+        "SELECT vchar::TEXT, c::KEYWORD, text FROM strings"
+      )""")
+  }
+
+  it should "REJECT a TEXT cast bound to a non-String field" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class WrongText(vchar: Int)
+
+      TestElasticClientApi.searchAs[WrongText](
+        "SELECT vchar::TEXT FROM strings"
+      )""")
+  }
+
   it should "VALIDATE temporal types" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi

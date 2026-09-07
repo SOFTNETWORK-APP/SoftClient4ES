@@ -54,23 +54,29 @@ object SQLTypeUtils {
   }
 
   def elasticType(sqlType: SQLType): String = sqlType match {
-    case Null                         => "null"
-    case TinyInt | Array(TinyInt)     => "byte"
-    case SmallInt | Array(SmallInt)   => "short"
-    case Int | Array(Int)             => "integer"
-    case BigInt | Array(BigInt)       => "long"
-    case Double | Array(Double)       => "double"
-    case Real | Array(Real)           => "float"
-    case Numeric                      => "scaled_float"
-    case Varchar | Text               => "text"
-    case Array(Varchar) | Array(Text) => "text"
-    case Keyword | Array(Keyword)     => "keyword"
-    case Boolean | Array(Boolean)     => "boolean"
-    case Date                         => "date"
-    case Time                         => "date"
-    case DateTime                     => "date"
-    case Timestamp                    => "date"
-    case Temporal                     => "date"
+    case Null                       => "null"
+    case TinyInt | Array(TinyInt)   => "byte"
+    case SmallInt | Array(SmallInt) => "short"
+    case Int | Array(Int)           => "integer"
+    case BigInt | Array(BigInt)     => "long"
+    case Double | Array(Double)     => "double"
+    case Real | Array(Real)         => "float"
+    case Numeric                    => "scaled_float"
+    // `Char` joins `Varchar`, not `Keyword`: `text` is what the DDL documentation already promises
+    // for a character column. Without this arm `Char` fell to `case _ => "object"`, so
+    // `CREATE TABLE t (c CHAR)` silently created an OBJECT-typed Elasticsearch field. That was
+    // nearly unreachable while bare `CHAR` was the only spelling; story 21.5 accepts `CHAR(n)`,
+    // which is the spelling everybody writes, so advertising it without this arm would route new
+    // traffic into a persisted wrong mapping.
+    case Varchar | Text | Char                      => "text"
+    case Array(Varchar) | Array(Text) | Array(Char) => "text"
+    case Keyword | Array(Keyword)                   => "keyword"
+    case Boolean | Array(Boolean)                   => "boolean"
+    case Date                                       => "date"
+    case Time                                       => "date"
+    case DateTime                                   => "date"
+    case Timestamp                                  => "date"
+    case Temporal                                   => "date"
     case Array(Date) | Array(Time) | Array(DateTime) | Array(Timestamp) | Array(Temporal) =>
       "date"
     case GeoPoint | Array(GeoPoint) => "geo_point"
@@ -321,8 +327,19 @@ object SQLTypeUtils {
         case (_, _) if from == to =>
           return expr
 
-        // ---- Any -> VARCHAR ----
-        case (_, SQLTypes.Varchar) =>
+        // ---- Any -> VARCHAR / CHAR / TEXT / KEYWORD ----
+        // Was `case (_, SQLTypes.Varchar)` — case-object equality, so CHAR fell through to the
+        // identity fallback and `CAST(1 AS CHAR)` emitted the number `1` where a string was asked
+        // for. `SQLLiteral`'s complete implementor set is {SQLVarchar, SQLChar} plus EsqlText and
+        // EsqlKeyword (which extend SQLVarchar) — no temporal, numeric, boolean, array, struct or
+        // binary type mixes it in — so the widening is tight, and the identity arm above still
+        // keeps `Varchar -> Varchar` an identity.
+        //
+        // Not optional: story 21.5 makes CHAR/TEXT/KEYWORD newly REACHABLE from a DQL cast, and
+        // widening the door without fixing the room behind it routes new traffic into a silent
+        // wrong answer (the #218 lesson — a parse fix can upgrade a loud failure into a silent
+        // corruption).
+        case (_, _: SQLLiteral) =>
           s"String.valueOf($expr)"
 
         // ---- PAR DEFAUT ----
