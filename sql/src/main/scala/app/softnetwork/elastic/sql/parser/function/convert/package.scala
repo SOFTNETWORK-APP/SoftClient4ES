@@ -60,12 +60,16 @@ package object convert {
       * Registered AFTER `convert_identifier`, which fails at its `separator` on this shape and lets
       * `|` move on: the non-backtracking rule bites only INSIDE a committed alternation, never
       * across sibling alternatives of the outer `|`.
+      *
+      * The charset is `(ident | literal)` because MySQL accepts BOTH `USING utf8` and `USING
+      * 'utf8'`. Taking only the bare form would half-support a spelling the lead confirmed we keep
+      * (OQ-3), and `ident` cannot express a quoted one.
       */
     def convert_using_identifier: PackratParser[Identifier] =
       Convert.regex ~ start ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
-      identifier) ~ keyword("USING") ~ ident ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ =>
+      identifier) ~ keyword("USING") ~ (ident | literal) ~ end ^^ { case _ ~ _ ~ i ~ _ ~ _ ~ _ =>
         i.withFunctions(Convert(i, targetType = SQLTypes.Varchar) +: i.functions)
       }
 

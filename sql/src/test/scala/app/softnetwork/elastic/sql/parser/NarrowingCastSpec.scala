@@ -77,8 +77,10 @@ class NarrowingCastSpec extends AnyFlatSpec with Matchers {
     painlessOf("SELECT CAST(n AS BIGINT) FROM t") should include("(long)")
     painlessOf("SELECT CAST(n AS DOUBLE) FROM t") should include("(double)")
     painlessOf("SELECT CAST(big AS DOUBLE) FROM t") should include("(double)")
-    // An identity is still an identity — no cast is emitted at all.
-    painlessOf("SELECT CAST(amount AS DOUBLE) FROM t") should not include "(double)"
+    // An identity is still an identity — no cast is emitted at all. Asserted EXACTLY: an absence
+    // matcher would also pass on any other wrong emission.
+    painlessOf("SELECT CAST(amount AS DOUBLE) FROM t") shouldBe
+    "(doc['amount'].size() == 0 ? null : doc['amount'].value)"
   }
 
   it should "leave TRY_CAST's safe wrapper in place around a narrowing" in {

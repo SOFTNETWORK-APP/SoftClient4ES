@@ -63,6 +63,16 @@ compose nested queries — where the tool lets you:
 - `UNION ALL` (concatenate result sets — no de-duplication).
 - `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It is **not** the `EXCEPT` set operator (see below).
 
+## Known limitation: a cast over a COLUMN does not convert
+
+`CAST(<column> AS <type>)` and `CONVERT` are accepted and the statement executes, but the value comes
+back **as stored** — the conversion is not applied. The engine resolves a conversion from the
+operand's type, and an executing query carries no schema, so a column's type is unknown at that
+point. It affects every source type, not only strings.
+
+Casts over **literals** convert normally (`CAST('125' AS BIGINT)`, `CAST(1.9 AS INT)`), so the
+workaround is to cast the literal, or to convert in the client. Being addressed in a follow-up.
+
 ## Not in this release (coming in the next release, Quarter 4 2026)
 
 - **Subqueries**: scalar, `IN (SELECT …)`, `EXISTS (SELECT …)`, derived tables `FROM (SELECT …)`, and correlated subqueries.

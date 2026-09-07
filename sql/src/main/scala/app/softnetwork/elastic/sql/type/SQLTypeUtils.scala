@@ -144,7 +144,15 @@ object SQLTypeUtils {
     if (distinct.size == 1) return distinct.head
 
     // 1. String
-    if (distinct.contains(SQLTypes.Varchar)) return SQLTypes.Varchar
+    // `exists(_.isInstanceOf[SQLVarchar])`, not `contains(Varchar)`: the case-object form missed
+    // `Text` and `Keyword`, which is what EVERY Elasticsearch string field maps to — the same
+    // case-object-equality hole this file carried in `coerce`'s source arms, 100 lines down. It
+    // became REACHABLE when story 21.5 made `CAST(x AS TEXT)` / `AS KEYWORD` legal targets, so
+    // `COALESCE(CAST(a AS TEXT), CAST(b AS KEYWORD))` fell through every branch to `SQLTypes.Any`.
+    //
+    // `Varchar` is returned rather than the encountered subtype on purpose: this is the LEAST
+    // COMMON super type of a mixed set, and `SQLVarchar` is exactly what Text and Keyword share.
+    if (distinct.exists(_.isInstanceOf[SQLVarchar])) return SQLTypes.Varchar
 
     // 2. Number
     if (distinct.contains(SQLTypes.Double)) return SQLTypes.Double
@@ -247,9 +255,18 @@ object SQLTypeUtils {
         // (TinyInt 1 ... Double 6, Java's widening order), so a new numeric type joins both halves
         // at once instead of silently missing the narrowing half.
         //
-        // Semantics: TRUNCATION TOWARD ZERO — Java/Painless cast semantics, and the same form the
-        // widening arms above already emit. MySQL rounds; the divergence is documented in
-        // functions_type_conversion.md rather than hidden.
+        // Semantics: EXACTLY Java/Painless cast semantics (the lead-approved rule), which are TWO
+        // different behaviours and must not be glossed as one:
+        //   - float/double -> integral TRUNCATES TOWARD ZERO: `(int) 1.9` is `1`, `(int) -1.9` is
+        //     `-1`;
+        //   - integral -> narrower integral DISCARDS THE HIGH-ORDER BITS, i.e. it WRAPS:
+        //     `(byte) 300` is `44`, `(short) 70000` is `4464`. It does NOT clamp and does not raise.
+        // The real divergence to document is therefore the second one: an engine that clamps an
+        // out-of-range narrowing to the target's bounds, or rejects it, disagrees with this one.
+        // Recorded in functions_type_conversion.md rather than hidden.
+        //
+        // (An earlier revision of this comment said "truncation toward zero" for BOTH cases. That
+        // is true only of the float case; the implementation was always right, the gloss was not.)
         //
         // `painlessType`'s `case _ => "Object"` default is unreachable from here by construction:
         // the guard admits only types `numericRankOf` knows, and every one of those has a

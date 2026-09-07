@@ -1402,9 +1402,11 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
     rows.size shouldBe 1
     scalarOf(rows.head, "n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.0
-    // 300 does not fit in a byte: Java/Painless truncation gives 44, and the point of the
-    // assertion is that SOMETHING narrowing happened rather than the raw 300 passing through.
-    scalarOf(rows.head, "b").asInstanceOf[java.lang.Number].intValue() should not be 300
+    // 300 does not fit in a byte. Java/Painless narrowing DISCARDS THE HIGH-ORDER BITS, so the
+    // answer is deterministic: `(byte) 300` is 44. Asserted exactly — `should not be 300` would be
+    // satisfied by a clamp to 127, by 0, or by any other wrong narrowing, i.e. a gate that cannot
+    // fail. (It was written that way first; this is the tightened form.)
+    scalarOf(rows.head, "b").asInstanceOf[java.lang.Number].intValue() shouldBe 44
   }
 
   it should "convert a cast over a LITERAL string exactly as documented (C1's reachable half)" in {
@@ -1421,7 +1423,9 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     scalarOf(rows.head, "dec_n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.5
     // `CAST(<non-string> AS CHAR)` was a silent no-op before this story: it emitted the bare `1`.
     scalarOf(rows.head, "as_char") shouldBe "1"
-    Option(scalarOf(rows.head, "bad_n")).filter(_ != null) shouldBe None
+    // `shouldBe null` does not compile on an `Any` (Cannot prove that Any <:< AnyRef); `Option(...)`
+    // is the exact same assertion and does.
+    Option(scalarOf(rows.head, "bad_n")) shouldBe None
   }
 
   /** 🔴 KNOWN LIMITATION, pinned so it cannot be mistaken for working — see
@@ -1469,6 +1473,21 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
     rows.size shouldBe 1
     scalarOf(rows.head, "c") shouldBe """C:\125"""
+  }
+
+  it should "execute a script whose string literal contains a RAW newline (D)" in {
+    // A raw line terminator DOES reach a literal: `Parser.normalize` collapses newlines only
+    // OUTSIDE quoted runs, and the literal regex's `[^'\\]` matches LF. The JDBC driver inlines
+    // PreparedStatement parameters as SQL literals, so any multi-line string value lands here.
+    //
+    // 🔴 It must be passed through RAW. Painless accepts only `\\` and `\"` as escape sequences and
+    // its content rule `~[\\"]` admits a raw line terminator, so the two-character `\n` form is a
+    // script COMPILE ERROR - the opposite of Java. Review proposed escaping it; this case is what
+    // measured that proposal breaking, and it fails if anyone re-introduces it.
+    val sql = "SELECT id, CONCAT('a\nb', code) AS c FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe "a\nb125"
   }
 
   it should "accept the SQL-standard doubled quote end to end (A)" in {

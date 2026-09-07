@@ -106,23 +106,58 @@ package object sql {
     out.toString
   }
 
-  /** Escapes a bare string for a DOUBLE-quoted Painless string literal — backslash first, then the
-    * quote, so the composition reverses (escaping the quote first would then double the backslash
-    * it had just introduced).
+  /** Escapes a bare string for a DOUBLE-quoted Painless string literal.
     *
-    * Without it `SELECT 'a"b'` emitted the Painless `"a"b"`, a script SYNTAX error Elasticsearch
-    * rejects at execution, and a value ending in a backslash emitted an unterminated string. For a
-    * value containing NEITHER character the result is byte-identical to the unescaped form, which
-    * is what bounds the change: only literals that were already broken alter shape.
+    * The escaped set is ENUMERATED from Painless's own lexer rather than patched case by case,
+    * because the whole justification for this function is "otherwise the literal is broken" and a
+    * rule stated that way admits no "except" (`feedback_constant_uniform_justification`). Painless
+    * accepts EXACTLY TWO escape sequences in a double-quoted string, and this is quoted verbatim
+    * from the Elasticsearch 8.18 compile error, not inferred:
+    *
+    * {{{
+    * unexpected character ["a\n]. The only valid escape sequences in strings
+    * starting with ["] are [\\] and [\"].
+    * }}}
+    *
+    * So the set is exactly the backslash and the double quote:
+    *
+    *   - the BACKSLASH — a lone one starts an escape sequence, so unescaped it either forms an
+    *     INVALID sequence with whatever follows or, at the end of a value, escapes the closing
+    *     quote and leaves the string unterminated;
+    *   - the DOUBLE QUOTE — the delimiter itself, which otherwise ends the literal early.
+    *
+    * 🔴 Nothing else may be escaped, and that is a CORRECTNESS constraint, not a minimalism
+    * preference. Painless's lexer content rule is `~[\\"]`, i.e. every other character — including
+    * a RAW LINE FEED or CARRIAGE RETURN, a tab, non-ASCII — is legal raw inside the literal, while
+    * the two-character `\n` / `\r` forms are NOT valid escapes and are a script COMPILE ERROR.
+    * Painless differs from Java here. A raw line terminator genuinely reaches this function
+    * (`Parser.normalize` collapses newlines only OUTSIDE quoted runs, and the JDBC driver inlines
+    * `PreparedStatement` parameters as SQL literals), it passes through untouched, and it WORKS —
+    * measured end to end on real Elasticsearch. Adding `\n` / `\r` escaping here was proposed in
+    * review and MEASURED to break exactly those statements; `PainlessLiteralEscapingSpec` and the
+    * testkit's raw-newline case now guard against re-introducing it.
+    *
+    * Backslash FIRST, then the quote, so the composition reverses: escaping the quote first would
+    * then double the backslash it had just introduced.
+    *
+    * For a value containing NEITHER character the result is byte-identical to the unescaped form,
+    * which is what bounds the change: only literals that were already broken alter shape.
     *
     * 🔴 A different channel from `escapeStringLiteral`, deliberately not shared with it even though
-    * today's rules rhyme: this escapes for PAINLESS (double-quoted, Java escapes), that escapes for
-    * a SQL literal (single-quoted, and it must stay reversible by `unescapeStringLiteral`). They
-    * answer to different grammars and may diverge; folding them would couple two contracts that
-    * only happen to agree.
+    * the rules rhyme: this escapes for PAINLESS (double-quoted), that escapes for a SQL literal
+    * (single-quoted, and it must stay reversible by `unescapeStringLiteral`). They answer to
+    * different grammars — the SQL literal's escape alphabet is `\'` and `\\`, this one's is `\"`
+    * and `\\` — and only the transport JSON layer escapes line terminators, on its own.
+    *
+    * ⚠️ It IS byte-identical to `StringValue.ddl`'s inline escape today, and the twin is
+    * deliberate: `ddl` renders a DOUBLE-QUOTED SQL literal that `TypeParser.literal`'s double-quote
+    * branch must read back, so it is pinned to the SQL grammar, not to Painless's. Sharing them
+    * would couple the DDL render to a channel whose rules can change independently.
     */
   def escapePainlessString(value: String): String =
-    value.replace("\\", "\\\\").replace("\"", "\\\"")
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
 
   /** Re-emits a name that was written quoted.
     *

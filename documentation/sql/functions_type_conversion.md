@@ -66,9 +66,10 @@ Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
 
 **Numeric Conversions:**
 ```sql
--- Convert to DOUBLE
+-- Convert to DOUBLE. WARNING - COLUMN operand: see the limitation above. The cast is accepted and
+-- the value comes back AS STORED, not converted. Cast a literal, or convert in the client.
 SELECT CAST(salary AS DOUBLE) AS s FROM emp;
--- Result: 12345.0
+-- Result: 12345 (the stored value, unconverted)
 
 -- Integer to DOUBLE
 SELECT CAST(100 AS DOUBLE) AS d;
@@ -82,13 +83,19 @@ SELECT CAST('123' AS INT) AS i;
 SELECT CAST('123.45' AS DOUBLE) AS d;
 -- Result: 123.45
 
--- DOUBLE to INT (truncates)
+-- DOUBLE to INT (truncates toward zero)
 SELECT CAST(123.99 AS INT) AS i;
 -- Result: 123
 
--- Using CONVERT alias
+-- Integer to a NARROWER integer: the high-order bits are discarded, i.e. it WRAPS. It does not
+-- clamp to the target's range and it does not raise - Java/Painless cast semantics. Engines that
+-- clamp, or reject, an out-of-range narrowing will disagree.
+SELECT CAST(300 AS TINYINT) AS b;
+-- Result: 44
+
+-- Using CONVERT alias. WARNING - COLUMN operand, same limitation as above.
 SELECT CONVERT(salary, DOUBLE) AS s FROM emp;
--- Result: 12345.0
+-- Result: 12345 (the stored value, unconverted)
 ```
 
 **String Conversions:**
@@ -120,38 +127,45 @@ SELECT CAST(CURRENT_TIMESTAMP AS VARCHAR) AS ts_str;
 SELECT CAST('2025-01-10' AS DATE) AS d;
 -- Result: 2025-01-10
 
--- String to TIMESTAMP
-SELECT CAST('2025-01-10 14:30:00' AS TIMESTAMP) AS ts;
--- Result: 2025-01-10 14:30:00
+-- String to TIMESTAMP. WARNING - the conversion is pinned to ISO_ZONED_DATE_TIME, so a
+-- SPACE-separated timestamp with no zone RAISES. Write it in ISO form, or use DATETIME_PARSE.
+SELECT CAST('2025-01-10T14:30:00Z' AS TIMESTAMP) AS ts;
+-- Result: 2025-01-10T14:30:00Z
 
 -- Timestamp to DATE
 SELECT CAST(CURRENT_TIMESTAMP AS DATE) AS d;
 -- Result: 2025-10-27
 
--- String with format to DATE
-SELECT CAST('2025/01/10' AS DATE) AS d;
--- Result: 2025-01-10
+-- WARNING - a slash-separated date does NOT convert: the DATE conversion is pinned to the pattern
+-- yyyy-MM-dd, so this RAISES rather than returning a date. Rewrite the value in ISO form.
+-- SELECT CAST('2025/01/10' AS DATE) AS d;   -- error
 
--- Unix timestamp to TIMESTAMP
-SELECT CAST(1704902400 AS TIMESTAMP) AS ts;
+-- Epoch MILLISECONDS to TIMESTAMP. WARNING - the operand is read as milliseconds, not seconds, so
+-- a seconds-precision epoch lands in 1970. Multiply by 1000, or use a millisecond epoch.
+SELECT CAST(1704902400000 AS TIMESTAMP) AS ts;
 -- Result: 2024-01-10 12:00:00
 ```
 
 **Boolean Conversions:**
+
+> WARNING - a conversion TO `BOOLEAN` is currently a no-op: the value is returned unchanged
+> (`CAST(1 AS BOOLEAN)` yields `1`, `CAST('true' AS BOOLEAN)` yields the string `'true'`). Only the
+> conversions FROM boolean below are applied. Use a comparison (`col = 1`) instead.
+
 ```sql
--- Number to BOOLEAN
+-- Number to BOOLEAN - NOT APPLIED, returns the number unchanged
 SELECT CAST(1 AS BOOLEAN) AS b;
--- Result: true
+-- Result: 1
 
 SELECT CAST(0 AS BOOLEAN) AS b;
--- Result: false
+-- Result: 0
 
--- String to BOOLEAN
+-- String to BOOLEAN - NOT APPLIED, returns the string unchanged
 SELECT CAST('true' AS BOOLEAN) AS b;
--- Result: true
+-- Result: 'true'
 
 SELECT CAST('false' AS BOOLEAN) AS b;
--- Result: false
+-- Result: 'false'
 
 -- Boolean to INT
 SELECT CAST(true AS INT) AS i;
@@ -162,18 +176,23 @@ SELECT CAST(false AS INT) AS i;
 ```
 
 **Decimal/Numeric Conversions:**
+
+> The precision and scale are parsed and IGNORED - there is no rounding and no padding, and the
+> target is `DOUBLE`. The statement re-renders as `CAST(x AS DOUBLE)` so what the engine applied is
+> always visible.
+
 ```sql
--- To DECIMAL with precision
+-- The scale is NOT applied: no rounding to 2 decimal places
 SELECT CAST(123.456 AS DECIMAL(10, 2)) AS dec;
--- Result: 123.46
+-- Result: 123.456
 
 -- String to DECIMAL
 SELECT CAST('123.456' AS DECIMAL(10, 3)) AS dec;
 -- Result: 123.456
 
--- INT to DECIMAL
+-- INT to DECIMAL: widened to a double, NOT padded to the scale
 SELECT CAST(100 AS DECIMAL(10, 2)) AS dec;
--- Result: 100.00
+-- Result: 100.0
 ```
 
 **Practical Examples:**

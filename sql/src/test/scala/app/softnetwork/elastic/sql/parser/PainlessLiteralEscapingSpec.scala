@@ -29,8 +29,8 @@ class PainlessLiteralEscapingSpec extends AnyFlatSpec with Matchers {
   "a string literal containing a double quote" should "emit VALID escaped Painless" in {
     // Written with the doubled SQL escape so the source is readable; `'a"b'` is the same value.
     painlessOf("""SELECT 'a"b' FROM t""") shouldBe """"a\"b""""
-    painlessOf("""SELECT "a""b" FROM t WHERE id = 1""") // identifier position - not a literal
-    painlessOf("""SELECT UPPER('say "hi"') FROM t""") should include("""\"hi\"""")
+    painlessOf("""SELECT UPPER('say "hi"') FROM t""") shouldBe
+    """"say \"hi\"".toUpperCase()"""
   }
 
   "a string literal containing a backslash" should "emit a DOUBLED backslash" in {
@@ -42,6 +42,25 @@ class PainlessLiteralEscapingSpec extends AnyFlatSpec with Matchers {
     painlessOf("""SELECT 'a\nb' FROM t""") shouldBe """"a\\nb""""
   }
 
+  "a string literal containing a RAW line terminator" should "PASS IT THROUGH unescaped" in {
+    // 🔴 Painless is NOT Java here, and this row exists because review proposed the opposite fix.
+    // Elasticsearch 8.18, verbatim, on a script whose literal carried a two-character `\n`:
+    //
+    //   unexpected character ["a\n]. The only valid escape sequences in strings
+    //   starting with ["] are [\\] and [\"].
+    //
+    // Painless's lexer content rule is `~[\\"]`, so a RAW line terminator is LEGAL inside the
+    // literal while the escaped form is a compile error. Escaping it would break every multi-line
+    // literal - measured end to end, 70/70 green with the pass-through and 1 failing without it.
+    val lf = "\n"
+    val cr = "\r"
+    painlessOf(s"SELECT 'a${lf}b' FROM t") shouldBe "\"a" + lf + "b\""
+    painlessOf(s"SELECT 'a${cr}b' FROM t") shouldBe "\"a" + cr + "b\""
+    painlessOf(s"SELECT UPPER('a${lf}b') FROM t") shouldBe "\"a" + lf + "b\".toUpperCase()"
+    // ... and the two-character escape must NOT appear: that is the regression this guards.
+    painlessOf(s"SELECT 'a${lf}b' FROM t") should not include "\\n"
+  }
+
   "a clean string literal" should "emit a BYTE-IDENTICAL script (the no-regression bound)" in {
     painlessOf("SELECT 'abc' FROM t") shouldBe """"abc""""
     painlessOf("SELECT 'O''Brien' FROM t") shouldBe """"O'Brien""""
@@ -49,6 +68,10 @@ class PainlessLiteralEscapingSpec extends AnyFlatSpec with Matchers {
     painlessOf("SELECT UPPER('abc') FROM t") shouldBe """"abc".toUpperCase()"""
     // A single quote needs no Painless escaping — Painless strings here are double-quoted.
     painlessOf("""SELECT 'it\'s' FROM t""") shouldBe """"it's""""
+    // A TAB is legal raw in a Painless string literal, so it stays raw: the escaped set is
+    // enumerated from what BREAKS a literal, and widening it further would change scripts that
+    // were never broken.
+    painlessOf("SELECT 'a\tb' FROM t") shouldBe "\"a\tb\""
   }
 
   "escaping" should "compose in the right order (backslash first, then the quote)" in {

@@ -81,7 +81,12 @@ class ConversionTargetTypeSpec extends AnyFlatSpec with Matchers {
       ("SELECT CAST(name AS VARCHAR(255)) FROM t", SQLTypes.Varchar, "CAST(name AS VARCHAR)"),
       ("SELECT CAST(name AS TEXT) FROM t", SQLTypes.Text, "CAST(name AS TEXT)"),
       ("SELECT CAST(name AS KEYWORD) FROM t", SQLTypes.Keyword, "CAST(name AS KEYWORD)"),
-      ("SELECT CONVERT(name USING utf8) FROM t", SQLTypes.Varchar, "CONVERT(name, VARCHAR)")
+      ("SELECT CONVERT(name USING utf8) FROM t", SQLTypes.Varchar, "CONVERT(name, VARCHAR)"),
+      // MySQL accepts a QUOTED charset too, and taking only the bare form would half-support a
+      // spelling we deliberately keep. Measured GREEN under a mutation that narrowed the charset
+      // back to `ident` before this row existed - the guard, not the fix, was missing.
+      ("SELECT CONVERT(name USING 'utf8') FROM t", SQLTypes.Varchar, "CONVERT(name, VARCHAR)"),
+      ("SELECT CONVERT(name USING utf8mb4) FROM t", SQLTypes.Varchar, "CONVERT(name, VARCHAR)")
     )
     rows.foreach { case (sql, expected, renderFragment) =>
       withClue(s"[$sql] ") {
@@ -185,7 +190,8 @@ class ConversionTargetTypeSpec extends AnyFlatSpec with Matchers {
     identifierOf("SELECT CAST(1 AS TEXT) FROM t").painless(None) shouldBe "String.valueOf(1)"
     identifierOf("SELECT CAST(1 AS KEYWORD) FROM t").painless(None) shouldBe "String.valueOf(1)"
     // TRY_CAST keeps its one-branch safe wrapper.
-    identifierOf("SELECT TRY_CAST('12' AS SIGNED) FROM t").painless(None) should startWith("try {")
+    identifierOf("SELECT TRY_CAST('12' AS SIGNED) FROM t").painless(None) shouldBe
+    """try { Long.parseLong("12").longValue() } catch (Exception e) { return null; }"""
   }
 
   it should "assert the CHAIN, not the Painless, when the operand type is unknown" in {

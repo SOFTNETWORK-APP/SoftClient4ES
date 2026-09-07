@@ -163,9 +163,14 @@ The delimiter is escaped by **doubling** it, exactly as it is inside a quoted id
 SQL standard and what every client and BI tool emits:
 
 ```sql
-SELECT 'O''Brien' AS name FROM t;      -- the value  O'Brien
-SELECT "say ""hi""" AS greeting FROM t WHERE id = 1;  -- the value  say "hi"
+SELECT 'O''Brien' AS name FROM t;                 -- the value  O'Brien
+SELECT id FROM t WHERE greeting = "say ""hi""";   -- the value  say "hi"
 ```
+
+⚠️ The second example is in a **value** position. In a SELECT list the same lexeme is a **column**:
+`SELECT "say ""hi""" FROM t` reads the field *named* `say "hi"`, per *Double quotes are also string
+delimiters* above — and a reference to a field that does not exist returns nulls, not an error.
+Single quotes have only one reading and are the safe spelling for a string.
 
 A backslash before the delimiter or before another backslash is also accepted (`'it\'s'`, `'C:\\'`).
 That form is not standard and is kept only because this engine has always accepted it. Any other

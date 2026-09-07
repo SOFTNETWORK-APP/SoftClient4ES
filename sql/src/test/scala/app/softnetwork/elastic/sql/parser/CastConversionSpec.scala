@@ -2,7 +2,7 @@ package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.query.SingleSearch
 import app.softnetwork.elastic.sql.schema.{Column, Table}
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -86,14 +86,37 @@ class CastConversionSpec extends AnyFlatSpec with Matchers {
 
   it should "keep a string-to-string cast an identity or a String.valueOf, never a parse" in {
     // The identity arm precedes the widened target arm, so `keyword -> keyword` stays untouched.
-    painlessOf("SELECT CAST(name AS KEYWORD) FROM t") should not include "parse"
+    // Asserted EXACTLY, not as `should not include "parse"`: an absence matcher is satisfied by any
+    // wrong emission at all, so it cannot tell "the identity arm fired" from "something else broke".
+    painlessOf("SELECT CAST(name AS KEYWORD) FROM t") shouldBe
+    "(doc['name'].size() == 0 ? null : doc['name'].value)"
     painlessOf("SELECT CAST(name AS VARCHAR) FROM t") should include("String.valueOf")
+  }
+
+  it should "give a mixed TEXT/KEYWORD set a string least-common-super-type (L4)" in {
+    // `leastCommonSuperType` asked `distinct.contains(SQLTypes.Varchar)` — the same
+    // case-object-equality hole as the `coerce` arms above, 100 lines up the same file, and NEWLY
+    // REACHABLE because this story made `CAST(x AS TEXT)` / `AS KEYWORD` legal targets. Without the
+    // widening a mixed set fell through every branch to `SQLTypes.Any`.
+    SQLTypeUtils.leastCommonSuperType(
+      List(SQLTypes.Text, SQLTypes.Keyword)
+    ) shouldBe SQLTypes.Varchar
+    SQLTypeUtils.leastCommonSuperType(
+      List(SQLTypes.Keyword, SQLTypes.Int)
+    ) shouldBe SQLTypes.Varchar
+    SQLTypeUtils.leastCommonSuperType(
+      List(SQLTypes.Varchar, SQLTypes.Text)
+    ) shouldBe SQLTypes.Varchar
+    // A single-element set still short-circuits to itself, and a non-string set is untouched.
+    SQLTypeUtils.leastCommonSuperType(List(SQLTypes.Keyword)) shouldBe SQLTypes.Keyword
+    SQLTypeUtils.leastCommonSuperType(List(SQLTypes.Int, SQLTypes.Double)) shouldBe SQLTypes.Double
   }
 
   it should "leave a NON-string column's numeric cast alone" in {
     // The widening is `_: SQLVarchar`, so it cannot capture a numeric source. `SQLChar` is
     // deliberately excluded too — no Elasticsearch mapping produces it.
     columnType("amount") shouldBe SQLTypes.Double
-    painlessOf("SELECT CAST(amount AS DOUBLE) FROM t") should not include "parseDouble"
+    painlessOf("SELECT CAST(amount AS DOUBLE) FROM t") shouldBe
+    "(doc['amount'].size() == 0 ? null : doc['amount'].value)"
   }
 }
