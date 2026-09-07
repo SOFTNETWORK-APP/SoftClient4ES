@@ -106,6 +106,51 @@ package object sql {
     out.toString
   }
 
+  /** The UTC normalisation every Painless emission over an Elasticsearch `date` VALUE must go
+    * through — and the single place the rule is written down.
+    *
+    * 🔴 Elasticsearch does not hand Painless the same object on every major. ES 7+ gives a
+    * `java.time.ZonedDateTime`; ES 6.8 gives an
+    * `org.elasticsearch.script.JodaCompatibleZonedDateTime`. They overlap, but not completely, and
+    * the gap is not theoretical — MEASURED on real ES 6.8.23:
+    * {{{
+    *   dynamic method [org.elasticsearch.script.JodaCompatibleZonedDateTime, toLocalTime/0] not found
+    * }}}
+    * `toLocalDate()` happens to exist there and `toLocalTime()` does not, which is exactly the kind
+    * of accident that produces a rule with an "except" in it. There is no except: every temporal
+    * conversion over a date VALUE normalises first.
+    *
+    * `toInstant()` exists on BOTH classes, so re-zoning through it yields a real `ZonedDateTime` on
+    * every supported major.
+    *
+    * 🔴 On ES 7/8/9 this chain is an IDENTITY, and that is the point rather than an objection:
+    * Elasticsearch stores and returns UTC and `'Z'` IS UTC, so
+    * `x.toInstant().atZone(ZoneId.of('Z'))` denotes the same instant, the same zone and the same
+    * local fields as `x`. It therefore reads as verbosity that could be "simplified" back to a bare
+    * `.toLocalDate()` / `.toLocalTime()` — do not. Deleting it breaks ES 6.8 and changes nothing
+    * anywhere else.
+    *
+    * Applies to a TIMESTAMP-typed operand, which is what an ES `date` field resolves to (story 21.5
+    * / issue #306). NOT to a DATETIME-typed one: `coerce`'s `(varchar, DateTime)` arm emits
+    * `LocalDateTime.parse(...)`, and `LocalDateTime` has no zero-argument `toInstant()`, so the
+    * same chain there is a compile error inside Elasticsearch. (That DATETIME denotes a
+    * `LocalDateTime` from one arm and a `ZonedDateTime` from another is a pre-existing
+    * inconsistency, recorded not fixed here.)
+    *
+    * ONE derivation, shared by both emitters — `SQLTypeUtils.coerce` and the transform-function
+    * chain in `function/package.scala`. It was previously four separate string literals, with the
+    * whole rule carried by a three-word `// compatible ES6+` comment on one of them. Story 21.5 hit
+    * "one key, two derivations" for the third time; this is the extraction rather than a fifth
+    * copy.
+    */
+  val painlessUtcZonedDateTime: String = ".toInstant().atZone(ZoneId.of('Z'))"
+
+  /** [[painlessUtcZonedDateTime]] followed by the calendar-date part. */
+  val painlessUtcLocalDate: String = s"$painlessUtcZonedDateTime.toLocalDate()"
+
+  /** [[painlessUtcZonedDateTime]] followed by the time-of-day part. */
+  val painlessUtcLocalTime: String = s"$painlessUtcZonedDateTime.toLocalTime()"
+
   /** Escapes a bare string for a DOUBLE-quoted Painless string literal.
     *
     * The escaped set is ENUMERATED from Painless's own lexer rather than patched case by case,
@@ -1244,8 +1289,8 @@ package object sql {
                 case SQLTypes.Temporal => // the first function to apply required a Temporal as input type
                   context match {
                     case Some(_) =>
-                      // compatible ES6+
-                      this.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                      // compatible ES6+ -- see `painlessUtcZonedDateTime` for WHY
+                      this.addPainlessMethod(painlessUtcZonedDateTime)
                       currType = SQLTypes.Timestamp
                     case _ => // do nothing
                   }

@@ -16,7 +16,14 @@
 
 package app.softnetwork.elastic.sql.`type`
 
-import app.softnetwork.elastic.sql.{Identifier, LiteralParam, PainlessContext, PainlessScript}
+import app.softnetwork.elastic.sql.{
+  painlessUtcLocalDate,
+  painlessUtcLocalTime,
+  Identifier,
+  LiteralParam,
+  PainlessContext,
+  PainlessScript
+}
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
 
 object SQLTypeUtils {
@@ -231,6 +238,51 @@ object SQLTypeUtils {
       * one definition rather than four copies — the escape rule this file already learned the hard
       * way (one key, one derivation).
       */
+    /** 🔴 The UTC normalisation belongs to a QUERY script and only to one.
+      *
+      * In a query, the operand of a temporal conversion is what Elasticsearch hands Painless for a
+      * `date` field — a `ZonedDateTime` on ES 7+, a `JodaCompatibleZonedDateTime` on 6.8 — so it
+      * must be normalised through `painlessUtcZonedDateTime` (see there for the measurement).
+      *
+      * In a PROCESSOR (ingest pipeline) script it is `ctx.<field>`: the raw JSON scalar of the
+      * document being indexed, before Elasticsearch has parsed it into anything. `toInstant()` is
+      * not defined on it, and emitting the chain there both breaks the script and — because the
+      * rendered processor no longer matches the stored one — makes `ALTER` re-create a processor
+      * nobody changed (recorded as `local-21.8-alter-churns-unchanged-pipeline-processor.md`).
+      *
+      * 🔴 The rule, at the precision it actually holds — it is about RUNTIME TYPE, not context.
+      *
+      * The mapped type describes what `doc['f'].value` hands a QUERY script. In an INGEST script
+      * the operand is `ctx.<field>`: the raw JSON value of the document being indexed, so its
+      * runtime type is the JSON type, not what Elasticsearch would have parsed it into.
+      *
+      *   - a `keyword` is a `String` in BOTH — so `CAST(code AS BIGINT)` emits `Long.parseLong` in
+      *     either context and is deliberately NOT guarded here;
+      *   - a `date` is a temporal object in a query and a raw string/number in `ctx` — so an arm
+      *     keyed on a TIMESTAMP SOURCE must not fire in ingest context.
+      *
+      * So the guard is not "ingest ignores the mapped type". It is narrower: an arm whose SOURCE
+      * type has a different JSON representation — the temporal ones — must not fire in ingest
+      * context. Every other arm is untouched.
+      *
+      * This is the SAME discriminator `function/package.scala` already guards its own date-method
+      * injection with (`case SQLTypes.Any if !ctx.isProcessor`), and it is reused rather than
+      * re-derived: one key, one derivation.
+      *
+      * 🔴 The guard makes the arms NOT MATCH in a processor context, so the conversion falls to the
+      * identity arm at the bottom of the match. That is deliberate and it is the whole point: it
+      * restores the emission BYTE-FOR-BYTE to what it was before #306 made this column resolve to
+      * `Timestamp`. Verified at `d1eef583`, where `profile.join_date` read back as `Date`, so
+      * `(Date, Date)` matched no temporal arm and returned `expr` untouched. Emitting
+      * `.toLocalDate()` here instead would ALSO differ from what is stored, and the ALTER churn
+      * would survive — the ingest script is unchanged, so its render must be unchanged too.
+      *
+      * The rule, stated once: **#306's mapped type governs QUERY scripts; an ingest script keeps
+      * the DECLARED-type behaviour**, because `ctx.<field>` is the raw document value, whose shape
+      * follows what the user declared rather than what the mapping hands a query.
+      */
+    val isProcessorContext: Boolean = context.exists(_.isProcessor)
+
     def temporalGuard(body: String): String =
       if (nullable) s"($expr != null ? $body : null)" else body
 
@@ -239,9 +291,25 @@ object SQLTypeUtils {
         // ---- DATE & TIME ----
         case (SQLTypes.Date, SQLTypes.DateTime | SQLTypes.Timestamp) =>
           s"$expr.atStartOfDay(ZoneId.of('Z'))"
-        case (SQLTypes.DateTime | SQLTypes.Timestamp, SQLTypes.Date) =>
+        // 🔴 TIMESTAMP and DATETIME are split, and the split is the rule rather than an exception.
+        // A TIMESTAMP-typed operand is what an Elasticsearch `date` field resolves to (#306), so it
+        // is whatever ES hands Painless — a `ZonedDateTime` on 7/8/9, a
+        // `JodaCompatibleZonedDateTime` on 6.8 — and every conversion over it normalises through
+        // `painlessUtcZonedDateTime` first. BOTH conversions, not just the one that happened to
+        // fail: `toLocalDate()` exists on the 6.8 class and `toLocalTime()` does not, and a rule
+        // that follows that accident is a rule with an "except" in it.
+        //
+        // A DATETIME-typed operand must NOT be normalised: `coerce`'s `(varchar, DateTime)` arm
+        // emits `LocalDateTime.parse(...)`, and `LocalDateTime` has no zero-argument `toInstant()`,
+        // so the chain would be a compile error inside Elasticsearch. `toLocalDate()` /
+        // `toLocalTime()` work directly on it.
+        case (SQLTypes.Timestamp, SQLTypes.Date) if !isProcessorContext =>
+          s"$expr$painlessUtcLocalDate"
+        case (SQLTypes.Timestamp, SQLTypes.Time) if !isProcessorContext =>
+          s"$expr$painlessUtcLocalTime"
+        case (SQLTypes.DateTime, SQLTypes.Date) =>
           s"$expr.toLocalDate()"
-        case (SQLTypes.DateTime | SQLTypes.Timestamp, SQLTypes.Time) =>
+        case (SQLTypes.DateTime, SQLTypes.Time) =>
           s"$expr.toLocalTime()"
 
         // ---- NUMERIQUES ----
