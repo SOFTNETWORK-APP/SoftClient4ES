@@ -395,7 +395,29 @@ object SQLTypeUtils {
     }
     if (!nullable)
       return ret
-    s"($expr != null ? $ret : null)"
+    // 🔴 `(def)` is load-bearing, and issue #306 is what made it necessary. Painless must unify the
+    // two branches of a ternary, and MOST conversion arms produce a PRIMITIVE — `((long) x)`,
+    // `Long.parseLong(x).longValue()`, `Integer.parseInt(x).intValue()`. A primitive cannot unify
+    // with `null`, so `(x != null ? ((long) x) : null)` is a script COMPILE ERROR:
+    //
+    //   class_cast_exception: Cannot cast from [long] to [java.lang.Object].
+    //
+    // (measured on real Elasticsearch 8.18). Casting to `def` boxes the primitive and the branches
+    // unify. It is a no-op for the arms that already return a reference (`LocalDate.parse(...)`,
+    // `String.valueOf(...)`).
+    //
+    // This was LATENT and unreachable before #306: `nullable` is true only for an identifier
+    // operand, and until the schema reached the execution path every identifier arrived with
+    // `baseType = Any`, so NO arm fired for a column and the ternary never wrapped a primitive.
+    // Literal operands are `nullable = false` and take the `return ret` above, which is why every
+    // literal case passed both before and after.
+    // Boxed ONLY when the arm produced a PRIMITIVE, which is exactly when the target is a ranked
+    // numeric: `Integer.parseInt(x).intValue()`, `((long) x)`, `.toEpochMilli()`. The temporal and
+    // literal arms already return references (`LocalDate.parse(...)`, `String.valueOf(...)`) and
+    // must stay BYTE-IDENTICAL — a blanket `(def)` moved a bridge pin that was never broken, which
+    // is churn, not a correction.
+    if (numericRankOf(to).isDefined) s"($expr != null ? (def)($ret) : null)"
+    else s"($expr != null ? $ret : null)"
   }
 
   private val numericRank: Map[Class[_], Int] = Map(

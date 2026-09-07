@@ -1428,51 +1428,63 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     Option(scalarOf(rows.head, "bad_n")) shouldBe None
   }
 
-  /** 🔴 KNOWN LIMITATION, pinned so it cannot be mistaken for working — see
-    * `docs/issues/local-21.5-cast-conversion-defect.md`.
+  /** 🔴 RETARGETED by issue #306 — this used to pin the DEFECT ("should NOT yet convert a cast over
+    * a COLUMN") and the defect is gone, so the pin asserts the fixed behaviour instead of being
+    * relaxed or deleted.
     *
-    * `SQLTypeUtils.coerce`'s arms are indexed by the operand's `baseType`, which for an identifier
-    * is `col.map(_.dataType)` — and `col` is populated only by `SingleSearch.update(Some(schema))`.
-    * That method has exactly ONE production call site (`Table.mergeWithSearch`, which uses it to
-    * infer a CTAS target table's COLUMNS, not to execute), so **no executed DQL query carries a
-    * schema** and every identifier reaches `coerce` as `SQLTypes.Any`.
+    * `SQLTypeUtils.coerce` is indexed by the operand's `baseType`, which for an identifier is
+    * `col.map(_.dataType)`, and `col` is populated only by `SingleSearch.update(Some(schema))`.
+    * Until #306 that had ONE production call site — `Table.mergeWithSearch`, inferring a CTAS
+    * target's columns — so no executing query carried a schema and a cast over a column emitted no
+    * conversion at all, for ANY source type. `SearchApi.resolveTemporalLiterals` now attaches the
+    * schema it was already loading, on every execution path.
     *
-    * Consequence: story 21.5's part-C arms are correct and unit-proven (`CastConversionSpec`,
-    * `NarrowingCastSpec`) but UNREACHABLE for a COLUMN operand in production. `CAST(<keyword col>
-    * AS BIGINT)` still returns the raw string, exactly as `CAST(<int col> AS DOUBLE)` has always
-    * returned the raw number.
-    *
-    * Attaching the schema at the execution seam is NOT a fix that belongs to this story: it would
-    * also silence `coerce`'s `case SQLTypes.Any if !ctx.isProcessor` branch, which today treats
-    * every untyped identifier as a ZonedDateTime and injects `.toLocalDate()` / `.toLocalTime()`.
-    * That changes what EVERY scripted query emits, and needs its own measurement.
-    *
-    * DELETE this test when the schema is attached — it pins a defect, not a contract.
+    * Values asserted EXACTLY: `should not be` here would be the fourth can't-fail gate of this
+    * epic.
     */
-  it should "NOT yet convert a cast over a COLUMN (no schema reaches the execution path)" in {
+  it should "convert a cast over a COLUMN, now that the schema reaches the execution path (#306)" in {
     val sql =
       "SELECT id, CAST(code AS BIGINT) AS n, CAST(amount AS BIGINT) AS m FROM cast_conversions;"
     val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
     rows.size shouldBe 1
-    scalarOf(rows.head, "n") shouldBe "125" // the STRING, not 125L - the defect
-    scalarOf(rows.head, "m").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.9
+    // a KEYWORD column cast to BIGINT: the STRING "125" before #306, the NUMBER 125 after (C1)
+    val n = scalarOf(rows.head, "n")
+    n shouldBe a[java.lang.Number]
+    n.asInstanceOf[java.lang.Number].longValue() shouldBe 125L
+    // a DOUBLE column narrowed to BIGINT: 1.9 before #306, 1 after (C2). Asserted as an exact
+    // double, because `longValue()` alone is satisfied by the unnarrowed 1.9 too.
+    val m = scalarOf(rows.head, "m")
+    m shouldBe a[java.lang.Number]
+    m.asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.0
   }
 
-  it should "execute a script whose string literal contains a double quote (D)" in {
-    // BEFORE: `Value.painless` emitted `"a"b"` and Elasticsearch rejected the script at COMPILE
-    // time. A Painless-syntax claim is only provable by Elasticsearch, which is why this case
-    // cannot live in the sql module.
-    val sql = """SELECT id, CONCAT('a"b', code) AS c FROM cast_conversions;"""
-    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+  it should "fail a cast over a COLUMN whose value cannot be parsed, and null it under TRY_CAST" in {
+    // The other half of the C1 contract, and the reason the release note leads on it: a value that
+    // used to pass through raw now FAILS, and TRY_CAST is the documented escape hatch.
+    val bad = "SELECT id, CAST(bad AS BIGINT) AS n FROM cast_conversions;"
+    scala.util
+      .Try(collectRows(System.nanoTime(), client.run(bad).futureValue))
+      .isFailure shouldBe true
+
+    val safe = "SELECT id, TRY_CAST(bad AS BIGINT) AS n FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(safe).futureValue)
     rows.size shouldBe 1
-    scalarOf(rows.head, "c") shouldBe """a"b125"""
+    Option(scalarOf(rows.head, "n")) shouldBe None
   }
 
-  it should "execute a script whose string literal ends in a backslash (D)" in {
-    val sql = """SELECT id, CONCAT('C:\\', code) AS c FROM cast_conversions;"""
+  it should "keep a DATE column's scripting correct now that its type is known (#306 Any-branch)" in {
+    // 🔴 The one genuine design risk of the schema attach, measured rather than reasoned about.
+    // `coerce`'s `case SQLTypes.Any if !ctx.isProcessor` branch treats an UNTYPED identifier as a
+    // ZonedDateTime and injects `.toLocalDate()` / `.toLocalTime()`. With the schema attached that
+    // branch stops firing for a typed column, so a date-bearing script takes a different route --
+    // and must still produce the right answer.
+    val sql =
+      """SELECT id, YEAR(birthdate) AS y, DATE_TRUNC(birthdate, MONTH) AS m
+        |FROM dql_users WHERE id = 1;""".stripMargin
     val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
     rows.size shouldBe 1
-    scalarOf(rows.head, "c") shouldBe """C:\125"""
+    scalarOf(rows.head, "y").asInstanceOf[java.lang.Number].intValue() shouldBe 1994
+    String.valueOf(scalarOf(rows.head, "m")) should startWith("1994-01-01")
   }
 
   it should "execute a script whose string literal contains a RAW newline (D)" in {

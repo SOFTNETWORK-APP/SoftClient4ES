@@ -107,7 +107,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
     */
   private[client] def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
-    if (!TemporalLiterals.hasCandidates(single)) return ElasticResult.success(single)
+    // #306 -- the early return this used to make (`if (!TemporalLiterals.hasCandidates(single))`)
+    // was correct while the only job was rewriting WHERE literals, and is WRONG now that the
+    // schema is also attached to the AST: almost no statement carries a temporal WHERE literal,
+    // so the lookup would be skipped for almost every query and `baseType` would stay `Any`.
     single.sources.distinct match {
       case Seq(source) if !source.contains("*") && !source.contains(",") =>
         this match {
@@ -116,7 +119,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               case Success(ElasticSuccess(schema)) =>
                 temporalLiteralSchemaMisses.remove(source)
                 TemporalLiterals(single, schema) match {
-                  case Right(resolved) =>
+                  case Right(literalsResolved) =>
+                    // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
+                    // `col.map(_.dataType)` and `col` is populated only here, inside `update`, from
+                    // `request.schema`; until this call existed the ONLY production caller of
+                    // `update(Some(schema))` was `Table.mergeWithSearch` (CTAS column inference,
+                    // which returns a Table rather than a statement to execute), so every executing
+                    // query reached `SQLTypeUtils.coerce` with `baseType = SQLTypes.Any` and NO cast
+                    // over a column ever emitted a conversion -- for any source type.
+                    //
+                    // Unconditional within this method's precondition, deliberately NOT scoped to
+                    // statements that contain a cast: `coerce` also serves `FunctionN` argument
+                    // coercion and CASE branch coercion, so a cast-scoped attach would make
+                    // `UPPER(col)` emit differently depending on whether the SAME statement
+                    // happened to carry a cast elsewhere -- a #205-family inconsistency that
+                    // depends on incidental statement content.
+                    //
+                    // Idempotent by necessity, not by luck: `SearchApi.search` resolves and then
+                    // routes a row query through `scrollRows` -> `ScrollApi.scroll`, which resolves
+                    // AGAIN, so this runs twice on that path (pinned in SchemaAttachSpec).
+                    val resolved = literalsResolved.update(Some(schema))
                     if (resolved ne single)
                       logger.debug(
                         s"Temporal literals resolved against the mapping of '$source':${resolved.where

@@ -47,11 +47,6 @@ Three limitations, stated plainly rather than hidden:
 `CONVERT(expr USING <charset>)` is accepted as a synonym for `CONVERT(expr, VARCHAR)`:
 Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
 
-> ⚠️ A cast whose operand is a **column** does not yet emit a conversion — the executing query
-> carries no schema, so the engine cannot see the column's type and the value is returned as
-> stored. Casts over **literals** convert as documented. Cast the literal, or convert in the
-> client, until this is addressed.
-
 **Output:**
 - Value converted to target `TYPE`
 
@@ -66,10 +61,9 @@ Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
 
 **Numeric Conversions:**
 ```sql
--- Convert to DOUBLE. WARNING - COLUMN operand: see the limitation above. The cast is accepted and
--- the value comes back AS STORED, not converted. Cast a literal, or convert in the client.
+-- Convert to DOUBLE
 SELECT CAST(salary AS DOUBLE) AS s FROM emp;
--- Result: 12345 (the stored value, unconverted)
+-- Result: 12345.0
 
 -- Integer to DOUBLE
 SELECT CAST(100 AS DOUBLE) AS d;
@@ -93,9 +87,9 @@ SELECT CAST(123.99 AS INT) AS i;
 SELECT CAST(300 AS TINYINT) AS b;
 -- Result: 44
 
--- Using CONVERT alias. WARNING - COLUMN operand, same limitation as above.
+-- Using CONVERT alias
 SELECT CONVERT(salary, DOUBLE) AS s FROM emp;
--- Result: 12345 (the stored value, unconverted)
+-- Result: 12345.0
 ```
 
 **String Conversions:**

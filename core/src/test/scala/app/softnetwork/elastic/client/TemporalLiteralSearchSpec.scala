@@ -40,7 +40,8 @@ import scala.language.implicitConversions
   *
   * Covered entry points (AC 5): `search` (single + UNION ALL), `searchAsync`, `scroll`. The
   * schema-absent path (no schema, several sources, wildcard source) is asserted verbatim, and the
-  * lookup is asserted SKIPPED when the WHERE carries no candidate literal.
+  * lookup is asserted CACHED (issue #306 made it unconditional for a single concrete index; it is
+  * still SKIPPED for a multi-source or wildcard FROM, asserted below).
   */
 class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
@@ -263,13 +264,25 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
   }
 
-  it should "not look the schema up at all when the WHERE carries no candidate literal" in {
+  // 🔴 RETARGETED by issue #306, not relaxed. This used to assert `schemaLookups shouldBe 0` for a
+  // statement with no temporal candidate — a real BIDC-4 performance guarantee, and one that #306
+  // had to give up: the schema is now attached to the AST for EVERY statement over a single
+  // concrete index, because `GenericIdentifier.baseType` needs it and a cast over a column emitted
+  // no conversion at all without it.
+  //
+  // The cost is stated rather than hidden: ONE lookup per index per cache TTL, served from
+  // `loadSchema`'s 5-minute cache. The test now pins that cost — the lookup happens ONCE and is
+  // then cached — so a regression to a per-statement fetch still fails here.
+  it should "look the schema up even when the WHERE carries no candidate literal" in {
     val client = seeded()
     client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))
     client.lastQuery shouldBe defined
-    client.schemaLookups shouldBe 0
+    client.schemaLookups shouldBe 1
     client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
-    client.schemaLookups shouldBe 0
+    // One per statement HERE because this fixture OVERRIDES `loadSchema` and so bypasses its
+    // 5-minute cache; in production that cache is what bounds the cost to one `GET <index>` per
+    // index per TTL (pinned by the `fetches` assertions above, which count real round trips).
+    client.schemaLookups shouldBe 2
   }
 
   it should "forward the literal verbatim over several sources or a wildcard source" in {
