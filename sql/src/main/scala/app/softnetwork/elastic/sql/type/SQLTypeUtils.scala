@@ -235,6 +235,28 @@ object SQLTypeUtils {
         case (SQLTypes.BigInt, SQLTypes.Double) =>
           s"((double) $expr)"
 
+        // ---- NUMERIC NARROWING ----
+        // There were WIDENING arms only, so every narrowing pair fell to the identity fallback at
+        // the bottom of this match: `CAST(1.9 AS INT)` emitted `1.9` and `CAST(<double col> AS
+        // BIGINT)` emitted the raw doc value. A cast that silently does nothing.
+        //
+        // Rank-guarded rather than thirteen enumerated pairs, and deliberately so: the thing an
+        // enumeration would spell out a SECOND time is "the Painless primitive of a numeric
+        // SQLType", which `painlessType` already IS. One key, one derivation — the defect that
+        // recurred four times in story 21.3. `numericRank` already encodes exactly this lattice
+        // (TinyInt 1 ... Double 6, Java's widening order), so a new numeric type joins both halves
+        // at once instead of silently missing the narrowing half.
+        //
+        // Semantics: TRUNCATION TOWARD ZERO — Java/Painless cast semantics, and the same form the
+        // widening arms above already emit. MySQL rounds; the divergence is documented in
+        // functions_type_conversion.md rather than hidden.
+        //
+        // `painlessType`'s `case _ => "Object"` default is unreachable from here by construction:
+        // the guard admits only types `numericRankOf` knows, and every one of those has a
+        // primitive arm.
+        case (f, t) if isNumericNarrowing(f, t) =>
+          s"((${painlessType(t)}) $expr)"
+
         // ---- NUMERIC <-> TEMPORAL ----
         case (SQLTypes.BigInt, SQLTypes.Timestamp | SQLTypes.DateTime) =>
           s"Instant.ofEpochMilli($expr).atZone(ZoneId.of('Z'))"
@@ -370,6 +392,20 @@ object SQLTypeUtils {
 
   private def numericRankOf(t: SQLType): Option[Int] =
     numericRank.collectFirst { case (cls, rank) if cls.isInstance(t) => rank }
+
+  /** True when both sides are ranked numerics and the target is STRICTLY lower in the lattice.
+    *
+    * 🔴 Used by `coerce` only. `canConvert`'s step 3 asks a different question about the same ranks
+    * — whether a SCHEMA EVOLUTION may change a column's type — and its "expansion only" rule must
+    * NOT be relaxed to match: loosening it would silently legalise narrowing column-type changes in
+    * an ALTER diff (`schema/TableDiff.scala` is its only production consumer). The two rules share
+    * the lattice and nothing else.
+    */
+  private def isNumericNarrowing(from: SQLType, to: SQLType): Boolean =
+    (numericRankOf(from), numericRankOf(to)) match {
+      case (Some(r1), Some(r2)) => r2 < r1
+      case _                    => false
+    }
 
   def canConvert(from: SQLType, to: SQLType): Boolean = {
 
