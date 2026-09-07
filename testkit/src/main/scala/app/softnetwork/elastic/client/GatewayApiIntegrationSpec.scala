@@ -139,13 +139,19 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ddl should include(
       """name VARCHAR FIELDS ( raw KEYWORD COMMENT 'sortable' ) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french")"""
     )
-    ddl should include("birthdate DATE")
+    // 🔴 TIMESTAMP, not DATE, since story 21.5 / issue #306, and this is a USER-VISIBLE change
+    // that owes a release note: a column declared DATE is stored by Elasticsearch as a `date`
+    // field, which is a millisecond timestamp, so SHOW TABLE now reports it by the name of what
+    // was actually stored. Re-running the reported DDL still creates the same ES mapping (every
+    // temporal type maps to `date`), and the table diff is unaffected -- pinned by
+    // `ColumnMetaDiffSpec`.
+    ddl should include("birthdate TIMESTAMP")
     ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
     ddl should include("ingested_at TIMESTAMP DEFAULT _ingest.timestamp")
     ddl should include("profile STRUCT FIELDS (")
     ddl should include("bio VARCHAR")
     ddl should include("followers INT")
-    ddl should include("join_date DATE")
+    ddl should include("join_date TIMESTAMP") // same as birthdate above (#306)
     ddl should include("seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))")
     ddl should include("PRIMARY KEY (id)")
     ddl should include("PARTITION BY birthdate (MONTH)")
@@ -1367,14 +1373,15 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |  id INT NOT NULL,
         |  code KEYWORD,
         |  bad KEYWORD,
-        |  amount DOUBLE
+        |  amount DOUBLE,
+        |  when_dt DATE
         |);""".stripMargin
 
     assertDdl(System.nanoTime(), client.run(create).futureValue)
 
     val insert =
-      """INSERT INTO cast_conversions (id, code, bad, amount) VALUES
-        |  (1, '125', 'abc', 1.9);
+      """INSERT INTO cast_conversions (id, code, bad, amount, when_dt) VALUES
+        |  (1, '125', 'abc', 1.9, '2024-03-15T14:30:00Z');
         |""".stripMargin
 
     assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 1)))
@@ -1468,6 +1475,63 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       else
         Option(x.getMessage).toList ::: walk(x.getCause) ::: x.getSuppressed.toList.flatMap(walk)
     walk(t).mkString(" | ")
+  }
+
+  /** 🔴 The MEDIUM-5 replacement, and the evidence for the two HIGH findings.
+    *
+    * `when_dt` is declared DATE — deliberately, because that is the case both HIGHs were measured
+    * on and the harder one: our own CREATE TABLE records `_meta.columns.when_dt.data_type = DATE`,
+    * and `IndexField.apply` PREFERS that recorded spelling over Elasticsearch's own `date`. So it
+    * is not enough to fix the ES-mapping fallback; the declared spelling has to resolve to
+    * TIMESTAMP too, which is what `SQLTypes.apply(IndexField)` now does.
+    *
+    * It carries a TIME OF DAY (14:30Z) on purpose: with a midnight value, "truncated to the date"
+    * and "not truncated at all" are nearly the same string, and the gate would barely fail.
+    *
+    * Every one of the four is falsifiable against the unfixed branch, where the operand resolved to
+    * `Date`:
+    *   - AS TIMESTAMP and AS DATETIME took `(Date, DateTime | Timestamp)` and emitted
+    *     `.atStartOfDay(ZoneId.of('Z'))`, which a `ZonedDateTime` does not have ⇒ all shards
+    *     failed;
+    *   - AS DATE was `(Date, Date)`, the IDENTITY arm ⇒ the un-truncated timestamp came back;
+    *   - AS TIME had no `(Date, Time)` arm at all ⇒ the fallback returned the timestamp whole.
+    */
+  it should "convert every temporal cast over a DATE column (HIGH-1 + HIGH-2)" in {
+    val sql =
+      """SELECT id,
+        |       CAST(when_dt AS DATE) AS d,
+        |       CAST(when_dt AS TIME) AS t,
+        |       CAST(when_dt AS TIMESTAMP) AS ts,
+        |       CAST(when_dt AS DATETIME) AS dt
+        |FROM cast_conversions;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    val row = rows.head
+
+    // HIGH-2, and the one that earns an exact value: `CAST(ts AS DATE)` is the date-truncation
+    // idiom Superset and Tableau emit constantly. The time of day must be GONE.
+    val d = String.valueOf(scalarOf(row, "d"))
+    withClue(s"CAST(when_dt AS DATE) returned [$d]: ") {
+      d should startWith("2024-03-15")
+      d should not include "14:30" // the un-truncated timestamp, i.e. the defect
+    }
+
+    // the complementary half: the time survives its own cast
+    val t = String.valueOf(scalarOf(row, "t"))
+    withClue(s"CAST(when_dt AS TIME) returned [$t]: ") {
+      t should startWith("14:30")
+    }
+
+    // HIGH-1: these two merely have to EXECUTE — on the unfixed branch they are a compile error
+    // inside Elasticsearch, so reaching a value at all is the assertion. The value is pinned too,
+    // since it costs nothing.
+    Seq("ts", "dt").foreach { col =>
+      val v = String.valueOf(scalarOf(row, col))
+      withClue(s"CAST(when_dt AS ${col.toUpperCase}) returned [$v]: ") {
+        v should startWith("2024-03-15")
+        v should include("14:30")
+      }
+    }
   }
 
   it should "fail a cast over a COLUMN whose value cannot be parsed, and null it under TRY_CAST" in {

@@ -1440,6 +1440,18 @@ package object schema {
     * @param materializedView
     *   whether this table is a materialized view
     */
+  /** Drops `_meta.columns` from a mappings map so the table diff cannot compare the same columns
+    * twice under two different equality rules. See the comment at the mappings diff for why.
+    */
+  private def withoutColumnMeta(
+    mappings: ListMap[String, Value[_]]
+  ): ListMap[String, Value[_]] =
+    mappings.get("_meta") match {
+      case Some(meta: ObjectValue) if meta.value.contains("columns") =>
+        mappings.updated("_meta", ObjectValue(meta.value - "columns"))
+      case _ => mappings
+    }
+
   case class Table(
     name: String,
     columns: List[Column],
@@ -2049,11 +2061,35 @@ package object schema {
       }
 
       // 4. Mappings
+      // 🔴 `_meta.columns` is EXCLUDED, and that is a correctness fix, not a convenience.
+      //
+      // It is a shadow of the columns step 3 has just compared, so the same fact gets two
+      // derivations — and they disagree by construction. Step 3 asks `SQLTypeUtils.elasticType`,
+      // i.e. "can Elasticsearch tell these apart?"; a raw JSON comparison asks "is the SQL
+      // SPELLING identical?". Every temporal SQL type maps to the single ES type `date`, so a
+      // column read back from a mapping can carry a different spelling than the one declared while
+      // being the very same Elasticsearch field.
+      //
+      // MEASURED, story 21.5 / issue #306: with an ES `date` field resolving to TIMESTAMP, a table
+      // declared `birthdate DATE` produced `columns = List()` — no change, correctly — beside
+      // `mappings = List(MappingSet(_meta.columns.birthdate.data_type, 'DATE'))`. That is a
+      // spurious mapping change on EVERY existing index with a date column, reported by every
+      // `CREATE TABLE IF NOT EXISTS`, table diff and ALTER planning pass, for a table nothing had
+      // altered — the customer-found defect class, and the reason the round trip is verified
+      // before a mapped type is ever changed.
+      //
+      // Nothing is lost: `Column.diff` compares type, default, script, comment, NOT NULL, options
+      // and multi-fields, which is a strict SUPERSET of what a `_meta.columns` entry holds
+      // (`data_type`, `not_null`, `comment`, `default_value`, `script`, `multi_fields`) — and it
+      // compares them against what Elasticsearch can actually represent. The REST of `_meta`
+      // (`primary_key`, `partition_by`, `type`) is owned by nothing else and stays in this diff.
       val mappingDiffs = scala.collection.mutable.ListBuffer[MappingDiff]()
-      mappingDiffs ++= ObjectValue(actual.mappings).diff(ObjectValue(desired.mappings)).map {
-        case Altered(name, value) => MappingSet(name, value)
-        case Removed(name)        => MappingRemoved(name)
-      }
+      mappingDiffs ++= ObjectValue(withoutColumnMeta(actual.mappings))
+        .diff(ObjectValue(withoutColumnMeta(desired.mappings)))
+        .map {
+          case Altered(name, value) => MappingSet(name, value)
+          case Removed(name)        => MappingRemoved(name)
+        }
 
       // 5. Settings
       val settingDiffs = scala.collection.mutable.ListBuffer[SettingDiff]()

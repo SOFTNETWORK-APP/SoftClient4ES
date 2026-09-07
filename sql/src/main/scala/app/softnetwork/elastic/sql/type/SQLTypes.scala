@@ -81,6 +81,38 @@ object SQLTypes {
     case _                          => Any
   }
 
-  def apply(field: IndexField): SQLType = apply(field.`type`)
+  /** The ELASTICSEARCH-mapping direction, which is NOT the same vocabulary as the SQL one above.
+    *
+    * 🔴 An Elasticsearch `date` field is a millisecond TIMESTAMP, not a calendar date — which is
+    * precisely why `doc['f'].value` hands Painless a `ZonedDateTime`. Mapping it to `Date` claimed
+    * a `LocalDate`, and once issue #306 let a column's mapped type reach `SQLTypeUtils.coerce` that
+    * lie became executable:
+    *   - `CAST(<date column> AS TIMESTAMP)` took `(Date, Timestamp)` and emitted
+    *     `.atStartOfDay(ZoneId.of('Z'))`, which a `ZonedDateTime` does not have — measured on real
+    *     ES 8.18 as `all shards failed`;
+    *   - `CAST(<date column> AS DATE)` was `(Date, Date)`, i.e. the IDENTITY arm, so it returned
+    *     the un-truncated timestamp — a SILENT wrong answer, and `CAST(ts AS DATE)` is the
+    *     date-truncation idiom Superset and Tableau emit constantly. With `Timestamp` the
+    *     already-correct `(Timestamp, Date) => .toLocalDate()`, `(Timestamp, Time) =>
+    *     .toLocalTime()` and `(Timestamp, BigInt) => .toEpochMilli()` arms fire, and `CAST(x AS
+    *     TIMESTAMP)` becomes the identity it should always have been. The LocalDate- shaped `(Date,
+    *     ...)` arms stay for LITERAL operands, which genuinely are calendar dates.
+    *
+    * Safe in the inverse direction, and this was verified BEFORE the change rather than after:
+    * `Column.diff` compares `elasticType(actual) != elasticType(desired)`, and `elasticType` sends
+    * Date, Time, DateTime, Timestamp and Temporal ALL to `"date"` — so no existing index reports a
+    * spurious type change in `SHOW CREATE TABLE`, table diff or ALTER. `CREATE TABLE t (c DATE)`
+    * still creates an ES `date`; it now reads back as TIMESTAMP, which is the honest name for what
+    * Elasticsearch stored (release note).
+    *
+    * `date_nanos` is deliberately untouched — it falls to `Any`, as BIDC-4 decided.
+    *
+    * Kept on THIS overload rather than in `apply(String)`: that one also parses SQL type names, so
+    * moving the arm there would make `CREATE TABLE t (c DATE)` declare a TIMESTAMP column.
+    */
+  def apply(field: IndexField): SQLType = field.`type`.toLowerCase match {
+    case "date" => Timestamp
+    case other  => apply(other)
+  }
 
 }

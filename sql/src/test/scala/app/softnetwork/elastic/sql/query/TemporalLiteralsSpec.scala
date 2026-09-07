@@ -432,14 +432,20 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
         |}},"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}}""".stripMargin
     val table = Index("events", json).schema
 
-    table.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Date)
+    // 🔴 TIMESTAMP, not DATE, since story 21.5 / issue #306: an Elasticsearch `date` field is a
+    // millisecond timestamp and `doc['f'].value` hands Painless a ZonedDateTime, so calling it a
+    // calendar DATE was a lie that became executable once a column's mapped type reached
+    // `SQLTypeUtils.coerce`. Only the SPELLING moves here — every temporal type still maps to the
+    // ES type `date`, which is why the assertions below are untouched and the DDL round trip is
+    // unaffected.
+    table.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Timestamp)
     table.find("fmt_ts").flatMap(_.options.get("format")) shouldBe Some(
       StringValue("yyyy-MM-dd HH:mm:ss")
     )
     // `date_nanos` is not a SQL type the mapping resolves to: it comes out as ANY, so it is never
     // a candidate. Pinned on purpose (AC 4: excluded, not covered).
     table.find("ts_nanos").map(_.dataType) shouldBe Some(SQLTypes.Any)
-    table.find("items.ts").map(_.dataType) shouldBe Some(SQLTypes.Date)
+    table.find("items.ts").map(_.dataType) shouldBe Some(SQLTypes.Timestamp)
 
     whereSql(
       resolved("SELECT id FROM events WHERE event_ts >= '2026-06-04 00:00:00'", table)
@@ -464,7 +470,7 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
         |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
     val single = Index("events_alias", s"""{"events":$events}""")
     single.name shouldBe "events_alias"
-    single.schema.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Date)
+    single.schema.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Timestamp) // #306
     whereSql(
       resolved("SELECT id FROM events_alias WHERE event_ts >= '2026-06-04 00:00:00'", single.schema)
     ) shouldBe "WHERE event_ts >= '2026-06-04T00:00:00'"
@@ -479,7 +485,7 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
 
     // a concrete index keyed by its own name is untouched by the rule
     Index("events", s"""{"events":$events}""").schema.find("event_ts").map(_.dataType) shouldBe
-    Some(SQLTypes.Date)
+    Some(SQLTypes.Timestamp) // #306, see the note on the mapping test above
 
     // R4-18: a member WITHOUT mappings still counts -- otherwise a two-index alias would resolve
     // silently to the other member (the silent-wrong-answer mode this story removes)
