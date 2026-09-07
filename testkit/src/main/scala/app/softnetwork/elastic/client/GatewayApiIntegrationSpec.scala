@@ -1351,6 +1351,150 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   // ---------------------------------------------------------------------------
+  // Story 21.5 — the CAST conversion defect (parts C1/C2) and Painless literal
+  // escaping (part D), on a REAL index.
+  //
+  // A dedicated table: `dql_users` has no keyword column holding a numeric string and no DOUBLE
+  // column, and adding either would move every 4-row oracle above. These three defects are all
+  // EXECUTION-time — a schema-less unit test cannot see C1 at all, and only Elasticsearch can
+  // prove a Painless-syntax claim — so they need their own fixture and their own content
+  // assertions, not `isSuccess`.
+  // ---------------------------------------------------------------------------
+
+  it should "prepare the cast-conversion test data (story 21.5)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_conversions (
+        |  id INT NOT NULL,
+        |  code KEYWORD,
+        |  bad KEYWORD,
+        |  amount DOUBLE
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO cast_conversions (id, code, bad, amount) VALUES
+        |  (1, '125', 'abc', 1.9);
+        |""".stripMargin
+
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 1)))
+  }
+
+  /** `script_fields` values arrive wrapped in Elasticsearch's per-field array on the row path (a
+    * pre-existing divergence, recorded by story 21.3), so unwrap a single-element list before
+    * asserting the VALUE. What matters here is the TYPE and the value, not the wrapper.
+    */
+  private def scalarOf(row: Map[String, Any], key: String): Any =
+    row.getOrElse(key, fail(s"no column [$key] in $row")) match {
+      case Seq(one)  => one
+      case List(one) => one
+      case other     => other
+    }
+
+  it should "narrow a cast over a LITERAL instead of returning the unnarrowed value (C2)" in {
+    // BEFORE story 21.5 this came back 1.9: `coerce` carried widening arms only, so every
+    // narrowing pair fell to the identity fallback. This is the case that proves Elasticsearch
+    // accepts the emitted `((int) 1.9)` — a Painless claim only ES can settle.
+    //
+    // Asserted as an EXACT double, deliberately: `longValue()` alone would be satisfied by the
+    // unnarrowed 1.9 too, i.e. a gate that cannot fail.
+    val sql = "SELECT id, CAST(1.9 AS INT) AS n, CAST(300 AS TINYINT) AS b FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.0
+    // 300 does not fit in a byte: Java/Painless truncation gives 44, and the point of the
+    // assertion is that SOMETHING narrowing happened rather than the raw 300 passing through.
+    scalarOf(rows.head, "b").asInstanceOf[java.lang.Number].intValue() should not be 300
+  }
+
+  it should "convert a cast over a LITERAL string exactly as documented (C1's reachable half)" in {
+    val sql =
+      """SELECT id,
+        |       CAST('125' AS SIGNED) AS signed_n,
+        |       CAST('1.5' AS DECIMAL(10,2)) AS dec_n,
+        |       CAST(1 AS CHAR(10)) AS as_char,
+        |       TRY_CAST('abc' AS BIGINT) AS bad_n
+        |FROM cast_conversions;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "signed_n").asInstanceOf[java.lang.Number].longValue() shouldBe 125L
+    scalarOf(rows.head, "dec_n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.5
+    // `CAST(<non-string> AS CHAR)` was a silent no-op before this story: it emitted the bare `1`.
+    scalarOf(rows.head, "as_char") shouldBe "1"
+    Option(scalarOf(rows.head, "bad_n")).filter(_ != null) shouldBe None
+  }
+
+  /** 🔴 KNOWN LIMITATION, pinned so it cannot be mistaken for working — see
+    * `docs/issues/local-21.5-cast-conversion-defect.md`.
+    *
+    * `SQLTypeUtils.coerce`'s arms are indexed by the operand's `baseType`, which for an identifier
+    * is `col.map(_.dataType)` — and `col` is populated only by `SingleSearch.update(Some(schema))`.
+    * That method has exactly ONE production call site (`Table.mergeWithSearch`, which uses it to
+    * infer a CTAS target table's COLUMNS, not to execute), so **no executed DQL query carries a
+    * schema** and every identifier reaches `coerce` as `SQLTypes.Any`.
+    *
+    * Consequence: story 21.5's part-C arms are correct and unit-proven (`CastConversionSpec`,
+    * `NarrowingCastSpec`) but UNREACHABLE for a COLUMN operand in production. `CAST(<keyword col>
+    * AS BIGINT)` still returns the raw string, exactly as `CAST(<int col> AS DOUBLE)` has always
+    * returned the raw number.
+    *
+    * Attaching the schema at the execution seam is NOT a fix that belongs to this story: it would
+    * also silence `coerce`'s `case SQLTypes.Any if !ctx.isProcessor` branch, which today treats
+    * every untyped identifier as a ZonedDateTime and injects `.toLocalDate()` / `.toLocalTime()`.
+    * That changes what EVERY scripted query emits, and needs its own measurement.
+    *
+    * DELETE this test when the schema is attached — it pins a defect, not a contract.
+    */
+  it should "NOT yet convert a cast over a COLUMN (no schema reaches the execution path)" in {
+    val sql =
+      "SELECT id, CAST(code AS BIGINT) AS n, CAST(amount AS BIGINT) AS m FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "n") shouldBe "125" // the STRING, not 125L - the defect
+    scalarOf(rows.head, "m").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.9
+  }
+
+  it should "execute a script whose string literal contains a double quote (D)" in {
+    // BEFORE: `Value.painless` emitted `"a"b"` and Elasticsearch rejected the script at COMPILE
+    // time. A Painless-syntax claim is only provable by Elasticsearch, which is why this case
+    // cannot live in the sql module.
+    val sql = """SELECT id, CONCAT('a"b', code) AS c FROM cast_conversions;"""
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe """a"b125"""
+  }
+
+  it should "execute a script whose string literal ends in a backslash (D)" in {
+    val sql = """SELECT id, CONCAT('C:\\', code) AS c FROM cast_conversions;"""
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe """C:\125"""
+  }
+
+  it should "accept the SQL-standard doubled quote end to end (A)" in {
+    val sql = "SELECT id, UPPER('it''s') AS s FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "s") shouldBe "IT'S"
+  }
+
+  it should "accept the new CAST target types over a column end to end (B)" in {
+    // Acceptance only for the column operands: what the engine emits for them is the subject of
+    // the known limitation above, not of #275.
+    val sql =
+      """SELECT id,
+        |       CAST(code AS SIGNED) AS signed_n,
+        |       CAST(code AS DECIMAL(10,2)) AS dec_n,
+        |       CAST(code AS TEXT) AS as_text,
+        |       CAST(code AS CHAR(10)) AS as_char,
+        |       CAST(code AS INT(11)) AS as_int,
+        |       CONVERT(code USING utf8) AS as_utf8
+        |FROM cast_conversions;""".stripMargin
+    val res = client.run(sql).futureValue
+    assertSelectResult(System.nanoTime(), res, nbResults = Some(1))
+  }
+
+  // ---------------------------------------------------------------------------
   // Numeric + Trigonometric functions
   // ---------------------------------------------------------------------------
 
