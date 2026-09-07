@@ -924,10 +924,18 @@ class MetricsElasticClient(
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     measureResult("search", Some(elasticQuery.indices.mkString(","))) {
-      delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+      delegate.singleSearch(
+        elasticQuery,
+        fieldAliases,
+        aggregations,
+        fields,
+        nestedHits,
+        rowInvariants
+      )
     }
   }
 
@@ -936,10 +944,18 @@ class MetricsElasticClient(
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
-      delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
+      delegate.multiSearch(
+        elasticQueries,
+        fieldAliases,
+        aggregations,
+        fields,
+        nestedHits,
+        rowInvariants
+      )
     }
   }
 
@@ -959,7 +975,8 @@ class MetricsElasticClient(
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -969,7 +986,14 @@ class MetricsElasticClient(
       // [[ElasticClientDelegator]]. Project to this trait's `ElasticResponse` so the cast is a
       // no-op at runtime (both sides erase to Object) instead of `Future → Nothing$`.
       delegate
-        .singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+        .singleSearchAsync(
+          elasticQuery,
+          fieldAliases,
+          aggregations,
+          fields,
+          nestedHits,
+          rowInvariants
+        )
         .asInstanceOf[Future[ElasticResult[ElasticResponse]]]
     }
 
@@ -989,7 +1013,8 @@ class MetricsElasticClient(
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -997,7 +1022,14 @@ class MetricsElasticClient(
     measureAsync("multisearchAsync") {
       // Same latent-`Nothing`-cast fix as `singleSearchAsync` above.
       delegate
-        .multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
+        .multiSearchAsync(
+          elasticQueries,
+          fieldAliases,
+          aggregations,
+          fields,
+          nestedHits,
+          rowInvariants
+        )
         .asInstanceOf[Future[ElasticResult[ElasticResponse]]]
     }
 

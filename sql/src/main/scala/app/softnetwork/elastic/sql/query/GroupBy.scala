@@ -26,6 +26,7 @@ import app.softnetwork.elastic.sql.{
   LongValue,
   PainlessContext,
   PainlessScript,
+  ParamValue,
   TokenRegex,
   Updateable
 }
@@ -239,6 +240,16 @@ case class Bucket(
         Left(
           s"GROUP BY position ${u.position} is out of range: the SELECT list has ${u.selectSize} " +
           s"item(s), so positions 1 to ${u.selectSize} are valid"
+        )
+      case None if identifier.functions == List(ParamValue) =>
+        // A bucket over an unbound `?` is scripted as `params.paramValue`, and nothing binds that
+        // key -- Painless reads a missing param as null, so Elasticsearch answers ZERO groups with
+        // HTTP 200. Scripting every nameless bucket is the right rule (it is what a terms
+        // aggregation needs), but this one shape has no value to script, so reject it rather than
+        // return a silent empty result. Consistent with story 20.9's ruling on a nested `?`.
+        Left(
+          "GROUP BY on a query parameter (?) is not supported: the parameter is never bound, so " +
+          "the grouping would silently match nothing"
         )
       case None if substitution.exists(_.alias.isEmpty) && identifier.name.isEmpty =>
         // A SUBSTITUTED bucket whose resolved identifier has no field name of its own, and no

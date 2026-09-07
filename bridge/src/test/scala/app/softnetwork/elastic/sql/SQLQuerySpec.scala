@@ -802,6 +802,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "terms": {
         |                "field": "products.category",
         |                "size": 10,
+        |                "exclude": ["coffee"],
         |                "min_doc_count": 1
         |              },
         |              "aggs": {
@@ -4802,10 +4803,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     // `shouldBeScripted = false`, so scoping the rule to row-INVARIANT literals left a fieldless,
     // scriptless `terms` for every other nameless Value -- an ES 400. A JDBC `PreparedStatement`
     // parameter, aliased and grouped, is the realistic route.
-    val param: ElasticSearchRequest = SelectStatement("SELECT ? AS p FROM Table GROUP BY p")
-    println(param.query)
-    param.query should include(""""script":{"lang":"painless","source":"params.paramValue"}""")
-
+    // ⚠️ NOT `? AS p`: a bucket over an unbound parameter is REJECTED (it would script
+    // `params.paramValue`, which nothing binds, so Elasticsearch would answer zero groups with
+    // HTTP 200). The scripting rule below is what makes every OTHER nameless bucket work.
     val random: ElasticSearchRequest = SelectStatement("SELECT RANDOM AS r FROM Table GROUP BY r")
     random.query should include(""""script":{"lang":"painless","source":"Math.random()"}""")
 
@@ -4819,7 +4819,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   it should "not emit a terms aggregation that carries neither field nor script" in {
     // The invariant behind the test above, stated once over every shape that reaches a bucket.
     Seq(
-      "SELECT ? AS p FROM Table GROUP BY p",
       "SELECT RANDOM AS r FROM Table GROUP BY r",
       "SELECT 2.5 AS d FROM Table GROUP BY d",
       "SELECT 2 + 0 AS c FROM Table GROUP BY c",
@@ -4829,8 +4828,16 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       "SELECT UPPER(country) AS u FROM Table GROUP BY u"
     ).foreach { sql =>
       val q: ElasticSearchRequest = SelectStatement(sql)
+      // Scoped INSIDE the `terms` object: asserting over the whole query lets an unrelated
+      // `script_fields` block satisfy it while the aggregation itself carries neither.
+      val terms = q.query.split("\"terms\":\\{").drop(1).map(_.takeWhile(_ != '}'))
       withClue(s"[$sql] ${q.query}: ") {
-        q.query.contains("\"field\"") || q.query.contains("\"script\"") shouldBe true
+        terms should not be empty
+        terms.foreach(t =>
+          withClue(s"terms{$t}: ") {
+            t.contains("\"field\"") || t.contains("\"script\"") shouldBe true
+          }
+        )
       }
     }
   }

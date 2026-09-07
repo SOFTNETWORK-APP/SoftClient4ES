@@ -1624,50 +1624,82 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
   // egress unless `elastic.include-document-id` is enabled or `_id` is selected.
   // -------------------------------------------------------------------------
 
-  // ---- issue #253 FOLD-IN 1: row-invariant constants are projected into AGGREGATION rows ----
+  // ---- issue #253 FOLD-IN 1: row-invariant constants are placed AS aggregation rows are built ----
   //
   // An aggregation response carries no hits, so the `script_fields` entry a constant is emitted as
   // is never fetched (`"size": 0`) and `rowNormalizer` null-fills the requested column -- measured
   // on real ES 8.18, `SELECT category, 2 AS flag ... GROUP BY category` returned `flag = null` on
-  // every row. `SearchApi` merges the AST value in on the result side instead.
+  // every row. The value comes from the AST and SEEDS `parseAggregations`' `parentContext`, so it
+  // is placed once at the top of the recursion rather than by a second pass over the rows.
 
-  "projectRowInvariants" should "add every constant to every aggregation row" in {
-    val rows = Seq(
-      ListMap[String, Any]("category" -> "a"),
-      ListMap[String, Any]("category" -> "b")
+  private val groupedResponse = """{
+                    |  "took": 5,
+                    |  "hits": { "total": { "value": 3 }, "hits": [] },
+                    |  "aggregations": {
+                    |    "category": {
+                    |      "buckets": [
+                    |        { "key": "a", "doc_count": 2, "n": { "value": 2 } },
+                    |        { "key": "b", "doc_count": 1, "n": { "value": 1 } }
+                    |      ]
+                    |    }
+                    |  }
+                    |}""".stripMargin
+
+  private def groupedRows(
+    constants: ListMap[String, Any],
+    fields: Seq[String] = Seq.empty
+  ): Seq[ListMap[String, Any]] =
+    parseSingleSearchResponse(
+      mapper.readTree(groupedResponse),
+      ListMap.empty,
+      ListMap.empty,
+      fields,
+      rowInvariants = constants
+    ).get
+
+  "a seeded row-invariant constant" should "reach every aggregation row" in {
+    val rows = groupedRows(ListMap[String, Any]("flag" -> 2L))
+    rows should have size 2
+    rows.map(_("category")) shouldBe Seq("a", "b")
+    rows.foreach(r => withClue(s"row=$r: ") { r("flag") shouldBe 2L })
+  }
+
+  it should "leave the rows untouched when the statement declares none" in {
+    groupedRows(ListMap.empty).foreach(r => r.keys.toSeq shouldBe Seq("category", "n"))
+  }
+
+  it should "LOSE to a value Elasticsearch computed under the same name" in {
+    // Precedence is structural, not a rule to remember: the seed goes in FIRST and the recursion
+    // merges bucket keys and metrics on the RIGHT of `++`, so anything Elasticsearch actually
+    // produced overwrites the constant -- including a computed null, which is the case a
+    // "never overwrite a non-null value" guard could not express.
+    val rows = groupedRows(ListMap[String, Any]("n" -> 999L, "category" -> "seeded"))
+    rows.map(_("n")) shouldBe Seq(2, 1)
+    rows.map(_("category")) shouldBe Seq("a", "b")
+  }
+
+  it should "be ordered by the requested output fields, not by insertion" in {
+    // Seeded constants enter the map before the bucket keys; `rowNormalizer` puts the row back into
+    // SELECT order at the end of `jsonToRows`.
+    // `rowNormalizer` puts the REQUESTED fields first, in order, and appends anything extra the
+    // response carried (here the metric `n`), which is its established behaviour.
+    val rows = groupedRows(ListMap[String, Any]("flag" -> 2L), Seq("category", "flag"))
+    rows.foreach(r =>
+      withClue(s"row=$r: ") { r.keys.toSeq.take(2) shouldBe Seq("category", "flag") }
     )
-    projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L, "lbl" -> "x")) shouldBe Seq(
-      ListMap[String, Any]("category" -> "a", "flag" -> 2L, "lbl" -> "x"),
-      ListMap[String, Any]("category" -> "b", "flag" -> 2L, "lbl" -> "x")
-    )
   }
 
-  it should "return the rows UNTOUCHED when there is no constant" in {
-    val rows = Seq(ListMap[String, Any]("category" -> "a"))
-    projectRowInvariants(rows, ListMap.empty) should be theSameInstanceAs rows
-  }
-
-  it should "FILL a column that rowNormalizer already null-filled, keeping its position" in {
-    // 🔴 This is the case that made the first wiring a no-op: `rowNormalizer` runs first and
-    // null-fills every requested output column, so the constant's key is already present carrying
-    // `null` by the time the projection sees the row. Skipping present keys therefore projected
-    // NOTHING -- measured on real ES 8.18, `flag` stayed null.
-    val rows = Seq(ListMap[String, Any]("category" -> "a", "flag" -> null))
-    val out = projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L))
-    out shouldBe Seq(ListMap[String, Any]("category" -> "a", "flag" -> 2L))
-    out.head.keys.toSeq shouldBe Seq("category", "flag") // SELECT order preserved
-  }
-
-  it should "never overwrite a real column with a constant of the same name" in {
-    // A projected constant is presentation; a value Elasticsearch actually computed always wins.
-    val rows = Seq(ListMap[String, Any]("flag" -> "from-elasticsearch"))
-    projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L)) shouldBe
-    Seq(ListMap[String, Any]("flag" -> "from-elasticsearch"))
-  }
-
-  it should "produce no row where there was none" in {
-    // A grouping that matched nothing stays empty -- the constant must not invent a row.
-    projectRowInvariants(Seq.empty, ListMap[String, Any]("flag" -> 2L)) shouldBe empty
+  it should "fill the COMPUTED-alias column an un-aliased constant is requested under" in {
+    // 🔴 The shape every other constant test misses: with no alias the requested column is the
+    // computed `__c2`, not the rendered `2`. Keying the projection by the rendered name left the
+    // requested column NULL and invented a bogus `2` beside it.
+    val rows = groupedRows(ListMap[String, Any]("__c2" -> 2L), Seq("category", "__c2"))
+    rows.foreach { r =>
+      withClue(s"row=$r: ") {
+        r("__c2") shouldBe 2L
+        r.keys.toSeq should not contain "2"
+      }
+    }
   }
 
   private object EnabledDocumentIdConversion extends ElasticConversion {

@@ -108,6 +108,12 @@ trait ElasticConversion {
     * Elasticsearch response is parsed exactly once — never serialized back to a String for core to
     * re-parse.
     */
+  /** `rowInvariants` carries one constant map PER RESPONSE, aligned with the queries that produced
+    * them (#253 FOLD-IN 1). A UNION ALL leg has its OWN constants -- `SELECT category, 2 AS flag
+    * ... UNION ALL SELECT category, 3 AS flag ...` must project 2 into the first leg's rows and 3
+    * into the second's -- so they cannot be applied to the concatenated result after the fact.
+    * Empty (the default) means project nothing, which is what every scroll-page caller wants.
+    */
   def parseResponseTree(
     results: JsonNode,
     fieldAliases: ListMap[String, String],
@@ -115,7 +121,8 @@ trait ElasticConversion {
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
-    retainDocumentId: Boolean = false
+    retainDocumentId: Boolean = false,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] = {
     var json = results
     if (json.has("responses")) {
@@ -130,7 +137,8 @@ trait ElasticConversion {
         fields,
         nestedHits,
         explodeNested,
-        retainDocumentId
+        retainDocumentId,
+        rowInvariants
       )
     } else {
       // Single search response
@@ -141,7 +149,8 @@ trait ElasticConversion {
         fields,
         nestedHits,
         explodeNested,
-        retainDocumentId
+        retainDocumentId,
+        rowInvariants.headOption.getOrElse(ListMap.empty)
       )
     }
   }
@@ -155,7 +164,8 @@ trait ElasticConversion {
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
-    retainDocumentId: Boolean = false
+    retainDocumentId: Boolean = false,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
@@ -173,7 +183,11 @@ trait ElasticConversion {
         throw new Exception(s"Elasticsearch errors in multi-search:\n${errors.mkString("\n")}")
       } else {
         // Parse each response and combine all rows
-        val allRows = responses.flatMap { response =>
+        // Each leg carries its OWN row-invariant constants (#253 FOLD-IN 1): a UNION of
+        // `SELECT category, 2 AS flag ...` and `SELECT category, 3 AS flag ...` seeds 2 into the
+        // first leg's rows and 3 into the second's. They are placed as each leg's rows are BUILT,
+        // which is also why the legs being concatenated afterwards costs nothing.
+        val allRows = responses.zipWithIndex.flatMap { case (response, leg) =>
           if (!response.has("error")) {
             jsonToRows(
               response,
@@ -182,7 +196,8 @@ trait ElasticConversion {
               fields,
               nestedHits,
               explodeNested,
-              retainDocumentId
+              retainDocumentId,
+              rowInvariants.lift(leg).getOrElse(ListMap.empty)
             )
           } else {
             Seq.empty
@@ -201,7 +216,8 @@ trait ElasticConversion {
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
-    retainDocumentId: Boolean = false
+    retainDocumentId: Boolean = false,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       // check if it is an error response
@@ -218,45 +234,32 @@ trait ElasticConversion {
           fields,
           nestedHits,
           explodeNested,
-          retainDocumentId
+          retainDocumentId,
+          rowInvariants
         )
       }
     }
 
-  /** Merge a statement's ROW-INVARIANT SELECT items into aggregation rows (issue #253, FOLD-IN 1).
-    *
-    * `SELECT category, 2 AS flag FROM t GROUP BY category` is standard SQL -- a constant does not
-    * vary within a group -- but an aggregation response carries NO hits, so the `script_fields`
-    * entry the constant is emitted as is never fetched (`"size": 0`) and `rowNormalizer` null-fills
-    * the requested column. MEASURED on real ES 8.18 before this: `flag` came back `null` on every
-    * row. The value is taken from the AST instead and added here, on the RESULT side.
-    *
-    * Deliberately NOT applied to the row path: there a constant already arrives through
-    * `script_fields` and works, and double-handling it would be the divergence this exists to
-    * remove.
-    *
-    * 🔴 A key that is already PRESENT but `null` is filled, not skipped. `rowNormalizer` runs first
-    * and null-fills every requested output column, so by the time the rows get here the constant's
-    * column already exists carrying `null` -- a "never overwrite an existing key" rule reads that
-    * placeholder as a real value and projects nothing at all (measured: the column stayed `null` on
-    * real ES 8.18 with the projection wired in). A NON-null value is still never overwritten, so a
-    * column Elasticsearch actually computed always wins over a constant of the same name. Existing
-    * column ORDER is preserved -- `rowNormalizer` has already put them in SELECT order.
-    */
-  protected def projectRowInvariants(
-    rows: Seq[ListMap[String, Any]],
-    constants: ListMap[String, Any]
-  ): Seq[ListMap[String, Any]] =
-    if (constants.isEmpty) rows
-    else
-      rows.map { row =>
-        val filled = row.map { case (k, v) =>
-          k -> (if (v == null) constants.getOrElse(k, v) else v)
-        }
-        filled ++ constants.filterNot { case (k, _) => filled.contains(k) }
-      }
-
   /** convert JsonNode to Rows
+    */
+  /** `rowInvariants` are the statement's ROW-INVARIANT SELECT items -- constants, which cannot vary
+    * within a group (issue #253, FOLD-IN 1). An aggregation response carries no hits, so the
+    * `script_fields` entry a constant is emitted as is never fetched under `"size": 0` and the
+    * column would come back NULL; the value is taken from the AST instead.
+    *
+    * 🔴 They SEED `parseAggregations`' `parentContext`, so each constant is placed ONCE at the top
+    * of the recursion and carried into every leaf row by the `parentContext ++ ...` the recursion
+    * already performs -- no extra traversal and no extra allocation. A second pass over the
+    * assembled rows would be `O(rows x cols)` on the largest collection the engine produces
+    * (`Bucket.DefaultSize` is 65,536 per level, multiplied on a multi-level grouping).
+    *
+    * Seeding also makes precedence structural: a bucket key or metric of the same name is merged on
+    * the RIGHT of `++` and therefore WINS, so a value Elasticsearch computed always beats a
+    * constant -- including a computed `null`.
+    *
+    * Only the AGGREGATION arms are seeded. On the row path (Case 1) and the mixed hits+aggs path
+    * (Case 4) a constant already arrives through `script_fields`, and double-handling it is exactly
+    * the divergence this exists to avoid.
     */
   def jsonToRows(
     json: JsonNode,
@@ -265,7 +268,8 @@ trait ElasticConversion {
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
-    retainDocumentId: Boolean = false
+    retainDocumentId: Boolean = false,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -283,7 +287,7 @@ trait ElasticConversion {
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
         val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
         groupedRows.values
@@ -297,7 +301,7 @@ trait ElasticConversion {
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        val ret = parseAggregations(aggs, ListMap.empty, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
         val groupedRows: Map[String, Seq[ListMap[String, Any]]] =
           ret.groupBy(_.getOrElse("bucket_root", "").toString)
         groupedRows.values

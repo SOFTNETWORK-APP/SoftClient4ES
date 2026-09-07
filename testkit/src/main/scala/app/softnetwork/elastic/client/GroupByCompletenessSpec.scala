@@ -20,7 +20,7 @@ import akka.NotUsed
 import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.bulk._
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SelectStatement
@@ -337,6 +337,48 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
   }
 
+  it should "project an UN-ALIASED constant under the column the row actually asks for" in {
+    // 🔴 Every other constant test uses an alias, which is why this shipped broken: with no alias
+    // the requested column is the COMPUTED `__c2`, and keying the projection by the rendered name
+    // (`2`) left that column NULL while inventing a bogus `2` beside it.
+    implicit val bareCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement("SELECT category, 2 FROM group_by_completeness GROUP BY category")
+    ) match {
+      case ElasticSuccess(response) =>
+        response.results should have size categories.toLong
+        response.results.foreach { row =>
+          withClue(s"row=$row: ") {
+            row.keys.toSeq should contain("__c2")
+            row("__c2").toString shouldBe "2"
+            row.keys.toSeq should not contain "2"
+          }
+        }
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "project each UNION ALL leg's OWN constant" in {
+    // 🔴 The multi-search arm never projected at all: both legs are aggregation-shaped and each
+    // carries a different constant, so the rows came back with `flag = null`. The legs are
+    // concatenated by the time a caller sees them, so the projection has to happen per response.
+    implicit val unionCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement(
+        "SELECT category, 2 AS flag FROM group_by_completeness WHERE amount <= 1 GROUP BY category" +
+        " UNION ALL " +
+        "SELECT category, 3 AS flag FROM group_by_completeness WHERE amount <= 2 GROUP BY category"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        val flags = response.results.map(_("flag").toString).toSet
+        withClue(s"rows=${response.results.take(4)}: ") {
+          flags shouldBe Set("2", "3")
+        }
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
   it should "order an aggregate-free GROUP BY by a SELECT ALIAS of the grouped column" in {
     // 🔴 Regression guard for the alias/bucket key desync: `SingleSearch.sorts` is keyed by the
     // sort's name while `buildBuckets` looks the direction up under the bucket's resolved column,
@@ -352,6 +394,35 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")
     }
+  }
+
+  it should "apply a HAVING however the GROUP BY spelled the column" in {
+    // 🔴 M-2: the repair originally covered only a SUBSTITUTED bucket, so whether a HAVING was
+    // honoured depended on whether the GROUP BY named the alias or the column -- worse than
+    // uniformly broken. Both spellings must filter.
+    // ⚠️ Unrolled, not looped: `searchAs` is a macro and needs a compile-time constant SQL string.
+    def check(label: String, result: ElasticResult[Seq[CategoryAliased]]): Unit =
+      result match {
+        case ElasticSuccess(rows) =>
+          withClue(s"[$label] ") {
+            rows should have size (categories - 1).toLong
+            rows.map(_.cat) should not contain "cat_01"
+          }
+        case ElasticFailure(error) => fail(s"[$label] Query failed: ${error.message}")
+      }
+
+    check(
+      "HAVING names the alias",
+      client.searchAs[CategoryAliased](
+        "SELECT category AS cat FROM group_by_completeness GROUP BY category HAVING cat <> 'cat_01'"
+      )
+    )
+    check(
+      "HAVING names the column",
+      client.searchAs[CategoryAliased](
+        "SELECT category AS cat FROM group_by_completeness GROUP BY category HAVING category <> 'cat_01'"
+      )
+    )
   }
 
   it should "apply a HAVING over an alias-resolved bucket" in {

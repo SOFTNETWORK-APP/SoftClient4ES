@@ -47,6 +47,21 @@ case class Field(
     with FunctionChain
     with PainlessScript
     with DateMathScript {
+
+  /** The name this SELECT item appears under in a result row -- its alias when it has one, else its
+    * source field.
+    *
+    * 🔴 ONE definition, because two places have to agree about it and did not: `SearchApi`'s
+    * requested-output names (which drive `rowNormalizer`, and therefore which columns exist and in
+    * what order) and `SingleSearch.rowInvariantProjection` (which supplies the VALUE of a constant
+    * column). Keying the projection off `identifierName` instead put `SELECT category, 2 FROM t
+    * GROUP BY category` under `2` while the row wanted `__c2`, so the requested column came back
+    * NULL and a bogus `2` column was invented beside it. Both callers now read this, over
+    * `Select.fieldsWithComputedAliases`, so a `__cN` computed for an un-aliased expression is the
+    * same on both sides by construction.
+    */
+  lazy val outputName: String = fieldAlias.map(_.alias).getOrElse(sourceField)
+
   def tableAlias: Option[String] = identifier.tableAlias
   def table: Option[String] = identifier.table
   def isScriptField: Boolean = identifier.painlessScriptRequired

@@ -39,7 +39,8 @@ case class FieldSort(
   nullOrdering: Option[NullOrdering] = None,
   bareTableAlias: Option[String] = None,
   unresolvedOrdinal: Option[UnresolvedOrdinal] = None,
-  resolved: Boolean = false
+  resolved: Boolean = false,
+  substitution: Option[Bucket.Substitution] = None
 ) extends FunctionChain
     with Updateable {
   lazy val functions: List[Function] = field.functions
@@ -65,8 +66,19 @@ case class FieldSort(
   // Render via field.sql (not identifierName) so the table-alias qualifier
   // survives the AST → SQL round-trip — consumers such as the join planner
   // re-parse this output and reject unqualified columns as ambiguous (#158).
+  //
+  // 🔴 A SUBSTITUTED sort re-emits the SELECT alias, for exactly the reason `Bucket.sql` does: an
+  // `ORDER BY <n>` resolved onto a bare numeric literal renders as that literal, which the grammar
+  // reads back as a POSITION. MEASURED before this:
+  // `SELECT 2 AS flag, SUM(amount) AS s FROM t GROUP BY flag ORDER BY flag ASC` rendered
+  // `ORDER BY 2 ASC` and re-parsed as `ORDER BY SUM(amount) ASC` -- a bucket sort silently becoming
+  // a METRIC sort -- and `SELECT 2 AS flag FROM t GROUP BY 1 ORDER BY 1 ASC` rendered a statement
+  // that no longer parses at all. The render IS re-parsed by consumers (#158's join planner, and
+  // `MaterializedViewExtension` re-runs a persisted one), so this is a live corruption, not a
+  // cosmetic round-trip failure. `Bucket` was given this protection in the same commit that taught
+  // `FieldSort` to substitute; the rule now covers both clauses, with no "except".
   override def sql: String =
-    s"${field.sql} $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
+    s"${substitution.flatMap(_.alias).getOrElse(field.sql)} $direction${nullOrdering.map(n => s" ${n.sql}").getOrElse("")}"
 
   override def update(request: SingleSearch): FieldSort =
     ordinal match {
@@ -81,7 +93,12 @@ case class FieldSort(
         // obviously so for a nested or unnested field. Take the resolved identifier as it stands.
         Bucket.selectItem(position, request) match {
           case Some(selected) =>
-            this.copy(field = selected.identifier, unresolvedOrdinal = None, resolved = true)
+            this.copy(
+              field = selected.identifier,
+              unresolvedOrdinal = None,
+              resolved = true,
+              substitution = Some(Bucket.Substitution.of(selected))
+            )
           case None =>
             this.copy(
               unresolvedOrdinal = Some(UnresolvedOrdinal(position, request.select.fields.size)),
@@ -89,45 +106,35 @@ case class FieldSort(
             )
         }
       case None =>
-        // 🔴 An ORDER BY that names a BUCKET by its output name must resolve to the same identifier
-        // the bucket did, through the SAME function -- otherwise `SingleSearch.sorts` is keyed by
-        // the alias (`"cat"`) while `buildBuckets` looks the direction up under the resolved column
-        // (`"category"`), and the terms `order` is silently DROPPED. Measured:
-        // `SELECT category AS cat FROM t GROUP BY cat ORDER BY cat ASC LIMIT 3` came back as an
-        // arbitrary top-3 by doc_count instead of the three smallest keys, HTTP 200. Same
-        // obligation as `SingleSearch.bucketNames`' key language, one clause over.
+        // 🔴 NO alias resolution here, and that is a DELIBERATE deletion, not an omission.
         //
-        // ⚠️ SCOPED to a name that IS a bucket's output name, and nothing else. Resolving every
-        // ORDER BY alias broke three measured shapes: a window `ORDER BY hire_date` inside
-        // `OVER (...)` re-pointed onto a SELECT item aliased `hire_date` (`CAST(hire_date AS DATE)`),
-        // and Superset's `ORDER BY "Revenue"` over `sum(total_price) AS "Revenue"` lost its alias --
-        // METRIC sorts already resolve through `ElasticAggregation`'s own three-way fallback and
-        // must not be rewritten here. Only the BUCKET path lacked that fallback, so only the bucket
-        // path is resolved.
+        // An earlier round resolved an ORDER BY that named a bucket by its output name, to keep
+        // `SingleSearch.sorts`' key in step with what `buildBuckets` looks up. It was proved
+        // REDUNDANT by falsification -- disabling it left all eight ORDER BY shapes emitting the
+        // correct terms `order`, because `BucketOrder` in the bridge already falls back to the
+        // bucket's own name -- and it was actively HARMFUL: `FieldSort.update` is shared verbatim
+        // between the statement's ORDER BY and every window's `OVER (...)` sort (six call sites in
+        // `function/aggregate`), with nothing to tell them apart, so it rewrote
+        // `ROW_NUMBER() OVER (PARTITION BY country ORDER BY pays)` into `ORDER BY country` whenever
+        // the statement happened to carry a GROUP BY. The guard that hid this keyed on a property
+        // of the STATEMENT (`groupBy.isDefined`), never of the sort being updated.
         //
-        // No `.update(request)` on what this resolves, for the same reason as the ordinal arm
-        // above: `orderBy` is updated LAST, so `request.select.fields` is already updated.
-        val namesABucket =
-          request.groupBy.isDefined && request.buckets.exists(_.name == field.name)
-        (if (namesABucket) Bucket.aliasItem(field, request) else None) match {
-          case Some(aliased) =>
-            this.copy(field = aliased.identifier, resolved = true, bareTableAlias = None)
-          case None =>
-            this.copy(
-              field = field.update(request),
-              resolved = true,
-              // `ORDER BY e` where `e` aliases a FROM table sorts on nothing (#159). It used to be
-              // caught downstream, because `Identifier.update` rewrote any bare name matching an alias
-              // to the empty string; that rewrite also broke a column legitimately sharing its table's
-              // name, so it is gone and the collision is recorded here, where the FROM aliases are
-              // still in scope.
-              bareTableAlias =
-                if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
-                  Some(field.name)
-                else
-                  None
-            )
-        }
+        // Keep the user's spelling. The bridge resolves the direction; the render stays a fixed
+        // point; and a window's own ORDER BY is left alone.
+        this.copy(
+          field = field.update(request),
+          resolved = true,
+          // `ORDER BY e` where `e` aliases a FROM table sorts on nothing (#159). It used to be
+          // caught downstream, because `Identifier.update` rewrote any bare name matching an alias
+          // to the empty string; that rewrite also broke a column legitimately sharing its table's
+          // name, so it is gone and the collision is recorded here, where the FROM aliases are
+          // still in scope.
+          bareTableAlias =
+            if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
+              Some(field.name)
+            else
+              None
+        )
     }
 
   override def validate(): Either[String, Unit] =

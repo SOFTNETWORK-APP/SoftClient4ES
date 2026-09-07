@@ -131,9 +131,16 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     parsed("SELECT category, true AS b FROM t GROUP BY category").rowInvariantProjection shouldBe
     ListMap("b" -> true)
 
-    // An un-aliased constant is keyed by its rendered name, the same convention bucket keys use.
+    // 🔴 An UN-ALIASED constant is keyed by the COMPUTED alias, because that is the column the
+    // result side asks for. Keying it by the rendered name (`"2"`) left the requested `__c2` column
+    // NULL and invented a bogus `2` column beside it -- measured end to end through the real
+    // `rowNormalizer`. `Field.outputName` is the single definition both sides read.
     parsed("SELECT category, 2 FROM t GROUP BY category").rowInvariantProjection.keys.toSeq shouldBe
-    Seq("2")
+    Seq("__c2")
+    parsed(
+      "SELECT category, 'x' FROM t GROUP BY category"
+    ).rowInvariantProjection.keys.toSeq shouldBe
+    Seq("__c2")
 
     // A statement with no constant projects nothing, so the merge is a no-op by construction.
     parsed("SELECT category FROM t GROUP BY category").rowInvariantProjection shouldBe empty
@@ -155,6 +162,22 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     // be no AST to inspect.)
     parsed("SELECT category, RANDOM AS r FROM t").rowInvariantProjection shouldBe empty
     parsed("SELECT category, ? AS p FROM t").rowInvariantProjection shouldBe empty
+  }
+
+  it should "still declare a constant whose name an aggregation also claims" in {
+    // Precedence is settled downstream, not here: the constants SEED the aggregation recursion, so
+    // anything Elasticsearch computes overwrites them (asserted in `ElasticConversionSpec`). The
+    // AST layer therefore just reports what the statement declares.
+    parsed(
+      "SELECT category, 2 AS m, MAX(amount) AS m FROM t GROUP BY category"
+    ).rowInvariantProjection shouldBe ListMap("m" -> 2L)
+  }
+
+  it should "reject a GROUP BY over an unbound query parameter" in {
+    // Scripting every nameless bucket is right, but `params.paramValue` is never bound: Painless
+    // reads the missing key as null and Elasticsearch answers ZERO groups with HTTP 200. A silent
+    // empty result is worse than the loud rejection.
+    rejects("SELECT ? AS p FROM t GROUP BY p", "query parameter")
   }
 
   it should "still reject a ROW-VARIANT pseudo-value beside a GROUP BY" in {
@@ -191,7 +214,14 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
       "SELECT 2 AS COL2, SUM(amount) AS s FROM t GROUP BY COL2",
       "SELECT 2 AS COL2 FROM t GROUP BY COL2",
       "SELECT 3 AS c FROM t GROUP BY 1",
-      "SELECT SUM(1) AS COL, 2 AS COL2 FROM t GROUP BY 2"
+      "SELECT SUM(1) AS COL, 2 AS COL2 FROM t GROUP BY 2",
+      // 🔴 The ORDER BY half: a sort resolved onto a bare numeric literal rendered as that literal
+      // and re-parsed as a POSITION. `... GROUP BY flag ORDER BY flag` became
+      // `ORDER BY 2` -> `ORDER BY SUM(amount)` (a bucket sort silently becoming a metric sort), and
+      // `... GROUP BY 1 ORDER BY 1` rendered a statement that no longer parses at all.
+      "SELECT 2 AS flag, SUM(amount) AS s FROM t GROUP BY flag ORDER BY flag ASC",
+      "SELECT 2 AS flag FROM t GROUP BY 1 ORDER BY 1 ASC",
+      "SELECT 2 AS flag FROM t GROUP BY flag ORDER BY flag DESC"
     ).foreach { sql =>
       val rendered = Parser(sql).map(_.sql).getOrElse(fail(s"did not parse: $sql"))
       withClue(s"[$sql] rendered=[$rendered] ") {

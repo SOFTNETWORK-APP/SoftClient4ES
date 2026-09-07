@@ -108,15 +108,20 @@ case class ElasticAggregation(
   def hasTransformExtendedStats: Boolean = ScriptedExtendedStatsAggregation.existsIn(Seq(agg))
 }
 
-/** The terms `order` a bucket asks for, looked up under EVERY spelling the sort could have been
-  * written with -- the resolved column name, the bucket's output name, and its SELECT alias.
+/** The terms `order` a bucket asks for, looked up under BOTH spellings a sort can be keyed by: the
+  * bucket's resolved column (`identifier.identifierName`) and its OUTPUT name (`Bucket.name`, i.e.
+  * the SELECT alias when there is one, else the path).
   *
-  * The metric path (`ElasticAggregation.apply`) has had this three-way fallback all along; the
-  * BUCKET path had only the first, so a sort naming the SELECT alias of a grouped column silently
+  * The metric path (`ElasticAggregation.apply`) has had this fallback all along; the BUCKET path
+  * had only the first lookup, so a sort naming the SELECT alias of a grouped column silently
   * produced NO `order` at all: `SELECT country AS pays FROM t GROUP BY country ORDER BY pays` came
   * back in an arbitrary doc_count order with HTTP 200, and with a LIMIT that is a different SET of
-  * groups. `FieldSort.update` now resolves the alias so the first lookup already matches; this
-  * mirrors the metric path so the two cannot disagree, and it closes the pre-existing spelling too.
+  * groups.
+  *
+  * ⚠️ TWO spellings, not three. A third `.orElse` on `identifier.fieldAlias` would be unreachable:
+  * `Bucket.name` IS `identifier.fieldAlias.getOrElse(path)`, so whenever an alias exists the second
+  * lookup already used that key. (The metric path's three arms are NOT redundant -- they read two
+  * different members -- so the shape must not be copied blindly from it.)
   */
 private[bridge] object BucketOrder {
   def apply(
@@ -126,15 +131,9 @@ private[bridge] object BucketOrder {
     bucketsDirection
       .get(bucket.identifier.identifierName)
       .orElse(bucketsDirection.get(bucket.name))
-      .orElse(bucket.identifier.fieldAlias.flatMap(bucketsDirection.get))
 }
 
 object ElasticAggregation {
-  private def bucketDirection(
-    bucketsDirection: Map[String, SortOrder],
-    bucket: app.softnetwork.elastic.sql.query.Bucket
-  ): Option[SortOrder] = BucketOrder(bucketsDirection, bucket)
-
   def apply(
     sqlAgg: Field,
     having: Option[Criteria],
@@ -496,7 +495,7 @@ object ElasticAggregation {
                 aggScript match {
                   case Some(script) =>
                     // Scripted date histogram
-                    bucketDirection(bucketsDirection, bucket) match {
+                    BucketOrder(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         DateHistogramAggregation(bucket.name, calendarInterval = interval)
                           .script(script)
@@ -512,7 +511,7 @@ object ElasticAggregation {
                     }
                   case _ =>
                     // Standard date histogram
-                    bucketDirection(bucketsDirection, bucket) match {
+                    BucketOrder(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         DateHistogramAggregation(bucket.name, calendarInterval = interval)
                           .field(currentBucketNestedPath)
@@ -532,7 +531,7 @@ object ElasticAggregation {
                 aggScript match {
                   case Some(script) =>
                     // Scripted terms aggregation
-                    bucketDirection(bucketsDirection, bucket) match {
+                    BucketOrder(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         TermsAggregation(bucket.name)
                           .script(script)
@@ -548,7 +547,7 @@ object ElasticAggregation {
                     }
                   case _ =>
                     // Standard terms aggregation
-                    bucketDirection(bucketsDirection, bucket) match {
+                    BucketOrder(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         termsAgg(bucket.name, currentBucketNestedPath)
                           .minDocCount(1)
