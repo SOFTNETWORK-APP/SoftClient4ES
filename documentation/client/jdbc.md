@@ -197,9 +197,9 @@ Elasticsearch has no server-side prepared statements, so the driver substitutes 
 - **A `?` is only a placeholder outside quotes and comments.** `WHERE label = 'what?' AND name = ?` has exactly one parameter; the `?` inside the literal is left alone.
 - **One statement per `PreparedStatement`.** A template containing more than one statement is refused when it is prepared. That is the JDBC contract, and it is also what makes the length bound below true: with more than one statement the engine parses on a different thread whose stack the driver does not control.
 - **Parameters are length-bounded.** A bound value may render to at most **8192 characters** (after escaping — an apostrophe or a backslash contributes two). Above that the driver raises a `SQLException` naming the limit rather than building a statement the engine's parser cannot read. Store long text in the document and filter on a shorter key, or narrow the value.
+- **A parameter you never set is an error**, not an implicit `NULL`, and an index with no matching placeholder is refused at set time. Use `setNull` to bind SQL `NULL` deliberately.
 
 > **Known limitation, plain `Statement` only:** a multi-statement string executed through `Statement` (not `PreparedStatement`) with a very long literal typed directly into the SQL can still exhaust the parser's stack, and reports a timeout rather than a parse error. Bound parameters are not affected. Split such SQL into separate statements.
-- **A parameter you never set is an error**, not an implicit `NULL`, and an index with no matching placeholder is refused at set time. Use `setNull` to bind SQL `NULL` deliberately.
 
 ```java
 PreparedStatement ps = conn.prepareStatement("SELECT * FROM demo WHERE name = ?");
