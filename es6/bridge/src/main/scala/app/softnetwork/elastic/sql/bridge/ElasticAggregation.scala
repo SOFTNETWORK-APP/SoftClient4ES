@@ -108,7 +108,33 @@ case class ElasticAggregation(
   def hasTransformExtendedStats: Boolean = ScriptedExtendedStatsAggregation.existsIn(Seq(agg))
 }
 
+/** The terms `order` a bucket asks for, looked up under EVERY spelling the sort could have been
+  * written with -- the resolved column name, the bucket's output name, and its SELECT alias.
+  *
+  * The metric path (`ElasticAggregation.apply`) has had this three-way fallback all along; the
+  * BUCKET path had only the first, so a sort naming the SELECT alias of a grouped column silently
+  * produced NO `order` at all: `SELECT country AS pays FROM t GROUP BY country ORDER BY pays` came
+  * back in an arbitrary doc_count order with HTTP 200, and with a LIMIT that is a different SET of
+  * groups. `FieldSort.update` now resolves the alias so the first lookup already matches; this
+  * mirrors the metric path so the two cannot disagree, and it closes the pre-existing spelling too.
+  */
+private[bridge] object BucketOrder {
+  def apply(
+    bucketsDirection: Map[String, SortOrder],
+    bucket: app.softnetwork.elastic.sql.query.Bucket
+  ): Option[SortOrder] =
+    bucketsDirection
+      .get(bucket.identifier.identifierName)
+      .orElse(bucketsDirection.get(bucket.name))
+      .orElse(bucket.identifier.fieldAlias.flatMap(bucketsDirection.get))
+}
+
 object ElasticAggregation {
+  private def bucketDirection(
+    bucketsDirection: Map[String, SortOrder],
+    bucket: app.softnetwork.elastic.sql.query.Bucket
+  ): Option[SortOrder] = BucketOrder(bucketsDirection, bucket)
+
   def apply(
     sqlAgg: Field,
     having: Option[Criteria],
@@ -466,7 +492,7 @@ object ElasticAggregation {
                 aggScript match {
                   case Some(script) =>
                     // Scripted date histogram
-                    bucketsDirection.get(bucket.identifier.identifierName) match {
+                    bucketDirection(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         DateHistogramAggregation(bucket.name, interval = interval)
                           .script(script)
@@ -482,7 +508,7 @@ object ElasticAggregation {
                     }
                   case _ =>
                     // Standard date histogram
-                    bucketsDirection.get(bucket.identifier.identifierName) match {
+                    bucketDirection(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         DateHistogramAggregation(bucket.name, interval = interval)
                           .field(currentBucketNestedPath)
@@ -502,7 +528,7 @@ object ElasticAggregation {
                 aggScript match {
                   case Some(script) =>
                     // Scripted terms aggregation
-                    bucketsDirection.get(bucket.identifier.identifierName) match {
+                    bucketDirection(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         TermsAggregation(bucket.name)
                           .script(script)
@@ -518,7 +544,7 @@ object ElasticAggregation {
                     }
                   case _ =>
                     // Standard terms aggregation
-                    bucketsDirection.get(bucket.identifier.identifierName) match {
+                    bucketDirection(bucketsDirection, bucket) match {
                       case Some(direction) =>
                         termsAgg(bucket.name, currentBucketNestedPath)
                           .minDocCount(1)

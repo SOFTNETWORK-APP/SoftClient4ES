@@ -255,8 +255,11 @@ class GroupByOrdinalSpec extends AnyFlatSpec with Matchers {
     Some(Seq("ABS(a)"))
   }
 
-  it should "not read a GROUP BY function or quoted expression as an ordinal" in {
-    bucketPaths("SELECT SUBSTRING(a, 1, 3) AS s FROM t GROUP BY SUBSTRING(a, 1, 3)") shouldBe
-    Seq("")
+  it should "not read a GROUP BY function as an ordinal" in {
+    // Assert the PREDICATE, not the empty `path` an expression bucket happens to have -- that
+    // string is an artifact of `sourceBucket` on a nameless identifier, not the intent.
+    val s = parsed("SELECT SUBSTRING(a, 1, 3) AS s FROM t GROUP BY SUBSTRING(a, 1, 3)")
+    Bucket.ordinalOf(s.buckets.head.identifier) shouldBe None
+    s.buckets.head.ordinal shouldBe None
   }
 }

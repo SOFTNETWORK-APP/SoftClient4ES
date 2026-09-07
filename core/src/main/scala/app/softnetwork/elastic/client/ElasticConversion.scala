@@ -223,6 +223,39 @@ trait ElasticConversion {
       }
     }
 
+  /** Merge a statement's ROW-INVARIANT SELECT items into aggregation rows (issue #253, FOLD-IN 1).
+    *
+    * `SELECT category, 2 AS flag FROM t GROUP BY category` is standard SQL -- a constant does not
+    * vary within a group -- but an aggregation response carries NO hits, so the `script_fields`
+    * entry the constant is emitted as is never fetched (`"size": 0`) and `rowNormalizer` null-fills
+    * the requested column. MEASURED on real ES 8.18 before this: `flag` came back `null` on every
+    * row. The value is taken from the AST instead and added here, on the RESULT side.
+    *
+    * Deliberately NOT applied to the row path: there a constant already arrives through
+    * `script_fields` and works, and double-handling it would be the divergence this exists to
+    * remove.
+    *
+    * 🔴 A key that is already PRESENT but `null` is filled, not skipped. `rowNormalizer` runs first
+    * and null-fills every requested output column, so by the time the rows get here the constant's
+    * column already exists carrying `null` -- a "never overwrite an existing key" rule reads that
+    * placeholder as a real value and projects nothing at all (measured: the column stayed `null` on
+    * real ES 8.18 with the projection wired in). A NON-null value is still never overwritten, so a
+    * column Elasticsearch actually computed always wins over a constant of the same name. Existing
+    * column ORDER is preserved -- `rowNormalizer` has already put them in SELECT order.
+    */
+  protected def projectRowInvariants(
+    rows: Seq[ListMap[String, Any]],
+    constants: ListMap[String, Any]
+  ): Seq[ListMap[String, Any]] =
+    if (constants.isEmpty) rows
+    else
+      rows.map { row =>
+        val filled = row.map { case (k, v) =>
+          k -> (if (v == null) constants.getOrElse(k, v) else v)
+        }
+        filled ++ constants.filterNot { case (k, _) => filled.contains(k) }
+      }
+
   /** convert JsonNode to Rows
     */
   def jsonToRows(

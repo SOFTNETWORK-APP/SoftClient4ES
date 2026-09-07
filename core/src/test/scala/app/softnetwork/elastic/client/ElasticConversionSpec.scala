@@ -1624,6 +1624,52 @@ class ElasticConversionSpec extends AnyFlatSpec with Matchers with ElasticConver
   // egress unless `elastic.include-document-id` is enabled or `_id` is selected.
   // -------------------------------------------------------------------------
 
+  // ---- issue #253 FOLD-IN 1: row-invariant constants are projected into AGGREGATION rows ----
+  //
+  // An aggregation response carries no hits, so the `script_fields` entry a constant is emitted as
+  // is never fetched (`"size": 0`) and `rowNormalizer` null-fills the requested column -- measured
+  // on real ES 8.18, `SELECT category, 2 AS flag ... GROUP BY category` returned `flag = null` on
+  // every row. `SearchApi` merges the AST value in on the result side instead.
+
+  "projectRowInvariants" should "add every constant to every aggregation row" in {
+    val rows = Seq(
+      ListMap[String, Any]("category" -> "a"),
+      ListMap[String, Any]("category" -> "b")
+    )
+    projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L, "lbl" -> "x")) shouldBe Seq(
+      ListMap[String, Any]("category" -> "a", "flag" -> 2L, "lbl" -> "x"),
+      ListMap[String, Any]("category" -> "b", "flag" -> 2L, "lbl" -> "x")
+    )
+  }
+
+  it should "return the rows UNTOUCHED when there is no constant" in {
+    val rows = Seq(ListMap[String, Any]("category" -> "a"))
+    projectRowInvariants(rows, ListMap.empty) should be theSameInstanceAs rows
+  }
+
+  it should "FILL a column that rowNormalizer already null-filled, keeping its position" in {
+    // 🔴 This is the case that made the first wiring a no-op: `rowNormalizer` runs first and
+    // null-fills every requested output column, so the constant's key is already present carrying
+    // `null` by the time the projection sees the row. Skipping present keys therefore projected
+    // NOTHING -- measured on real ES 8.18, `flag` stayed null.
+    val rows = Seq(ListMap[String, Any]("category" -> "a", "flag" -> null))
+    val out = projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L))
+    out shouldBe Seq(ListMap[String, Any]("category" -> "a", "flag" -> 2L))
+    out.head.keys.toSeq shouldBe Seq("category", "flag") // SELECT order preserved
+  }
+
+  it should "never overwrite a real column with a constant of the same name" in {
+    // A projected constant is presentation; a value Elasticsearch actually computed always wins.
+    val rows = Seq(ListMap[String, Any]("flag" -> "from-elasticsearch"))
+    projectRowInvariants(rows, ListMap[String, Any]("flag" -> 2L)) shouldBe
+    Seq(ListMap[String, Any]("flag" -> "from-elasticsearch"))
+  }
+
+  it should "produce no row where there was none" in {
+    // A grouping that matched nothing stays empty -- the constant must not invent a row.
+    projectRowInvariants(Seq.empty, ListMap[String, Any]("flag" -> 2L)) shouldBe empty
+  }
+
   private object EnabledDocumentIdConversion extends ElasticConversion {
     override protected def includeDocumentId: Boolean = true
   }

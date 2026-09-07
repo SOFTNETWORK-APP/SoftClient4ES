@@ -17,6 +17,8 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.parser.Parser
+
+import scala.collection.immutable.ListMap
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -70,27 +72,22 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
   private def bucketTriples(sql: String): Seq[(String, String, String)] =
     parsed(sql).buckets.map(b => (b.name, b.path, b.sourceBucket))
 
-  // ---- FOLD-IN 1: a row-invariant literal that IS the group key ----
+  // ---- FOLD-IN 1: a row-invariant literal beside a GROUP BY ----
   //
-  // 🔴 SCOPE, decided by MEASUREMENT during implementation (2026-09-07) and escalated to the lead.
-  // FOLD-IN 1 has two sub-cases and only one of them works end to end:
+  // Two shapes, both delivered, and they are delivered by different machinery:
   //
   //   (A) the constant IS the grouped item (`GROUP BY 2` naming `2 AS COL2`, or `GROUP BY COL2`).
-  //       The bucket key carries the value, and the four Tableau corpus probes PD-7 names -- the
-  //       ones "holding the published ceiling at 65/99" -- are all this shape. It is delivered
-  //       here, end to end, and verified against real Elasticsearch.
+  //       The bucket key carries the value. This needs NO validator change -- once `Bucket.update`
+  //       resolves the position AND updates it, the bucket's `name` is the field's alias, which the
+  //       existing non-aggregated-field check already excuses -- but it does need the bucket to be
+  //       SCRIPTED (a constant has no field name to give) and to RE-EMIT its alias (its own render
+  //       reads back as an ordinal).
   //
   //   (B) the constant is an EXTRA ungrouped column (`SELECT category, 2 AS flag ... GROUP BY
-  //       category`). MEASURED on real ES 8.18: the statement parses, the constant is emitted as a
-  //       `script_fields` entry, the aggregation path answers with `"size": 0`, and the column
-  //       comes back **null** for every row. Accepting it would trade one loud rejection for a
-  //       silent wrong answer, in the exact family this story exists to close, so it is NOT
-  //       accepted here; the rows below pin the rejection so the decision is visible.
-  //
-  // Case (B) needs the constant PROJECTED into each aggregation row, which lives in `core`
-  // (`ElasticConversion.jsonToRows` takes `fields: Seq[String]`, with no statement in scope) and
-  // reaches ~10 call sites across `SearchApi` / `ScrollApi`. That is a design question for the
-  // lead, not a drive-by: it is recorded in `docs/issues/local-21.3-grouped-select-literal.md`.
+  //       category`). Accepting it is only half the job: an aggregation response has no hits, so
+  //       the `script_fields` entry is never fetched under `"size": 0` and the column came back
+  //       NULL on every row (MEASURED on real ES 8.18). `SingleSearch.rowInvariantProjection`
+  //       carries the value from the AST and `SearchApi` merges it into each aggregation row.
 
   "a constant that IS the group key" should "be accepted (FOLD-IN 1, case A)" in {
     // The 4-row Tableau corpus shape, and its alias spelling. Both were Left before this story
@@ -108,13 +105,63 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     accepts("SELECT 'x' AS lbl FROM t GROUP BY 'x'")
   }
 
-  "an ungrouped constant beside a GROUP BY" should "stay rejected (FOLD-IN 1, case B)" in {
-    // See the scope note above: accepted, this returns the column as NULL on every row (MEASURED
-    // on real ES 8.18). The rejection is the SAME message these statements got before this story,
-    // so nothing regresses -- what changes is that the reason is now recorded rather than assumed.
-    rejects("SELECT category, 2 AS COL2 FROM t GROUP BY category", "Non-aggregated fields")
-    rejects("SELECT category, 'x' AS lbl FROM t GROUP BY category", "Non-aggregated fields")
-    rejects("SELECT SUM(amount) AS s, 2 AS COL2 FROM t GROUP BY country", "Non-aggregated fields")
+  "an ungrouped constant beside a GROUP BY" should "be accepted (FOLD-IN 1, case B)" in {
+    // Standard SQL: a constant does not vary within a group, so it needs no grouping. All Left on
+    // `origin/main` with "Non-aggregated fields ... cannot be selected when GROUP BY is present".
+    accepts("SELECT category, 2 AS COL2 FROM t GROUP BY category")
+    accepts("SELECT category, 'x' AS lbl FROM t GROUP BY category")
+    accepts("SELECT category, 2.5 AS ratio FROM t GROUP BY category")
+    accepts("SELECT SUM(amount) AS s, 2 AS COL2 FROM t GROUP BY country")
+    accepts("SELECT category, true AS b FROM t GROUP BY category")
+    accepts("SELECT category, NULL AS n FROM t GROUP BY category")
+    accepts("SELECT category, PI AS p FROM t GROUP BY category")
+  }
+
+  it should "carry the constant's VALUE, keyed by its output name, for the result side to project" in {
+    // 🔴 Acceptance alone would be a NEW silent wrong answer: an aggregation response has no hits,
+    // so the `script_fields` entry a constant is emitted as is never fetched under `"size": 0` and
+    // the column came back NULL on every row (MEASURED on real ES 8.18). The value therefore comes
+    // from the AST, and `SearchApi` merges it into each aggregation row.
+    parsed("SELECT category, 2 AS COL2 FROM t GROUP BY category").rowInvariantProjection shouldBe
+    ListMap("COL2" -> 2L)
+    parsed("SELECT category, 'x' AS lbl FROM t GROUP BY category").rowInvariantProjection shouldBe
+    ListMap("lbl" -> "x")
+    parsed("SELECT category, 2.5 AS ratio FROM t GROUP BY category").rowInvariantProjection shouldBe
+    ListMap("ratio" -> 2.5d)
+    parsed("SELECT category, true AS b FROM t GROUP BY category").rowInvariantProjection shouldBe
+    ListMap("b" -> true)
+
+    // An un-aliased constant is keyed by its rendered name, the same convention bucket keys use.
+    parsed("SELECT category, 2 FROM t GROUP BY category").rowInvariantProjection.keys.toSeq shouldBe
+    Seq("2")
+
+    // A statement with no constant projects nothing, so the merge is a no-op by construction.
+    parsed("SELECT category FROM t GROUP BY category").rowInvariantProjection shouldBe empty
+  }
+
+  it should "project SQL NULL as a PRESENT null column, and never a row-variant value" in {
+    // `Null` is kept in the allow-list: it is a constant, and excluding it would be an exception
+    // with no principle behind it. ⚠️ Recorded limitation: a projected `NULL` column is
+    // indistinguishable downstream from a column that failed to project, because `rowNormalizer`
+    // null-fills a missing requested column with exactly the same value. Every OTHER constant
+    // carries a real value, so the ambiguity is confined to the one case where null is correct.
+    val nulled = parsed("SELECT category, NULL AS n FROM t GROUP BY category")
+    nulled.rowInvariantProjection.keys.toSeq shouldBe Seq("n")
+    Option(nulled.rowInvariantProjection("n")) shouldBe None
+
+    // Row-VARIANT and unbound shapes are excluded: a projected `?` would be a NULL column by
+    // another route, which is exactly what this fix exists to prevent. (Asserted WITHOUT a GROUP
+    // BY, because with one these statements are rejected -- see the test below -- and there would
+    // be no AST to inspect.)
+    parsed("SELECT category, RANDOM AS r FROM t").rowInvariantProjection shouldBe empty
+    parsed("SELECT category, ? AS p FROM t").rowInvariantProjection shouldBe empty
+  }
+
+  it should "still reject a ROW-VARIANT pseudo-value beside a GROUP BY" in {
+    // The classification must not leak: `RANDOM` re-evaluates per document and `?` is unbound, so
+    // neither is a constant a group can be said to carry.
+    rejects("SELECT category, RANDOM AS r FROM t GROUP BY category", "Non-aggregated fields")
+    rejects("SELECT category, ? AS p FROM t GROUP BY category", "Non-aggregated fields")
   }
 
   it should "resolve an ordinal naming a literal EXACTLY ONCE" in {
@@ -170,14 +217,9 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     rejects("SELECT category, country FROM t GROUP BY category", "Non-aggregated fields country")
   }
 
-  it should "never treat a ROW-VARIANT pseudo-value as a constant" in {
-    // `Bucket.shouldBeScripted`'s constant classification is an ALLOW-list, so a row-VARIANT value
-    // can never be scripted as a constant bucket: `RANDOM` re-evaluates per document and `?` is an
-    // unbound parameter.
+  it should "classify row-invariance on the AST, as an allow-list" in {
     // ⚠️ The spelling is the bare `RANDOM`, not `RANDOM()`: MEASURED, `RANDOM()` does not parse at
-    // all ("end of input expected"), so a `RANDOM()` row would have passed for the wrong reason.
-    rejects("SELECT category, RANDOM AS r FROM t GROUP BY category", "Non-aggregated fields")
-    rejects("SELECT category, ? AS p FROM t GROUP BY category", "Non-aggregated fields")
+    // all ("end of input expected"), so a `RANDOM()` row would pass for the wrong reason.
     SingleSearch.isRowInvariantLiteral(
       parsed("SELECT RANDOM AS r FROM t").select.fields.head.identifier
     ) shouldBe false
@@ -187,6 +229,10 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     SingleSearch.isRowInvariantLiteral(
       parsed("SELECT 2 AS n FROM t").select.fields.head.identifier
     ) shouldBe true
+    // A real column is not a constant, however it is spelled.
+    SingleSearch.isRowInvariantLiteral(
+      parsed("SELECT category FROM t").select.fields.head.identifier
+    ) shouldBe false
   }
 
   // ---- FOLD-IN 2: GROUP BY <select alias> resolves to the aliased field ----
@@ -223,12 +269,17 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     s.bucketNames.keys.toSeq should contain("country")
   }
 
-  it should "normalise the alias to the resolved column on render, with the render fixed point" in {
+  it should "re-emit the alias the bucket was resolved through, and re-parse to the same bucket" in {
+    // The render keeps the spelling the statement used (`GROUP BY pays`), NOT the resolved column:
+    // the alias is what `Bucket.aliasItem` reads back to the same SELECT item, it is what the user
+    // wrote, and it matches what `origin/main` rendered -- so an existing MATERIALIZED VIEW whose
+    // definition groups by an alias does not see its stored render change and rebuild.
     val rendered = Parser("SELECT country AS pays FROM t GROUP BY pays")
       .map(_.sql)
       .getOrElse(fail("did not parse"))
-    rendered should include("GROUP BY country")
+    rendered should include("GROUP BY pays")
     Parser(rendered).map(_.sql).getOrElse("") shouldBe rendered
+    bucketTriples(rendered) shouldBe bucketTriples("SELECT country AS pays FROM t GROUP BY country")
   }
 
   it should "leave a bucket that matches no alias alone" in {

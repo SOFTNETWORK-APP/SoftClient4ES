@@ -89,20 +89,45 @@ case class FieldSort(
             )
         }
       case None =>
-        this.copy(
-          field = field.update(request),
-          resolved = true,
-          // `ORDER BY e` where `e` aliases a FROM table sorts on nothing (#159). It used to be
-          // caught downstream, because `Identifier.update` rewrote any bare name matching an alias
-          // to the empty string; that rewrite also broke a column legitimately sharing its table's
-          // name, so it is gone and the collision is recorded here, where the FROM aliases are
-          // still in scope.
-          bareTableAlias =
-            if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
-              Some(field.name)
-            else
-              None
-        )
+        // 🔴 An ORDER BY that names a BUCKET by its output name must resolve to the same identifier
+        // the bucket did, through the SAME function -- otherwise `SingleSearch.sorts` is keyed by
+        // the alias (`"cat"`) while `buildBuckets` looks the direction up under the resolved column
+        // (`"category"`), and the terms `order` is silently DROPPED. Measured:
+        // `SELECT category AS cat FROM t GROUP BY cat ORDER BY cat ASC LIMIT 3` came back as an
+        // arbitrary top-3 by doc_count instead of the three smallest keys, HTTP 200. Same
+        // obligation as `SingleSearch.bucketNames`' key language, one clause over.
+        //
+        // ⚠️ SCOPED to a name that IS a bucket's output name, and nothing else. Resolving every
+        // ORDER BY alias broke three measured shapes: a window `ORDER BY hire_date` inside
+        // `OVER (...)` re-pointed onto a SELECT item aliased `hire_date` (`CAST(hire_date AS DATE)`),
+        // and Superset's `ORDER BY "Revenue"` over `sum(total_price) AS "Revenue"` lost its alias --
+        // METRIC sorts already resolve through `ElasticAggregation`'s own three-way fallback and
+        // must not be rewritten here. Only the BUCKET path lacked that fallback, so only the bucket
+        // path is resolved.
+        //
+        // No `.update(request)` on what this resolves, for the same reason as the ordinal arm
+        // above: `orderBy` is updated LAST, so `request.select.fields` is already updated.
+        val namesABucket =
+          request.groupBy.isDefined && request.buckets.exists(_.name == field.name)
+        (if (namesABucket) Bucket.aliasItem(field, request) else None) match {
+          case Some(aliased) =>
+            this.copy(field = aliased.identifier, resolved = true, bareTableAlias = None)
+          case None =>
+            this.copy(
+              field = field.update(request),
+              resolved = true,
+              // `ORDER BY e` where `e` aliases a FROM table sorts on nothing (#159). It used to be
+              // caught downstream, because `Identifier.update` rewrote any bare name matching an alias
+              // to the empty string; that rewrite also broke a column legitimately sharing its table's
+              // name, so it is gone and the collision is recorded here, where the FROM aliases are
+              // still in scope.
+              bareTableAlias =
+                if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
+                  Some(field.name)
+                else
+                  None
+            )
+        }
     }
 
   override def validate(): Either[String, Unit] =

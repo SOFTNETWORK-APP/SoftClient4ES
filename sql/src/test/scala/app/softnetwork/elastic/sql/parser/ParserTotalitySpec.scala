@@ -628,7 +628,9 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
       "reachable during a parse but live elsewhere - `query/GroupBy.scala`, `query/package.scala`, " +
       "`query/Where.scala`, all pulled in by `single`'s `.update()` action - are NOT covered here, " +
       "and one of the real crashers is a bare index with no `throw` token at all. Those are " +
-      "covered by input instead (the GROUP BY cases above) and belong to story 21.3.\n" +
+      "covered by INPUT instead (the GROUP BY cases above), never by this scan -- do NOT widen it " +
+      "to `query/**`, which carries ~90 legitimate rendering-time throws and still could not see " +
+      "an unguarded index. Story 21.3 closed the three crashers that were known there.\n" +
       "Offenders:\n" + offenders.mkString("\n") + "\n"
     ) {
       offenders shouldBe empty

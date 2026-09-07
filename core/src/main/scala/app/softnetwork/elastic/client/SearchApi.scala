@@ -269,7 +269,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 single.sqlAggregations,
                 extractOutputFieldNames(single),
                 single.nestedHitsMappings
-              )
+              ).map(withRowInvariants(single, _))
         }
 
       case parsed: MultiSearch =>
@@ -343,6 +343,25 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * @return
     *   the Elasticsearch response
     */
+  /** Add a statement's ROW-INVARIANT SELECT items to an AGGREGATION response's rows (#253, FOLD-IN
+    * 1) -- `SELECT category, 2 AS flag ... GROUP BY category` must return `flag = 2`, not the
+    * `null` an aggregation response leaves behind (measured on real Elasticsearch: the
+    * `script_fields` entry a constant is emitted as is never fetched under `"size": 0`).
+    *
+    * Guarded on `!returnsRows`, so it applies to the aggregation path ONLY: on the row path the
+    * constant already arrives through `script_fields` and must not be handled twice. This is the
+    * one seam that has BOTH the statement and the assembled rows -- the client entry points
+    * (`parseSingleSearchResponse` and friends) are shared with the scroll pages and carry no
+    * statement, which is why the projection is applied here rather than threaded through them.
+    */
+  private def withRowInvariants(
+    single: SingleSearch,
+    response: ElasticResponse
+  ): ElasticResponse =
+    if (single.returnsRows || single.rowInvariantProjection.isEmpty) response
+    else
+      response.copy(results = projectRowInvariants(response.results, single.rowInvariantProjection))
+
   def singleSearch(
     elasticQuery: ElasticQuery,
     fieldAliases: ListMap[String, String],
@@ -616,7 +635,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 single.sqlAggregations,
                 extractOutputFieldNames(single),
                 single.nestedHitsMappings
-              )
+              ).map(_.map(withRowInvariants(single, _)))(ExecutionContext.global)
         }
 
       case parsed: MultiSearch =>

@@ -19,7 +19,9 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.{
+  quoteIdentifier,
   Expr,
+  GenericIdentifier,
   Identifier,
   LongValue,
   PainlessContext,
@@ -102,16 +104,34 @@ object Bucket {
     else
       None
 
-  /** The spelling a resolved bucket must RE-EMIT, when its own render would not re-parse to it.
+  /** How a bucket that was SUBSTITUTED -- an ordinal `GROUP BY <n>` or a `GROUP BY <select alias>`
+    * replaced by the SELECT item it names -- must re-emit itself.
     *
-    * Only one shape needs it: an integer constant, whose render (`2`) the grammar reads back as a
-    * POSITION. The alias is the only spelling that re-parses to the same bucket, via
-    * [[Bucket.aliasItem]]. `field.fieldAlias` is the RAW, explicit alias -- deliberately not
+    * 🔴 The render has to RE-PARSE to the same bucket, and after substitution the identifier's own
+    * render often does not: `GROUP BY COL2` naming `2 AS COL2` renders the bare `2`, which the
+    * grammar reads back as POSITION 2 (measured: it became `GROUP BY SUM(amount)`, a different
+    * aggregation). `2.5 AS d` and `2 + 0 AS c` render to something that does not parse in GROUP BY
+    * position at all. `MaterializedViewExtension` persists this render and re-runs it via
+    * `client.run(alter.sql)`, so it is a live corruption, not a cosmetic round-trip failure.
+    *
+    * The rule is therefore stated once, with no "except": **a substituted bucket re-emits the ALIAS
+    * it was resolved through**, which `Bucket.aliasItem` reads back to the same SELECT item by
+    * construction. With no alias the substituted bucket falls back to the identifier's own render,
+    * which is correct for a plain column (`SELECT country FROM t GROUP BY 1` renders `GROUP BY
+    * country`, the established house behaviour) and is rejected by [[Bucket.validate]] when the
+    * identifier has no name of its own to render.
+    *
+    * `alias` comes from the RAW `Field` and carries its own quoting, so a quoted or reserved-word
+    * alias re-emits quoted (`GROUP BY "COL 2"`, not `GROUP BY COL 2`). It is deliberately NOT
     * `identifier.fieldAlias`, which after `update` also carries the `__cN` aliases
-    * `Select.fieldsWithComputedAliases` invents, and those resolve through nothing.
+    * `Select.fieldsWithComputedAliases` invents -- those resolve through nothing.
     */
-  def renderAsOf(field: Field): Option[String] =
-    if (ordinalOf(field.identifier).isDefined) field.fieldAlias.map(_.alias) else None
+  case class Substitution(alias: Option[String])
+
+  object Substitution {
+    def of(field: Field): Substitution =
+      Substitution(field.fieldAlias.map(a => if (a.quoted) quoteIdentifier(a.alias) else a.alias))
+  }
 
   /** The SELECT item a bare-name bucket references through its ALIAS, when it does -- `GROUP BY
     * pays` where the SELECT list carries `country AS pays`. Resolution rules, in order:
@@ -143,26 +163,17 @@ case class Bucket(
   size: Option[Int] = None,
   unresolvedOrdinal: Option[UnresolvedOrdinal] = None,
   resolved: Boolean = false,
-  renderAs: Option[String] = None
+  substitution: Option[Bucket.Substitution] = None
 ) extends Updateable
     with PainlessScript {
   def tableAlias: Option[String] = identifier.tableAlias
   def table: Option[String] = identifier.table
 
-  /** 🔴 The render must RE-PARSE to this same bucket, and for one resolved shape the identifier's
-    * own render does not: an integer constant. `GROUP BY COL2` naming `2 AS COL2` resolves onto the
-    * literal, whose `Identifier.sql` is the bare `2` -- which the grammar reads back as POSITION 2.
-    * MEASURED: `SELECT 2 AS COL2, SUM(amount) AS s FROM t GROUP BY COL2` rendered `... GROUP BY 2`
-    * and re-parsed as `GROUP BY SUM(amount)`, a different aggregation. `MaterializedViewExtension`
-    * persists this render and re-runs it (`client.run(alter.sql)`), so it is a live corruption, not
-    * a cosmetic round-trip failure -- the same lesson story 21.1's AD-13 paid for.
-    *
-    * `renderAs` therefore carries the SELECT alias for exactly the buckets whose resolved
-    * identifier would itself be read as an ordinal (`Bucket.ordinalOf` decides that -- one
-    * definition again). Every other constant is unambiguous and renders as itself: `'x'` re-parses
-    * as a string, `2.5` does not reach a bucket at all (measured).
+  /** A SUBSTITUTED bucket re-emits the alias it was resolved through; every other bucket renders as
+    * its identifier. See [[Bucket.Substitution]] for why, and for the measured corruption that
+    * forced it.
     */
-  override def sql: String = renderAs.getOrElse(s"$identifier")
+  override def sql: String = substitution.flatMap(_.alias).getOrElse(s"$identifier")
 
   /** The 1-based SELECT position this bucket names, when it is an ordinal `GROUP BY <n>` at all --
     * decided by [[Bucket.ordinalOf]] on the AST, never by a regex on the rendered name.
@@ -193,7 +204,7 @@ case class Bucket(
               identifier = selected.identifier.update(request),
               size = bucketSize,
               resolved = true,
-              renderAs = Bucket.renderAsOf(selected)
+              substitution = Some(Bucket.Substitution.of(selected))
             )
           case None =>
             // Recorded, never thrown: `Parser.apply` must stay total, and a `Left` from
@@ -214,7 +225,7 @@ case class Bucket(
               identifier = aliased.identifier.update(request),
               size = bucketSize,
               resolved = true,
-              renderAs = Bucket.renderAsOf(aliased)
+              substitution = Some(Bucket.Substitution.of(aliased))
             )
           case None =>
             this.copy(identifier = identifier.update(request), size = bucketSize, resolved = true)
@@ -229,13 +240,16 @@ case class Bucket(
           s"GROUP BY position ${u.position} is out of range: the SELECT list has ${u.selectSize} " +
           s"item(s), so positions 1 to ${u.selectSize} are valid"
         )
-      case None if resolved && Bucket.ordinalOf(identifier).isDefined && renderAs.isEmpty =>
-        // Grouping by an integer constant is legal (one group), but with no SELECT alias there is
-        // no spelling that re-emits it: `SELECT 3 FROM t GROUP BY 1` would render `GROUP BY 3` and
-        // re-parse as position 3. Reject rather than ship a render that means something else --
-        // this input was rejected before the constant classification landed, so nothing regresses.
+      case None if substitution.exists(_.alias.isEmpty) && identifier.name.isEmpty =>
+        // A SUBSTITUTED bucket whose resolved identifier has no field name of its own, and no
+        // alias either, cannot be re-emitted: `SELECT 3 FROM t GROUP BY 1` would render
+        // `GROUP BY 3` and re-parse as position 3, `SELECT 2.5 AS d ... GROUP BY 1` (unaliased)
+        // would render something the grammar rejects outright. A bucket that was NOT substituted
+        // is untouched -- `SELECT UPPER(country) FROM t GROUP BY UPPER(country)` renders itself and
+        // re-parses -- and a substituted PLAIN COLUMN has a name to render, so
+        // `SELECT country FROM t GROUP BY 1` still renders `GROUP BY country`.
         Left(
-          s"GROUP BY on the constant ${identifier.sql} requires a SELECT alias to name it: " +
+          s"GROUP BY on the expression ${identifier.sql} requires a SELECT alias to name it: " +
           s"write `SELECT ${identifier.sql} AS <name> ... GROUP BY <name>`"
         )
       case None => Right(())
@@ -267,22 +281,29 @@ case class Bucket(
 
   override def out: SQLType = identifier.out
 
-  /** A bucket over a row-invariant LITERAL must be scripted, or nothing describes it.
+  /** A bucket with NO FIELD NAME must be scripted, or nothing describes it.
     *
-    * `GROUP BY <n>` naming a bare literal in the SELECT list (`SELECT SUM(1) AS COL, 2 AS COL2 ...
-    * GROUP BY 2`, four Tableau probes in the BI corpus) resolves the bucket onto an identifier
-    * whose `name` is EMPTY, so the `terms` aggregation had no `field` -- and a literal `Value`
-    * carries no `shouldBeScripted` of its own, so it had no `script` either. MEASURED before this
-    * line: `"terms": {"size": 65536, "min_doc_count": 1}`, which Elasticsearch rejects outright (a
-    * `terms` aggregation must specify a field or a script). Scripting it emits `"terms": {"script":
-    * {"source": "2"}, ...}`, whose key is the constant for every document --
-    * i.e. exactly ONE group, which is what `GROUP BY <constant>` means.
+    * An Elasticsearch `terms` aggregation must specify a `field` or a `script`. A bucket resolved
+    * onto an expression or a constant has an EMPTY `identifier.name`, so there is no field to give;
+    * if nothing in its function chain reports `shouldBeScripted` either, the emitted aggregation
+    * carries NEITHER and Elasticsearch rejects the request outright. MEASURED before this line:
+    * `SELECT SUM(1) AS COL, 2 AS COL2 FROM t GROUP BY 2` emitted `"terms": {"size": 65536,
+    * "min_doc_count": 1}`, and so did `GROUP BY p` over `? AS p` and `GROUP BY r` over `RANDOM AS
+    * r`.
     *
-    * Deliberately narrow: `Value.shouldBeScripted` stays `false`, because that flag also drives
-    * SELECT-list script fields and sorts, where a bare literal is handled elsewhere.
+    * 🔴 The condition is `identifier.name.isEmpty`, NOT "the identifier is a row-invariant
+    * literal". Every nameless `Value` hits the same hole -- `ParamValue` (a JDBC
+    * `PreparedStatement` parameter, aliased and grouped, is the realistic route), `RandomValue`,
+    * `IdValue`, `IngestTimestampValue`, `Values` -- because `Value` inherits `shouldBeScripted =
+    * false`. A rule justified by correctness applies to every shape that triggers it, with no
+    * "except" (`feedback_constant_uniform_justification`); scoping it to the row-invariant subset
+    * left a fieldless, scriptless `terms` for all the others.
+    *
+    * Deliberately scoped to the BUCKET: `Value.shouldBeScripted` stays `false`, because that flag
+    * also drives SELECT-list script fields and sorts, where a bare literal is handled elsewhere.
     */
   override def shouldBeScripted: Boolean =
-    identifier.shouldBeScripted || SingleSearch.isRowInvariantLiteral(identifier)
+    identifier.shouldBeScripted || identifier.name.isEmpty
 
   override def hasAggregation: Boolean = identifier.hasAggregation
 

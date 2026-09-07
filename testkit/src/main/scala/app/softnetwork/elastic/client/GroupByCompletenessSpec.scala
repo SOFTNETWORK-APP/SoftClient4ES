@@ -37,6 +37,7 @@ case class CategoryCount(category: String, cnt: Long)
 case class CategoryOnly(category: String)
 case class CategoryAmount(category: String, amount: Int)
 case class CategoryAliased(cat: String)
+case class AmountOnly(amount: Int)
 
 /** Regression test for issue #205: `GROUP BY` with no `LIMIT` must return EVERY group.
   *
@@ -200,14 +201,36 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   }
 
   it should "return one row per COMBINATION for a multi-column aggregate-free GROUP BY" in {
-    // `cat_i` holds exactly i docs with amounts 1..i, so every document IS a distinct
-    // (category, amount) pair: the exact oracle is `totalDocs` = sum(1..37) = 703.
+    // 🔴 The oracle has to be strictly LESS than the document count, or it cannot fail: grouping by
+    // (category, amount) yields exactly one pair per document here (`cat_i` holds `i` docs with
+    // amounts 1..i), so a row-shaped -- i.e. UNFIXED -- execution returns the same 703 rows and the
+    // test is green either way. Slicing to `amount <= 3` makes the amount REPEAT across categories:
+    // cat_01 contributes 1 pair, cat_02 two, every cat_i (i >= 3) three, so the combination count
+    // is 1 + 2 + 3*35 = 108 while the DOCUMENT count in the slice is the same 108... so the slice
+    // alone is not enough either. Grouping by `amount` ONLY is what separates them: 3 groups
+    // against 108 documents.
     client.searchAs[CategoryAmount](
-      "SELECT category, amount FROM group_by_completeness GROUP BY category, amount"
+      "SELECT category, amount FROM group_by_completeness WHERE amount <= 3 GROUP BY category, amount"
     ) match {
       case ElasticSuccess(rows) =>
-        rows should have size totalDocs.toLong
-        rows.map(r => (r.category, r.amount)).distinct should have size totalDocs.toLong
+        val expected = 1 + 2 + 3 * (categories - 2) // 108 distinct (category, amount) pairs
+        rows should have size expected.toLong
+        rows.map(r => (r.category, r.amount)).distinct should have size expected.toLong
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "return one row per GROUP, not per document, when the group key repeats" in {
+    // The gate the test above cannot be: `amount <= 3` selects 108 documents but only THREE
+    // distinct amounts, so a row-shaped execution returns 108 rows and an aggregation-shaped one
+    // returns 3. Nothing about the fixture can make those numbers coincide.
+    client.searchAs[AmountOnly](
+      "SELECT amount FROM group_by_completeness WHERE amount <= 3 GROUP BY amount"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.amount).sorted shouldBe Seq(1, 2, 3)
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")
@@ -259,7 +282,95 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
   }
 
-  it should "group by a row-invariant constant, which is exactly ONE group (FOLD-IN 1)" in {
+  it should "project a row-invariant constant beside the group key (FOLD-IN 1, case B)" in {
+    // 🔴 The pre-fix failure mode is a NULL column, not an error: an aggregation response has no
+    // hits, so the `script_fields` entry the constant is emitted as is never fetched under
+    // `"size": 0`. MEASURED on real ES 8.18 before the projection landed:
+    // `List((cat_37,None), (cat_36,None), (cat_35,None))`.
+    //
+    // ⚠️ Asserted on the RAW row, not through `searchAs`: the macro types a bare integer literal
+    // as BIGINT (so an `Int` field is a compile error) while the value arrives as Jackson's
+    // smallest type at run time (so a `Long` field fails to decode). That binding mismatch is
+    // pre-existing for ANY literal column and is recorded separately -- it must not be allowed to
+    // hide whether the projection works, which is what this test is for.
+    implicit val projCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement(
+        "SELECT category, 2 AS flag FROM group_by_completeness GROUP BY category"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        response.results should have size categories.toLong
+        response.results.foreach { row =>
+          row.keys.toSeq should contain("flag")
+          row("flag").toString shouldBe "2"
+        }
+        response.results.map(_("category").toString).toSet shouldBe
+        (1 to categories).map(c => f"cat_$c%02d").toSet
+
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // 🔴 PINS A KNOWN DEFECT, not a contract -- delete this test when the defect is fixed.
+  //
+  // The same constant reaches the caller DIFFERENTLY on the two paths, MEASURED on real ES 8.18:
+  //   aggregation path (GROUP BY): `flag -> 2`         -- a clean scalar, projected from the AST
+  //   row path        (no GROUP BY): `flag -> List(2)` -- array-wrapped
+  //
+  // The wrap is the pre-existing `script_fields` defect (`jsonNodeToAny` keeps an ES per-field
+  // array as a List and nothing unwraps it), recorded in
+  // docs/issues/local-21.3-script-fields-values-are-array-wrapped.md. The aggregation side is the
+  // CORRECT one and is deliberately NOT wrapped to match: matching would spread a defect to a path
+  // that does not have it. Pinned so the divergence is visible rather than discovered.
+  it should "expose the known row-path array wrap, which the aggregation path does not share" in {
+    implicit val wrapCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement("SELECT id, 2 AS flag FROM group_by_completeness LIMIT 2")
+    ) match {
+      case ElasticSuccess(response) =>
+        response.results.foreach { row =>
+          withClue(s"row path, row=$row: ") { row("flag") shouldBe List(2) }
+        }
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "order an aggregate-free GROUP BY by a SELECT ALIAS of the grouped column" in {
+    // 🔴 Regression guard for the alias/bucket key desync: `SingleSearch.sorts` is keyed by the
+    // sort's name while `buildBuckets` looks the direction up under the bucket's resolved column,
+    // so an ORDER BY naming the alias silently produced NO terms `order` at all -- with a LIMIT
+    // that is a DIFFERENT SET of groups (the top 3 by doc_count instead of the 3 smallest keys),
+    // returned with HTTP 200. No integration test covered the alias spelling, which is why it
+    // shipped. `cat_i` holds `i` docs, so doc_count order and key order disagree by construction.
+    client.searchAs[CategoryAliased](
+      "SELECT category AS cat FROM group_by_completeness GROUP BY cat ORDER BY cat ASC LIMIT 3"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.cat) shouldBe Seq("cat_01", "cat_02", "cat_03")
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "apply a HAVING over an alias-resolved bucket" in {
+    // 🔴 Regression guard for the same desync on the HAVING path: the bucket `Identifier.update`
+    // attaches is matched against the real one by DISPLAY NAME, so an aliased grouped column made
+    // `Expression.includes` stop matching and the terms `exclude` vanished -- the user's filter
+    // silently dropped and MORE rows came back.
+    client.searchAs[CategoryAliased](
+      "SELECT category AS cat FROM group_by_completeness GROUP BY cat HAVING cat <> 'cat_01'"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size (categories - 1).toLong
+        rows.map(_.cat) should not contain "cat_01"
+      case ElasticFailure(error) =>
+        fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "group by a row-invariant constant, which is exactly ONE group (FOLD-IN 1, case A)" in {
     // The Tableau capability-probe shape (`SELECT SUM(1) AS COL, 2 AS COL2 ... GROUP BY 2`) reduced
     // to what makes it work: a bucket whose identifier is a CONSTANT has no field to name, so it
     // must be emitted as a SCRIPTED `terms`. Before that, the emitted aggregation carried neither

@@ -661,12 +661,14 @@ GROUP BY profile.city;
   that names nothing (`0`, a negative, or one past the end of the `SELECT` list) is a parse error
   naming the position. A column genuinely named with digits is unaffected, and a column named `1`
   is addressed as `` GROUP BY `1` ``.
-- `SELECT` aliases are supported: `SELECT country AS pays ... GROUP BY pays` groups by `country`.
-- Grouping **by** a constant is legal and means exactly one group
+- `SELECT` aliases are supported: `SELECT country AS pays ... GROUP BY pays` groups by `country`,
+  and `ORDER BY pays` / `HAVING pays <> 'x'` address that group by the same name.
+- A constant is legal beside a `GROUP BY` and carries its value on every row
+  (`SELECT category, 2 AS flag FROM t GROUP BY category`) — it does not vary within a group, so it
+  needs no grouping.
+- Grouping **by** a constant is also legal and means exactly one group
   (`SELECT 2 AS flag ... GROUP BY flag`, or the equivalent position `... GROUP BY 1`). It needs a
   `SELECT` alias, because the alias is the only name that group can be given.
-- A constant that is *not* grouped still has to be grouped like any other column:
-  `SELECT category, 2 AS flag ... GROUP BY category` is rejected.
 - `LIMIT` on a `GROUP BY` bounds the number of **groups**, not the number of rows — it is pushed
   down as the Elasticsearch `terms` size. On a multi-column `GROUP BY` it bounds **each level**, so
   the row count can exceed it.
