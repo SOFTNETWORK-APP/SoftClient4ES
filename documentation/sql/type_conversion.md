@@ -9,7 +9,11 @@ Converts a value to a specified SQL type. Fails if the conversion is invalid.
 
 **Inputs:**  
 - `value` (ANY type)  
-- `targetType` (SQL type: `INT`, `BIGINT`, `DOUBLE`, `DATE`, `DATETIME`, `TIMESTAMP`, `VARCHAR`, etc.)  
+- `targetType` — see the target-type list in
+  [Type Conversion Functions](functions_type_conversion.md#cast--convert), which is the single
+  authoritative list. It covers the character, numeric, temporal and binary families, the MySQL
+  spellings `SIGNED` / `UNSIGNED` and `DECIMAL` / `NUMERIC` / `DEC`, and the parameterised forms
+  (`CHAR(10)`, `DECIMAL(10,2)`, `INT(11)`) whose parameters are accepted and ignored.
 
 **Output:**  
 - `targetType`  

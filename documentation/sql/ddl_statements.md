@@ -117,12 +117,20 @@ The SQL Gateway supports the following type system:
 | `REAL`              | `float`                              |
 | `BOOLEAN`           | `boolean`                            |
 | `VARCHAR` \| `TEXT` | `text` + optional `keyword` subfield |
+| `CHAR`              | `text`                               |
+| `DECIMAL` \| `NUMERIC` \| `DEC` | `double` (approximate — no exact decimal type) |
 | `KEYWORD`           | `keyword`                            |
 | `DATE`              | `date`                               |
 | `TIMESTAMP`         | `date`                               |
 | `STRUCT`            | `object` with nested properties      |
 | `ARRAY<STRUCT>`     | `nested`                             |
 | `GEO_POINT`         | `geo_point`                          |
+
+A length, precision or scale may be written on any type SQL parameterises — `c VARCHAR(255)`,
+`c CHAR(1)`, `c DECIMAL(10,2)`, `c BIGINT(20)` — and is **accepted and ignored**, exactly as in a
+cast: Elasticsearch has no length- or scale-constrained scalar type. `c VARCHAR(255)` creates the
+same field as `c VARCHAR`, and the column re-renders without the parameter so `SHOW CREATE TABLE`
+shows what was actually created.
 
 ---
 

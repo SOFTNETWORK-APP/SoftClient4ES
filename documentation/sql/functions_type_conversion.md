@@ -16,17 +16,41 @@ CONVERT(expr, TYPE)
 **Inputs:**
 - `expr` - Expression to convert
 - `TYPE` - Target data type:
-  - `VARCHAR` / `STRING` / `CHAR`
-  - `INT` / `INTEGER` / `BIGINT` / `SMALLINT` / `TINYINT`
-  - `DOUBLE` / `FLOAT` / `REAL`
+  - `VARCHAR` / `STRING` / `CHAR` / `TEXT` / `KEYWORD`
+  - `INT` / `INTEGER` / `BIGINT` / `SMALLINT` / `TINYINT` / `SIGNED` / `UNSIGNED`
+  - `DOUBLE` / `FLOAT` / `REAL` / `DECIMAL` / `NUMERIC` / `DEC`
   - `BOOLEAN`
   - `DATE`
   - `TIMESTAMP` / `DATETIME`
   - `TIME`
+  - `BINARY` / `VARBINARY`
 
-> `DECIMAL` / `NUMERIC` are **not** cast targets (see
-> [known limitations](known_limitations.md)) — use `DOUBLE` and round explicitly. `TEXT`, `KEYWORD`
-> and `BOOL` are column types in `CREATE TABLE`, not cast targets; write `VARCHAR` and `BOOLEAN`.
+A length, precision or scale may be written on any type SQL parameterises — `CHAR(10)`,
+`VARCHAR(255)`, `DECIMAL(10,2)`, `INT(11)`, `TIMESTAMP(3)` — and is **accepted and ignored**.
+
+Three limitations, stated plainly rather than hidden:
+
+> - `SIGNED` and `UNSIGNED` are both 64-bit **signed** integers (`BIGINT`). Elasticsearch's
+>   `unsigned_long` is not addressable from a cast, so a value above `Long.MAX_VALUE` is not
+>   representable.
+> - `DECIMAL` / `NUMERIC` / `DEC` are **approximate**: they map to `DOUBLE`. Elasticsearch has no
+>   exact decimal type.
+> - A precision or length is **ignored** — no rounding, no truncation. Nothing pretends otherwise:
+>   the statement re-renders **without** it (`CAST(x AS DECIMAL(10,2))` becomes
+>   `CAST(x AS DOUBLE)`, `CHAR(10)` becomes `CHAR`), so every artifact that echoes a statement —
+>   `SHOW CREATE TABLE`, a materialized view's `.sql`, a log line — shows the type the engine
+>   actually applied.
+>
+> `BOOL` is still not a cast target; write `BOOLEAN`. `BLOB`, `CLOB`, `BIT`, `MONEY`, `UUID` and
+> `INTERVAL` as a type are rejected.
+
+`CONVERT(expr USING <charset>)` is accepted as a synonym for `CONVERT(expr, VARCHAR)`:
+Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
+
+> ⚠️ A cast whose operand is a **column** does not yet emit a conversion — the executing query
+> carries no schema, so the engine cannot see the column's type and the value is returned as
+> stored. Casts over **literals** convert as documented. Cast the literal, or convert in the
+> client, until this is addressed.
 
 **Output:**
 - Value converted to target `TYPE`
