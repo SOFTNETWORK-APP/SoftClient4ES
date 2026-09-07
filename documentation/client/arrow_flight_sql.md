@@ -46,18 +46,21 @@ Available images per ES version:
 | ES 8.x | `softnetwork/softclient4es8-arrow-flight-sql:latest` |
 | ES 9.x | `softnetwork/softclient4es9-arrow-flight-sql:latest` |
 
-### Fat JAR
+### Pinning a release, and why there is no JAR
+
+The images above track `latest`. Pin the tag for anything you need to reproduce — the current
+release is **`0.3.2`**:
 
 ```bash
-java -jar softclient4es8-arrow-flight-sql-0.3.1.jar
+docker run -p 32010:32010 \
+  -e ELASTIC_HOST=elasticsearch \
+  softnetwork/softclient4es8-arrow-flight-sql:0.3.2
 ```
 
-| Elasticsearch | Artifact |
-|---------------|----------|
-| ES 6.x | `softclient4es6-arrow-flight-sql-0.3.1.jar` |
-| ES 7.x | `softclient4es7-arrow-flight-sql-0.3.1.jar` |
-| ES 8.x | `softclient4es8-arrow-flight-sql-0.3.1.jar` |
-| ES 9.x | `softclient4es9-arrow-flight-sql-0.3.1.jar` |
+The sidecar ships **as a Docker image only**. The `softclient4es{6,7,8,9}-arrow-flight-sql`
+artifacts published to JFrog are small configuration jars — a manifest and a `logback.xml`, with no
+application code — so `java -jar` on one will not start a server. For Kubernetes, see the
+[federation operator guide](federation_operator_guide.md).
 
 ---
 
