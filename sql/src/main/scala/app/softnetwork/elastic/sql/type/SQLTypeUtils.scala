@@ -255,22 +255,29 @@ object SQLTypeUtils {
         case (SQLTypes.Boolean, SQLTypes.TinyInt) =>
           s"(byte)($expr ? 1 : 0)"
 
-        // ---- VARCHAR -> NUMERIC ----
-        case (SQLTypes.Varchar, SQLTypes.Int) =>
+        // ---- LITERAL (VARCHAR / TEXT / KEYWORD) -> NUMERIC ----
+        // 🔴 These arms matched the `SQLTypes.Varchar` case OBJECT, and no Elasticsearch mapping
+        // ever reports VARCHAR — `SQLTypes.apply(String)` maps every string field to `Text` or
+        // `Keyword`. So the one arm that worked was unreachable from a real index and
+        // `CAST(name AS BIGINT)` fell to the identity fallback below, emitting the RAW STRING: a
+        // cast that silently did nothing. `_: SQLVarchar` covers Varchar/Text/Keyword and nothing
+        // else — `SQLChar` deliberately stays out, because no ES mapping produces it.
+        case (_: SQLVarchar, SQLTypes.Int) =>
           s"Integer.parseInt($expr).intValue()"
-        case (SQLTypes.Varchar, SQLTypes.BigInt) =>
+        case (_: SQLVarchar, SQLTypes.BigInt) =>
           s"Long.parseLong($expr).longValue()"
-        case (SQLTypes.Varchar, SQLTypes.Double) =>
+        case (_: SQLVarchar, SQLTypes.Double) =>
           s"Double.parseDouble($expr).doubleValue()"
-        case (SQLTypes.Varchar, SQLTypes.Real) =>
+        case (_: SQLVarchar, SQLTypes.Real) =>
           s"Float.parseFloat($expr).floatValue()"
-        case (SQLTypes.Varchar, SQLTypes.SmallInt) =>
+        case (_: SQLVarchar, SQLTypes.SmallInt) =>
           s"Short.parseShort($expr).shortValue()"
-        case (SQLTypes.Varchar, SQLTypes.TinyInt) =>
+        case (_: SQLVarchar, SQLTypes.TinyInt) =>
           s"Byte.parseByte($expr).byteValue()"
 
-        // ---- VARCHAR -> TEMPORAL ----
-        case (SQLTypes.Varchar, SQLTypes.Date) =>
+        // ---- LITERAL (VARCHAR / TEXT / KEYWORD) -> TEMPORAL ----
+        // Same case-object-equality defect as the numeric arms above, same widening.
+        case (_: SQLVarchar, SQLTypes.Date) =>
           context match {
             case Some(ctx) =>
               ctx.addParam(
@@ -284,7 +291,7 @@ object SQLTypeUtils {
             case None => // continue
           }
           "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
-        case (SQLTypes.Varchar, SQLTypes.Time) =>
+        case (_: SQLVarchar, SQLTypes.Time) =>
           context match {
             case Some(ctx) =>
               ctx.addParam(
@@ -298,7 +305,7 @@ object SQLTypeUtils {
             case None => // continue
           }
           "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
-        case (SQLTypes.Varchar, SQLTypes.DateTime) =>
+        case (_: SQLVarchar, SQLTypes.DateTime) =>
           context match {
             case Some(ctx) =>
               ctx.addParam(
@@ -310,7 +317,7 @@ object SQLTypeUtils {
             case None => // continue
           }
           s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
-        case (SQLTypes.Varchar, SQLTypes.Timestamp) =>
+        case (_: SQLVarchar, SQLTypes.Timestamp) =>
           context match {
             case Some(ctx) =>
               ctx.addParam(
