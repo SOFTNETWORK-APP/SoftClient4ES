@@ -202,7 +202,7 @@
   ],
   "limitations": [
     "Cannot change PRIMARY KEY after creation",
-    "Cannot change PARTITIONED BY after creation",
+    "Cannot change PARTITION BY after creation",
     "Some type changes may fail if data is incompatible"
   ],
   "seeAlso": [

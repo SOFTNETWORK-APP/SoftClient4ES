@@ -1,0 +1,36 @@
+{
+  "name": "EPOCHDAY",
+  "category": "Date/Time",
+  "shortDescription": "Number of days since the epoch",
+  "syntax": [
+    "EPOCHDAY(date)"
+  ],
+  "description": "Extracts the number of days between 1970-01-01 and the given date or timestamp. Negative for dates before the epoch.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date to convert to a day count",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "BIGINT",
+  "examples": [
+    {
+      "title": "Days since the epoch",
+      "description": "Convert a timestamp to a day number",
+      "sql": "SELECT EPOCHDAY(created_at) as day_number FROM orders"
+    },
+    {
+      "title": "Group by day number",
+      "description": "Count orders per day",
+      "sql": "SELECT EPOCHDAY(created_at) as day_number, COUNT(*) as n\nFROM orders\nGROUP BY EPOCHDAY(created_at)"
+    }
+  ],
+  "notes": [
+    "EPOCH_DAY is an accepted spelling"
+  ],
+  "seeAlso": ["YEARDAY", "WEEKDAY", "DAY"],
+  "aliases": ["EPOCH_DAY"]
+}

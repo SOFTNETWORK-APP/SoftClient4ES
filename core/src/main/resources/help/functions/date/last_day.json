@@ -1,0 +1,36 @@
+{
+  "name": "LAST_DAY",
+  "category": "Date/Time",
+  "shortDescription": "Last day of the month a date falls in",
+  "syntax": [
+    "LAST_DAY(date)"
+  ],
+  "description": "Returns the last day of the month that contains the given date or timestamp.",
+  "parameters": [
+    {
+      "name": "date",
+      "type": "DATE/TIMESTAMP",
+      "description": "Date whose month end is returned",
+      "optional": false,
+      "defaultValue": null
+    }
+  ],
+  "returnType": "DATE",
+  "examples": [
+    {
+      "title": "End of the month",
+      "description": "Last day of the month each order was placed in",
+      "sql": "SELECT LAST_DAY(created_at) as month_end FROM orders"
+    },
+    {
+      "title": "Month end beside the row",
+      "description": "Project the month end next to the order",
+      "sql": "SELECT id, LAST_DAY(created_at) as month_end FROM orders LIMIT 10"
+    }
+  ],
+  "notes": [
+    "LASTDAY is an accepted spelling"
+  ],
+  "seeAlso": ["DATE_TRUNC", "DAY", "MONTH"],
+  "aliases": ["LASTDAY"]
+}

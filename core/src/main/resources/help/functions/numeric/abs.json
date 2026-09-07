@@ -19,11 +19,13 @@
   "examples": [
     {
       "title": "Absolute value",
-      "description": "Get absolute difference",
-      "sql": "SELECT ABS(actual - expected) as difference FROM measurements"
+      "description": "Get the absolute value of a stored delta",
+      "sql": "SELECT ABS(delta) as difference FROM measurements"
     }
   ],
-  "notes": [],
+  "notes": [
+    "Arithmetic is not accepted inside a scalar function argument: compute the value into a column, or apply the arithmetic outside the call"
+  ],
   "seeAlso": ["SIGN"],
   "aliases": []
 }

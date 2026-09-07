@@ -20,7 +20,7 @@
     {
       "title": "Convert to degrees",
       "description": "Convert π to degrees",
-      "sql": "SELECT DEGREES(PI()) as degrees"
+      "sql": "SELECT DEGREES(PI) as deg FROM circles"
     }
   ],
   "notes": [

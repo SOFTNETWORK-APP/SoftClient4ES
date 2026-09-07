@@ -19,11 +19,13 @@
   "examples": [
     {
       "title": "Round down",
-      "description": "Calculate complete units",
-      "sql": "SELECT FLOOR(balance / 100) as hundreds FROM accounts"
+      "description": "Drop the fractional part of a balance",
+      "sql": "SELECT FLOOR(balance) as whole_units FROM accounts"
     }
   ],
-  "notes": [],
+  "notes": [
+    "Arithmetic is not accepted inside a scalar function argument: compute the value into a column, or apply the arithmetic outside the call"
+  ],
   "seeAlso": ["CEIL", "ROUND"],
   "aliases": []
 }

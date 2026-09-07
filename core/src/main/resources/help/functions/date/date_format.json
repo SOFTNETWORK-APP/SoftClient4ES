@@ -34,6 +34,6 @@
     "Uses MySQL-style Date/Time Patterns",
     "Common patterns: %Y (year 4 digits), %m (month), %d (day)"
   ],
-  "seeAlso": ["TO_DATE", "TO_TIMESTAMP"],
+  "seeAlso": ["DATE_PARSE", "DATETIME_PARSE"],
   "aliases": ["FORMAT", "DATE_FORMAT"]
 }

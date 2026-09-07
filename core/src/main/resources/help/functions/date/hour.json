@@ -25,7 +25,7 @@
     {
       "title": "Peak hours",
       "description": "Count events by hour",
-      "sql": "SELECT HOUR(timestamp) as hour, COUNT(*) as count\nFROM events\nGROUP BY HOUR(timestamp)"
+      "sql": "SELECT HOUR(timestamp) as hour_of_day, COUNT(*) as event_count\nFROM events\nGROUP BY HOUR(timestamp)"
     }
   ],
   "notes": [

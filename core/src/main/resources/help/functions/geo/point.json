@@ -3,21 +3,21 @@
   "category": "Geospatial",
   "shortDescription": "Create a geographic point",
   "syntax": [
-    "POINT(longitude, latitude)"
+    "ST_DISTANCE(location, POINT(latitude, longitude))"
   ],
-  "description": "Creates a geographic point from longitude and latitude coordinates.",
+  "description": "Creates a geographic point from latitude and longitude coordinates, in that order.",
   "parameters": [
-    {
-      "name": "longitude",
-      "type": "DOUBLE",
-      "description": "Longitude (-180 to 180)",
-      "optional": false,
-      "defaultValue": null
-    },
     {
       "name": "latitude",
       "type": "DOUBLE",
       "description": "Latitude (-90 to 90)",
+      "optional": false,
+      "defaultValue": null
+    },
+    {
+      "name": "longitude",
+      "type": "DOUBLE",
+      "description": "Longitude (-180 to 180)",
       "optional": false,
       "defaultValue": null
     }
@@ -25,25 +25,27 @@
   "returnType": "GEO_POINT",
   "examples": [
     {
-      "title": "Create point",
-      "description": "Paris coordinates",
-      "sql": "SELECT POINT(2.3522, 48.8566) as paris_location"
+      "title": "Distance from a point",
+      "description": "How far each store is from Paris, in metres",
+      "sql": "SELECT ST_DISTANCE(location, POINT(48.8566, 2.3522)) as distance_m FROM stores"
     },
     {
       "title": "Use in distance calculation",
       "description": "Distance from Paris",
-      "sql": "SELECT name, ST_DISTANCE(location, POINT(2.3522, 48.8566)) as distance_from_paris\nFROM cities"
+      "sql": "SELECT name, ST_DISTANCE(location, POINT(48.8566, 2.3522)) as distance_from_paris\nFROM cities"
     },
     {
-      "title": "Insert geo point",
-      "description": "Store location",
-      "sql": "INSERT INTO stores (name, location) VALUES ('Store A', POINT(-73.9857, 40.7484))"
+      "title": "Filter by distance from a point",
+      "description": "Stores within 1000 metres of the point",
+      "sql": "SELECT name FROM stores WHERE ST_DISTANCE(location, POINT(40.7484, -73.9857)) < 1000"
     }
   ],
   "notes": [
-    "Longitude is first, latitude is second (GeoJSON order)",
-    "Coordinates use WGS84 (EPSG:4326) reference system"
+    "Latitude is first, longitude is second - NOT the GeoJSON order",
+    "Coordinates use WGS84 (EPSG:4326) reference system",
+    "POINT has no standalone form: it is only accepted as an argument to ST_DISTANCE. In the syntax above, location is the indexed geo_point column",
+    "A coordinate must be written with a decimal point: POINT(1.0, 2.0) is accepted, POINT(1, 2) is not"
   ],
-  "seeAlso": ["ST_DISTANCE", "ST_WITHIN", "GEO_BOUNDING_BOX"],
+  "seeAlso": ["ST_DISTANCE"],
   "aliases": []
 }

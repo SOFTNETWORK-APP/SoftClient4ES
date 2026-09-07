@@ -43,14 +43,15 @@
       "sql": "SELECT SUBSTRING(code FROM 6) as suffix FROM products"
     },
     {
-      "title": "Extract username from email",
-      "description": "Get part before @",
-      "sql": "SELECT SUBSTRING(email, 1, POSITION('@' IN email) - 1) as username FROM users"
+      "title": "Extract a fixed-length prefix",
+      "description": "First five characters of the email",
+      "sql": "SELECT SUBSTRING(email, 1, 5) as prefix FROM users"
     }
   ],
   "notes": [
     "Positions are 1-based (first character is position 1)",
-    "If length exceeds remaining characters, returns available characters"
+    "If length exceeds remaining characters, returns available characters",
+    "A nested function call is not accepted in an argument slot: SUBSTRING(s, 1, POSITION('@' IN s)) is rejected"
   ],
   "seeAlso": ["LEFT", "RIGHT", "POSITION", "LENGTH"],
   "aliases": ["SUBSTR"]

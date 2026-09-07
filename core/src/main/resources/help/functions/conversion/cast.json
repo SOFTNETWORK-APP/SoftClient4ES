@@ -32,8 +32,8 @@
     },
     {
       "title": "Number to string",
-      "description": "Convert for concatenation",
-      "sql": "SELECT 'ID: ' || CAST(id AS VARCHAR) as label FROM users"
+      "description": "Convert for concatenation with CONCAT",
+      "sql": "SELECT CONCAT('ID: ', CAST(id AS VARCHAR)) as label FROM users"
     },
     {
       "title": "Using :: operator",
@@ -46,15 +46,16 @@
       "sql": "SELECT CAST('2024-01-15' AS DATE) as date_value"
     },
     {
-      "title": "Decimal precision",
-      "description": "Cast to decimal with precision",
-      "sql": "SELECT CAST(price AS DECIMAL(10,2)) as formatted_price FROM products"
+      "title": "Cast to floating point",
+      "description": "Convert a numeric column to DOUBLE",
+      "sql": "SELECT CAST(price AS DOUBLE) as formatted_price FROM products"
     }
   ],
   "notes": [
     "Raises error if conversion fails",
     "Use TRY_CAST or SAFE_CAST for NULL on failure",
-    "Supported types: INT, BIGINT, DOUBLE, DECIMAL, VARCHAR, DATE, TIMESTAMP, BOOLEAN"
+    "Supported types: INT, BIGINT, DOUBLE, DECIMAL, VARCHAR, DATE, TIMESTAMP, BOOLEAN",
+    "String concatenation with || is not supported: use CONCAT(a, b)"
   ],
   "seeAlso": ["TRY_CAST", "SAFE_CAST", "CONVERT"],
   "aliases": []

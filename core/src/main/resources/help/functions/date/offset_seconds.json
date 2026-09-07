@@ -20,7 +20,7 @@
     {
       "title": "Get Timezone offset in seconds",
       "description": "Extract timezone offset in seconds from date/timestamp",
-      "sql": "SELECT OFFSET_SECONDS(created_at) as offset FROM events"
+      "sql": "SELECT OFFSET_SECONDS(created_at) as tz_offset FROM events"
     }
   ],
   "notes": [],

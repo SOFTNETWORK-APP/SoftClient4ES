@@ -13,17 +13,18 @@
     {
       "title": "Get current time",
       "description": "Use in query",
-      "sql": "SELECT CURRENT_TIMESTAMP as now"
+      "sql": "SELECT CURRENT_TIMESTAMP as now_ts FROM logs"
     },
     {
-      "title": "Set timestamp",
-      "description": "Insert with current time",
-      "sql": "INSERT INTO logs (message, created_at) VALUES ('test', CURRENT_TIMESTAMP)"
+      "title": "Filter on the current time",
+      "description": "Rows created before now",
+      "sql": "SELECT message FROM logs WHERE created_at < CURRENT_TIMESTAMP"
     }
   ],
   "notes": [
     "Returns timestamp in UTC",
-    "Includes milliseconds"
+    "Includes milliseconds",
+    "A function call is not accepted in INSERT ... VALUES; only literals are"
   ],
   "seeAlso": ["CURRENT_DATE", "NOW", "TODAY"],
   "aliases": []

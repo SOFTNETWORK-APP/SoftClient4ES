@@ -3,8 +3,7 @@
   "category": "Numeric",
   "shortDescription": "Get the value of π",
   "syntax": [
-    "PI",
-    "PI()"
+    "PI"
   ],
   "description": "Returns the mathematical constant π (pi) ≈ 3.14159...",
   "parameters": [],
@@ -13,17 +12,17 @@
     {
       "title": "Circle area",
       "description": "Calculate area of circle",
-      "sql": "SELECT PI() * POW(radius, 2) as area FROM circles"
+      "sql": "SELECT PI * POW(radius, 2) as area FROM circles"
     },
     {
       "title": "Circle circumference",
       "description": "Calculate perimeter",
-      "sql": "SELECT 2 * PI() * radius as circumference FROM circles"
+      "sql": "SELECT 2 * PI * radius as circumference FROM circles"
     }
   ],
   "notes": [
     "Returns double-precision approximation of π",
-    "Parentheses are optional: PI and PI() are equivalent"
+    "PI is a bare-word literal: write PI, never PI()"
   ],
   "seeAlso": ["RADIANS", "DEGREES"],
   "aliases": []

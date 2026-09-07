@@ -47,6 +47,6 @@
     "ELSE is optional - returns NULL if no match and no ELSE",
     "All result expressions must be compatible types"
   ],
-  "seeAlso": ["IF", "COALESCE", "NULLIF"],
+  "seeAlso": ["COALESCE", "NULLIF"],
   "aliases": []
 }
