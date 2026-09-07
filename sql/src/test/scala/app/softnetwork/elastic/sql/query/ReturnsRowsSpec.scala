@@ -80,4 +80,29 @@ class ReturnsRowsSpec extends AnyFlatSpec with Matchers {
     single("SELECT id FROM t LIMIT 5").returnsRows shouldBe true
     single("SELECT COUNT(*) AS cnt FROM t LIMIT 5").returnsRows shouldBe false
   }
+
+  // ---- issue #253: an explicit GROUP BY is aggregation-shaped, aggregate or not ----
+
+  it should "be false for a GROUP BY with NO aggregate anywhere (issue #253)" in {
+    val s = single("SELECT category FROM t GROUP BY category")
+    s.windowRowQuery shouldBe false
+    s.returnsRows shouldBe false
+  }
+
+  it should "be false for a multi-column aggregate-free GROUP BY" in {
+    single("SELECT country, category FROM t GROUP BY country, category").returnsRows shouldBe false
+  }
+
+  it should "be false for an aggregate-free GROUP BY with an explicit LIMIT" in {
+    single("SELECT category FROM t GROUP BY category LIMIT 100").returnsRows shouldBe false
+  }
+
+  it should "be false for an aggregate-free GROUP BY over a scripted bucket" in {
+    single("SELECT UPPER(country) AS c FROM t GROUP BY UPPER(country)").returnsRows shouldBe false
+  }
+
+  it should "stay true for a projection with no GROUP BY and no aggregate" in {
+    // The guard must not leak: only an explicit GROUP BY flips the shape.
+    single("SELECT category FROM t").returnsRows shouldBe true
+  }
 }

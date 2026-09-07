@@ -1218,9 +1218,17 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
-    delegate.singleSearch(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+    delegate.singleSearch(
+      elasticQuery,
+      fieldAliases,
+      aggregations,
+      fields,
+      nestedHits,
+      rowInvariants
+    )
 
   /** Multi-search with Elasticsearch queries.
     *
@@ -1238,9 +1246,17 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
-    delegate.multiSearch(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
+    delegate.multiSearch(
+      elasticQueries,
+      fieldAliases,
+      aggregations,
+      fields,
+      nestedHits,
+      rowInvariants
+    )
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
     *
@@ -1270,12 +1286,20 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
   ): Future[ElasticResult[ElasticResponse]] =
-    delegate.singleSearchAsync(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+    delegate.singleSearchAsync(
+      elasticQuery,
+      fieldAliases,
+      aggregations,
+      fields,
+      nestedHits,
+      rowInvariants
+    )
 
   /** Asynchronous multi-search with Elasticsearch queries.
     *
@@ -1293,12 +1317,20 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
   ): Future[ElasticResult[ElasticResponse]] =
-    delegate.multiSearchAsync(elasticQueries, fieldAliases, aggregations, fields, nestedHits)
+    delegate.multiSearchAsync(
+      elasticQueries,
+      fieldAliases,
+      aggregations,
+      fields,
+      nestedHits,
+      rowInvariants
+    )
 
   /** Searches and converts results into typed entities from an SQL query.
     *

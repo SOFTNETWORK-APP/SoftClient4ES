@@ -118,17 +118,76 @@ package object query {
     lazy val fieldAliases: ListMap[String, String] = select.fieldAliases
     lazy val tableAliases: ListMap[String, String] = from.tableAliases
     lazy val unnestAliases: ListMap[String, (String, Option[Limit])] = from.unnestAliases
+
+    /** Bucket lookup, keyed by EVERY spelling a bucket can be referenced with.
+      *
+      * Two consumers, and they ask different questions, which is why the map is DUAL-keyed:
+      *   - `Identifier.update` builds the `BucketPath` by looking each GROUP BY bucket up under the
+      *     spelling the statement WROTE (`b.identifier.identifierName` -- `"1"` for an ordinal,
+      *     `"pays"` for an alias);
+      *   - every SELECT / ORDER BY identifier looks its own bucket up under the RESOLVED column
+      *     name (`request.bucketNames.get(identifierName)`).
+      *
+      * 🔴 OBLIGATION, not a reassurance: anything that looks a bucket up in this map must speak one
+      * of those two key languages. Adding a resolution rule here (the ordinal and alias arms below)
+      * without indexing BOTH spellings silently disables one of the two lookups -- which is exactly
+      * how `GROUP BY pays` came to emit `terms { field: "pays" }` on a non-existent field. The
+      * consumers are `sql/.../package.scala` (`Identifier.update`, 6 sites) and
+      * `sql/.../function/aggregate/package.scala` (`WindowFunction.update`, 2 sites).
+      *
+      * Issue #253's companion defect: ordinal-ness used to be sniffed with `"\\d+".r.findFirstIn`
+      * on the RENDERED name, guarded only by "the name contains no space", so ANY name carrying a
+      * digit was a candidate -- `GROUP BY city2` indexed `select.fields(1)` on a one-column SELECT
+      * and crashed `Parser.apply` with `IndexOutOfBoundsException`. This method is ON THE PARSE
+      * PATH (`Identifier.update` forces it unconditionally whenever a GROUP BY is present) and it
+      * runs BEFORE `Bucket.update`, so it -- not `Bucket.update`'s bounds check -- is what actually
+      * crashed `GROUP BY 0` and `GROUP BY 99`. Ordinal-ness is now `Bucket.ordinalOf` on the AST,
+      * and an out-of-range position is left unresolved for `Bucket.validate` to reject.
+      *
+      * ⚠️ The resolved identifier is deliberately NOT `.update(this)`-d: `Identifier.update` forces
+      * `bucketNames` itself, so updating here would recurse into this very lazy val. `bucketNames`
+      * builds LOOKUP KEYS; `Bucket.update` owns the resolution that reaches the emitted query, and
+      * both route through `Bucket.selectItem` / `Bucket.aliasItem` so they cannot disagree.
+      */
     lazy val bucketNames: ListMap[String, Bucket] = ListMap(buckets.flatMap { b =>
       val name = b.identifier.identifierName
-      "\\d+".r.findFirstIn(name) match {
-        case Some(n) if name.trim.split(" ").length == 1 =>
-          val identifier = select.fields(n.toInt - 1).identifier
-          val updated = b.copy(identifier = select.fields(n.toInt - 1).identifier)
+      val resolved: Option[Identifier] =
+        (b.ordinal match {
+          case Some(position) => Bucket.selectItem(position, this)
+          case None           => Bucket.aliasItem(b.identifier, this)
+        }).map(_.identifier)
+      resolved match {
+        case Some(identifier) =>
+          val resolvedName = identifier.identifierName
+          // Carry the SELECT alias so this copy's `name` equals the real bucket's -- see the
+          // OBLIGATION above; `Identifier.update` reads the same `fieldAliases` map.
+          val display = fieldAliases.get(resolvedName)
+          val named = identifier match {
+            case g: GenericIdentifier => g.copy(fieldAlias = display.orElse(g.fieldAlias))
+            case other                => other
+          }
+          val updated = b.copy(identifier = named)
           ListMap(
-            n                         -> updated, // also map numeric bucket to field name
-            identifier.identifierName -> updated
+            (Seq(
+              name             -> updated, // the spelling the statement was written with
+              resolvedName     -> updated // the resolved column name
+            ) ++ display.map(_ -> updated)): _* // the OUTPUT name a HAVING or WHERE would use
           )
-        case _ => ListMap(name -> b)
+        case None =>
+          // The bucket was NOT substituted -- but it still has to be named the way the real bucket
+          // is, or `Expression.includes` (which compares by DISPLAY name) stops matching and a
+          // HAVING is silently dropped. `SELECT category AS cat ... GROUP BY category HAVING cat
+          // <> 'x'` lost its `exclude` for exactly this reason: the copy was named `category` while
+          // the bucket that reaches Elasticsearch is named `cat`. Broken on main too, but leaving
+          // it made whether a HAVING is honoured depend on whether the GROUP BY spelled the alias
+          // or the column, which is worse than uniformly broken.
+          val display = fieldAliases.get(name)
+          val named = b.identifier match {
+            case g: GenericIdentifier => g.copy(fieldAlias = display.orElse(g.fieldAlias))
+            case other                => other
+          }
+          val updated = b.copy(identifier = named)
+          ListMap((Seq(name -> updated) ++ display.map(_ -> updated)): _*)
       }
     }: _*)
 
@@ -221,7 +280,12 @@ package object query {
     }
 
     lazy val scriptFields: Seq[Field] = {
-      if (aggregates.nonEmpty)
+      // A GROUP BY emits `"size": 0`, so NO hit is ever returned and a `script_fields` block can
+      // never be fetched -- Elasticsearch would still parse and compile every Painless script in it
+      // on each query. It used to be emitted whenever the statement carried no metric aggregate,
+      // which is exactly the aggregate-free GROUP BY shape issue #253 makes common. The VALUES that
+      // block used to be asked for now come from `rowInvariantProjection` on the result side.
+      if (aggregates.nonEmpty || groupBy.isDefined)
         Seq.empty
       else
         select.fieldsWithComputedAliases.filter(_.isScriptField)
@@ -238,6 +302,50 @@ package object query {
           .distinct
       else
         Seq.empty
+    }
+
+    /** The row-invariant SELECT items and their values, keyed by OUTPUT column name (FOLD-IN 1).
+      *
+      * An aggregation response has no hits, so `script_fields` -- which is how a constant is
+      * emitted -- is never fetched (`"size": 0`) and the column came back NULL on every row,
+      * MEASURED on real Elasticsearch. The value is therefore taken from the AST and merged into
+      * each aggregation row on the RESULT side: the constant is presentation, not something
+      * Elasticsearch should be asked to compute. (The rejected alternative was rewriting it into
+      * the GROUP BY as an extra scripted `terms` level -- it works, but it costs a Painless bucket
+      * level per constant on the aggregation hot path.)
+      *
+      * The key is [[Field.outputName]] over `fieldsWithComputedAliases` -- the SAME expression
+      * `SearchApi.extractOutputFieldNames` uses, so the projected key and the requested column are
+      * the same string by construction. Row-VARIANT and unbound shapes are excluded by
+      * [[SingleSearch.isRowInvariantLiteral]] -- a projected `?` would be a NULL column by another
+      * route, which is the very thing this fixes.
+      */
+    lazy val rowInvariantProjection: ListMap[String, Any] = {
+      // 🔴 A constant is NOT declared for a name some other SELECT item owns, and this guard is
+      // load-bearing rather than belt-and-braces. Seeding makes Elasticsearch win only when it
+      // actually EMITS a value: `extractMetrics` writes no entry for a null-valued metric, so
+      // nothing lands on the right of `++` and the constant would survive. MEASURED against a
+      // response whose `m` is `{"value": null}`, `SELECT category, 2 AS m, MAX(amount) AS m ...
+      // GROUP BY category` returned `m = 2` where SQL says NULL. Precedence at the merge is
+      // therefore necessary but not sufficient; the collision is excluded HERE, where the statement
+      // is known, so the merge never has to arbitrate it.
+      val claimedElsewhere =
+        select.fieldsWithComputedAliases
+          .filterNot(f => SingleSearch.isRowInvariantLiteral(f.identifier))
+          .map(_.outputName)
+          .toSet
+      ListMap(
+        select.fieldsWithComputedAliases
+          .filter(f => SingleSearch.isRowInvariantLiteral(f.identifier))
+          .filterNot(f => claimedElsewhere.contains(f.outputName))
+          .map { f =>
+            val value = f.identifier.functions.headOption match {
+              case Some(v: Value[_]) => v.value
+              case _                 => null
+            }
+            f.outputName -> value
+          }: _*
+      )
     }
 
     lazy val windowFields: Seq[Field] =
@@ -257,8 +365,21 @@ package object query {
       * window-enriched projections), false when it returns aggregation results (GROUP BY /
       * metric-only SELECT). A row query with no LIMIT means EVERY matching row (issue #209) —
       * consumers use this to route such queries through a paging-complete path.
+      *
+      * An explicit GROUP BY is aggregation-shaped WHATEVER the SELECT list contains (issue #253).
+      * With no aggregate anywhere — `SELECT category FROM t GROUP BY category`, the SQL-standard
+      * spelling of DISTINCT, and 22 of the 99 captured BI statements — `sqlAggregations` is empty,
+      * which used to make the statement report itself as a row query: it was then routed to the
+      * scroll path (`SearchApi.search`/`searchAsync`) or to the licensed row cap
+      * (`CoreDqlExtension` rule 2) and came back as per-document rows instead of one row per group.
+      * The scaladoc above already promised `false` here; the expression, not the contract, was the
+      * bug.
+      *
+      * The guard sits on the aggregation arm ONLY because `windowRowQuery` already carries
+      * `groupBy.isEmpty`, so hoisting it out would be equivalent today and would make correctness
+      * depend on that internal. Do not "simplify" it.
       */
-    lazy val returnsRows: Boolean = windowRowQuery || sqlAggregations.isEmpty
+    lazy val returnsRows: Boolean = windowRowQuery || (sqlAggregations.isEmpty && groupBy.isEmpty)
 
     private lazy val selectAggs: Seq[Field] =
       select.fieldsWithComputedAliases
@@ -381,9 +502,14 @@ package object query {
           if (groupBy.isDefined) {
             val nonAggregatedFields =
               select.fields.filterNot(f => f.hasAggregation)
-            val invalidFields = nonAggregatedFields.filterNot(f =>
-              buckets.exists(b => b.name == f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
-            )
+            val invalidFields = nonAggregatedFields
+              .filterNot(f => buckets.exists(_.name == f.outputName))
+              // FOLD-IN 1: a ROW-INVARIANT literal is legal beside a GROUP BY in standard SQL --
+              // it cannot vary within a group, so it needs no bucket. It is not merely accepted:
+              // `rowInvariantProjection` carries its VALUE into every aggregation row, because a
+              // column that parses and then comes back NULL is the silent wrong answer this story
+              // exists to close.
+              .filterNot(f => SingleSearch.isRowInvariantLiteral(f.identifier))
             if (invalidFields.nonEmpty) {
               Left(
                 s"Non-aggregated fields ${invalidFields.map(_.sql).mkString(", ")} cannot be selected when GROUP BY is present"
@@ -417,9 +543,74 @@ package object query {
             Right(())
           }
         }
+        _ <- {
+          // OFFSET under a GROUP BY was silently DROPPED: the aggregation path emits
+          // `size 0 fetchSource false` whenever `allAggregations.nonEmpty && fields.isEmpty`, which
+          // is every GROUP BY, so the `limit ... from ...` branch that would carry the offset is
+          // never taken and the offset never reached Elasticsearch. A real group offset needs the
+          // `composite` aggregation and `after_key` — explicitly out of scope. Same reasoning as
+          // the NULLS FIRST / NULLS LAST guard above, and applied uniformly to the
+          // aggregate-bearing and aggregate-free forms alike.
+          if (groupBy.isDefined && limit.exists(_.offset.isDefined)) {
+            Left(
+              "OFFSET is not supported when GROUP BY is present: group results are not paginated " +
+              "(the offset used to be ignored silently). Remove the OFFSET, or page by key ranges."
+            )
+          } else {
+            Right(())
+          }
+        }
       } yield ()
     }
 
+  }
+
+  object SingleSearch {
+
+    /** A bare ROW-INVARIANT literal: an empty name carrying exactly one scalar constant `Value` --
+      * the shape the parser builds for `2 AS COL2` (`GenericIdentifier("", List(LongValue(2)))`).
+      * Such an item is the same for every document in a group.
+      *
+      * TWO production consumers, and they are two halves of one feature (issue #253, FOLD-IN 1 --
+      * "a constant is legal beside a GROUP BY"):
+      *   - `SingleSearch.validate()` excuses such a field from the non-aggregated-field check, so
+      *     `SELECT category, 2 AS flag FROM t GROUP BY category` parses;
+      *   - `SingleSearch.rowInvariantProjection` carries its VALUE, which `SearchApi` merges into
+      *     each aggregation row -- without that the column parses and then comes back NULL, because
+      *     an aggregation response has no hits and the `script_fields` entry a constant is emitted
+      *     as is never fetched under `"size": 0`.
+      *
+      * It does NOT decide whether a BUCKET must be scripted: that rule is `identifier.name.isEmpty`
+      * (a bucket with no field name has nothing to name), which covers every nameless `Value` and
+      * not merely the row-invariant ones.
+      *
+      * 🔴 It is an ALLOW-list on purpose, not a deny-list. A deny-list ("everything but
+      * `RandomValue`/`ParamValue`/...") defaults to ACCEPT, so it silently widens the moment a
+      * `Value` subclass is added -- and it would already admit `Values` (array literals, which
+      * extend `Value[Seq[T]]`) unmeasured. Keeping `ParamValue` / `RandomValue` / `IdValue` /
+      * `IngestTimestampValue` / `Values` OUT is load-bearing: they are row-variant or unbound, and
+      * a projected `?` would be a NULL column by another route -- the very thing this fixes. `Null`
+      * IS included: it is a constant, and excluding it would be an exception with no principle
+      * behind it (a projected SQL `NULL` column is correct, though indistinguishable downstream
+      * from one that failed to project, since `rowNormalizer` null-fills identically). `CharValue`
+      * / `EValue` are not reachable from today's grammar (`value =
+      * literal|pi|random|double|long|boolean|null|param|array`); they are classified with their
+      * peers rather than left to the reject arm by accident.
+      */
+    def isRowInvariantLiteral(identifier: Identifier): Boolean =
+      identifier.name.isEmpty && (identifier.functions match {
+        case (v: Value[_]) :: Nil =>
+          v match {
+            case _: NumericValue[_] => true // LongValue, DoubleValue
+            case _: StringValue     => true
+            case _: CharValue       => true
+            case _: BooleanValue    => true
+            case PiValue | EValue   => true
+            case Null               => true
+            case _                  => false
+          }
+        case _ => false
+      })
   }
 
   case class MultiSearch(requests: Seq[SingleSearch], explodeNested: Boolean = true)

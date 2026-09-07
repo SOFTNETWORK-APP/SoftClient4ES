@@ -802,6 +802,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "terms": {
       |                "field": "products.category",
       |                "size": 10,
+      |                "exclude": "coffee",
       |                "min_doc_count": 1
       |              },
       |              "aggs": {
@@ -4666,6 +4667,240 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val backtick: ElasticSearchRequest = SelectStatement("SELECT MAX(`amount`) AS m FROM bi_events")
     ansi.query should include("\"max\":{\"field\":\"amount\"}")
     backtick.query shouldBe ansi.query
+  }
+
+  // ---- issue #253: an aggregate-free GROUP BY is a terms aggregation, not a document query ----
+
+  it should "translate an aggregate-free GROUP BY into a terms aggregation (issue #253)" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "category": {
+        |      "terms": { "field": "category", "size": 65536, "min_doc_count": 1 }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "size an aggregate-free GROUP BY from an explicit LIMIT" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category LIMIT 5")
+    // the TERMS size is the LIMIT (a bucket count); the request itself stays "size":0
+    select.query should include(""""size":5""")
+    select.query should include(""""size":0""")
+  }
+
+  it should "nest one terms level per column for a multi-column aggregate-free GROUP BY" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT country, category FROM Table GROUP BY country, category")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "country": {
+        |      "terms": { "field": "country", "size": 65536, "min_doc_count": 1 },
+        |      "aggs": {
+        |        "category": {
+        |          "terms": { "field": "category", "size": 65536, "min_doc_count": 1 }
+        |        }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "order an aggregate-free GROUP BY by the bucket key, not by a document sort" in {
+    // The document `sortBy` is gated on `aggregates.isEmpty && buckets.isEmpty`, so a
+    // bucket-bearing statement must produce a terms `order` and NO top-level "sort".
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category ORDER BY category DESC")
+    val query = select.query
+    println(query)
+    query should include(""""order":{"_key":"desc"}""")
+    query should not include """"sort":"""
+  }
+
+  it should "emit no bucket_selector for a HAVING with no aggregate over an aggregate-free GROUP BY" in {
+    // `metricSelectorForBucket` strips "1 == 1" to the empty string, so the HAVING becomes a terms
+    // exclude and no bucket_selector is produced.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY category HAVING category <> 'x'")
+    val query = select.query
+    println(query)
+    query should not include "bucket_selector"
+    query should include("exclude")
+  }
+
+  it should "resolve a GROUP BY select-alias to the aliased FIELD in the emitted terms (FOLD-IN 2)" in {
+    // Pre-fix this emitted terms { field: "pays" } on a NON-EXISTENT field, which Elasticsearch
+    // answers with zero buckets and HTTP 200. The aggregation is NAMED after the alias and reads
+    // the aliased COLUMN.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT country AS pays FROM Table GROUP BY pays")
+    val query = select.query
+    println(query)
+    query should include(""""pays":{"terms":{"field":"country"""")
+    query should not include """"field":"pays""""
+    // and it is byte-identical to the explicit spelling apart from nothing at all
+    val explicit: ElasticSearchRequest =
+      SelectStatement("SELECT country AS pays FROM Table GROUP BY country")
+    query shouldBe explicit.query
+  }
+
+  it should "resolve an ordinal GROUP BY / ORDER BY into the terms field and order" in {
+    // `ORDER BY <n>` used to be a Painless sort over a constant (row path) or an unmatched
+    // bucket-order key (GROUP BY path) — silently dropped either way. Pinning the emitted JSON is
+    // the only assertion that can see the difference.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category FROM Table GROUP BY 1 ORDER BY 1 ASC LIMIT 3")
+    val query = select.query
+    println(query)
+    query shouldBe
+    """{
+        |  "query": { "match_all": {} },
+        |  "size": 0,
+        |  "_source": false,
+        |  "aggs": {
+        |    "category": {
+        |      "terms": {
+        |        "field": "category",
+        |        "size": 3,
+        |        "min_doc_count": 1,
+        |        "order": { "_key": "asc" }
+        |      }
+        |    }
+        |  }
+        |}""".stripMargin.replaceAll("\\s", "")
+  }
+
+  it should "order buckets by the METRIC when the ordinal names an aggregate" in {
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category, COUNT(*) AS c FROM Table GROUP BY 1 ORDER BY 2 DESC")
+    val query = select.query
+    println(query)
+    query should include(""""order":{"c":"desc"}""")
+  }
+
+  it should "script a bucket over a row-invariant literal, which has no field to name" in {
+    // FOLD-IN 1's corpus shape: `GROUP BY 2` names `2 AS COL2`, so the bucket identifier has an
+    // EMPTY name. Without `Bucket.shouldBeScripted` covering the literal, the emitted terms carried
+    // neither `field` nor `script` — which Elasticsearch rejects outright. A scripted terms over a
+    // constant is one bucket, which is what `GROUP BY <constant>` means.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT SUM(1) AS COL, 2 AS COL2 FROM Table GROUP BY 2")
+    val query = select.query
+    println(query)
+    query should include(
+      """"COL2":{"terms":{"size":65536,"script":{"lang":"painless","source":"2"}"""
+    )
+  }
+
+  // ---- issue #253 review round: the alias/bucket key desync, pinned on the EMITTED query ----
+  //
+  // Every one of these was a REGRESSION against main introduced by the alias resolution, and none
+  // of them is visible to a parse-level assertion: the statement parses either way, and only the
+  // generated JSON shows the `order` / `exclude` / `script` that went missing.
+
+  it should "keep the terms order when ORDER BY names the grouped column by its SELECT ALIAS" in {
+    // Regression: `sorts` was keyed by the alias (`cat`) while `buildBuckets` looked the direction
+    // up under the resolved column (`category`), so the `order` was silently DROPPED -- and with a
+    // LIMIT that is a DIFFERENT SET of groups, returned with HTTP 200.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category AS cat FROM Table GROUP BY cat ORDER BY cat ASC LIMIT 3")
+    val query = select.query
+    println(query)
+    query should include(""""field":"category"""")
+    query should include(""""order":{"_key":"asc"}""")
+  }
+
+  it should "keep the terms order for the aggregate-bearing twin" in {
+    val select: ElasticSearchRequest =
+      SelectStatement(
+        "SELECT category AS cat, COUNT(*) AS n FROM Table GROUP BY cat ORDER BY cat ASC LIMIT 3"
+      )
+    select.query should include(""""order":{"_key":"asc"}""")
+  }
+
+  it should "keep the terms exclude when HAVING names the grouped column by its SELECT ALIAS" in {
+    // Regression: the bucket `Identifier.update` attaches is matched against the real one by
+    // DISPLAY NAME, and the copy in `bucketNames` was named `category` while the real bucket was
+    // named `cat`, so `Expression.includes` stopped matching and the user's filter vanished.
+    val select: ElasticSearchRequest =
+      SelectStatement("SELECT category AS cat FROM Table GROUP BY cat HAVING cat <> 'x'")
+    val query = select.query
+    println(query)
+    query should include(""""field":"category"""")
+    // elastic4s 6 renders a single-value terms exclude as a bare string; 7+ renders an array.
+    query should include(""""exclude":"x""")
+  }
+
+  it should "resolve an ordinal GROUP BY that an aliased ORDER BY or HAVING then names" in {
+    // Both were a loud `Left` on main and must not become accepted-and-silently-unordered /
+    // accepted-and-silently-unfiltered.
+    val ordered: ElasticSearchRequest =
+      SelectStatement("SELECT category AS cat FROM Table GROUP BY 1 ORDER BY cat ASC")
+    ordered.query should include(""""order":{"_key":"asc"}""")
+
+    val filtered: ElasticSearchRequest =
+      SelectStatement("SELECT category AS cat FROM Table GROUP BY 1 HAVING cat <> 'x'")
+    // elastic4s 6 renders a single-value terms exclude as a bare string; 7+ renders an array.
+    filtered.query should include(""""exclude":"x""")
+  }
+
+  it should "script EVERY bucket that has no field name, not only the constant ones" in {
+    // An Elasticsearch `terms` aggregation must specify a `field` or a `script`. A bucket resolved
+    // onto a nameless identifier has no field to give, and `Value` inherits
+    // `shouldBeScripted = false`, so scoping the rule to row-INVARIANT literals left a fieldless,
+    // scriptless `terms` for every other nameless Value -- an ES 400. A JDBC `PreparedStatement`
+    // parameter, aliased and grouped, is the realistic route.
+    // ⚠️ NOT `? AS p`: a bucket over an unbound parameter is REJECTED (it would script
+    // `params.paramValue`, which nothing binds, so Elasticsearch would answer zero groups with
+    // HTTP 200). The scripting rule below is what makes every OTHER nameless bucket work.
+    val random: ElasticSearchRequest = SelectStatement("SELECT RANDOM AS r FROM Table GROUP BY r")
+    random.query should include(""""script":{"lang":"painless","source":"Math.random()"}""")
+
+    val decimal: ElasticSearchRequest = SelectStatement("SELECT 2.5 AS d FROM Table GROUP BY d")
+    decimal.query should include(""""script":{"lang":"painless","source":"2.5"}""")
+
+    val arith: ElasticSearchRequest = SelectStatement("SELECT 2 + 0 AS c FROM Table GROUP BY c")
+    arith.query should include(""""script":{"lang":"painless","source":"2 + 0"}""")
+  }
+
+  it should "not emit a terms aggregation that carries neither field nor script" in {
+    // The invariant behind the test above, stated once over every shape that reaches a bucket.
+    Seq(
+      "SELECT RANDOM AS r FROM Table GROUP BY r",
+      "SELECT 2.5 AS d FROM Table GROUP BY d",
+      "SELECT 2 + 0 AS c FROM Table GROUP BY c",
+      "SELECT 2 AS n FROM Table GROUP BY n",
+      "SELECT 'x' AS lbl FROM Table GROUP BY lbl",
+      "SELECT SUM(1) AS COL, 2 AS COL2 FROM Table GROUP BY 2",
+      "SELECT UPPER(country) AS u FROM Table GROUP BY u"
+    ).foreach { sql =>
+      val q: ElasticSearchRequest = SelectStatement(sql)
+      // Scoped INSIDE the `terms` object: asserting over the whole query lets an unrelated
+      // `script_fields` block satisfy it while the aggregation itself carries neither.
+      val terms = q.query.split("\"terms\":\\{").drop(1).map(_.takeWhile(_ != '}'))
+      withClue(s"[$sql] ${q.query}: ") {
+        terms should not be empty
+        terms.foreach(t =>
+          withClue(s"terms{$t}: ") {
+            t.contains("\"field\"") || t.contains("\"script\"") shouldBe true
+          }
+        )
+      }
+    }
   }
 
 }

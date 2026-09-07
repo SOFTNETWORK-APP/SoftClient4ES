@@ -225,6 +225,35 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     truncationOf(res) shouldBe None
   }
 
+  // ---- issue #253: an aggregate-free GROUP BY is aggregation-shaped, so the row cap must NOT
+  //      fire and the statement must NOT be re-routed to a capped scroll ----
+
+  it should "NOT cap a no-LIMIT aggregate-free GROUP BY (issue #253)" in {
+    // Pre-fix `returnsRows` was true (no aggregate anywhere ⇒ `sqlAggregations` empty), so rule (2)
+    // drove a `cappedScroll` at maxDocuments = 10,000 and the caller got per-DOCUMENT rows. This is
+    // the aggregate-free twin of the carve-out test above and must behave identically to it.
+    val (client, res) = run("SELECT category FROM idx GROUP BY category", Quota.Community)
+
+    res shouldBe a[ElasticSuccess[_]]
+    client.scrolledConfig.get() shouldBe null
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe a[SingleSearch]
+    truncationOf(res) shouldBe None
+  }
+
+  it should "still reject an explicit LIMIT over quota on an aggregate-free GROUP BY (no bypass)" in {
+    // Rule (1) does not key on `returnsRows`, so the 402 asymmetry is unchanged by the #253 fix.
+    // Expected GREEN before the fix too -- this is a no-regression pin for the licence argument,
+    // not a RED.
+    val (client, res) =
+      run("SELECT category FROM idx GROUP BY category LIMIT 20000", Quota.Community)
+
+    res shouldBe a[ElasticFailure]
+    res.asInstanceOf[ElasticFailure].elasticError.statusCode shouldBe Some(402)
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
   // ---- AC-4: explicit LIMIT over quota → 402 (intentional asymmetry) ----
 
   behavior of "CoreDqlExtension explicit LIMIT over quota"

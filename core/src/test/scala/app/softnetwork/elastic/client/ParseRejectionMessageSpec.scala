@@ -122,17 +122,25 @@ class ParseRejectionMessageSpec extends AnyFlatSpec with Matchers with BeforeAnd
   // Throwable(message, cause.orNull)`, so an internal parser fault is the only thing that ever
   // produces a stack trace here. `ParserError.cause` now carries it.
   //
-  // `SELECT a, b FROM t GROUP BY 0` is measured: `SingleSearch.bucketNames` indexes
-  // `select.fields(n - 1)` with no bounds check, from inside `single`'s combinator action.
-  // Ordinal-bucket SEMANTICS belong to story 21.3 / #253 — when 21.3 rejects this in `validate()`
-  // the `Internal parser error` label legitimately changes; RETARGET this assertion, and keep the
-  // status/operation/cause ones, which are #250's contract.
-  it should "report an internal parser fault with an honest status and a preserved cause" in {
+  // 🔴 RETARGETED by story 21.3 / #253, as this block instructed. `SELECT a, b FROM t GROUP BY 0`
+  // was the witness because `SingleSearch.bucketNames` indexed `select.fields(n - 1)` with no
+  // bounds check from inside `single`'s combinator action; 21.3 moved ordinal-bucket semantics
+  // into `Bucket.validate()`, so it is a GRAMMAR-side rejection now and never reaches the boundary
+  // catch. What is pinned here is therefore the other half of the same contract: a validator
+  // rejection on the `run` route is `Some(400)` / `Some("sql")` with NO cause — a user's bad SQL
+  // has no interesting stack, and attaching one would put a parser internal in front of a BI user.
+  //
+  // #250's cause-THREADING half kept its coverage on the pipeline route below, which still has a
+  // witness. Measured while retargeting: after 21.3 not one of the 1,408 SQL statements harvested
+  // from this repo's own test sources reaches the boundary catch (12 did before), so there is no
+  // SQL string left that could drive it through `run`.
+  it should "report a validator rejection with an honest status and no spurious cause" in {
     val error = rejectionOf("SELECT a, b FROM t GROUP BY 0")
-    error.message should include("Internal parser error")
+    error.message should not include "Internal parser error"
+    error.message should include("GROUP BY position 0")
     error.statusCode shouldBe Some(400)
     error.operation shouldBe Some("sql")
-    error.cause shouldBe defined
+    error.cause shouldBe empty
   }
 
   // AD-4 — `PipelineApi.pipeline(sql)` carried the identical dead `ElasticFailure` branch and had
@@ -155,8 +163,13 @@ class ParseRejectionMessageSpec extends AnyFlatSpec with Matchers with BeforeAnd
   // all. `pipeline(sql)` parses any statement before checking it is a `PipelineStatement`, so the
   // measured AST crasher reaches it. Also pins that the reason is BOUNDED here as it is on the SQL
   // route: `excerpt` collapses control characters and line separators.
+  // 🔴 The witness is `null`, not `GROUP BY 0`: story 21.3 turned that input into a validator
+  // rejection (see above), and `normalize` dereferencing a null query before `parse` runs is the
+  // one remaining route into `Parser.apply`'s boundary catch. `pipeline` hands its argument
+  // straight to `Parser`, so it reaches the catch; `run` does not, because `splitStatements` sees
+  // the string first.
   it should "preserve the cause and bound the reason on the pipeline internal-fault route" in {
-    client.pipeline("SELECT a, b FROM t GROUP BY 0") match {
+    client.pipeline(null.asInstanceOf[String]) match {
       case ElasticFailure(error) =>
         error.message should startWith("Error parsing pipeline DDL statement")
         error.message should include("Internal parser error")

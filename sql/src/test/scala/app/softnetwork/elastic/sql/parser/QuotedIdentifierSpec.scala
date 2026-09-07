@@ -592,19 +592,21 @@ class QuotedIdentifierSpec extends AnyFlatSpec with Matchers {
   // AD-12 — the 21.3 interaction
   // ---------------------------------------------------------------------------------------------
 
-  "a name that merely CONTAINS a digit under GROUP BY" should "still fail, as it does today" in {
-    // KNOWN, PRE-EXISTING, and 21.3's to fix. `SingleSearch.bucketNames` detects an ordinal with a
-    // digit search over the rendered name, so `GROUP BY "city2"` indexes `select.fields(1)` on a
-    // one-item SELECT. Measured on the unmodified tree: the same `IndexOutOfBoundsException: 1`,
-    // surfaced as a `Left` by the boundary catch story 21.4 installed.
+  "a name that merely CONTAINS a digit under GROUP BY" should "now parse, in both spellings" in {
+    // 🔴 Story 21.3 / #253 landed. This row used to assert the CRASH: `SingleSearch.bucketNames`
+    // detected an ordinal by running `\d+` over the RENDERED name, so `GROUP BY "city2"` indexed
+    // `select.fields(1)` on a one-item SELECT and came back as `IndexOutOfBoundsException: 1`,
+    // surfaced as a `Left` by story 21.4's boundary catch. 21.1 had added the backtick spelling as
+    // a second door to it, which is why it was pinned here rather than inherited silently.
     //
-    // This story does not fix it; it adds the backtick spelling as a second door to it, so the
-    // crash is pinned here rather than inherited silently. 21.3 replaces `bucketNames`'s
-    // discriminator, at which point these two rows MUST be RETARGETED to 21.3's rejection message —
-    // never deleted. They pin a contract (the input is rejected, not crashed through), and only the
-    // route changes.
-    rejectedInternally("SELECT `city2` FROM t GROUP BY `city2`", "IndexOutOfBounds")
-    rejectedInternally("SELECT \"city2\" FROM t GROUP BY \"city2\"", "IndexOutOfBounds")
+    // Its instruction said "retarget to 21.3's rejection message", but the premise was wrong:
+    // `SELECT "city2" FROM t GROUP BY "city2"` is a VALID query and 21.3 makes it WORK rather than
+    // reject. Retargeting it to a rejection would have promoted a bug report into a contract, so
+    // the row asserts the correct behaviour instead — and, being 21.1's own interaction test, it
+    // asserts it for BOTH quoted spellings.
+    parses("SELECT `city2` FROM t GROUP BY `city2`")
+    parses("SELECT \"city2\" FROM t GROUP BY \"city2\"")
+    single("SELECT `city2` FROM t GROUP BY `city2`").buckets.map(_.path) shouldBe Seq("city2")
   }
 
   "a quoted digit" should "be a column NAME, never an ordinal" in {

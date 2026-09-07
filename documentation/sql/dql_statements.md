@@ -646,6 +646,36 @@ ORDER BY COUNT(*) DESC;
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
   script null-checks every metric before comparing it.
 
+#### GROUP BY without an aggregate
+
+`GROUP BY` with no aggregate in the `SELECT` list returns **one row per group** — the SQL-standard
+spelling of `DISTINCT`:
+
+```sql
+SELECT profile.city AS city
+FROM dql_users
+GROUP BY profile.city;
+```
+
+- Positions are supported: `GROUP BY 1` and `ORDER BY 1` name the first `SELECT` item. A position
+  that names nothing (`0`, a negative, or one past the end of the `SELECT` list) is a parse error
+  naming the position. A column genuinely named with digits is unaffected, and a column named `1`
+  is addressed as `` GROUP BY `1` ``.
+- `SELECT` aliases are supported: `SELECT country AS pays ... GROUP BY pays` groups by `country`,
+  and `ORDER BY pays` / `HAVING pays <> 'x'` address that group by the same name.
+- A constant is legal beside a `GROUP BY` and carries its value on every row
+  (`SELECT category, 2 AS flag FROM t GROUP BY category`) — it does not vary within a group, so it
+  needs no grouping.
+- Grouping **by** a constant is also legal and means exactly one group
+  (`SELECT 2 AS flag ... GROUP BY flag`, or the equivalent position `... GROUP BY 1`). It needs a
+  `SELECT` alias, because the alias is the only name that group can be given.
+- `LIMIT` on a `GROUP BY` bounds the number of **groups**, not the number of rows — it is pushed
+  down as the Elasticsearch `terms` size. On a multi-column `GROUP BY` it bounds **each level**, so
+  the row count can exceed it.
+- `OFFSET` is **not supported** with `GROUP BY` and is rejected: group results are not paginated.
+- With no `LIMIT`, every level is sized at Elasticsearch's `search.max_buckets` ceiling (65,536):
+  a grouping wider than that fails loudly rather than truncating silently.
+
 ---
 
 ## Parent-Level Aggregations on Nested Arrays

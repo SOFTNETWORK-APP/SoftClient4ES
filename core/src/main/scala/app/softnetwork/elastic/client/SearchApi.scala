@@ -70,8 +70,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     */
   protected def extractOutputFieldNames(single: SingleSearch): Seq[String] = {
     val fields = single.select.fieldsWithComputedAliases
+    // `Field.outputName` is the SHARED definition: `SingleSearch.rowInvariantProjection` keys a
+    // projected constant off the very same expression, so the column this asks for and the column
+    // that supplies its value are the same string by construction (#253 FOLD-IN 1).
     if (fields.size == 1 && fields.head.identifier.identifierName == "*") Seq.empty
-    else fields.map(f => f.fieldAlias.map(_.alias).getOrElse(f.sourceField))
+    else fields.map(_.outputName)
   }
 
   /** Issue #276 -- resolve the string literals a WHERE clause compares against `date`-mapped
@@ -268,7 +271,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 single.fieldAliases,
                 single.sqlAggregations,
                 extractOutputFieldNames(single),
-                single.nestedHitsMappings
+                single.nestedHitsMappings,
+                rowInvariantsOf(single)
               )
         }
 
@@ -292,8 +296,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           elasticQueries,
           multiple.fieldAliases,
           multiple.sqlAggregations,
+          // ⚠️ Pre-existing simplification, untouched: the output NAMES come from the FIRST leg
+          // only. The row-invariant CONSTANTS below are per-leg, because each leg may declare its
+          // own (#253 FOLD-IN 1).
           multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty),
-          multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty)
+          multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
+          multiple.requests.map(rowInvariantsOf)
         )
 
       case _ =>
@@ -332,6 +340,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     }
   }
 
+  /** The ROW-INVARIANT constants a statement contributes to its own rows (#253 FOLD-IN 1).
+    *
+    * Handed to the parse layer as ordinary statement-derived data, exactly like `fieldAliases` and
+    * the output `fields`, and SEEDED into `parseAggregations`' `parentContext` so each constant is
+    * placed once as the rows are built rather than by a second pass over them.
+    *
+    * No `returnsRows` guard is needed: `parseAggregations` IS the aggregation path by construction,
+    * so a row-shaped statement never reaches the seed. The empty default is what every scroll-page
+    * caller gets.
+    */
+  private def rowInvariantsOf(single: SingleSearch): ListMap[String, Any] =
+    single.rowInvariantProjection
+
   /** Search for documents / aggregations matching the Elasticsearch query.
     *
     * @param elasticQuery
@@ -348,9 +369,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
-    singleSearchInternal(elasticQuery, fieldAliases, aggregations, fields, nestedHits)
+    singleSearchInternal(
+      elasticQuery,
+      fieldAliases,
+      aggregations,
+      fields,
+      nestedHits,
+      rowInvariants
+    )
 
   /** [[singleSearch]] with an explicit document-id retention decision. `retainDocumentId = true` is
     * reserved for the window-enrichment base query, which matches rows to their ranking ordinals by
@@ -362,6 +391,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty,
     retainDocumentId: Boolean = false
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     validateJson("search", elasticQuery.query) match {
@@ -399,7 +429,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             fields,
             nestedHits,
             elasticQuery.explodeNested,
-            retainDocumentId
+            retainDocumentId,
+            Seq(rowInvariants)
           )
         ) match {
           case success @ ElasticSuccess(_) =>
@@ -467,7 +498,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     elasticQueries.queries.flatMap { elasticQuery =>
       validateJson("search", elasticQuery.query).map(error =>
@@ -508,7 +540,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
             aggs,
             fields,
             nestedHits,
-            elasticQueries.explodeNested
+            elasticQueries.explodeNested,
+            rowInvariants = rowInvariants
           )
         ) match {
           case success @ ElasticSuccess(_) =>
@@ -615,7 +648,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                 single.fieldAliases,
                 single.sqlAggregations,
                 extractOutputFieldNames(single),
-                single.nestedHitsMappings
+                single.nestedHitsMappings,
+                rowInvariantsOf(single)
               )
         }
 
@@ -636,8 +670,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
           elasticQueries,
           multiple.fieldAliases,
           multiple.sqlAggregations,
+          // ⚠️ Pre-existing simplification, untouched: the output NAMES come from the FIRST leg
+          // only. The row-invariant CONSTANTS below are per-leg (#253 FOLD-IN 1).
           multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty),
-          multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty)
+          multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
+          multiple.requests.map(rowInvariantsOf)
         )
 
       case _ =>
@@ -672,7 +709,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: ListMap[String, Any] = ListMap.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -694,7 +732,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               aggs,
               fields,
               nestedHits,
-              elasticQuery.explodeNested
+              elasticQuery.explodeNested,
+              rowInvariants = Seq(rowInvariants)
             )
           ) match {
             case success @ ElasticSuccess(_) =>
@@ -789,7 +828,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
-    nestedHits: Map[String, Seq[(String, String)]] = Map.empty
+    nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -813,7 +853,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
               aggs,
               fields,
               nestedHits,
-              elasticQueries.explodeNested
+              elasticQueries.explodeNested,
+              rowInvariants = rowInvariants
             )
           ) match {
             case success @ ElasticSuccess(_) =>
@@ -1633,7 +1674,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val rankingWindows: Seq[(String, RankingWindow)] =
       request.windowFields.flatMap { f =>
         f.identifier.windows.collect { case r: RankingWindow =>
-          f.fieldAlias.map(_.alias).getOrElse(f.sourceField) -> r
+          f.outputName -> r
         }
       }
 
@@ -1841,7 +1882,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     val rankingAliases: Seq[String] =
       request.windowFields.flatMap { f =>
         f.identifier.windows.collect { case _: RankingWindow =>
-          f.fieldAlias.map(_.alias).getOrElse(f.sourceField)
+          f.outputName
         }
       }
 
