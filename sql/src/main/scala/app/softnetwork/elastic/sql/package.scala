@@ -106,6 +106,24 @@ package object sql {
     out.toString
   }
 
+  /** Escapes a bare string for a DOUBLE-quoted Painless string literal — backslash first, then the
+    * quote, so the composition reverses (escaping the quote first would then double the backslash
+    * it had just introduced).
+    *
+    * Without it `SELECT 'a"b'` emitted the Painless `"a"b"`, a script SYNTAX error Elasticsearch
+    * rejects at execution, and a value ending in a backslash emitted an unterminated string. For a
+    * value containing NEITHER character the result is byte-identical to the unescaped form, which
+    * is what bounds the change: only literals that were already broken alter shape.
+    *
+    * 🔴 A different channel from `escapeStringLiteral`, deliberately not shared with it even though
+    * today's rules rhyme: this escapes for PAINLESS (double-quoted, Java escapes), that escapes for
+    * a SQL literal (single-quoted, and it must stay reversible by `unescapeStringLiteral`). They
+    * answer to different grammars and may diverge; folding them would couple two contracts that
+    * only happen to agree.
+    */
+  def escapePainlessString(value: String): String =
+    value.replace("\\", "\\\\").replace("\"", "\\\"")
+
   /** Re-emits a name that was written quoted.
     *
     * The canonical delimiter is the ANSI SQL-92 double quote and an embedded one is DOUBLED — the
@@ -396,7 +414,9 @@ package object sql {
     override def painless(context: Option[PainlessContext]): String =
       SQLTypeUtils.coerce(
         value match {
-          case s: String  => s""""$s""""
+          // Escaped, since #274/story 21.5: an unescaped `"` produced a Painless SYNTAX error and a
+          // trailing backslash an unterminated string. Byte-identical for a value carrying neither.
+          case s: String  => s""""${escapePainlessString(s)}""""
           case b: Boolean => b.toString
           case n: Number  => n.toString
           case _          => value.toString
