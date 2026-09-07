@@ -5,6 +5,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.SingleSearch
 import app.softnetwork.elastic.sql.schema.{Column, Schema, Table}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.PainlessContext
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -23,11 +24,11 @@ import org.slf4j.{Logger, LoggerFactory}
   * before it existed:
   *
   *   1. the seam ATTACHES — a statement that comes back out of `resolveTemporalLiterals` carries
-  *      the mapped column types, so the conversion is emitted;
-  *   2. the attach is IDEMPOTENT — `SearchApi.search` resolves and then routes a row query through
-  *      `scrollRows` -> `ScrollApi.scroll`, which resolves AGAIN, so it genuinely runs twice on
-  *      that path. Story 21.3 lost a round to a resolution that was not idempotent (a substituted
-  *      node whose SHAPE the resolver also matched), so this is pinned rather than assumed.
+  *      the mapped column types, so the conversion is emitted; 2. the attach is IDEMPOTENT —
+  *      `SearchApi.search` resolves and then routes a row query through `scrollRows` ->
+  *      `ScrollApi.scroll`, which resolves AGAIN, so it genuinely runs twice on that path. Story
+  *      21.3 lost a round to a resolution that was not idempotent (a substituted node whose SHAPE
+  *      the resolver also matched), so this is pinned rather than assumed.
   */
 class SchemaAttachSpec extends AnyFlatSpec with Matchers {
 
@@ -61,6 +62,17 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
     }
 
   private def painlessOf(s: SingleSearch): String = s.select.fields.head.painless(None)
+
+  /** The render the BRIDGE actually performs. `painless(None)` inlines everything; production
+    * `script_fields` emission calls `field.painless(Some(context))`, and that is the ONLY path on
+    * which a conversion can be hoisted into a `params` declaration — so it is the only path on
+    * which the null guard around such a conversion can be lost.
+    */
+  private def painlessWithContext(s: SingleSearch): (String, String) = {
+    val ctx = PainlessContext()
+    val script = s.select.fields.head.painless(Some(ctx))
+    (script, ctx.toString)
+  }
 
   // -- 1. the seam attaches -----------------------------------------------------
   "resolveTemporalLiterals" should "attach the schema, so a cast over a COLUMN converts" in {
@@ -145,11 +157,34 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
     // operand, and no identifier ever reached an arm while `baseType` was Any. A literal operand
     // is `nullable = false` and skips the ternary entirely, which is why every literal case passed
     // before AND after.
-    val attached = parse("SELECT CAST(amount AS BIGINT) AS m FROM events LIMIT 5").update(Some(schema))
+    val attached =
+      parse("SELECT CAST(amount AS BIGINT) AS m FROM events LIMIT 5").update(Some(schema))
     val script = painlessOf(attached)
     script should include("(def)")
     script should include("(long)")
     // the guard shape itself: a null operand still yields null, never a primitive default
     script should include("!= null")
+  }
+
+  // -- 4. the PARAM path, which is the one production renders through -------------
+  "a temporal conversion hoisted into a param" should "keep its null guard" in {
+    // 🔴 The four `<varchar> -> temporal` arms `return` a param name from INSIDE the match, before
+    // the nullable wrapper at the bottom of `coerce` can run. Under `painless(None)` there is no
+    // context, `addParam` is never reached and the wrapper still applies — so a spec that only
+    // ever renders with `None`, as the three sections above do, cannot see the difference. On the
+    // bridge's real render the guard has to be built into the param BODY, and this is what says
+    // so: without it the declaration is a bare `LocalDate.parse(...)` that throws on a null
+    // document value instead of yielding null.
+    //
+    // Reachable only since #306: the arm is keyed on a VARCHAR source, and before the attach an
+    // identifier's `baseType` was always `Any`.
+    val attached = parse("SELECT CAST(code AS DATE) AS d FROM events LIMIT 5").update(Some(schema))
+    val (script, params) = painlessWithContext(attached)
+    withClue(s"script [$script] params [$params]: ") {
+      // hoisted, not inlined — otherwise this test is asserting the `None` path over again
+      script should include("param")
+      params should include("LocalDate.parse")
+      params should include("!= null")
+    }
   }
 }

@@ -86,10 +86,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * `ScrollApi.scroll` -- hence `GatewayApi.run` (REPL, JDBC driver, Flight SQL sidecar and its
     * cross-index JOIN legs, which re-enter `gateway.run`) transitively.
     *
-    * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when the WHERE carries
-    * no candidate literal, when the FROM does not name exactly ONE concrete index (several sources,
-    * a `*` wildcard or a `,` list), when this client is not an [[IndicesApi]], and when the schema
-    * cannot be loaded (alias without a template, unknown index, cluster error or a thrown lookup)
+    * 🔴 Since issue #306 this method also ATTACHES the schema to the AST (see the body), so it is
+    * no longer purely a #276 concern and the lookup is NO LONGER skipped for a statement without a
+    * temporal candidate — `baseType` is needed for every statement, and skipping would have left
+    * the attach dead for nearly every query. Cost: one lookup per index per cache TTL.
+    *
+    * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when the FROM does not
+    * name exactly ONE concrete index (several sources, a `*` wildcard or a `,` list), when this
+    * client is not an [[IndicesApi]], and when the schema cannot be loaded (alias without a
+    * template, unknown index, cluster error or a thrown lookup)
     * -- the literal is then forwarded exactly as before. The schema comes from
     * [[IndicesApi.loadSchema]] 's 5-minute cache, so a miss costs one `GET <index>` per index per
     * TTL. A literal that cannot be a date under a fully-understood mapping format is a `400` that

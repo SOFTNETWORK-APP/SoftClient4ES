@@ -279,10 +279,32 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery shouldBe defined
     client.schemaLookups shouldBe 1
     client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
-    // One per statement HERE because this fixture OVERRIDES `loadSchema` and so bypasses its
-    // 5-minute cache; in production that cache is what bounds the cost to one `GET <index>` per
-    // index per TTL (pinned by the `fetches` assertions above, which count real round trips).
+    // `schemaLookups` counts CALLS, and this fixture overrides `loadSchema`, so it is one per
+    // statement by construction — it cannot show the COST.
     client.schemaLookups shouldBe 2
+  }
+
+  it should "cost ONE round trip per index per TTL, not one per statement" in {
+    // The number the #306 guarantee is actually about. `schemaLookups` above counts calls; this
+    // counts real fetches through the production cache, using the same local-override pattern as
+    // the alias test above (an unseeded client, so the first statement genuinely misses).
+    var fetches = 0
+    val client = new RecordingClient {
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+        fetches += 1
+        ElasticResult.success(
+          Some(
+            """{"mappings":{"properties":{"id":{"type":"keyword"},"event_ts":{"type":"date"},
+              |"label":{"type":"keyword"},"amount":{"type":"integer"}}},
+              |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+          )
+        )
+      }
+    }
+    client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))
+    client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
+    client.search(SelectStatement("SELECT id FROM events WHERE amount > 20 LIMIT 5"))
+    fetches shouldBe 1 // three statements, ONE round trip - a per-statement regression fails here
   }
 
   it should "forward the literal verbatim over several sources or a wildcard source" in {

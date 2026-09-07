@@ -225,6 +225,15 @@ object SQLTypeUtils {
     nullable: Boolean,
     context: Option[PainlessContext]
   ): String = {
+
+    /** The null guard the four temporal arms below must apply THEMSELVES, because they return from
+      * inside `ctx.addParam(...)` and so never reach the wrapper at the end of this method. Kept as
+      * one definition rather than four copies — the escape rule this file already learned the hard
+      * way (one key, one derivation).
+      */
+    def temporalGuard(body: String): String =
+      if (nullable) s"($expr != null ? $body : null)" else body
+
     val ret = {
       (from, to) match {
         // ---- DATE & TIME ----
@@ -316,58 +325,69 @@ object SQLTypeUtils {
 
         // ---- LITERAL (VARCHAR / TEXT / KEYWORD) -> TEMPORAL ----
         // Same case-object-equality defect as the numeric arms above, same widening.
+        //
+        // 🔴 These four arms `return` from INSIDE `ctx.addParam(...)`, so they never reach the
+        // nullable wrapper at the end of this method — and issue #306, which made them reachable
+        // for a COLUMN operand, is what turned that into a live defect: a document merely MISSING
+        // the field yields `LocalDate.parse(null, ...)` -> NullPointerException -> all shards
+        // failed. The numeric arms fall through and are guarded; these must guard themselves.
+        //
+        // The guard goes on the param BODY, not on the param reference: the parse runs when the
+        // param is EVALUATED, so guarding the reference site would be too late. Each arm therefore
+        // owns its whole result and returns it, which also keeps the end-of-method wrapper from
+        // applying a second time. No boxing — every one of these returns a reference.
         case (_: SQLVarchar, SQLTypes.Date) =>
+          val guarded = temporalGuard(
+            "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+          )
           context match {
             case Some(ctx) =>
-              ctx.addParam(
-                LiteralParam(
-                  "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
-                )
-              ) match {
+              ctx.addParam(LiteralParam(guarded)) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+          return guarded
         case (_: SQLVarchar, SQLTypes.Time) =>
+          val guarded = temporalGuard(
+            "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
+          )
           context match {
             case Some(ctx) =>
-              ctx.addParam(
-                LiteralParam(
-                  "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
-                )
-              ) match {
+              ctx.addParam(LiteralParam(guarded)) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
+          return guarded
         case (_: SQLVarchar, SQLTypes.DateTime) =>
+          val guarded = temporalGuard(
+            s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
+          )
           context match {
             case Some(ctx) =>
-              ctx.addParam(
-                LiteralParam(s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)")
-              ) match {
+              ctx.addParam(LiteralParam(guarded)) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
+          return guarded
         case (_: SQLVarchar, SQLTypes.Timestamp) =>
+          val guarded = temporalGuard(
+            s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
+          )
           context match {
             case Some(ctx) =>
-              ctx.addParam(
-                LiteralParam(s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)")
-              ) match {
+              ctx.addParam(LiteralParam(guarded)) match {
                 case Some(p) => return p
                 case None    => // continue
               }
             case None => // continue
           }
-          s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
+          return guarded
 
         // ---- IDENTITY ----
         case (_, _) if from == to =>
@@ -416,7 +436,7 @@ object SQLTypeUtils {
     // literal arms already return references (`LocalDate.parse(...)`, `String.valueOf(...)`) and
     // must stay BYTE-IDENTICAL — a blanket `(def)` moved a bridge pin that was never broken, which
     // is churn, not a correction.
-    if (numericRankOf(to).isDefined) s"($expr != null ? (def)($ret) : null)"
+    if (producesPainlessPrimitive(to)) s"($expr != null ? (def)($ret) : null)"
     else s"($expr != null ? $ret : null)"
   }
 
@@ -428,6 +448,24 @@ object SQLTypeUtils {
     classOf[SQLReal]     -> 5,
     classOf[SQLDouble]   -> 6
   )
+
+  /** Does an arm targeting `to` return a PAINLESS PRIMITIVE, and therefore need boxing before the
+    * null guard wraps it?
+    *
+    * This is the property that actually matters — a primitive cannot unify with `null` in a ternary
+    * — so it is asked directly rather than through the `numericRankOf(to).isDefined` proxy the
+    * first version used. The proxy was keyed by CLASS, so `SQLTypes.Numeric` fell outside it while
+    * the `Boolean -> Numeric | Int` arm returns a primitive `int`: a shape the review could not
+    * reach through a nullable operand today, but one a future arm could.
+    *
+    * `painlessType` is the single existing derivation of "the Painless type of an SQLType", so the
+    * question is asked of it rather than by re-listing the primitives here.
+    */
+  private val painlessPrimitives: Set[String] =
+    Set("byte", "short", "int", "long", "float", "double", "boolean", "char")
+
+  private def producesPainlessPrimitive(to: SQLType): Boolean =
+    painlessPrimitives.contains(painlessType(to))
 
   private def numericRankOf(t: SQLType): Option[Int] =
     numericRank.collectFirst { case (cls, rank) if cls.isInstance(t) => rank }

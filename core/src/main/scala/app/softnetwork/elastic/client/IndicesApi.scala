@@ -223,18 +223,37 @@ trait IndicesApi extends ElasticClientHelpers {
     */
   def loadSchema(index: String): ElasticResult[Schema] = {
     val now = System.currentTimeMillis()
-    Option(schemaCache.get(index)) match {
-      case Some((schema, cachedAt)) if now - cachedAt < schemaCacheTtlMs =>
-        logger.debug(s"📦 Schema cache hit for '$index'")
-        ElasticSuccess(schema)
-      case _ =>
-        fetchSchemaFromES(index) match {
-          case success @ ElasticSuccess(schema) =>
-            schemaCache.put(index, (schema, now))
-            success
-          case failure => failure
+    // `compute`, not get/fetch/put: the plain form let N concurrent statements over one index each
+    // issue their own `GET <index>` and parse the whole mapping on a cold cache or at TTL expiry.
+    // Before issue #306 almost nothing triggered that — the lookup happened only for a statement
+    // with a temporal WHERE literal — and #306 makes EVERY statement trigger it, which turns a
+    // rare stampede into the common path. Same fix and same precedent as #238's `shardCountCache`
+    // (`ScrollApi`): the map is a ConcurrentHashMap, so `compute` serialises the miss per KEY and
+    // the losers of the race read the winner's value instead of re-fetching.
+    //
+    // Only a SUCCESS is cached, exactly as before, so a failure is retried on the next statement
+    // rather than being remembered here (the 404 negative cache lives in `SearchApi`).
+    var result: ElasticResult[Schema] = null
+    schemaCache.compute(
+      index,
+      (_, existing) =>
+        existing match {
+          case (schema, cachedAt) if now - cachedAt < schemaCacheTtlMs =>
+            logger.debug(s"📦 Schema cache hit for '$index'")
+            result = ElasticSuccess(schema)
+            existing
+          case _ =>
+            fetchSchemaFromES(index) match {
+              case success @ ElasticSuccess(schema) =>
+                result = success
+                (schema, now)
+              case failure =>
+                result = failure
+                existing // null when absent -> the entry stays absent
+            }
         }
-    }
+    )
+    result
   }
 
   /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21). */
