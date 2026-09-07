@@ -119,6 +119,7 @@ The SQL Gateway supports the following type system:
 | `VARCHAR` \| `TEXT` | `text` + optional `keyword` subfield |
 | `CHAR`              | `text`                               |
 | `DECIMAL` \| `NUMERIC` \| `DEC` | `double` (approximate — no exact decimal type) |
+| `SIGNED` \| `UNSIGNED`         | `long` (both are 64-bit **signed**; aliases of `BIGINT`) |
 | `KEYWORD`           | `keyword`                            |
 | `DATE`              | `date`                               |
 | `TIMESTAMP`         | `date`                               |

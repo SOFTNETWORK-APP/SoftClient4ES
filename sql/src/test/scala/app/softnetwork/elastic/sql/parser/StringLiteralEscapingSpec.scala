@@ -166,6 +166,24 @@ class StringLiteralEscapingSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "be accepted inside an ARRAY literal" in {
+    // AC-1 lists array literals among the covered positions, and `TypeParser.literals`
+    // (`"[" ~> repsep(literal, ",") <~ "]"`) is a DIFFERENT caller of `literal` from the `IN` list
+    // above. Measured on origin/main: both shapes below were REJECTED there, so this is the
+    // widening reaching that caller.
+    Parser("ALTER TABLE t SET MAPPING x = ['a''b','c']").isRight shouldBe true
+    Parser("CREATE TABLE t (c VARCHAR DEFAULT ['a''b','c'])").isRight shouldBe true
+
+    val stmt = statementOf("ALTER TABLE t SET MAPPING x = ['a''b','c']")
+    stmt.sql should include("""a'b""")
+    Parser(stmt.sql) shouldBe Right(stmt)
+
+    // ⚠️ The DDL DEFAULT form is deliberately NOT round-tripped here: `Values.sql` renders an
+    // array as an IN-list (`('a\'b','c')`), which does not re-parse as an array. That is issue I6,
+    // PRE-EXISTING and independent of this story — measured on origin/main, where
+    // `DEFAULT ['ab','c']` (no doubled quote at all) already fails the same fixed point.
+  }
+
   // -- B - the legacy backslash form is untouched ----------------------------
   "the legacy backslash escape" should "keep working exactly as before" in {
     firstValue("""SELECT 'it\'s' FROM t""") shouldBe "it's"
