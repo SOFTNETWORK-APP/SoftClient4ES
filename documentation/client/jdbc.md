@@ -153,6 +153,81 @@ For the full JOIN matrix, see the Cross-Index JOIN walkthrough (`../sql/joins.md
 
 ---
 
+## Cross-index JOIN on JDK 16 and later
+
+The JOIN engine is built on Apache Arrow, which reaches into `java.nio` to address off-heap memory. **JDK 16 and later deny that access by default** ([JEP 396](https://openjdk.org/jeps/396)), so on a modern JVM the cross-index JOIN — and only the cross-index JOIN — needs one flag:
+
+```
+--add-opens=java.base/java.nio=ALL-UNNAMED
+```
+
+Everything else in the driver (queries, DDL, DML, `SHOW`, metadata browsing) works without it. On JDK 8 through 15 no flag is needed at all.
+
+If the flag is missing, the driver refuses the JOIN immediately with a message naming the flag — it does not run the query and then fail. Attempting a JOIN produces:
+
+> Cross-index JOIN is unavailable in this JVM: Apache Arrow cannot reach its off-heap memory layer because JDK 16 and later deny the reflective access it needs. Add `--add-opens=java.base/java.nio=ALL-UNNAMED` to the JVM's startup arguments. …
+
+### Setting it in a JVM you do not launch
+
+A BI tool starts its own JVM, so there is no command line to edit. Use the environment variable the JVM itself reads at startup:
+
+```bash
+export JAVA_TOOL_OPTIONS="--add-opens=java.base/java.nio=ALL-UNNAMED"
+```
+
+Set it before starting the tool. The JVM prints `Picked up JAVA_TOOL_OPTIONS: …` on startup when it has taken it — that line is the confirmation to look for in the tool's own log. Tools that let you edit their JVM arguments directly (DBeaver's `dbeaver.ini`, DataGrip's *Help ▸ Edit Custom VM Options*) can carry the flag there instead.
+
+> **Not a fix:** the fat JAR's manifest carries an `Add-Opens` attribute, but the JVM honours that **only** for the jar named on a `java -jar` launch. A driver JAR loaded from a tool's driver folder is not that jar, so the manifest does nothing there. The flag on the host JVM is the fix.
+
+---
+
+## Prepared statements
+
+Elasticsearch has no server-side prepared statements, so the driver substitutes bound parameters into the statement text **on the client, before the engine parses it**. That model is worth understanding because it decides what can and cannot be bound:
+
+- **Values are escaped; identifiers are not bindable.** Every value is rendered as a SQL literal using the engine's own escaping, so a bound value can only ever become one literal — it can never become syntax. There is no setter that injects a table or column name.
+- **A `?` is only a placeholder outside quotes and comments.** `WHERE label = 'what?' AND name = ?` has exactly one parameter; the `?` inside the literal is left alone.
+- **Parameters are length-bounded.** A bound value may render to at most **1024 characters** (after escaping — an apostrophe or a backslash counts twice). Above that the driver raises a `SQLException` naming the limit rather than building a statement the engine's parser cannot read. Store long text in the document and filter on a shorter key.
+
+```java
+PreparedStatement ps = conn.prepareStatement("SELECT * FROM demo WHERE name = ?");
+ps.setString(1, "O'Brien");        // renders 'O\'Brien' — one literal, quotes and all
+ResultSet rs = ps.executeQuery();
+```
+
+### Binding a list with `setArray`
+
+An array is renderable only where the grammar accepts a value list — the `IN` position:
+
+```java
+PreparedStatement ps = conn.prepareStatement("SELECT * FROM demo WHERE id IN (?)");
+ps.setArray(1, conn.createArrayOf("VARCHAR", new Object[] { "a", "b" }));
+```
+
+which becomes:
+
+```sql
+SELECT * FROM demo WHERE id IN ('a','b')
+```
+
+`... IN ?` (without the parentheses) works too — the driver adds them. Anywhere else, and for a shape the grammar rejects, `setArray` raises a `SQLException` that says which: an **empty** array, an array containing **NULL**, an array of **booleans**, an array mixing **text and numbers**, and an array mixing **whole numbers and decimals**. Bind a homogeneous, non-empty array of text or numbers.
+
+### Character streams
+
+`setAsciiStream`, `setCharacterStream` and `setNCharacterStream` are supported and read into the statement text under the same 1024-character bound; longer content raises a `SQLException` rather than being silently truncated.
+
+### Permanently unsupported setters
+
+These are not "not yet" — under a text-substitution model there is no correct rendering for them, so they throw `SQLFeatureNotSupportedException` and always will:
+
+| Setter | Why |
+|---|---|
+| `setBinaryStream`, `setBlob`, `setClob`, `setNClob` | the grammar has no binary literal and no LOB locator; use `setBytes`, which renders Base64 text |
+| `setRef`, `setRowId`, `setSQLXML`, `setURL` | no literal form in the grammar |
+| `setUnicodeStream` | deprecated by the JDBC specification itself |
+
+---
+
 ## Java Example
 
 ```java
