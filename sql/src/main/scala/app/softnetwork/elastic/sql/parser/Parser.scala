@@ -1782,13 +1782,22 @@ trait Parser
   /** Strips the delimiters and un-escapes, in ONE left-to-right pass.
     *
     * `Parser.normalize` was rewritten from a line-based pass into a scan for the same reason: one
-    * pass is obviously correct without a case analysis, and it is the shape story 21.5 shares as
-    * `unescapeStringLiteral(content, delimiter)`.
+    * pass is obviously correct without a case analysis.
     *
-    * Merge note (story 21.1 AD-11 item 4): whichever of 21.1 / 21.5 lands second folds the `q ==
-    * '"'` interior onto that shared function; the backtick arm stays local (doubling only -- AD-5
-    * forbids backslash semantics inside backticks, and the shared function would collapse a doubled
-    * backslash).
+    * 🔴 It is deliberately NOT folded onto `unescapeStringLiteral(content, delimiter)`, which story
+    * 21.5 added for string LITERALS -- and a merge note here used to prescribe exactly that fold.
+    * The note was wrong: the two escape ALPHABETS differ, and folding them would silently change
+    * what a quoted identifier means (story 21.5 AD-12, measured both ways).
+    *
+    *   - An IDENTIFIER un-escapes a backslash before ANY character, so `"a\nb"` is the column
+    *     `anb`. That is what this loop's `c == '\\' && q == '"'` arm does, and it has been the
+    *     behaviour since story 21.1.
+    *   - A LITERAL un-escapes only `\\` and a backslash before its own delimiter, so `'a\nb'` keeps
+    *     the backslash -- a contract COPY INTO paths depend on.
+    *
+    * The backtick arm is local for a second, independent reason (story 21.1 AD-5): inside backticks
+    * the ONLY escape is a doubled backtick, and a shared backslash-aware scan would collapse a
+    * doubled backslash that must survive.
     */
   private def unquoteName(lexeme: String): String = {
     val q = lexeme.charAt(0)

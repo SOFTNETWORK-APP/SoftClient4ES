@@ -55,13 +55,56 @@ package object sql {
     case _       => ""
   }
 
-  /** Escapes a bare string for a single-quoted SQL literal, exactly reversing how the grammar's
-    * `'([^'\\]|\\.)*'` unescapes it — backslash first, then the quote. Renderers that hold a plain
-    * `String` rather than a `StringValue` (a column COMMENT, for one) need it too, which is why it
-    * lives here rather than on the value.
+  /** Escapes a bare string for a single-quoted SQL literal — backslash first, then the quote, so
+    * the composition reverses. Renderers that hold a plain `String` rather than a `StringValue` (a
+    * column COMMENT, for one) need it too, which is why it lives here rather than on the value.
+    *
+    * The grammar accepts TWO spellings of an embedded quote — the SQL-standard doubled delimiter
+    * (`''`, issue #274) and this legacy backslash form — and `unescapeStringLiteral` reads both.
+    * Only the backslash form is ever EMITTED, deliberately (story 21.5 AD-2): an ANSI-doubling
+    * render would also have to stop escaping backslashes, and `StringValue("C:\\").sql` would then
+    * emit `'C:\'`, which this grammar rejects — an un-reparseable render, the #218 class.
     */
   def escapeStringLiteral(value: String): String =
     value.replace("\\", "\\\\").replace("'", "\\'")
+
+  /** Un-escapes a quoted string literal's interior, in ONE left-to-right scan.
+    *
+    * Handles both accepted forms in a single pass: the SQL-standard doubled delimiter (`''` / `""`)
+    * and the grammar's legacy backslash escapes (`\'`, `\"`, `\\`). Any OTHER `\x` sequence is
+    * copied VERBATIM, exactly as the two-`replace` chain this supersedes did — `'a\nb'` keeps its
+    * literal backslash, and COPY INTO paths depend on that.
+    *
+    * Parameterised by delimiter so both branches of `TypeParser.literal` share one scan rather than
+    * growing a second copy.
+    *
+    * 🔴 It is NOT shared with `Parser.unquoteName`, and the difference is not an oversight: an
+    * IDENTIFIER un-escapes a backslash before ANY character (measured: `SELECT "a\nb" FROM t` is
+    * the column `anb`), a LITERAL only before the delimiter or another backslash. The two escape
+    * alphabets genuinely differ, so folding them — which a note on `unquoteName` used to prescribe
+    * — would silently change what a quoted identifier means (story 21.5 AD-12).
+    */
+  def unescapeStringLiteral(content: String, delimiter: Char): String = {
+    val out = new StringBuilder(content.length)
+    var i = 0
+    while (i < content.length) {
+      val c = content.charAt(i)
+      if (
+        c == '\\' && i + 1 < content.length &&
+        (content.charAt(i + 1) == '\\' || content.charAt(i + 1) == delimiter)
+      ) {
+        out.append(content.charAt(i + 1))
+        i += 2
+      } else if (c == delimiter && i + 1 < content.length && content.charAt(i + 1) == delimiter) {
+        out.append(delimiter)
+        i += 2
+      } else {
+        out.append(c)
+        i += 1
+      }
+    }
+    out.toString
+  }
 
   /** Re-emits a name that was written quoted.
     *
@@ -610,9 +653,11 @@ package object sql {
   }
 
   case class StringValue(override val value: String) extends Value[String](value) {
-    // Escaped exactly as the grammar's literal (`'([^'\\]|\\.)*'`) unescapes it — backslash first,
-    // then the quote, so the composition reverses. Without this a value holding an apostrophe
-    // rendered `'it's'`, which no longer parses.
+    // Escaped in the backslash form the grammar's literal accepts — backslash first, then the
+    // quote, so the composition reverses. Without this a value holding an apostrophe rendered
+    // `'it's'`, which no longer parses. The grammar ALSO accepts the SQL-standard doubled quote on
+    // input (#274); the render deliberately stays backslash-escaped (story 21.5 AD-2), so
+    // `SELECT 'O''Brien'` re-renders `'O\'Brien'` and re-parses to an equal AST.
     override def sql: String = s"""'${escapeStringLiteral(value)}'"""
     override def baseType: SQLType = SQLTypes.Varchar
 

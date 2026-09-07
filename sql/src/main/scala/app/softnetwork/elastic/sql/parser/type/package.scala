@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.{
+  unescapeStringLiteral,
   BooleanValue,
   BooleanValues,
   DoubleValue,
@@ -44,12 +45,29 @@ package object `type` {
       * lets RegexParsers skip whitespace between the opening quote and the content, so `' Bob'`
       * silently parsed as `'Bob'` — the literal's interior must never be subject to whitespace
       * skipping (COPY INTO paths, for one, contractually preserve it — see LocalPath).
+      *
+      * Both branches accept the SQL-standard DOUBLED delimiter (`''` / `""`, issue #274) beside the
+      * grammar's legacy backslash escapes. The three content alternatives are disjoint on their
+      * FIRST character — `[^'\\]` excludes both, `\\.` starts with a backslash, `''` with a quote —
+      * so the quantifier is deterministic and cannot backtrack catastrophically.
+      *
+      * Nothing that parsed before can change meaning: the content alternatives cannot cross a LONE
+      * quote, so the only place the widened regex reaches further than the old one is across a
+      * DOUBLED quote — and two adjacent literals with no separator were never a valid parse in this
+      * grammar (`repsep`/`separator` everywhere).
+      *
+      * The double-quoted branch does NOT make `"a""b"` a string wherever it appears: a quoted
+      * lexeme in an identifier position is claimed first by `quotedIdentifier` /
+      * `quotedIdentifierUnlessArithmetic`, whose own regex has accepted the doubled escape since
+      * story 21.1. Which reading wins is decided by production order, exactly as it already is for
+      * a bare `"x"`. An EMPTY `""` stays the empty STRING — `quotedNameRegex`'s content quantifier
+      * is `+` on purpose.
       */
     def literal: PackratParser[StringValue] =
-      (""""([^"\\]|\\.)*"""".r ^^ { str =>
-        StringValue(str.substring(1, str.length - 1).replace("\\\"", "\"").replace("\\\\", "\\"))
-      }) | ("""'([^'\\]|\\.)*'""".r ^^ { str =>
-        StringValue(str.substring(1, str.length - 1).replace("\\'", "'").replace("\\\\", "\\"))
+      (""""([^"\\]|\\.|"")*"""".r ^^ { str =>
+        StringValue(unescapeStringLiteral(str.substring(1, str.length - 1), '"'))
+      }) | ("""'([^'\\]|\\.|'')*'""".r ^^ { str =>
+        StringValue(unescapeStringLiteral(str.substring(1, str.length - 1), '\''))
       })
 
     def long: PackratParser[LongValue] =

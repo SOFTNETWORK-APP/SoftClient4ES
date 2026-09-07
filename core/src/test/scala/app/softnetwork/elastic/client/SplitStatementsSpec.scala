@@ -133,4 +133,35 @@ class SplitStatementsSpec extends AnyFlatSpec with Matchers {
     GatewayApi.splitStatements("""SELECT "a\"b;c" FROM t; SELECT 2""") shouldBe
     List("""SELECT "a\"b;c" FROM t""", "SELECT 2")
   }
+
+  // Issue #274 taught `TypeParser.literal` the SQL-standard doubled quote, and changed THIS method
+  // by not one byte. The reason is structural, not lucky: the first quote closes the run and the
+  // second, immediately adjacent, re-opens it, so the window in which the scanner is outside a
+  // quoted run while the grammar is inside it is ZERO characters wide and no `;` can fall into it.
+  // These rows exist so a future rewrite of the scanner cannot quietly break that property.
+  it should "leave the quote state balanced across a doubled single quote" in {
+    GatewayApi.splitStatements("SELECT 'a'';b' FROM t; SELECT 2") shouldBe
+    List("SELECT 'a'';b' FROM t", "SELECT 2")
+    GatewayApi.splitStatements("SELECT 'a''' FROM t; SELECT 2") shouldBe
+    List("SELECT 'a''' FROM t", "SELECT 2")
+    GatewayApi.splitStatements("SELECT '''' FROM t; SELECT 2") shouldBe
+    List("SELECT '''' FROM t", "SELECT 2")
+    GatewayApi.splitStatements("SELECT 'O''Brien' FROM t") shouldBe
+    List("SELECT 'O''Brien' FROM t")
+  }
+
+  it should "leave the quote state balanced across a doubled double quote" in {
+    GatewayApi.splitStatements("""SELECT "a"";b" FROM t; SELECT 2""") shouldBe
+    List("""SELECT "a"";b" FROM t""", "SELECT 2")
+    // Four consecutive double quotes: an empty doubled pair. Built from a val because a
+    // triple-quoted literal cannot end in a quote.
+    val fourQuotes = "\"" * 4
+    GatewayApi.splitStatements(s"SELECT $fourQuotes FROM t; SELECT 2") shouldBe
+    List(s"SELECT $fourQuotes FROM t", "SELECT 2")
+  }
+
+  it should "not start a comment on a double dash inside a doubled-quote literal" in {
+    GatewayApi.splitStatements("SELECT 'a''--b' FROM t; SELECT 2") shouldBe
+    List("SELECT 'a''--b' FROM t", "SELECT 2")
+  }
 }
