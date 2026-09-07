@@ -23,15 +23,16 @@
       "sql": "SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products"
     },
     {
-      "title": "Floor on a computed value",
-      "description": "Never let the discount go below zero",
-      "sql": "SELECT GREATEST(0, base_price - rebate) AS net FROM orders"
+      "title": "Floor a column at zero",
+      "description": "Never return a price below zero",
+      "sql": "SELECT GREATEST(0, base_price) AS net FROM orders"
     }
   ],
   "notes": [
     "Ignores NULL arguments (ANSI semantics)",
     "Returns NULL only if every argument is NULL",
-    "All arguments should be numeric and have comparable types"
+    "All arguments should be numeric and have comparable types",
+    "Arithmetic is not accepted inside a scalar function argument: compute the value into a column, or apply the arithmetic outside the call"
   ],
   "seeAlso": ["LEAST", "COALESCE"],
   "aliases": []

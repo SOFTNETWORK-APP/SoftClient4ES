@@ -32,7 +32,7 @@
     {
       "title": "Handle invalid data",
       "description": "Filter invalid values",
-      "sql": "SELECT * FROM data WHERE TRY_CAST(value AS INT) IS NOT NULL"
+      "sql": "SELECT * FROM data WHERE ISNOTNULL(TRY_CAST(value AS INT))"
     },
     {
       "title": "With COALESCE",
@@ -42,7 +42,8 @@
   ],
   "notes": [
     "Returns NULL instead of error on conversion failure",
-    "Useful for data cleaning and validation"
+    "Useful for data cleaning and validation",
+    "IS NOT NULL is not accepted over a function call in WHERE: use ISNOTNULL(TRY_CAST(...))"
   ],
   "seeAlso": ["CAST", "COALESCE"],
   "aliases": ["SAFE_CAST"]

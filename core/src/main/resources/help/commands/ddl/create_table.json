@@ -11,7 +11,7 @@
     "  ...",
     "  [PRIMARY KEY (column, ...)]",
     ")",
-    "[PARTITIONED BY column (granularity)]",
+    "[PARTITION BY column (granularity)]",
     "[OPTIONS (",
     "  [settings = (setting = value, ...)],",
     "  [mappings = (mapping = value, ...)],",
@@ -69,7 +69,7 @@
       "optional": true
     },
     {
-      "name": "PARTITIONED BY",
+      "name": "PARTITION BY",
       "description": "Create time-based index template. Granularity: YEAR, MONTH, WEEK, DAY.",
       "optional": true
     },
@@ -123,12 +123,12 @@
     {
       "title": "Partitioned table",
       "description": "Create time-partitioned table for logs",
-      "sql": "CREATE TABLE logs (\n  id INT NOT NULL,\n  level KEYWORD,\n  message VARCHAR,\n  timestamp TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITIONED BY (timestamp MONTH)"
+      "sql": "CREATE TABLE logs (\n  id INT NOT NULL,\n  level KEYWORD,\n  message VARCHAR,\n  timestamp TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITION BY timestamp (MONTH)"
     },
     {
       "title": "Table with full options",
       "description": "Create table with all options specified",
-      "sql": "CREATE OR REPLACE TABLE events (\n  id INT NOT NULL COMMENT 'Event ID',\n  event_type KEYWORD NOT NULL,\n  payload STRUCT FIELDS (\n    user_id INT,\n    action VARCHAR\n  ),\n  created_at TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITIONED BY (created_at MONTH)\nOPTIONS (\n  settings = (\n    number_of_shards = 3,\n    number_of_replicas = 1\n  ),\n  mappings = (dynamic = false)\n)"
+      "sql": "CREATE OR REPLACE TABLE events (\n  id INT NOT NULL COMMENT 'Event ID',\n  event_type KEYWORD NOT NULL,\n  payload STRUCT FIELDS (\n    user_id INT,\n    action VARCHAR\n  ),\n  created_at TIMESTAMP DEFAULT _ingest.timestamp,\n  PRIMARY KEY (id)\n) PARTITION BY created_at (MONTH)\nOPTIONS (\n  settings = (\n    number_of_shards = 3,\n    number_of_replicas = 1\n  ),\n  mappings = (dynamic = false)\n)"
     },
     {
       "title": "Create from SELECT",

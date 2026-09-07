@@ -35,18 +35,19 @@
     {
       "title": "Match a pattern",
       "description": "Rows whose code starts with two letters followed by digits",
-      "sql": "SELECT code FROM products WHERE REGEXP_LIKE(code, '^[A-Z]{2}[0-9]+')"
+      "sql": "SELECT code FROM products WHERE REGEXP_LIKE(code, '^[A-Z]{2}[0-9]+') = true"
     },
     {
       "title": "Case-insensitive match",
       "description": "Match regardless of letter case using the 'i' flag",
-      "sql": "SELECT name FROM contacts WHERE REGEXP_LIKE(name, 'smith', 'i')"
+      "sql": "SELECT name FROM contacts WHERE REGEXP_LIKE(name, 'smith', 'i') = true"
     }
   ],
   "notes": [
     "Uses Java regular expression syntax",
     "Flags: 'i' = case-insensitive, 'n' = dotall, 'c' = case-sensitive (default)",
-    "REGEXP is an accepted alias for REGEXP_LIKE"
+    "REGEXP is an accepted alias for REGEXP_LIKE",
+    "A function call is not a WHERE predicate on its own: compare it explicitly, as in REGEXP_LIKE(a, 'x') = true"
   ],
   "seeAlso": ["REPLACE", "POSITION"],
   "aliases": ["REGEXP"]

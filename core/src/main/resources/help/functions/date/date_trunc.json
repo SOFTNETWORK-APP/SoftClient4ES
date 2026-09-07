@@ -33,7 +33,7 @@
     {
       "title": "Group by day",
       "description": "Aggregate by date",
-      "sql": "SELECT DATE_TRUNC(timestamp, DAY) as day, COUNT(*) as count\nFROM events\nGROUP BY DATE_TRUNC(timestamp, DAY)"
+      "sql": "SELECT DATE_TRUNC(timestamp, DAY) as bucket, COUNT(*) as event_count\nFROM events\nGROUP BY DATE_TRUNC(timestamp, DAY)"
     },
     {
       "title": "Truncate to hour",

@@ -13,7 +13,7 @@
     {
       "title": "Get today's date",
       "description": "Use in query",
-      "sql": "SELECT CURRENT_DATE as today"
+      "sql": "SELECT CURRENT_DATE as today_date FROM orders"
     },
     {
       "title": "Filter by today",

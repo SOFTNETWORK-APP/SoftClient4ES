@@ -13,7 +13,7 @@
     {
       "title": "Get current time",
       "description": "Use NOW function",
-      "sql": "SELECT NOW() as current_time"
+      "sql": "SELECT NOW() as now_ts FROM logs"
     }
   ],
   "notes": [

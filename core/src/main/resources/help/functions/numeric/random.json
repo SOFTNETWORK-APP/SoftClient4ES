@@ -3,7 +3,7 @@
   "category": "Numeric",
   "shortDescription": "Generate random number",
   "syntax": [
-    "RANDOM()"
+    "RANDOM"
   ],
   "description": "Returns a random floating-point number between 0 and 1.",
   "parameters": [],
@@ -12,7 +12,7 @@
     {
       "title": "Random number",
       "description": "Generate random value",
-      "sql": "SELECT RANDOM() as random_value"
+      "sql": "SELECT RANDOM as random_value FROM events"
     }
   ],
   "notes": [],

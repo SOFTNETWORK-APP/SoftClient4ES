@@ -27,7 +27,7 @@
     {
       "title": "Avoid division by zero",
       "description": "Return NULL instead of error",
-      "sql": "SELECT total / NULLIF(count, 0) as average FROM stats"
+      "sql": "SELECT total / NULLIF(total_count, 0) as average FROM stats"
     },
     {
       "title": "Treat empty as NULL",

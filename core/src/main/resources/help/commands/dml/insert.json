@@ -68,7 +68,7 @@
     "NULL values are inserted as missing fields"
   ],
   "limitations": [],
-  "seeAlso": ["UPDATE", "DELETE", "COPY INTO", "BULK INSERT"],
+  "seeAlso": ["UPDATE", "DELETE", "COPY INTO"],
   "minVersion": null,
   "aliases": []
 }

@@ -29,5 +29,7 @@
   "week.json",
   "quarter.json",
   "offset_seconds.json",
+  "epochday.json",
+  "last_day.json",
   "interval.json"
 ]

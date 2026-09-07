@@ -1036,13 +1036,13 @@ FROM dql_users;
 ##### **POINT:**
 
 ```sql
-POINT(longitude, latitude)
+POINT(latitude, longitude)
 ```
 
 ##### **ST_DISTANCE:**
 
 ```sql
-ST_DISTANCE(location, POINT(2.3522, 48.8566))
+ST_DISTANCE(location, POINT(48.8566, 2.3522))
 ```
 
 Example:
@@ -1055,7 +1055,7 @@ CREATE TABLE IF NOT EXISTS dql_geo (
 );
 
 SELECT id,
-       ST_DISTANCE(location, POINT(2.3522, 48.8566)) AS dist_paris
+       ST_DISTANCE(location, POINT(48.8566, 2.3522)) AS dist_paris
 FROM dql_geo;
 ```
 

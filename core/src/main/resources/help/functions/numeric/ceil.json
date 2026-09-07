@@ -20,11 +20,13 @@
   "examples": [
     {
       "title": "Round up",
-      "description": "Calculate pages needed",
-      "sql": "SELECT CEIL(total_items / 10.0) as pages FROM listings"
+      "description": "Round a stored average up",
+      "sql": "SELECT CEIL(average_rating) as rounded_up FROM listings"
     }
   ],
-  "notes": [],
+  "notes": [
+    "Arithmetic is not accepted inside a scalar function argument: compute the value into a column, or apply the arithmetic outside the call"
+  ],
   "seeAlso": ["FLOOR", "ROUND"],
   "aliases": ["CEILING"]
 }

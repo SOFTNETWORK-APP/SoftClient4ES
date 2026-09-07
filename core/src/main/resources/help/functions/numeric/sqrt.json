@@ -19,12 +19,14 @@
   "examples": [
     {
       "title": "Square root",
-      "description": "Calculate distance",
-      "sql": "SELECT SQRT(POW(x2-x1, 2) + POW(y2-y1, 2)) as distance FROM points"
+      "description": "Square root of a stored value",
+      "sql": "SELECT SQRT(squared_distance) as dist FROM points"
     }
   ],
   "notes": [
-    "Returns NULL for negative input"
+    "Returns NULL for negative input",
+    "Arithmetic is not accepted inside a scalar function argument: compute the value into a column, or apply the arithmetic outside the call",
+    "distance is an accepted spelling of ST_DISTANCE and is therefore rejected as an alias"
   ],
   "seeAlso": ["POW", "EXP"],
   "aliases": []
