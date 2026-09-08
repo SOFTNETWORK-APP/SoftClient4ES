@@ -16,8 +16,8 @@ import org.scalatest.matchers.should.Matchers
   * Semantics are the lead's PD-1 ruling: C-STYLE. Numerics compare against zero; strings go through
   * `Boolean.parseBoolean`, so `'true'` (any case) is true and every other string is false.
   *
-  * 🔴 Every emission below was EXECUTED on a real Elasticsearch 8.18.3 via
-  * `POST /_scripts/painless/_execute` before being pinned here — `Boolean.parseBoolean` being
+  * 🔴 Every emission below was EXECUTED on a real Elasticsearch 8.18.3 via `POST
+  * /_scripts/painless/_execute` before being pinned here — `Boolean.parseBoolean` being
   * whitelisted, and `!= 0` accepting a `def`, are Painless claims, and only Elasticsearch settles
   * those (this project's standing rule; story 21.5 paid for it twice).
   *

@@ -15,18 +15,18 @@ import org.scalatest.matchers.should.Matchers
   *   - `CAST('14:30' AS TIME)` raised (`ofPattern("HH:mm:ss")`).
   *
   * And the engine disagreed with ITSELF: #276/BIDC-4 taught the WHERE path to resolve a
-  * space-separated literal against the mapped column's own `format`, so
-  * `WHERE ts = '2025-01-10 14:30:00'` worked while the CAST of the same literal raised.
+  * space-separated literal against the mapped column's own `format`, so `WHERE ts = '2025-01-10
+  * 14:30:00'` worked while the CAST of the same literal raised.
   *
   * The lead's OQ-3 ruling is "accept a small ordered format set per target". Painless has no
   * expression-level `try`/`catch` and `ofPattern`'s optional sections cannot express ISO's
   * variable-length fractional seconds, so the set is realised as a separator NORMALISATION in front
   * of a WIDER ISO formatter — one parse, and a strict superset of what parsed before.
   *
-  * 🔴 EVERY expectation below was EXECUTED on a real Elasticsearch 8.18.3 via
-  * `POST /_scripts/painless/_execute`, including the ISO forms that already worked (to prove the
-  * widening is not a swap) and the inputs that must STILL fail. A Painless claim is only provable
-  * by Elasticsearch.
+  * 🔴 EVERY expectation below was EXECUTED on a real Elasticsearch 8.18.3 via `POST
+  * /_scripts/painless/_execute`, including the ISO forms that already worked (to prove the widening
+  * is not a swap) and the inputs that must STILL fail. A Painless claim is only provable by
+  * Elasticsearch.
   */
 class TemporalCastFormatSpec extends AnyFlatSpec with Matchers {
 

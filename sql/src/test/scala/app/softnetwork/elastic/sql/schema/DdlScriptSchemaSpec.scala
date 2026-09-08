@@ -131,19 +131,21 @@ class DdlScriptSchemaSpec extends AnyFlatSpec with Matchers {
       "t",
       columns = List(Column("zip_code", SQLTypes.Keyword), Column("zip_n", SQLTypes.BigInt))
     ).update()
-    val statements = Parser("ALTER TABLE t ALTER COLUMN zip_n SET SCRIPT AS (CAST(zip_code AS BIGINT))") match {
-      case Right(at: AlterTable) => at.statements
-      case other                 => fail(s"expected an AlterTable, got $other")
-    }
+    val statements =
+      Parser("ALTER TABLE t ALTER COLUMN zip_n SET SCRIPT AS (CAST(zip_code AS BIGINT))") match {
+        case Right(at: AlterTable) => at.statements
+        case other                 => fail(s"expected an AlterTable, got $other")
+      }
     sourceOf(live.merge(statements).columns, "zip_n") should include("Long.parseLong")
   }
 
   it should "stay silent when the live table does not know the operand" in {
     val live = Table("t", columns = List(Column("zip_n", SQLTypes.BigInt))).update()
-    val statements = Parser("ALTER TABLE t ALTER COLUMN zip_n SET SCRIPT AS (CAST(absent AS BIGINT))") match {
-      case Right(at: AlterTable) => at.statements
-      case other                 => fail(s"expected an AlterTable, got $other")
-    }
+    val statements =
+      Parser("ALTER TABLE t ALTER COLUMN zip_n SET SCRIPT AS (CAST(absent AS BIGINT))") match {
+        case Right(at: AlterTable) => at.statements
+        case other                 => fail(s"expected an AlterTable, got $other")
+      }
     sourceOf(live.merge(statements).columns, "zip_n") shouldBe
     "def param1 = ctx.absent; ctx.zip_n = param1"
   }
@@ -160,8 +162,13 @@ class DdlScriptSchemaSpec extends AnyFlatSpec with Matchers {
       source = "def param1 = ctx.zip_code; ctx.zip_n = param1"
     )
     stored.expr shouldBe None
-    val table = Table("t", columns = List(Column("zip_code", SQLTypes.Keyword),
-      Column("zip_n", SQLTypes.BigInt, script = Some(stored)))).update()
+    val table = Table(
+      "t",
+      columns = List(
+        Column("zip_code", SQLTypes.Keyword),
+        Column("zip_n", SQLTypes.BigInt, script = Some(stored))
+      )
+    ).update()
     sourceOf(table.columns, "zip_n") shouldBe "def param1 = ctx.zip_code; ctx.zip_n = param1"
   }
 }

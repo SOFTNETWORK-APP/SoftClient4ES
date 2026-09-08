@@ -18,11 +18,13 @@ import org.scalatest.matchers.should.Matchers
   *     caller who asked for four characters got seven, silently, on the ordinary script-field path;
   *   - `DATETIME_PARSE('2025-01-10 10:00:00', 'yyyy-MM-dd HH:mm:ss')` emitted
   *     `ofPattern("yyyy-MM-dd HH:mm:ss XXX")`, which demands a space and an offset the caller's
-  *     format never declared, and THREW. It "worked" only for text that happened to carry ` +01:00`.
+  *     format never declared, and THREW. It "worked" only for text that happened to carry `
+  *     +01:00`.
   *
-  * The fix does not rewrite the caller's pattern. A parse that must yield a `ZonedDateTime` gets the
-  * zone from `withZone`, which supplies one only when the text carried none — the same mechanism
-  * `SQLTypeUtils`' `<string> -> TIMESTAMP` arm uses, deliberately shared rather than re-derived.
+  * The fix does not rewrite the caller's pattern. A parse that must yield a `ZonedDateTime` gets
+  * the zone from `withZone`, which supplies one only when the text carried none — the same
+  * mechanism `SQLTypeUtils`' `<string> -> TIMESTAMP` arm uses, deliberately shared rather than
+  * re-derived.
   */
 class DateTimeFormatZoneSpec extends AnyFlatSpec with Matchers {
 
@@ -86,5 +88,32 @@ class DateTimeFormatZoneSpec extends AnyFlatSpec with Matchers {
     // "zone NAME", which does not accept the `Z` ISO-8601 writes for UTC; `X` does.
     painlessOf("SELECT DATETIME_PARSE(name, 'yyyy-MM-ddZ') FROM t") should
     include("""ofPattern("yyyy-MM-ddX")""")
+  }
+
+  "the %f fractional-seconds format" should "emit a VARIABLE-width fraction, not a fixed one" in {
+    // 🔴 `%f` was mapped to `SSS` under a comment reading "microseconds". MEASURED on real ES
+    // 8.18.3, `S` is FIXED WIDTH in BOTH directions: `SSS` formats `.123456789` as `.123` and
+    // REFUSES to parse `.123456`; `SSSSSS` refuses to parse `.123`. Optional sections do not
+    // rescue it — `[.SSSSSS][.SSS]` formats as `.123456.123`.
+    //
+    // Picking a width would therefore NARROW one direction to widen the other — an "except" inside
+    // the very rule the temporal CAST arms in this same story are justified by. `appendFraction`
+    // is variable width, so the emission is a strict SUPERSET in both directions. Verified on ES
+    // 8.18.3 with the emitted script: parses `.123` (as before), `.123456`, `.123456789` and NO
+    // fraction at all; formats the value's real precision.
+    val painless = painlessOf("SELECT DATETIME_PARSE(name, '%Y-%m-%d %H:%i:%s.%f') FROM t")
+    painless should include("appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)")
+    painless should not include "SSS"
+    // The decimal point the caller wrote is absorbed INTO the fraction, which is what makes a
+    // zero-nanosecond value format as `12:00:00` rather than `12:00:00.` — measured.
+    painless should include("""appendPattern("yyyy-MM-dd HH:mm:ss")""")
+  }
+
+  it should "leave a format with no fraction on the plain ofPattern path" in {
+    // The builder is emitted ONLY when a fraction is present, so nothing else moves.
+    painlessOf("SELECT DATETIME_PARSE(name, '%Y-%m-%d %H:%i:%s') FROM t") should
+    include("""DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")""")
+    painlessOf("SELECT DATETIME_PARSE(name, '%Y-%m-%d %H:%i:%s') FROM t") should
+    not include "DateTimeFormatterBuilder"
   }
 }
