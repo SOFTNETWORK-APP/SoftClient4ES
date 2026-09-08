@@ -77,19 +77,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     else fields.map(_.outputName)
   }
 
-  /** Issue #276 -- resolve the string literals a WHERE clause compares against `date`-mapped
-    * columns (see [[TemporalLiterals]]) BEFORE the statement is rendered into an Elasticsearch
-    * query. Runs ONCE per statement, on the AST -- never per hit.
+  /** Attach the index schema to the AST, and resolve the string literals a WHERE clause compares
+    * against `date`-mapped columns (issue #276; see [[TemporalLiterals]]) -- both BEFORE the
+    * statement is rendered into an Elasticsearch query. Runs ONCE per statement, on the AST --
+    * never per hit.
     *
     * Covered entry points: every `SingleSearch -> ElasticQuery` seam -- [[search]] /
     * [[searchAsync]] (the single statement and each `UNION ALL` request), the inner-hits search and
     * `ScrollApi.scroll` -- hence `GatewayApi.run` (REPL, JDBC driver, Flight SQL sidecar and its
     * cross-index JOIN legs, which re-enter `gateway.run`) transitively.
     *
-    * 🔴 Since issue #306 this method also ATTACHES the schema to the AST (see the body), so it is
-    * no longer purely a #276 concern and the lookup is NO LONGER skipped for a statement without a
-    * temporal candidate — `baseType` is needed for every statement, and skipping would have left
-    * the attach dead for nearly every query. Cost: one lookup per index per cache TTL.
+    * 🔴 The attach arrived with issue #306 (see the body); it is why this method is named for the
+    * schema rather than for the literals, and why the lookup is NO LONGER skipped for a statement
+    * without a temporal candidate — `baseType` is needed for every statement, and skipping would
+    * have left the attach dead for nearly every query. Cost: one lookup per index per cache TTL.
     *
     * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when the FROM does not
     * name exactly ONE concrete index (several sources, a `*` wildcard or a `,` list), when this
@@ -104,10 +105,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * `loadSchema` caches successes only, so a source it cannot resolve -- an ALIAS on the es8/es9
     * clients (`executeGetIndex` looks the alias up as a key and finds nothing), an unknown index
     * without a template -- would otherwise cost one failed lookup (two round trips + WARN lines)
-    * per statement. [[temporalLiteralSchemaMisses]] remembers a 404 miss for
-    * [[temporalLiteralSchemaMissTtlMs]] and skips the lookup; the literal is verbatim either way. A
-    * NON-404 failure (a transient 5xx, a thrown lookup) is never remembered, so a cluster blip
-    * cannot disable the resolution for the TTL.
+    * per statement. [[schemaMisses]] remembers a 404 miss for [[schemaMissTtlMs]] and skips the
+    * lookup; the literal is verbatim either way. A NON-404 failure (a transient 5xx, a thrown
+    * lookup) is never remembered, so a cluster blip cannot disable the resolution for the TTL.
     *
     * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
     *
@@ -136,18 +136,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * (AD-17). The only self-consistent predicate is "this statement emits Painless over a column",
     * i.e. `shouldBeScripted` across the clauses.
     */
-  private[client] def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
-    // #306 -- the early return this used to make (`if (!TemporalLiterals.hasCandidates(single))`)
-    // was correct while the only job was rewriting WHERE literals, and is WRONG now that the
+  private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] = {
+    // #306 -- this used to return early for a statement whose WHERE carried no temporal literal.
+    // That was correct while the only job was rewriting those literals, and is WRONG now that the
     // schema is also attached to the AST: almost no statement carries a temporal WHERE literal,
     // so the lookup would be skipped for almost every query and `baseType` would stay `Any`.
     single.sources.distinct match {
       case Seq(source) if !source.contains("*") && !source.contains(",") =>
         this match {
-          case indices: IndicesApi if !temporalLiteralSchemaMissed(source) =>
+          case indices: IndicesApi if !schemaMissed(source) =>
             Try(indices.loadSchema(source)) match {
               case Success(ElasticSuccess(schema)) =>
-                temporalLiteralSchemaMisses.remove(source)
+                schemaMisses.remove(source)
                 TemporalLiterals(single, schema) match {
                   case Right(literalsResolved) =>
                     // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
@@ -188,7 +188,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
                     )
                 }
               case Success(ElasticFailure(error)) =>
-                if (error.statusCode.contains(404)) rememberTemporalLiteralSchemaMiss(source)
+                if (error.statusCode.contains(404)) rememberSchemaMiss(source)
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
@@ -205,49 +205,48 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     }
   }
 
-  /** Sources whose schema answered 404, with the time of the miss (see
-    * [[resolveTemporalLiterals]]). Per client instance, like the schema cache it shadows. Keys are
-    * caller-supplied FROM names, so the map is bounded the way #238's `shardCountCache` is: above
-    * [[temporalLiteralSchemaMissPurgeThreshold]] entries an insert also purges the expired ones,
-    * and if it is STILL above four times the threshold (a client probing thousands of distinct
-    * unknown names inside one TTL) it is cleared -- the worst case is then today's cost, one failed
-    * lookup per statement, never unbounded memory.
+  /** Sources whose schema answered 404, with the time of the miss (see [[resolveWithSchema]]). Per
+    * client instance, like the schema cache it shadows. Keys are caller-supplied FROM names, so the
+    * map is bounded the way #238's `shardCountCache` is: above [[schemaMissPurgeThreshold]] entries
+    * an insert also purges the expired ones, and if it is STILL above four times the threshold (a
+    * client probing thousands of distinct unknown names inside one TTL) it is cleared -- the worst
+    * case is then today's cost, one failed lookup per statement, never unbounded memory.
     */
-  private val temporalLiteralSchemaMisses =
+  private val schemaMisses =
     new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
-  private val temporalLiteralSchemaMissPurgeThreshold = 256
+  private val schemaMissPurgeThreshold = 256
 
   /** How long a failed schema lookup is remembered -- the schema cache's own default TTL. */
-  protected def temporalLiteralSchemaMissTtlMs: Long = 5 * 60 * 1000L
+  protected def schemaMissTtlMs: Long = 5 * 60 * 1000L
 
   /** Current size of the negative cache (tests). */
-  private[client] def temporalLiteralSchemaMissCount: Int = temporalLiteralSchemaMisses.size()
+  private[client] def schemaMissCount: Int = schemaMisses.size()
 
-  private def temporalLiteralSchemaMissed(source: String): Boolean =
-    Option(temporalLiteralSchemaMisses.get(source)).exists { missedAt =>
-      System.currentTimeMillis() - missedAt < temporalLiteralSchemaMissTtlMs
+  private def schemaMissed(source: String): Boolean =
+    Option(schemaMisses.get(source)).exists { missedAt =>
+      System.currentTimeMillis() - missedAt < schemaMissTtlMs
     }
 
-  private def rememberTemporalLiteralSchemaMiss(source: String): Unit = {
+  private def rememberSchemaMiss(source: String): Unit = {
     val now = System.currentTimeMillis()
-    temporalLiteralSchemaMisses.put(source, now)
-    if (temporalLiteralSchemaMisses.size() > temporalLiteralSchemaMissPurgeThreshold) {
-      val ttl = temporalLiteralSchemaMissTtlMs
-      temporalLiteralSchemaMisses
+    schemaMisses.put(source, now)
+    if (schemaMisses.size() > schemaMissPurgeThreshold) {
+      val ttl = schemaMissTtlMs
+      schemaMisses
         .entrySet()
         .removeIf((e: java.util.Map.Entry[String, java.lang.Long]) => now - e.getValue >= ttl)
-      if (temporalLiteralSchemaMisses.size() > temporalLiteralSchemaMissPurgeThreshold * 4)
-        temporalLiteralSchemaMisses.clear()
+      if (schemaMisses.size() > schemaMissPurgeThreshold * 4)
+        schemaMisses.clear()
     }
   }
 
-  /** [[resolveTemporalLiterals]] over every request of a `UNION ALL`; the first rejection wins. */
-  private[client] def resolveTemporalLiterals(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+  /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
+  private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
     val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
     multiple.requests.foldLeft(zero) {
       case (ElasticSuccess(acc), request) =>
-        resolveTemporalLiterals(request) match {
+        resolveWithSchema(request) match {
           case ElasticSuccess(resolved) => ElasticResult.success(acc :+ resolved)
           case ElasticFailure(error)    => ElasticResult.failure(error)
         }
@@ -296,7 +295,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         }
       case parsed: SingleSearch =>
         // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
-        val single = resolveTemporalLiterals(parsed) match {
+        val single = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }
@@ -329,7 +328,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         }
 
       case parsed: MultiSearch =>
-        val multiple = resolveTemporalLiterals(parsed) match {
+        val multiple = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }
@@ -680,7 +679,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
       case parsed: SingleSearch =>
         // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
-        val single = resolveTemporalLiterals(parsed) match {
+        val single = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
         }
@@ -706,7 +705,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         }
 
       case parsed: MultiSearch =>
-        val multiple = resolveTemporalLiterals(parsed) match {
+        val multiple = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
         }
@@ -1233,7 +1232,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     implicit def timestamp: Long = System.currentTimeMillis()
     sql.statement match {
       case Some(parsed: SingleSearch) =>
-        val single = resolveTemporalLiterals(parsed) match {
+        val single = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }
@@ -1244,7 +1243,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
         singleSearchWithInnerHits[U, I](elasticQuery, innerField)
 
       case Some(parsed: MultiSearch) =>
-        val multiple = resolveTemporalLiterals(parsed) match {
+        val multiple = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }

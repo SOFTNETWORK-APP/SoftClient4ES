@@ -1441,8 +1441,8 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     * `col.map(_.dataType)`, and `col` is populated only by `SingleSearch.update(Some(schema))`.
     * Until #306 that had ONE production call site — `Table.mergeWithSearch`, inferring a CTAS
     * target's columns — so no executing query carried a schema and a cast over a column emitted no
-    * conversion at all, for ANY source type. `SearchApi.resolveTemporalLiterals` now attaches the
-    * schema it was already loading, on every execution path.
+    * conversion at all, for ANY source type. `SearchApi.resolveWithSchema` now attaches the schema
+    * it was already loading, on every execution path.
     *
     * Values asserted EXACTLY: `should not be` here would be the fourth can't-fail gate of this
     * epic.

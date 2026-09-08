@@ -78,7 +78,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
 
     /** Set to 0 by a test to expire the negative cache immediately. */
     @volatile var missTtlMs: Long = 5 * 60 * 1000L
-    override protected def temporalLiteralSchemaMissTtlMs: Long = missTtlMs
+    override protected def schemaMissTtlMs: Long = missTtlMs
 
     override private[client] implicit def singleSearchToJsonQuery(
       sqlSearch: SingleSearch
@@ -178,7 +178,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.search(statement)
     client.search(statement)
     client.schemaLookups shouldBe 2 // a 503 is retried on the next statement
-    client.temporalLiteralSchemaMissCount shouldBe 0
+    client.schemaMissCount shouldBe 0
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
   }
 
@@ -190,7 +190,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
         SelectStatement(s"SELECT id FROM unknown_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
       )
     }
-    expiring.temporalLiteralSchemaMissCount should be < 257 // the purge ran at least once
+    expiring.schemaMissCount should be < 257 // the purge ran at least once
 
     val flooding = new RecordingClient // default TTL: nothing expires, only the cap can act
     (1 to 1100).foreach { i =>
@@ -198,7 +198,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
         SelectStatement(s"SELECT id FROM probe_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
       )
     }
-    flooding.temporalLiteralSchemaMissCount should be <= 1024
+    flooding.schemaMissCount should be <= 1024
   }
 
   it should "resolve the schema through an alias over one index, and treat an alias over several as unknown" in {
@@ -221,7 +221,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
       SelectStatement(s"SELECT id FROM events_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
-    client.temporalLiteralSchemaMissCount shouldBe 0 // a resolved alias is never a miss
+    client.schemaMissCount shouldBe 0 // a resolved alias is never a miss
     client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // ambiguous: not found
     val before = client.schemaLookups
     client.search(
@@ -229,7 +229,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
     client.schemaLookups shouldBe (before + 1)
-    client.temporalLiteralSchemaMissCount shouldBe 1
+    client.schemaMissCount shouldBe 1
     // R4-19: the ambiguous alias is BOUNDED -- a second statement costs no further lookup
     client.search(
       SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts < '$spaceForm' LIMIT 5")

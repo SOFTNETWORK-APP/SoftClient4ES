@@ -315,35 +315,6 @@ object TemporalLiterals {
     case _                                  => false
   }
 
-  /** True when the WHERE clause carries at least one candidate operand -- the caller skips the
-    * schema lookup entirely otherwise, so a statement without a temporal-looking predicate costs
-    * nothing.
-    */
-  def hasCandidates(search: SingleSearch): Boolean =
-    search.where.flatMap(_.criteria).exists(candidate)
-
-  private def candidate(criteria: Criteria): Boolean = criteria match {
-    case Predicate(left, _, right, _, _) => candidate(left) || candidate(right)
-    case relation: ElasticRelation       => candidate(relation.criteria)
-    case e: GenericExpression =>
-      (e.identifier, e.operator, e.value) match {
-        case (id: GenericIdentifier, op: ComparisonOperator, _: StringValue) =>
-          rangeOrEquality(op) && plainColumn(id)
-        case _ => false
-      }
-    case b: BetweenExpr =>
-      (b.identifier, b.fromTo) match {
-        case (id: GenericIdentifier, _: LiteralFromTo) => plainColumn(id)
-        case _                                         => false
-      }
-    case in: InExpr[_, _] =>
-      (in.identifier, in.values) match {
-        case (id: GenericIdentifier, _: StringValues) => plainColumn(id)
-        case _                                        => false
-      }
-    case _ => false
-  }
-
   /** Resolve every temporal literal of `search`'s WHERE clause against `schema`.
     *
     * @return

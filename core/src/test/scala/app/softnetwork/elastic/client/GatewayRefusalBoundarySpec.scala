@@ -169,7 +169,7 @@ class GatewayRefusalBoundarySpec
   private class TemporalRejectingClient extends NopeClientApi {
     override protected def logger: Logger = LoggerFactory.getLogger(getClass)
 
-    override private[client] def resolveTemporalLiterals(
+    override private[client] def resolveWithSchema(
       single: SingleSearch
     ): ElasticResult[SingleSearch] =
       ElasticFailure(

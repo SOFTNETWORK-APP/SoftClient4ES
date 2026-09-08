@@ -19,12 +19,12 @@ import org.slf4j.{Logger, LoggerFactory}
   * so every executing query reached `coerce` with `baseType = SQLTypes.Any` and **no cast over a
   * column ever emitted a conversion, for any source type**.
   *
-  * `SearchApi.resolveTemporalLiterals` now attaches the schema it was already loading. This spec
-  * pins the two properties the fix rests on, both of which were only asserted in a source COMMENT
-  * before it existed:
+  * `SearchApi.resolveWithSchema` now attaches the schema it was already loading. This spec pins the
+  * two properties the fix rests on, both of which were only asserted in a source COMMENT before it
+  * existed:
   *
-  *   1. the seam ATTACHES — a statement that comes back out of `resolveTemporalLiterals` carries
-  *      the mapped column types, so the conversion is emitted; 2. the attach is IDEMPOTENT —
+  *   1. the seam ATTACHES — a statement that comes back out of `resolveWithSchema` carries the
+  *      mapped column types, so the conversion is emitted; 2. the attach is IDEMPOTENT —
   *      `SearchApi.search` resolves and then routes a row query through `scrollRows` ->
   *      `ScrollApi.scroll`, which resolves AGAIN, so it genuinely runs twice on that path. Story
   *      21.3 lost a round to a resolution that was not idempotent (a substituted node whose SHAPE
@@ -75,14 +75,14 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
   }
 
   // -- 1. the seam attaches -----------------------------------------------------
-  "resolveTemporalLiterals" should "attach the schema, so a cast over a COLUMN converts" in {
+  "resolveWithSchema" should "attach the schema, so a cast over a COLUMN converts" in {
     val client = seeded()
     val parsed = parse("SELECT CAST(code AS BIGINT) AS n FROM events LIMIT 5")
 
     // BEFORE the attach this is the whole story: no schema, `baseType` is Any, no arm fires.
     painlessOf(parsed) should not include "parseLong"
 
-    client.resolveTemporalLiterals(parsed) match {
+    client.resolveWithSchema(parsed) match {
       case ElasticSuccess(resolved) =>
         painlessOf(resolved) should include("Long.parseLong")
       case ElasticFailure(error) => fail(s"unexpected failure: ${error.message}")
@@ -90,12 +90,12 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "attach it for a statement with NO temporal literal at all" in {
-    // The early return this method used to make (`if (!TemporalLiterals.hasCandidates(single))`)
-    // would skip the lookup here — and almost no statement carries a temporal WHERE literal, so
-    // the attach would have been dead for nearly every query.
+    // Before #306 this method returned early when the WHERE carried no temporal literal, which
+    // would skip the lookup here — and almost no statement carries such a literal, so the attach
+    // would have been dead for nearly every query.
     val client = seeded()
     val parsed = parse("SELECT CAST(amount AS BIGINT) AS m FROM events WHERE amount > 10 LIMIT 5")
-    client.resolveTemporalLiterals(parsed) match {
+    client.resolveWithSchema(parsed) match {
       case ElasticSuccess(resolved) => painlessOf(resolved) should include("(long)")
       case ElasticFailure(error)    => fail(s"unexpected failure: ${error.message}")
     }
@@ -104,7 +104,7 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
   it should "leave a multi-source or wildcard FROM untouched (the precondition still holds)" in {
     val client = seeded()
     val wildcard = parse("SELECT CAST(code AS BIGINT) AS n FROM events* LIMIT 5")
-    client.resolveTemporalLiterals(wildcard) match {
+    client.resolveWithSchema(wildcard) match {
       case ElasticSuccess(resolved) => painlessOf(resolved) should not include "parseLong"
       case ElasticFailure(error)    => fail(s"unexpected failure: ${error.message}")
     }
@@ -133,11 +133,11 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
   it should "be idempotent through the SEAM applied twice, not only through update()" in {
     val client = seeded()
     val parsed = parse("SELECT CAST(code AS BIGINT) AS n FROM events LIMIT 5")
-    val first = client.resolveTemporalLiterals(parsed) match {
+    val first = client.resolveWithSchema(parsed) match {
       case ElasticSuccess(r)     => r
       case ElasticFailure(error) => fail(error.message)
     }
-    val second = client.resolveTemporalLiterals(first) match {
+    val second = client.resolveWithSchema(first) match {
       case ElasticSuccess(r)     => r
       case ElasticFailure(error) => fail(error.message)
     }

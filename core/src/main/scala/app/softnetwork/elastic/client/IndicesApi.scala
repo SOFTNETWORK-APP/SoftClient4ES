@@ -864,7 +864,7 @@ trait IndicesApi extends ElasticClientHelpers {
         case Some(where) =>
           implicit val timestamp: Long = System.currentTimeMillis()
           // #276 -- the same temporal-literal resolution the equivalent SELECT gets
-          resolveDmlTemporalLiterals(
+          resolveDmlWithSchema(
             SingleSearch(
               from = From(tables = Seq(delete.table)),
               where = Some(where),
@@ -882,18 +882,19 @@ trait IndicesApi extends ElasticClientHelpers {
     finalizeDeleteByQuery(index, result)
   }
 
-  /** Issue #276 -- resolve the WHERE clause's temporal literals for a DELETE / UPDATE by-query
-    * search body exactly as [[SearchApi.resolveTemporalLiterals]] does for a SELECT (same rule,
-    * same schema-absent boundaries), so `DELETE FROM t WHERE ts >= '2026-06-04 00:00:00'` affects
-    * the rows the equivalent SELECT matches instead of failing with a raw shard error.
+  /** Issue #276 -- resolve the WHERE clause's temporal literals (and, since #306, attach the
+    * schema) for a DELETE / UPDATE by-query search body exactly as [[SearchApi.resolveWithSchema]]
+    * does for a SELECT (same rule, same schema-absent boundaries), so `DELETE FROM t WHERE ts >=
+    * '2026-06-04 00:00:00'` affects the rows the equivalent SELECT matches instead of failing with
+    * a raw shard error.
     */
-  private def resolveDmlTemporalLiterals(
+  private def resolveDmlWithSchema(
     single: SingleSearch,
     operation: String
   ): Either[ElasticError, SingleSearch] =
     this match {
       case api: SearchApi =>
-        api.resolveTemporalLiterals(single) match {
+        api.resolveWithSchema(single) match {
           case ElasticSuccess(resolved) => Right(resolved)
           case ElasticFailure(error)    => Left(error.copy(operation = Some(operation)))
         }
@@ -1075,7 +1076,7 @@ trait IndicesApi extends ElasticClientHelpers {
             case Some(where) =>
               implicit val timestamp: Long = System.currentTimeMillis()
               // #276 -- the same temporal-literal resolution the equivalent SELECT gets
-              resolveDmlTemporalLiterals(
+              resolveDmlWithSchema(
                 SingleSearch(
                   from = From(tables = Seq(Table(u.table))),
                   where = Some(where),
@@ -1618,7 +1619,7 @@ trait IndicesApi extends ElasticClientHelpers {
                 )
               else {
                 implicit val timestamp: Long = System.currentTimeMillis()
-                resolveDmlTemporalLiterals(
+                resolveDmlWithSchema(
                   search.copy(deleteByQuery = false),
                   "updateByQuery"
                 ) match {
@@ -1745,7 +1746,7 @@ trait IndicesApi extends ElasticClientHelpers {
 
                 case Some(where) =>
                   implicit val timestamp: Long = System.currentTimeMillis()
-                  resolveDmlTemporalLiterals(
+                  resolveDmlWithSchema(
                     SingleSearch(
                       from = From(tables = Seq(deleteStmt.table)),
                       where = Some(where),
@@ -1774,7 +1775,7 @@ trait IndicesApi extends ElasticClientHelpers {
               )
             else {
               implicit val timestamp: Long = System.currentTimeMillis()
-              resolveDmlTemporalLiterals(search.copy(deleteByQuery = true), "deleteByQuery").map {
+              resolveDmlWithSchema(search.copy(deleteByQuery = true), "deleteByQuery").map {
                 resolved =>
                   val query: String = resolved
                   logger.info(s"✅ Converted SQL search query to search for deleteByQuery: $query")
