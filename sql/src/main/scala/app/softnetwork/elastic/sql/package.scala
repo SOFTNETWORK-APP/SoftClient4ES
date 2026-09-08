@@ -27,7 +27,7 @@ import app.softnetwork.elastic.sql.function.geo.DistanceUnit
 import app.softnetwork.elastic.sql.function.time.CurrentFunction
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
-import app.softnetwork.elastic.sql.schema.Column
+import app.softnetwork.elastic.sql.schema.{Column, Table => Schema}
 import com.fasterxml.jackson.databind.JsonNode
 
 import scala.annotation.tailrec
@@ -1424,6 +1424,7 @@ package object sql {
         }
       val parts: Seq[String] = name.split("\\.").toSeq
       val tableAlias = parts.head
+      val mainTable = request.from.mainTable.name
       // A qualifier needs something to qualify: `parts.head` is only a table alias when a column
       // name follows it. Without the arity check a column that happens to share its table's name
       // — `FROM status WHERE status = 'done'` — matched `tableAliases` and was rewritten to
@@ -1431,7 +1432,29 @@ package object sql {
       val table =
         if (parts.size > 1) request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
         else None
-      if (table.nonEmpty) {
+
+      /** The schema for THIS column's own table.
+        *
+        * 🔴 Keyed on `table`, never on the alias. `request.schemas` is keyed the way
+        * `From.tableAliases` keys it -- the index name via `aliasKey` (story 21.2 AD-6) -- which is
+        * also how softclient4es-extensions builds its map. `tableAlias` is the SQL alias (`c`), a
+        * different language; looking the map up with it misses for every aliased JOIN.
+        *
+        * 🔴 `this.table` is the fallback because `update` is not the first pass. The parser has
+        * already normalised `c.zip` to `name = "zip"`, `table = Some("customers")` -- MEASURED --
+        * so `parts.size` is 1, the qualified branch below is not taken, and `table` (local) is
+        * None. `this.table` is then the ONLY surviving evidence of which leg the column came from.
+        *
+        * A known-but-absent leg deliberately does NOT fall back to the main table: attributing a
+        * joined column to the main table's schema resolves it against the wrong mapping, which is
+        * worse than not resolving it at all.
+        */
+      val columnSchema: Option[Schema] =
+        table.orElse(this.table) match {
+          case Some(key) => request.schemas.get(key).orElse(request.schema)
+          case None      => request.schemas.get(mainTable).orElse(request.schema)
+        }
+      if (table.nonEmpty) { // maybe from a JOIN or a subquery, not the main table
         request.unnestAliases.find(_._1 == tableAlias) match {
           case Some(tuple) if !nested =>
             val nestedElement =
@@ -1450,7 +1473,7 @@ package object sql {
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 nestedElement = nestedElement,
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(colName)),
+                col = columnSchema.flatMap(schema => schema.find(colName)),
                 table = table
               )
               .withFunctions(this.updateFunctions(request))
@@ -1464,7 +1487,7 @@ package object sql {
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(colName)),
+                col = columnSchema.flatMap(schema => schema.find(colName)),
                 table = table
               )
               .withFunctions(this.updateFunctions(request))
@@ -1475,7 +1498,7 @@ package object sql {
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
                 bucket = request.bucketNames.get(identifierName).orElse(bucket),
                 bucketPath = bucketPath,
-                col = request.schema.flatMap(schema => schema.find(name)),
+                col = columnSchema.flatMap(schema => schema.find(name)),
                 table = table
               )
               .withFunctions(this.updateFunctions(request))
@@ -1487,17 +1510,19 @@ package object sql {
               fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
               bucket = request.bucketNames.get(identifierName).orElse(bucket),
               bucketPath = bucketPath,
-              col = request.schema.flatMap(schema => schema.find(colName)),
+              col = columnSchema.flatMap(schema => schema.find(colName)),
               table = table
             )
         }
       } else {
+        // maybe from the main table or a subquery, not a JOIN
+        // here we only take into account the main table, not subqueries
         this
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
             bucket = request.bucketNames.get(identifierName).orElse(bucket),
             bucketPath = bucketPath,
-            col = request.schema.flatMap(schema => schema.find(name))
+            col = columnSchema.flatMap(schema => schema.find(name))
           )
           .withFunctions(this.updateFunctions(request))
       }

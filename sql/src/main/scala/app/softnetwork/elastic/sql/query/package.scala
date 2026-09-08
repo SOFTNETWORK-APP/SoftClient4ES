@@ -108,7 +108,8 @@ package object query {
     updateByQuery: Boolean = false,
     onConflict: Option[OnConflict] = None,
     schema: Option[Schema] = None,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    schemas: Map[String, Schema] = Map.empty
   ) extends SearchStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
@@ -277,6 +278,10 @@ package object query {
       } yield updated).getOrElse(
         throw new IllegalStateException("Failed to update SQLSearchRequest")
       )
+    }
+
+    def updateAll(schemas: Map[String, Schema] = Map.empty): SingleSearch = {
+      this.copy(schemas = schemas /*, schema = None*/ ).update()
     }
 
     lazy val scriptFields: Seq[Field] = {
