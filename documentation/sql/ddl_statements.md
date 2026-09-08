@@ -406,6 +406,31 @@ a good value with `NULL`.
 > **Note** — `STORED` describes *this* index only. The same column can be an executing
 > `SCRIPT AS` in the index that computes it and a `STORED` one in every index it flows into.
 
+#### Conversions inside a computed column
+
+The expression is resolved against the **columns of the same table**, so a `CAST` over a sibling
+column converts on the way in:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (CAST(zip_code AS BIGINT))    -- stores the NUMBER 75001
+);
+```
+
+`ALTER TABLE ... ALTER COLUMN ... SET SCRIPT AS (...)` resolves the same way, against the table as
+it currently exists.
+
+> An operand that names no column of the table is left **unconverted** rather than rejected: the
+> statement still succeeds and the raw value is stored. Check the column names if a computed column
+> comes back with the type of its source instead of its own.
+
+⚠️ **Date and time FUNCTIONS are not usable in a computed column.** In an ingest script the operand
+is the raw JSON value of the incoming document — for a `date` column, the string as written — so
+`YEAR(created)`, `DATE_TRUNC(...)` and `DATE_DIFF(...)` fail at ingest and the column is left
+absent from the document. Conversions (`CAST`) and string functions (`UPPER`, ...) are unaffected.
+
 ---
 
 ## ALTER TABLE

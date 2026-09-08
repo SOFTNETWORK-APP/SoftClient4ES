@@ -515,10 +515,67 @@ package object time {
   sealed trait FunctionWithDateTimeFormat {
     def format: String
 
-    def includeTimeZone: Boolean = false
+    /** The `%f` (fractional seconds) marker, left in the pattern by `convert()` and turned into a
+      * VARIABLE-WIDTH fraction here. It is not a letter substitution because no `ofPattern` letter
+      * can express one: `S` is fixed width in BOTH directions.
+      */
+    private val FractionMarker = "%f"
 
-    protected def param: String = "DateTimeFormatter.ofPattern(\"" + convert() + "\")"
+    protected def param: String = {
+      val pattern = convert()
+      val at = pattern.indexOf(FractionMarker)
+      if (at < 0) "DateTimeFormatter.ofPattern(\"" + pattern + "\")"
+      else {
+        // A decimal point written immediately before `%f` BELONGS to the fraction: handing it to
+        // `appendFraction` is what makes a zero-nanosecond value format as `12:00:00` instead of
+        // `12:00:00.`, and what lets a value with no fraction at all still parse.
+        val absorbsPoint = at > 0 && pattern.charAt(at - 1) == '.'
+        val head = pattern.substring(0, if (absorbsPoint) at - 1 else at)
+        // A second `%f` in one format is meaningless; keep the historical fixed-width mapping for
+        // it rather than emitting a pattern `ofPattern` would reject.
+        val tail = pattern.substring(at + FractionMarker.length).replace(FractionMarker, "SSS")
+        val b = new StringBuilder("new DateTimeFormatterBuilder()")
+        if (head.nonEmpty) b.append(s""".appendPattern("$head")""")
+        b.append(s".appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, $absorbsPoint)")
+        if (tail.nonEmpty) b.append(s""".appendPattern("$tail")""")
+        b.append(".toFormatter()")
+        b.toString
+      }
+    }
 
+    /** The same formatter with a DEFAULT zone, for a parse that must produce a `ZonedDateTime`.
+      *
+      * 🔴 This replaces appending `" XXX"` to the user's pattern, which was wrong in BOTH
+      * directions and MEASURED so on real ES 8.18 (story 21.8):
+      *
+      *   - formatting: `DATETIME_FORMAT(ts, 'yyyy')` emitted `ofPattern("yyyy XXX")` and returned
+      *     `"2025 Z"` — a silent wrong answer on the ordinary script-field path, for a caller who
+      *     asked for four characters;
+      *   - parsing: `DATETIME_PARSE('2025-01-10 10:00:00', 'yyyy-MM-dd HH:mm:ss')` emitted
+      *     `ofPattern("yyyy-MM-dd HH:mm:ss XXX")`, which demands a space and an offset the caller's
+      *     format never declared, so the parse failed at runtime. It "worked" only for input that
+      *     happened to carry ` +01:00`.
+      *
+      * `withZone` is the right tool because it does NOT rewrite the caller's pattern: at parse time
+      * it supplies a zone only when the text carried none, and an explicit offset still wins
+      * (verified — `2025-01-10T14:30:00+01:00` resolves to `13:30Z`). It is the same mechanism
+      * `SQLTypeUtils`' `<string> -> TIMESTAMP` arm uses, deliberately: one derivation, not two.
+      */
+    protected def zonedParam: String = s"$param.withZone(ZoneId.of('Z'))"
+
+    /** MySQL-style format letters to `java.time` pattern letters.
+      *
+      * 🔴 `%f` is deliberately ABSENT. MySQL's `%f` is fractional seconds, and it was mapped to
+      * `SSS` — three digits — under a comment that said "microseconds". MEASURED on real ES 8.18.3,
+      * `S` is FIXED WIDTH in both directions: `SSS` formats `.123456789` as `.123` and REFUSES to
+      * parse `.123456`, while `SSSSSS` refuses to parse `.123`. Optional sections do not rescue it
+      * either — `[.SSSSSS][.SSS]` formats as `.123456.123`.
+      *
+      * So no letter substitution can be correct, and picking a width would NARROW one direction to
+      * widen the other — an "except" inside the very rule story 21.8's temporal arms are justified
+      * by (widen, never narrow). `param` emits a variable-width `appendFraction` instead, which
+      * formats the value's real precision and parses any number of digits, including none.
+      */
     val sqlToJava: Map[String, String] = Map(
       "%Y" -> "yyyy",
       "%y" -> "yy",
@@ -534,7 +591,6 @@ package object time {
       "%i" -> "mm",
       "%s" -> "ss",
       "%S" -> "ss",
-      "%f" -> "SSS", // microseconds
       "%p" -> "a",
       "%W" -> "EEEE",
       "%a" -> "EEE",
@@ -552,12 +608,11 @@ package object time {
         pattern.replace(sql, java)
       }
 
-      val patternWithTZ =
-        if (basePattern.contains("Z")) basePattern.replace("Z", "X")
-        else if (includeTimeZone) s"$basePattern XXX"
-        else basePattern
-
-      patternWithTZ
+      // A literal `Z` in the caller's pattern means "zone NAME" to `ofPattern`, which does not
+      // accept the `Z` that ISO-8601 writes for UTC; `X` does. Unchanged, and unrelated to the
+      // default-zone question `zonedParam` answers.
+      if (basePattern.contains("Z")) basePattern.replace("Z", "X")
+      else basePattern
     }
   }
 
@@ -751,8 +806,6 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def includeTimeZone: Boolean = true
-
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case arg :: Nil =>
@@ -760,7 +813,7 @@ package object time {
             case Some(ctx) =>
               identifier.baseType match {
                 case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $param)")) match {
+                  ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $zonedParam)")) match {
                     case Some(p) => return p
                     case _       =>
                   }
@@ -768,7 +821,7 @@ package object time {
               }
             case _ =>
           }
-          s"ZonedDateTime.parse($arg, $param)"
+          s"ZonedDateTime.parse($arg, $zonedParam)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
@@ -812,8 +865,6 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }
-
-    override def includeTimeZone: Boolean = true
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {

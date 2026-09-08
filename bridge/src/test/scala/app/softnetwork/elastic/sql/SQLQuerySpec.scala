@@ -60,7 +60,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
          |      }
          |    }
          |  }
-         |}""".stripMargin.replaceAll("\\s+", "")
+         |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform count distinct" in {
@@ -96,7 +100,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
          |      }
          |    }
          |  }
-         |}""".stripMargin.replaceAll("\\s+", "")
+         |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested count" in {
@@ -141,7 +149,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested count with nested criteria" in {
@@ -204,7 +216,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested count with filter" in {
@@ -278,7 +294,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested count with \"and not\" operator" in {
@@ -352,7 +372,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested count with date filtering" in {
@@ -420,7 +444,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform nested select" in {
@@ -496,7 +524,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "profileId"
         |    ]
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "exclude fields from select" in {
@@ -514,7 +546,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |   "includes":["*"],
         |   "excludes":["col1","col2"]
         | }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "perform query with group by and having" in {
@@ -574,6 +610,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
@@ -836,6 +875,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll("<(\\d)", " < $1")
@@ -869,6 +911,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("if\\(", "if (")
@@ -916,7 +961,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "*"
         |    ]
         |  }
-        |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "filter with date and interval" in {
@@ -951,7 +1001,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "*"
         |    ]
         |  }
-        |}""".stripMargin.replaceAll("\\s", "").replaceAll("ChronoUnit", " ChronoUnit")
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
+      .replaceAll("ChronoUnit", " ChronoUnit")
   }
 
   it should "filter with time and interval" in {
@@ -988,6 +1043,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll(">=", " >= ")
       .replaceAll("<", " < ")
@@ -1048,6 +1106,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("!=", " != ")
@@ -1120,6 +1181,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
@@ -1194,6 +1258,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("ChronoUnit", " ChronoUnit")
       .replaceAll("==", " == ")
       .replaceAll("!=", " != ")
@@ -1253,6 +1320,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("if\\(", "if (")
@@ -1396,6 +1466,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("if\\(", "if (")
@@ -1461,7 +1534,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            "field": "createdAt",
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
         |            }
         |          }
         |        }
@@ -1470,6 +1543,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("if\\(", "if (")
@@ -1487,7 +1563,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",ZonedDateTime", ", ZonedDateTime")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
-      .replaceAll("SSSXXX", "SSS XXX")
       .replaceAll("ddHH", "dd HH")
   }
 
@@ -1513,7 +1588,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "lastSeen": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss XXX\"); (param1 == null) ? null : param2.format(param1)"
+        |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss\"); (param1 == null) ? null : param2.format(param1)"
         |      }
         |    }
         |  },
@@ -1524,6 +1599,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("if\\(", "if (")
@@ -1540,9 +1618,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
       .replaceAll(",ZonedDateTime", ", ZonedDateTime")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
-      .replaceAll("SSSXXX", "SSS XXX")
       .replaceAll("ddHH", "dd HH")
-      .replaceAll("XXX", " XXX")
   }
 
   it should "handle date_diff function as script field" in {
@@ -1570,6 +1646,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defa", "def a")
@@ -1611,7 +1690,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param3 = ((param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")) != null ? (param1 == null) ? null : ZonedDateTime.parse(param1, DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH:mm:ss.SSS XXX\")).toLocalDate() : null); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3, param2))"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param3 = ((param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))) != null ? (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))).toLocalDate() : null); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3, param2))"
         |            }
         |          }
         |        }
@@ -1620,6 +1699,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defa", "def a")
@@ -1637,7 +1719,6 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("\\|\\|", " || ")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll(",DateTimeFormatter", ", DateTimeFormatter")
-      .replaceAll("SSSXXX", "SSS XXX")
       .replaceAll("ddHH", "dd HH")
   }
 
@@ -1680,6 +1761,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1737,6 +1821,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |  }
       |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1788,6 +1875,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1839,6 +1929,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1878,6 +1971,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1920,6 +2016,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defs", "def s")
@@ -1966,7 +2065,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "*"
         |    ]
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "handle is_notnull criteria as exists" in {
@@ -1992,7 +2095,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "*"
         |    ]
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "handle coalesce function as script field" in {
@@ -2023,6 +2130,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll(";defp", "; defp")
       .replaceAll("defp", "def p")
       .replaceAll("defv", " def v")
@@ -2078,6 +2188,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defv", " def v")
       .replaceAll("defa", "def a")
@@ -2241,7 +2354,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c5": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1"
+        |        "source": "def param1 = LocalDate.parse((\"2025-09-11\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1"
         |      }
         |    }
         |  },
@@ -2252,6 +2365,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll(";defp", "; defp")
       .replaceAll("defp", "def p")
       .replaceAll("defv", " def v")
@@ -2317,6 +2433,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defd", " def d")
       .replaceAll("defe", " def e")
@@ -2374,6 +2493,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defd", " def d")
       .replaceAll("defe", " def e")
@@ -2510,6 +2632,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
@@ -2598,6 +2723,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
@@ -2760,6 +2888,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defp", "def p")
@@ -2906,6 +3037,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3035,6 +3169,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3104,6 +3241,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3241,6 +3381,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3360,6 +3503,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defv", " def v")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3420,7 +3566,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())) == false)"
+        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-11\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())) == false)"
         |                  }
         |                }
         |              },
@@ -3444,7 +3590,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3510,7 +3662,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                        "script": {
         |                          "script": {
         |                            "lang": "painless",
-        |                            "source": "def param1 = (doc['comments.replies.lastUpdated'].size() == 0 ? null : doc['comments.replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
+        |                            "source": "def param1 = (doc['comments.replies.lastUpdated'].size() == 0 ? null : doc['comments.replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
         |                          }
         |                        }
         |                      }
@@ -3547,8 +3699,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3604,7 +3765,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    "script": {
         |                      "script": {
         |                        "lang": "painless",
-        |                        "source": "def param1 = (doc['replies.lastUpdated'].size() == 0 ? null : doc['replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse(\"2025-09-10\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
+        |                        "source": "def param1 = (doc['replies.lastUpdated'].size() == 0 ? null : doc['replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
         |                      }
         |                    }
         |                  },
@@ -3653,8 +3814,17 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3756,6 +3926,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "_source": true
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
       .replaceAll("defe", "def e")
@@ -3823,7 +3996,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |            }
         |        }
         |    }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "handle aggregation with nested of nested context" in {
@@ -3859,7 +4036,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "handle where filters according to scope" in {
@@ -3930,7 +4111,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   // === Issue #50: HAVING COUNT(*) without alias ===
@@ -3992,6 +4177,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
@@ -4048,6 +4236,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">=", " >= ")
@@ -4104,6 +4295,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
@@ -4197,6 +4391,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "handle HAVING COUNT(DISTINCT *) without alias" in {
@@ -4243,6 +4440,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
@@ -4298,6 +4498,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  }
         |}""".stripMargin
       .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("==", " == ")
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
@@ -4365,7 +4568,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "translate STDDEV_SAMP(salary) to extended_stats (alias of STDDEV)" in {
@@ -4413,7 +4620,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "translate VAR_SAMP(salary) to extended_stats (alias of VARIANCE)" in {
@@ -4476,7 +4687,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "translate the PERCENTILE_CONT(salary, 0.95) shorthand to percentiles" in {
@@ -4500,7 +4715,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "translate PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY salary) to percentiles" in {
@@ -4516,7 +4735,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |  "aggs": {
         |    "median": { "percentiles": { "field": "salary", "percents": [50.0] } }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "translate PERCENTILE_CONT(0.9) OVER (PARTITION BY department ORDER BY salary)" in {
@@ -4559,7 +4782,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s+", "")
+        |}""".stripMargin
+      .replaceAll("\\s+", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
     "\"percentiles\"".r.findAllIn(query).length shouldBe 1
   }
 
@@ -4627,7 +4854,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      "terms": { "field": "category", "size": 65536, "min_doc_count": 1 }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s", "")
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "size an aggregate-free GROUP BY from an explicit LIMIT" in {
@@ -4658,7 +4889,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s", "")
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "order an aggregate-free GROUP BY by the bucket key, not by a document sort" in {
@@ -4722,7 +4957,11 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      }
         |    }
         |  }
-        |}""".stripMargin.replaceAll("\\s", "")
+        |}""".stripMargin
+      .replaceAll("\\s", "")
+      .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
+      .replace(",newDateTimeFormatterBuilder", ", new DateTimeFormatterBuilder")
+      .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
   }
 
   it should "order buckets by the METRIC when the ordinal names an aggregate" in {

@@ -890,7 +890,7 @@ The following patterns are supported in `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_F
 | `%I`     | Hour (01-12, synonym for %h)         | `01`            |
 | `%i`     | Minutes (00-59)                      | `45`            |
 | `%s`     | Seconds (00-59)                      | `30`            |
-| `%f`     | Microseconds (000000-999999)         | `123456`        |
+| `%f`     | Fractional seconds, any precision    | `123456`        |
 | `%p`     | AM/PM marker                         | `AM` / `PM`     |
 
 **Pattern Combination Examples:**
@@ -907,6 +907,14 @@ The following patterns are supported in `DATE_FORMAT`, `DATE_PARSE`, `DATETIME_F
 
 -- ISO 8601 with microseconds
 '%Y-%m-%dT%H:%i:%s.%f'        -- 2025-01-10T13:45:30.123456
+```
+
+> **`%f` is variable width.** It formats a value at its actual precision — `.123456` for
+> microseconds, `.123` for milliseconds — and when parsing it accepts any number of fractional
+> digits, or none at all. A decimal point written immediately before it belongs to the fraction, so
+> a value with no fractional part formats as `12:00:00` rather than `12:00:00.`.
+
+```
 
 -- Short format
 '%d-%b-%y'                    -- 10-Jan-25

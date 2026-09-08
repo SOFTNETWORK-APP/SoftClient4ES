@@ -362,7 +362,9 @@ class ConversionTargetTypeSpec extends AnyFlatSpec with Matchers {
     // alternative and the later `~` failure never backtracks. Measured; do not "clean up" there.
     val sql = "SELECT CAST('2025-01-01' + INTERVAL 1 DAY AS DATE) AS c FROM t"
     chainOf(sql) shouldBe List("Cast", "SQLAddInterval", "StringValue")
+    // The `.replace("/", "-")` is story 21.8's DATE format widening (it accepts `2025/01/10` too),
+    // not part of what this test is about; the operand-ordering claim above is.
     identifierOf(sql).painless(None) shouldBe
-    """LocalDate.parse("2025-01-01", DateTimeFormatter.ofPattern("yyyy-MM-dd")).plus(1, ChronoUnit.DAYS)"""
+    """LocalDate.parse(("2025-01-01").replace("/", "-"), DateTimeFormatter.ofPattern("yyyy-MM-dd")).plus(1, ChronoUnit.DAYS)"""
   }
 }
