@@ -1496,6 +1496,57 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     *   - AS DATE was `(Date, Date)`, the IDENTITY arm ⇒ the un-truncated timestamp came back;
     *   - AS TIME had no `(Date, Time)` arm at all ⇒ the fallback returned the timestamp whole.
     */
+  /** 🔴 The INGEST path, which this suite has never exercised end to end.
+    *
+    * `users` is created with an ingest `DATEDIFF` column but nothing is ever inserted into it, and
+    * the `age` assertions elsewhere belong to `dql_users`, which has no script column. So no test
+    * has ever observed what an ingest script actually computes — which is why story 21.5's ingest
+    * guard rested on inference rather than measurement.
+    *
+    * What is being measured: the RUNTIME TYPE of `ctx.<date field>`. `SQLTypeUtils.coerce` guards
+    * its temporal arms on `isProcessorContext` because `ctx.d` is the raw JSON value of the
+    * document being indexed, NOT the temporal object `doc['d'].value` hands a query. If that is
+    * right, `DATEDIFF(d, CURRENT_DATE, DAY)` cannot compute at ingest — `ChronoUnit.DAYS.between`
+    * gets a String — and the processor's `ignore_failure` leaves the column unset. If it is wrong,
+    * `days` comes back a number and the guard is wrong; this test says which.
+    */
+  it should "record what an ingest script sees for a DATE column (ctx runtime type)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS ingest_probe (
+        |  id INT NOT NULL,
+        |  d DATE,
+        |  label KEYWORD,
+        |  days INT SCRIPT AS (DATEDIFF(d, CURRENT_DATE, DAY))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO ingest_probe (id, d, label) VALUES (1, '2024-03-15', 'x');")
+        .futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    val rows = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, d, label, days FROM ingest_probe;").futureValue
+    )
+    rows.size shouldBe 1
+    val row = rows.head
+
+    // CONTROL: the document was indexed and the plain columns round-tripped, so anything observed
+    // about `days` is about the ingest SCRIPT and not about a failed insert.
+    String.valueOf(scalarOf(row, "d")) should startWith("2024-03-15")
+    scalarOf(row, "label") shouldBe "x"
+
+    val days = row.get("days").map(v => scalarOf(row, "days")).orNull
+    withClue(s"ingest-computed days = [$days] (null/absent => ctx.d is NOT a temporal object): ") {
+      // The measurement. Asserted, not merely printed, so a change in either direction is loud.
+      Option(days) shouldBe None
+    }
+  }
+
   it should "convert every temporal cast over a DATE column (HIGH-1 + HIGH-2)" in {
     val sql =
       """SELECT id,

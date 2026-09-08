@@ -24,7 +24,6 @@ import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.ObjectNode
 
-import java.util.UUID
 import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 import scala.language.implicitConversions
@@ -402,9 +401,52 @@ package object schema {
     }
 
     override def sql: String = ddl
+
+    /** 🔴 Deterministic, and identifier-safe. It was `UUID.randomUUID().toString`, which is
+      * neither, and that single expression produced BOTH halves of the ALTER-pipeline defect —
+      * MEASURED: three consecutive reads of one processor's `column` gave three different values.
+      *
+      *   - `Table.diff` keys processors by `"<pipeline>-<type>-<column>"`, so a processor whose
+      *     column is random can never match its counterpart: every diff reports it as REMOVED and
+      *     re-ADDED, on a processor nobody touched. That is the churn.
+      *   - `ProcessorRemoved.stmt` renders `DROP PROCESSOR <TYPE>(<column>)`, so the statement came
+      *     out as `DROP PROCESSOR SCRIPT(b18b1864-5e89-44fd-b4f8-191faa9e9e0c)` — a UUID's hyphens
+      *     are not an `ident`, so the generated DDL did not parse. On ES 6.8 that is a hard ALTER
+      *     failure; 7/8/9 never reach it because their processors keep the `description` that
+      *     re-types them (processor `description` is ES 7.9+), so they stay `ScriptProcessor`.
+      *
+      * A processor with no `field` has no column, so the fallback is an identity derived from the
+      * processor's own CONTENT: equal processors get equal ids, and the id is `[a-z0-9_]` so it
+      * survives the DDL round trip. Nothing persists this value — it is computed at diff time —
+      * which is why the change is backward compatible with pipelines already stored.
+      *
+      * 🔴 The content is CANONICALISED (pairs rendered, then sorted) before hashing, so equality is
+      * a property rather than an observation. `properties` is a `ListMap`, i.e. INSERTION-ordered:
+      * hashing `toString` directly would make the id depend on the order the JSON happened to be
+      * parsed in, so two processors with identical content but different key order would get
+      * different ids — and the diff keys on this string. Sorting removes that dependency, and
+      * `String.hashCode` is specified by the JLS, so equal content yields equal ids across separate
+      * JVM runs and not merely within one.
+      *
+      * Collisions: 32 bits over the handful of anonymous processors a pipeline can hold. If two DID
+      * collide the diff would treat them as one processor and compare their properties, so the
+      * failure mode is a spurious `ProcessorChanged` — noisy, not silent, and no worse than the
+      * churn this class already has (21.8 Part F.1).
+      *
+      * This does NOT by itself stop the churn on ES 6.8: a read-back anonymous processor still
+      * cannot match a declared one keyed by its real column. It makes the churn DETERMINISTIC and
+      * the emitted DDL VALID. The remaining half is 21.8 Part F.1.
+      */
     override def column: String = properties.get("field") match {
       case Some(s: String) => s
-      case _               => UUID.randomUUID().toString
+      case _               => s"anonymous_$canonicalContentId"
+    }
+
+    /** Order-independent identity of this processor's properties. See `column`. */
+    private def canonicalContentId: String = {
+      val canonical =
+        properties.toSeq.map { case (k, v) => s"$k=$v" }.sorted.mkString("\u0000")
+      f"${canonical.hashCode & 0xffffffffL}%08x"
     }
     override def ignoreFailure: Boolean = properties.get("ignore_failure") match {
       case Some(b: Boolean) => b
