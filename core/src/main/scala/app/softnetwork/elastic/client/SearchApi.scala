@@ -63,7 +63,7 @@ import scala.util.{Failure, Success, Try}
   * }}}
   */
 //format:on
-trait SearchApi extends ElasticConversion with ElasticClientHelpers {
+trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaCacheTtlApi {
 
   /** Extract output field names from a SingleSearch in SQL SELECT order. For each field, uses the
     * alias if present, otherwise the source field name. Returns empty Seq for SELECT * queries.
@@ -217,8 +217,23 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
 
   private val schemaMissPurgeThreshold = 256
 
-  /** How long a failed schema lookup is remembered -- the schema cache's own default TTL. */
-  protected def schemaMissTtlMs: Long = 5 * 60 * 1000L
+  /** How long a failed schema lookup is remembered: the schema cache's DEFAULT TTL
+    * (`elastic.schema-cache.ttl`), never longer than the built-in five minutes.
+    *
+    * 🔴 Deliberately the default and never a per-index value (story 21.8 D.3.2): this map records a
+    * MISS. There is no metadata to read a TTL from, because there was no schema — an index that
+    * does not exist cannot ask to be forgotten sooner.
+    *
+    * 🔴 And deliberately CAPPED, which the two positive caches are not. Nothing invalidates a miss:
+    * it is cleared only by a later successful load, and `resolveWithSchema` does not even attempt
+    * the lookup while one stands. So a miss remembered for an operator-chosen hour would mean that
+    * querying a table before it exists, then creating it, leaves every statement against it running
+    * with NO schema attached for that hour — no `SQLTypeUtils.coerce`, no temporal-literal
+    * resolution, silently (#306's skip conditions). Shortening the TTL still shortens this; making
+    * the knob able to LENGTHEN it would turn a five-minute nuisance into an unbounded one.
+    */
+  protected def schemaMissTtlMs: Long =
+    math.min(schemaCacheTtlMs, SchemaCacheSettings.DefaultTtlMs)
 
   /** Current size of the negative cache (tests). */
   private[client] def schemaMissCount: Int = schemaMisses.size()

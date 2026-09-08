@@ -37,7 +37,9 @@
     "SET SETTING setting = value",
     "DROP SETTING setting",
     "SET ALIAS alias = value",
-    "DROP ALIAS alias"
+    "DROP ALIAS alias",
+    "SET SCHEMA CACHE TTL [=] 'duration'",
+    "DROP SCHEMA CACHE TTL"
   ],
   "description": "Modify an existing Elasticsearch index by adding, removing, or modifying columns. Some operations require index reindexing (like changing data types).",
   "clauses": [
@@ -150,6 +152,11 @@
       "name": "SET ALIAS / DROP ALIAS",
       "description": "Add, update, or remove index aliases",
       "optional": true
+    },
+    {
+      "name": "SET SCHEMA CACHE TTL / DROP SCHEMA CACHE TTL",
+      "description": "Set or remove how long clients may cache this table's schema before reading it from Elasticsearch again. Overrides the client's elastic.schema-cache.ttl for this table only; stored in the index metadata, so every client sees it",
+      "optional": true
     }
   ],
   "examples": [
@@ -192,13 +199,20 @@
       "title": "Multiple alterations",
       "description": "Apply several changes in one statement",
       "sql": "ALTER TABLE users (\n  ADD COLUMN IF NOT EXISTS age INT DEFAULT 0,\n  RENAME COLUMN name TO full_name,\n  ALTER COLUMN status SET DEFAULT 'active',\n  ALTER COLUMN profile SET FIELDS (\n    bio VARCHAR DEFAULT 'N/A',\n    verified BOOLEAN DEFAULT false\n  )\n)"
+    },
+    {
+      "title": "Cache this table's schema for an hour",
+      "description": "A mapping that never moves; DROP SCHEMA CACHE TTL returns the table to the client default",
+      "sql": "ALTER TABLE orders SET SCHEMA CACHE TTL = '1h'"
     }
   ],
   "notes": [
     "DROP COLUMN only removes the mapping, existing data is not deleted",
     "RENAME COLUMN and SET DATA TYPE operations trigger a reindex",
     "Adding columns with DEFAULT creates/updates the ingest pipeline",
-    "Use IF EXISTS/IF NOT EXISTS to make scripts idempotent"
+    "Use IF EXISTS/IF NOT EXISTS to make scripts idempotent",
+    "SET SCHEMA CACHE TTL writes _meta.schema_cache_ttl, so it is equivalent to SET MAPPING _meta.schema_cache_ttl = 'duration'; durations use the HOCON spellings (30s, 10m, 1h, or milliseconds) and anything else is rejected when the statement is parsed",
+    "A shortened schema cache TTL is noticed by another client only when ITS current entry expires, so the change takes effect within one OLD period"
   ],
   "limitations": [
     "Cannot change PRIMARY KEY after creation",

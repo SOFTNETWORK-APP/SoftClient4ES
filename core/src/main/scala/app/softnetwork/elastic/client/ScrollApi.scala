@@ -130,7 +130,7 @@ import scala.util.{Failure, Success}
   * @see
   *   [[https://www.elastic.co/guide/en/elasticsearch/reference/7.10/point-in-time-api.html PIT API Documentation]]
   */
-trait ScrollApi extends ElasticClientHelpers {
+trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   _: VersionApi with SearchApi with SettingsApi =>
 
   // ========================================================================
@@ -150,8 +150,10 @@ trait ScrollApi extends ElasticClientHelpers {
     */
   protected def configuredMaxSlices: Int = ScrollConfig.DefaultMaxSlices
 
-  /** TTL, in milliseconds, of the primary-shard-count cache consulted by sliced PIT paging (#238).
-    * Override in a subclass to change (default: 5 minutes, the schema cache's TTL). One `_settings`
+  /** The primary-shard-count cache consulted by sliced PIT paging (#238), on the schema cache's
+    * clock: its TTL is [[SchemaCacheTtlApi.schemaCacheTtlMsFor]], the shortest among the indices a
+    * key names (story 21.8 Part D — a schema cached for an hour and a shard count re-probed every
+    * five minutes was incoherent, and two hard-coded constants in two files drift). One `_settings`
     * round-trip per distinct index set per TTL instead of one per un-LIMITed row query. What is
     * cached: a positive count, and a **privilege** failure (HTTP 401 / 403 — the one failure class
     * that is deterministic), so an under-privileged user sees ONE WARN per TTL instead of one per
@@ -164,16 +166,29 @@ trait ScrollApi extends ElasticClientHelpers {
     * `invalidateAllSchemas` drops all of them; DDL issued through another client, and an entry
     * whose expression the index does not prefix, are seen after the TTL.
     */
-  protected def shardCountCacheTtlMs: Long = 5 * 60 * 1000L
-
   private val shardCountCache =
-    new java.util.concurrent.ConcurrentHashMap[String, (ElasticResult[Int], Long)]()
+    new java.util.concurrent.ConcurrentHashMap[String, CachedShardCount]()
 
   /** Above this many entries a cache miss also purges the expired ones (keys are index SETS, so a
     * long-lived server over date-suffixed or per-tenant indices would otherwise grow without
     * bound).
     */
   private val shardCountCachePurgeThreshold = 256
+
+  /** The TTL a shard-count entry for these indices is stamped with — and the ONE derivation of it.
+    *
+    * The key names a SET of expressions, so the shortest TTL among them governs: no member may be
+    * remembered longer than it asked to be. A wildcard, or an index whose schema is not cached,
+    * resolves to the default, so this is the default until the schemas that shorten it are
+    * themselves loaded.
+    *
+    * 🔴 A `def`, called by BOTH the stamp and the message that tells an operator how long a
+    * privilege failure is remembered. Re-deriving it at the message would put the two halves of a
+    * coupled pair in two places again — which is the defect story 21.8 D.4 exists to close, and
+    * exactly the half nobody would notice was lying.
+    */
+  private def shardCountTtlMs(indices: Seq[String]): Long =
+    indices.distinct.map(schemaCacheTtlMsFor).reduceOption(_ min _).getOrElse(schemaCacheTtlMs)
 
   private def shardCountCacheable(result: ElasticResult[Int]): Boolean = result match {
     case ElasticSuccess(shards) => shards > 0
@@ -189,15 +204,16 @@ trait ScrollApi extends ElasticClientHelpers {
   private[client] def cachedPrimaryShardCount(
     indices: Seq[String]
   ): (ElasticResult[Int], Boolean) = {
-    val key = indices.distinct.sorted.mkString(",")
-    val ttl = shardCountCacheTtlMs
+    val members = indices.distinct.sorted
+    val key = members.mkString(",")
+    val ttl = shardCountTtlMs(members)
     var result: ElasticResult[Int] = null
     var fromCache = true
     shardCountCache.compute(
       key,
-      (_: String, entry: (ElasticResult[Int], Long)) => {
-        if (entry != null && System.currentTimeMillis() - entry._2 < ttl) {
-          result = entry._1
+      (_: String, entry: CachedShardCount) => {
+        if (entry != null && !entry.isExpired(System.currentTimeMillis())) {
+          result = entry.count
           entry
         } else {
           fromCache = false
@@ -209,7 +225,7 @@ trait ScrollApi extends ElasticClientHelpers {
                 ElasticFailure(err.copy(cause = None)) // never pin a stack
               case success => success
             }
-            (stored, System.currentTimeMillis())
+            CachedShardCount(stored, System.currentTimeMillis(), ttl)
           } else null // not cached: a null mapping removes the (expired) entry
         }
       }
@@ -218,9 +234,7 @@ trait ScrollApi extends ElasticClientHelpers {
       val now = System.currentTimeMillis()
       shardCountCache
         .entrySet()
-        .removeIf((e: java.util.Map.Entry[String, (ElasticResult[Int], Long)]) =>
-          now - e.getValue._2 >= ttl
-        )
+        .removeIf((e: java.util.Map.Entry[String, CachedShardCount]) => e.getValue.isExpired(now))
     }
     (result, fromCache)
   }
@@ -596,7 +610,7 @@ trait ScrollApi extends ElasticClientHelpers {
     * per primary shard of the resolved indices, capped by the ceiling, never above the shard count.
     * The guard order is load-bearing: no `_settings` round-trip on ORDER BY / LIMIT / opt-out / ES6
     * / classic-scroll paths. The shard count comes from [[cachedPrimaryShardCount]] (one
-    * `_settings` round-trip per index set per [[shardCountCacheTtlMs]]); a lookup failure degrades
+    * `_settings` round-trip per index set per resolved schema-cache TTL); a lookup failure degrades
     * to sequential with a WARN — once per TTL for a privilege failure (DEBUG while the cached
     * failure is replayed), on every extraction for a transient one.
     */
@@ -635,11 +649,11 @@ trait ScrollApi extends ElasticClientHelpers {
               )
               1
             case ElasticFailure(err) =>
-              // only a privilege failure is remembered (see shardCountCacheTtlMs); anything else
+              // only a privilege failure is remembered (see cachedPrimaryShardCount); anything else
               // is probed again by the next extraction, and says so
               val why = err.statusCode match {
                 case Some(s) if s == 401 || s == 403 =>
-                  s"the lookup needs the view_index_metadata privilege on the indices (HTTP $s) — remembered for ${shardCountCacheTtlMs / 1000} s"
+                  s"the lookup needs the view_index_metadata privilege on the indices (HTTP $s) — remembered for ${shardCountTtlMs(elasticQuery.indices) / 1000} s"
                 case _ =>
                   "retried on the next extraction"
               }

@@ -33,7 +33,13 @@ import app.softnetwork.elastic.sql.query.{
   Unknown,
   Update
 }
-import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline, Schema, TableAlias}
+import app.softnetwork.elastic.sql.schema.{
+  GenericProcessor,
+  IngestPipeline,
+  Schema,
+  SchemaCacheTtl,
+  TableAlias
+}
 import app.softnetwork.elastic.sql.serialization._
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
@@ -52,13 +58,52 @@ import scala.jdk.CollectionConverters._
   *   - Parameter validation
   *   - Automatic retry for transient errors
   */
-trait IndicesApi extends ElasticClientHelpers {
+trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   _: RefreshApi with PipelineApi with BulkApi with ScrollApi with VersionApi with TemplateApi =>
 
-  // Schema cache TTL in milliseconds. Override in subclass to change (default: 5 minutes).
-  protected def schemaCacheTtlMs: Long = 5 * 60 * 1000L
+  private val schemaCache = new ConcurrentHashMap[String, CachedSchema]()
 
-  private val schemaCache = new ConcurrentHashMap[String, (Schema, Long)]()
+  /** Above this many entries a cache miss also purges the expired ones. Keyed by index name, this
+    * map was unbounded while it was cold; since #306 every executed query writes to it, and a
+    * deployment that mints dated indices (`logs-2025.03`) would otherwise grow without bound. Same
+    * threshold and same precedent as #238's `shardCountCache` and #276's `schemaMisses`.
+    */
+  private val schemaCachePurgeThreshold = 256
+
+  /** The resolved TTL for `index`: what the index itself declares in its mapping metadata (`ALTER
+    * TABLE … SET SCHEMA CACHE TTL`), else the client default.
+    *
+    * Read off the cache ENTRY, which was stamped when the schema was fetched — answering costs no
+    * round trip, so `ScrollApi` may call it per extraction. An index whose schema is not cached
+    * (yet, or any more) resolves to the default; it will be re-resolved the moment its schema is.
+    *
+    * 🔴 Self-referential, and bounded because of it: change an index's TTL and another client
+    * notices only when ITS current entry expires, i.e. after at most one OLD period. Shortening a
+    * TTL therefore takes effect one old period later, never sooner.
+    */
+  override protected def schemaCacheTtlMsFor(index: String): Long =
+    schemaCache.get(index) match {
+      case null  => schemaCacheTtlMs
+      case entry => entry.ttlMs
+    }
+
+  /** The TTL an index declares, or the default — and a WARN, once per fetch, for a declared value
+    * that is not a duration (the DDL sugar validates it, but `SET MAPPING` and a hand-written
+    * `_meta` do not).
+    */
+  private def resolveTtlMs(index: String, schema: Schema): Long =
+    SchemaCacheTtl.of(schema) match {
+      case Some(Right(ms))    => ms
+      case Some(Left(reason)) =>
+        // Called from inside `schemaCache.compute`, so this log holds a bin lock — deliberately
+        // acceptable here: the blocking `GET <index>` that produced this schema runs there too
+        // (see `loadSchema`), so the lock is already held across far more than a log line.
+        logger.warn(
+          s"⚠️ Index '$index' declares an invalid ${SchemaCacheTtl.MetadataPath}: $reason — using the default TTL"
+        )
+        schemaCacheTtlMs
+      case None => schemaCacheTtlMs
+    }
 
   /** Alias -> the CONCRETE index its cached schema was resolved from (issue #276). Without it an
     * `ALTER TABLE <index>` would leave a stale mapping -- and therefore a stale date `format` --
@@ -234,27 +279,74 @@ trait IndicesApi extends ElasticClientHelpers {
     // Only a SUCCESS is cached, exactly as before, so a failure is retried on the next statement
     // rather than being remembered here (the 404 negative cache lives in `SearchApi`).
     var result: ElasticResult[Schema] = null
+    var fetched = false
     schemaCache.compute(
       index,
       (_, existing) =>
         existing match {
-          case (schema, cachedAt) if now - cachedAt < schemaCacheTtlMs =>
+          case entry: CachedSchema if !entry.isExpired(now) =>
             logger.debug(s"📦 Schema cache hit for '$index'")
-            result = ElasticSuccess(schema)
-            existing
+            result = ElasticSuccess(entry.schema)
+            entry
           case _ =>
+            fetched = true
             fetchSchemaFromES(index) match {
               case success @ ElasticSuccess(schema) =>
                 result = success
-                (schema, now)
+                CachedSchema(schema, now, resolveTtlMs(index, schema))
               case failure =>
                 result = failure
                 existing // null when absent -> the entry stays absent
             }
         }
     )
+    if (fetched && schemaCache.size() > schemaCachePurgeThreshold) purgeExpiredSchemas(now)
     result
   }
+
+  /** Drop every expired entry — each on ITS own clock, through the single `isExpired` rule — plus
+    * the alias->target rows for exactly those entries.
+    *
+    * 🔴 The alias rows are keyed by what this sweep ACTUALLY removed, never by "no schema is cached
+    * under this alias". `fetchSchemaFromES` writes `schemaAliasTargets` from INSIDE the
+    * `schemaCache.compute` lambda, i.e. before `compute` installs the entry, so a concurrent sweep
+    * that asked `schemaCache.containsKey(alias)` would delete the row a fetch had just written —
+    * and an alias whose target is later altered would then keep serving a stale mapping (a stale
+    * date `format`, and a stale `baseType` for #306's emission) for a full TTL, silently. That is
+    * the defect the row exists to prevent (#276 / review R4-21).
+    *
+    * ⚠️ NOT covered by a test, and it cannot be from outside: the divergent state exists only
+    * between that `put` and `compute` installing the entry, and every seam a test can override
+    * (`executeGetIndex`, `getIndex`, `getTemplate`, `getPipeline`) runs BEFORE the `put`. Adding a
+    * hook that exists only to be parked in would be worse than the finding. The structural cure is
+    * to carry the target ON the cache entry so there is no second map to keep in sync — worth
+    * doing, deliberately not done here (it rewrites #276's invalidation path).
+    *
+    * Above four times the threshold the whole cache is dropped instead: values here are entire
+    * `Table`s, not the `Int` of #238's shard counts, and expiry alone bounds nothing when an index
+    * asks for a long TTL (`SET SCHEMA CACHE TTL = '30d'`) and the names keep changing — dated
+    * indices, per-tenant indices. The worst case of dropping is today's cost, one re-fetch.
+    */
+  private def purgeExpiredSchemas(now: Long): Unit = {
+    val expired = scala.collection.mutable.Set.empty[String]
+    schemaCache
+      .entrySet()
+      .removeIf((e: java.util.Map.Entry[String, CachedSchema]) =>
+        e.getValue.isExpired(now) && { expired += e.getKey; true }
+      )
+    schemaAliasTargets.keySet().removeIf((alias: String) => expired.contains(alias))
+    if (schemaCache.size() > schemaCachePurgeThreshold * 4) {
+      logger.info(
+        s"🗑️ Schema cache above ${schemaCachePurgeThreshold * 4} live entries; dropping it (the next statement per index re-reads its mapping)"
+      )
+      schemaCache.clear()
+      schemaAliasTargets.clear()
+    }
+    ()
+  }
+
+  /** Current size of the schema cache (tests). */
+  private[client] def schemaCacheSize: Int = schemaCache.size()
 
   /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21). */
   private def invalidateAliasesOf(index: String): Unit =
@@ -270,7 +362,8 @@ trait IndicesApi extends ElasticClientHelpers {
       }
 
   def updateSchema(index: String, schema: Schema): Unit = {
-    schemaCache.put(index, (schema, System.currentTimeMillis()))
+    val now = System.currentTimeMillis()
+    schemaCache.put(index, CachedSchema(schema, now, resolveTtlMs(index, schema)))
     invalidateAliasesOf(index)
     // #238 — ALTER TABLE may have reindexed into a different shard count
     invalidateShardCounts(Some(index))

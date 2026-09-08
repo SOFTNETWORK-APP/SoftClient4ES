@@ -520,6 +520,15 @@ elastic {
     max-slices = 8
   }
   
+  # How long a table's schema -- and the primary shard count that follows it -- may be cached
+  # before Elasticsearch is read again. This is the DEFAULT: an index that declares its own
+  # (ALTER TABLE <t> SET SCHEMA CACHE TTL = '10m') overrides it for itself. Since every executed
+  # statement reads the cached schema, a stale entry means Painless emitted for the previous
+  # mapping -- shorten this for mappings that change under a running client.
+  schema-cache {
+    ttl = 5m
+  }
+
   # Cluster discovery
   discovery {
     enabled   = false

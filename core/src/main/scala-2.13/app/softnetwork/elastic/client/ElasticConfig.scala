@@ -45,6 +45,10 @@ import java.time.Duration
   * @param scroll
   *   Paged row extraction settings (`elastic.scroll`: page size and the ceiling on concurrent PIT
   *   slices, #238)
+  * @param schemaCache
+  *   How long a table's schema (and the shard count that follows it) may be cached by this client
+  *   (`elastic.schema-cache.ttl`, story 21.8 Part D). An index may shorten or lengthen its own
+  *   through `ALTER TABLE … SET SCHEMA CACHE TTL`
   */
 case class ElasticConfig(
   credentials: ElasticCredentials = ElasticCredentials(),
@@ -55,7 +59,8 @@ case class ElasticConfig(
   metrics: MetricsConfig,
   watcher: ElasticCredentials,
   includeDocumentId: Boolean = false,
-  scroll: ScrollSettings = ScrollSettings()
+  scroll: ScrollSettings = ScrollSettings(),
+  schemaCache: SchemaCacheSettings = SchemaCacheSettings()
 )
 
 object ElasticConfig extends StrictLogging {

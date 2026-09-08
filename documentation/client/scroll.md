@@ -162,8 +162,9 @@ clock improve when shards and nodes are added.
 | Otherwise | `max(1, min(Σ number_of_shards of the resolved indices, ceiling))` |
 
 The shard count comes from `GET <indices>/_settings` (the indices a wildcard, alias or data stream
-resolves to are summed and deduplicated) and is **cached per index set for 5 minutes** — the same
-TTL as the schema cache (`shardCountCacheTtlMs`, overridable in a subclass) — so a workload of many
+resolves to are summed and deduplicated) and is **cached per index set on the schema cache's own
+clock** — `elastic.schema-cache.ttl` (5 minutes by default), or the shortest TTL the indices in the
+key declare for themselves via `ALTER TABLE … SET SCHEMA CACHE TTL` — so a workload of many
 small un-LIMITed queries pays one round-trip per table per TTL, not one per query (concurrent cold
 extractions of the same set share one lookup). What is remembered: a positive count, and a
 **privilege** failure (HTTP 401/403 — the credentials lack `view_index_metadata`), for which the
