@@ -101,7 +101,9 @@ class StandaloneCallAssemblySpec extends AnyFlatSpec with Matchers {
   }
 
   "DATETIME_PARSE" should "emit the parse alone for both operand kinds" in {
-    painlessOf("SELECT DATETIME_PARSE('2025-01-10 10:00:00', 'yyyy-MM-dd HH:mm:ss') FROM t") shouldBe
+    painlessOf(
+      "SELECT DATETIME_PARSE('2025-01-10 10:00:00', 'yyyy-MM-dd HH:mm:ss') FROM t"
+    ) shouldBe
     """ZonedDateTime.parse("2025-01-10 10:00:00", """ +
     """DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of('Z')))"""
     painlessOf("SELECT DATETIME_PARSE(name, 'yyyy-MM-dd HH:mm:ss') FROM t") shouldBe
@@ -416,12 +418,15 @@ class StandaloneCallAssemblySpec extends AnyFlatSpec with Matchers {
     * gap.
     */
   private def exercisedNames: Set[String] =
-    family.flatMap(transformsOf).flatMap { fn =>
-      Iterator
-        .iterate[Class[_]](fn.getClass)(_.getSuperclass)
-        .takeWhile(_ != null)
-        .map(_.getSimpleName)
-    }.toSet
+    family
+      .flatMap(transformsOf)
+      .flatMap { fn =>
+        Iterator
+          .iterate[Class[_]](fn.getClass)(_.getSuperclass)
+          .takeWhile(_ != null)
+          .map(_.getSimpleName)
+      }
+      .toSet
 
   behavior of "the family list"
 

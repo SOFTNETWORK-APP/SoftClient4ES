@@ -19,24 +19,23 @@ import org.scalatest.matchers.should.Matchers
   * 🔴 Three separate things had to be true for that example to work, and only the first was known:
   *
   *   1. the OPERAND must be parsed into a temporal. Its runtime shape is decided by `instanceof`
-  *      rather than guessed, because Elasticsearch accepts BOTH an ISO string and epoch millis
-  *      into a `date` field (the lead's ruling). The previous code answered that question one way,
+  *      rather than guessed, because Elasticsearch accepts BOTH an ISO string and epoch millis into
+  *      a `date` field (the lead's ruling). The previous code answered that question one way,
   *      hard-coded as `from = SQLTypes.BigInt`, with no test — and wrong for every documented
-  *      example, which ingests strings;
-  *   2. the ingest CLOCK was `ctx['_ingest']['timestamp']`, which is NULL. Verified on REAL
-  *      indices, not `_simulate`, on ES 6.8.23, 7.17.29, 8.18.3 and 9.0.3 — so `CURRENT_DATE`,
-  *      `CURRENT_TIMESTAMP`, `NOW` and `TODAY` inside `SCRIPT AS` have never worked on any
-  *      supported version. `System.currentTimeMillis()` is whitelisted on all four, and is already
-  *      the unit the surrounding `Instant.ofEpochMilli(...)` expects;
-  *   3. every temporal value in a processor must be the SAME Java type. `ChronoUnit.between`
-  *      refuses a `ZonedDateTime` paired with a `LocalDate`, and Elasticsearch refuses a
-  *      `LocalDate` assigned back into `ctx.<field>` at all (`illegal_argument_exception:
-  *      unexpected value type [class java.time.LocalDate]`). So a processor collapses to
-  *      `ZonedDateTime` — the same collapse `SQLTypeUtils.runtimeType` already applies to a query.
+  *      example, which ingests strings; 2. the ingest CLOCK was `ctx['_ingest']['timestamp']`,
+  *      which is NULL. Verified on REAL indices, not `_simulate`, on ES 6.8.23, 7.17.29, 8.18.3 and
+  *      9.0.3 — so `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `NOW` and `TODAY` inside `SCRIPT AS` have
+  *      never worked on any supported version. `System.currentTimeMillis()` is whitelisted on all
+  *      four, and is already the unit the surrounding `Instant.ofEpochMilli(...)` expects; 3. every
+  *      temporal value in a processor must be the SAME Java type. `ChronoUnit.between` refuses a
+  *      `ZonedDateTime` paired with a `LocalDate`, and Elasticsearch refuses a `LocalDate` assigned
+  *      back into `ctx.<field>` at all (`illegal_argument_exception: unexpected value type [class
+  *      java.time.LocalDate]`). So a processor collapses to `ZonedDateTime` — the same collapse
+  *      `SQLTypeUtils.runtimeType` already applies to a query.
   *
-  * ⚠️ Every emission below was executed as a real ingest pipeline on ES 6.8.23, 7.17.29, 8.18.3
-  * AND 9.0.3, against both document shapes. `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` stores
-  * `age: 36` for `{"birthdate":"1990-05-20"}` and for `{"birthdate":643161600000}` on all four.
+  * ⚠️ Every emission below was executed as a real ingest pipeline on ES 6.8.23, 7.17.29, 8.18.3 AND
+  * 9.0.3, against both document shapes. `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` stores `age: 36`
+  * for `{"birthdate":"1990-05-20"}` and for `{"birthdate":643161600000}` on all four.
   *
   * KNOWN AND UNCHANGED: a document MISSING the source field still leaves the computed column
   * absent. `instanceof` on null throws and `ignore_failure: true` swallows it, which is the same
