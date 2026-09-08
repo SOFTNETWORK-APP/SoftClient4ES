@@ -1,7 +1,7 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql.NamePart
-import app.softnetwork.elastic.sql.query.{SingleSearch, StandardJoin}
+import app.softnetwork.elastic.sql.query.{Insert, SingleSearch, StandardJoin, Update}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -456,10 +456,28 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     ).isRight shouldBe true
   }
 
-  it should "still reject the DML and DDL name surface story 21.7 owns" in {
-    rejected("INSERT INTO `prod_eu`.dest SELECT a FROM src")
-    rejected("""INSERT INTO "prod_eu".dest SELECT a FROM src""")
-    rejected("UPDATE `orders` SET a = 1 WHERE id = 1")
+  /** RETARGETED by story 21.7, not deleted: these rows pinned a PENDING CAPABILITY ("the DML and
+    * DDL name surface story 21.7 owns"), not a defect, so the contract they record is now the
+    * ACCEPTANCE. `QuotedDmlDdlNameSpec` owns the full matrix; these three stay here because they
+    * are the exact statements 21.2 handed over, and their red is what tells a reader that 21.7's
+    * conversion has been undone.
+    */
+  it should "have handed the DML and DDL name surface to story 21.7, which accepts it" in {
+    Parser("INSERT INTO `prod_eu`.dest SELECT a FROM src") match {
+      case Right(i: Insert) =>
+        i.table shouldBe "dest"; i.parts shouldBe Seq(q("prod_eu"), b("dest"))
+      case other => fail(s"expected an Insert, got $other")
+    }
+    Parser("""INSERT INTO "prod_eu".dest SELECT a FROM src""") match {
+      case Right(i: Insert) =>
+        i.table shouldBe "dest"; i.parts shouldBe Seq(q("prod_eu"), b("dest"))
+      case other => fail(s"expected an Insert, got $other")
+    }
+    Parser("UPDATE `orders` SET a = 1 WHERE id = 1") match {
+      case Right(u: Update) => u.table shouldBe "orders"; u.parts shouldBe Seq(q("orders"))
+      case other            => fail(s"expected an Update, got $other")
+    }
+    // Rejected on its own merits — there is no LOCAL TEMPORARY production, quoted or not.
     rejected("CREATE LOCAL TEMPORARY TABLE dest (COL INTEGER)")
   }
 }

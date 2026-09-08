@@ -220,6 +220,63 @@ package object sql {
   def quoteIdentifier(name: String): String =
     "\"" + name.replace("\"", "\"\"") + "\""
 
+  /** Re-emits an object reference from the ordered part list the statement wrote.
+    *
+    * ONE derivation, shared by `query.Table` (the FROM/JOIN surface, story 21.2) and by every
+    * DDL/DML statement that names a table, view, pipeline, watcher or enrich policy (story 21.7).
+    * Two derivations of the same rendering is the defect story 21.3 paid for four times in one
+    * story; there is deliberately no second copy.
+    *
+    * Two rules, both load-bearing (story 21.2 AD-1 rule 5):
+    *
+    *   1. 🔴 Each part is emitted as ONE lexeme, NEVER split on its dots — the OPPOSITE of
+    *      `Identifier.sql`, which quotes per dot-separated part because in an identifier `a.b`
+    *      means *alias a, column b*. In an object reference `a.b` is ONE Elasticsearch name whose
+    *      dot is literal, so splitting would render `logs-2025.03` as `"logs-2025"."03"`, which
+    *      re-parses as qualifier `logs-2025` + index `03` — an index move manufactured by a
+    *      renderer. 2. 🔴 A qualifier part is ALWAYS emitted quoted (its `quoted` bit is true by
+    *      construction — `Parser.qualifierPart` matches nothing else). An unquoted prefix is not a
+    *      prefix.
+    *
+    * `parts` empty ⇒ the reference is exactly `name`, written bare: either a programmatic
+    * construction (`IndicesApi`, `TableDiff`, `FromlessSelect.toSingleSearch`) or a single bare
+    * part, which `Parser.identRef` normalises to `Nil` precisely so that the AST and the render of
+    * every bare-spelled statement stay byte-identical to what they were before story 21.7.
+    */
+  def renderName(parts: Seq[NamePart], name: String): String =
+    if (parts.isEmpty) name
+    else parts.map(p => if (p.quoted) quoteIdentifier(p.value) else p.value).mkString(".")
+
+  /** The bare DDL/DML name shape, and its ONE owner: `Parser.ident` is `bareNameRegex.r` and
+    * `renderColumnName` below is its inverse. A second copy of this character class is how a rule
+    * and its reverse drift apart.
+    */
+  val bareNameRegex: String = "[a-zA-Z_][a-zA-Z0-9_.]*"
+
+  private val bareName = bareNameRegex.r.pattern
+
+  /** Re-emits a COLUMN name, an option key or a struct-entry key in the spelling that reads back as
+    * the SAME single name: bare when the DDL/DML name surface can spell it that way, ANSI-quoted
+    * otherwise.
+    *
+    * 🔴 Why these positions decide by SHAPE while an object reference (`renderName` above) carries
+    * the parts the statement wrote. A column name lives in a `List[String]` / `ListMap[String, _]`
+    * (an INSERT column list, an UPDATE SET, a PRIMARY KEY, the options map) with nowhere to put a
+    * per-name bit, and story 21.7 made those positions accept quoting for the first time — so
+    * WITHOUT this, `INSERT INTO t ("my col") VALUES (1)` would render `INSERT INTO t (my col)
+    * VALUES (1)`: the lossy render story 21.2 exists to remove, re-created on the DDL surface. The
+    * predicate is exact rather than heuristic because `Parser.identName` keeps `ident` as its last
+    * alternative, so "the bare spelling re-parses to this same name" IS "it matches
+    * `bareNameRegex`" — no reserved-word list is involved, and none is duplicated here.
+    *
+    * Consequence, and it is the wanted one: a name that has always been spellable renders exactly
+    * as it did before story 21.7, so no existing rendering moves.
+    *
+    * NEVER use this on a path that reaches Elasticsearch — an ES field name is the unquoted value.
+    */
+  def renderColumnName(name: String): String =
+    if (bareName.matcher(name).matches()) name else quoteIdentifier(name)
+
   /** One part of a table reference, exactly as the statement wrote it (#85 — story 21.2 AD-1).
     *
     * `value` is the raw content (un-escaped for a quoted part); `quoted` records whether it was

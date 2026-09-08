@@ -1088,7 +1088,7 @@ package object schema {
         .map(s => s" SCRIPT AS (${s.script})${if (s.materialized) " STORED" else ""}")
         .getOrElse("")
       val tabs = "\t" * level
-      s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
+      s"$tabs${renderColumnName(name)} $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
 
     def asMap(table: Table): Seq[ListMap[String, Any]] = Seq(
@@ -1327,7 +1327,7 @@ package object schema {
   }
 
   case class PartitionDate(column: String, granularity: TimeUnit = TimeUnit.DAYS) extends DdlToken {
-    def sql: String = s" PARTITION BY $column ($granularity)"
+    def sql: String = s" PARTITION BY ${renderColumnName(column)} ($granularity)"
 
     val dateRounding: String = granularity.script.get
 
