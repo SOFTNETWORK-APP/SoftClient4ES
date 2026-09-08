@@ -76,4 +76,11 @@ trait ElasticClientApi
     ScrollConfig(scrollSize = elasticConfig.scroll.size)
 
   override protected def configuredMaxSlices: Int = elasticConfig.scroll.maxSlices
+
+  /** The DEFAULT schema-cache TTL (`elastic.schema-cache.ttl`, `ELASTIC_SCHEMA_CACHE_TTL`, story
+    * 21.8 Part D). An index that declares its own through `ALTER TABLE … SET SCHEMA CACHE TTL`
+    * overrides it for itself; the shard-count cache and the 404 negative cache follow the same
+    * value.
+    */
+  override protected def schemaCacheTtlMs: Long = elasticConfig.schemaCache.ttlMs
 }

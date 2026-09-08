@@ -94,7 +94,9 @@ class ScrollSlicingSpec
     override protected def logger: Logger = mockLogger
     override def version: ElasticResult[String] = ElasticSuccess(esVersion)
     override protected def configuredMaxSlices: Int = ceiling
-    override protected def shardCountCacheTtlMs: Long = ttlMs
+    // Story 21.8 Part D: the shard-count cache follows the schema cache's TTL; with no schema
+    // cached for these indices, that is this default.
+    override protected def schemaCacheTtlMs: Long = ttlMs
 
     val pitConfig = new AtomicReference[ScrollConfig]()
     val classicConfig = new AtomicReference[ScrollConfig]()

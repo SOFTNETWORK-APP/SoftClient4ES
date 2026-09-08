@@ -1518,10 +1518,11 @@ local numbers; treat them as orders of magnitude.
 
 Two distinct costs, with different profiles:
 
-- **The load** is amortised by the schema cache (5-minute TTL, `schemaCacheTtlMs`). A hit is a
+- **The load** is amortised by the schema cache (`elastic.schema-cache.ttl`, 5 minutes by
+  default, and an index may set its own — see [Tuning](#tuning)). A hit is a
   concurrent-map lookup and a timestamp compare — 0.1 µs, i.e. nothing. A miss additionally costs
   one `GET <index>` round trip to Elasticsearch plus the parse above. **Parse cost scales with
-  mapping width**, roughly linearly: a 300-field index costs ~1 ms to parse, once per five minutes.
+  mapping width**, roughly linearly: a 300-field index costs ~1 ms to parse, once per TTL.
 - **The attach** never amortises — it rebuilds the AST on every statement. It scales with
   **statement size**, not mapping width: a 300-field mapping costs no more than a 5-field one for a
   trivial statement. It runs **once per statement**, or **twice** for an un-`LIMIT`ed row query,
@@ -1537,15 +1538,56 @@ of milliseconds to tens of milliseconds — well under 0.1%. The one case worth 
 
 The mapping parse is the only cost that a longer TTL amortises, and it is the one that grows with
 your mapping: at ~1 ms for a 300-field index, a workload spread across many wide indices pays that
-once per index per TTL. Raising `schemaCacheTtlMs` trades staleness — a mapping changed outside this
-client is not seen until the entry expires — for fewer parses. The cache-hit and AST-attach costs
-are unaffected by the TTL, so tuning it does nothing for a workload against a single narrow index.
+once per index per TTL. The cache-hit and AST-attach costs are unaffected by the TTL, so tuning it
+does nothing for a workload against a single narrow index.
+
+⚠️ **The TTL is a correctness knob, not only a performance one.** Because the schema now reaches
+every executed statement, a stale entry no longer means a stale column list — it means Painless
+emitted for the *previous* mapping. Retype a column from `keyword` to `long` and, for the rest of
+the TTL, this client keeps emitting `Long.parseLong(doc['x'].value)` against a field that is already
+numeric. Shorten the TTL for mappings that change under a running client; lengthen it for mappings
+that do not.
+
+**The client default** (all indices):
+
+```hocon
+elastic.schema-cache.ttl = 5m   # or the ELASTIC_SCHEMA_CACHE_TTL environment variable
+```
+
+**Per index** — the volatility of a mapping is a property of the index, so an index can carry its
+own, and it wins over the client default:
+
+```sql
+ALTER TABLE orders SET SCHEMA CACHE TTL = '1h';    -- a mapping that never moves
+ALTER TABLE feature_flags SET SCHEMA CACHE TTL = '30s';
+ALTER TABLE orders DROP SCHEMA CACHE TTL;          -- back to the client default
+```
+
+The value is stored in the index's own mapping metadata (`_meta.schema_cache_ttl`), so every client
+against that cluster picks it up; `ALTER TABLE … SET MAPPING _meta.schema_cache_ttl = '1h'` and
+`CREATE TABLE … OPTIONS (mappings = (_meta = (schema_cache_ttl = '1h')))` write exactly the same
+thing. Durations are written the way HOCON writes them (`30s`, `10m`, `1h`, or a bare number of
+milliseconds); the DDL form rejects anything else at parse time.
+
+Precedence: **index metadata > `elastic.schema-cache.ttl` > the built-in 5 minutes.**
+
+⚠️ Changing an index's TTL is **self-referential**: another client learns the new value only when
+*its* current entry expires, so the **old** TTL governs how fast the new one is noticed. Shortening
+an hour to a minute therefore takes effect within the hour, not within the minute.
 
 ### Operational note
 
-Expect one `GET <index>` per distinct index per 5 minutes from each client instance. Concurrent
+Expect one `GET <index>` per distinct index per TTL from each client instance. Concurrent
 first-touch queries do **not** stampede: the cache is populated under `ConcurrentHashMap.compute`,
-so only one of them fetches.
+so only one of them fetches. Past 256 entries a miss also drops the expired ones, each on its own
+clock, and past 1024 live entries it drops the cache outright — a long per-index TTL over
+ever-changing index names (dated or per-tenant indices) would otherwise grow it without limit. The
+cost of a drop is one re-read per index.
+
+The **primary shard-count cache** used by sliced paging follows the same clock (see
+[scroll](scroll.md)). The negative cache that remembers a 404 follows it only downwards: a *miss*
+has no metadata to read a per-index TTL from, and nothing invalidates it — so lowering
+`elastic.schema-cache.ttl` shortens it, while raising the setting leaves it at five minutes.
 
 
 ## Performance Optimization

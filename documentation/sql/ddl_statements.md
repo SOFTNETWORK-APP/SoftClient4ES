@@ -435,6 +435,8 @@ a good value with `NULL`.
 - `DROP SETTING key`
 - `SET|ADD ALIAS alias_name = value`
 - `DROP ALIAS alias_name`
+- `SET SCHEMA CACHE TTL [=] 'duration'`
+- `DROP SCHEMA CACHE TTL`
 
 ### Table-level clauses take no parentheses
 
@@ -455,6 +457,42 @@ The parentheses around the statement list are optional and independent of any si
 A value may be a scalar (`'1s'`, `true`, `2`), an array (`['a', 'b']`), or a nested object
 written with **parentheses**: `(key = value, key = (nested = value))`. The `{…}` brace form is
 for `STRUCT` column values in `INSERT`, and is not accepted here.
+
+### SET SCHEMA CACHE TTL
+
+How long a client may cache this table's schema before reading it from Elasticsearch again. The
+volatility of a mapping is a property of the index, so the value lives with the index and overrides
+the client's `elastic.schema-cache.ttl` default for this table alone:
+
+```sql
+ALTER TABLE orders SET SCHEMA CACHE TTL = '1h';
+ALTER TABLE orders DROP SCHEMA CACHE TTL;
+```
+
+The `=` is optional (`SET SCHEMA CACHE TTL '1h'`). Durations use the HOCON spellings — `30s`,
+`10m`, `1h`, or a bare number of milliseconds; anything else is rejected when the statement is
+parsed, before it reaches the cluster.
+
+This is sugar: it writes `_meta.schema_cache_ttl`, so it is exactly equivalent to
+
+```sql
+ALTER TABLE orders SET MAPPING _meta.schema_cache_ttl = '1h';
+```
+
+and a table can be created with one:
+
+```sql
+CREATE TABLE IF NOT EXISTS orders (
+  id INT NOT NULL
+) OPTIONS (mappings = (_meta = (schema_cache_ttl = '1h')));
+```
+
+Since the schema now reaches every executed statement, a stale entry means Painless emitted for the
+*previous* mapping, not merely a stale column list — so shorten this for a table whose mapping
+changes under a running client. Note that changing it is self-referential: another client notices
+the new value only when its current entry expires, i.e. after at most one **old** period. The
+primary shard-count cache used by sliced paging follows the same TTL. See
+[client/search](../client/search.md#tuning).
 
 ### Type Changes and Safety
 

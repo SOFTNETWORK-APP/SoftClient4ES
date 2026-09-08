@@ -37,6 +37,7 @@ import app.softnetwork.elastic.sql.schema.{
   IngestProcessor,
   IngestProcessorType,
   PartitionDate,
+  SchemaCacheTtl,
   ScriptProcessor
 }
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -740,6 +741,30 @@ object Parser
   def dropTableSetting: PackratParser[DropTableSetting] =
     (keyword("DROP") ~ keyword("SETTING")) ~> identName ^^ { m => DropTableSetting(m) }
 
+  /** `SET SCHEMA CACHE TTL = '10m'` — sugar over the metadata write it desugars to, NOT a second
+    * way of storing the same thing (story 21.8 Part D). The TTL lives at
+    * `SchemaCacheTtl.MetadataPath` whichever spelling wrote it, so `SET MAPPING`, `CREATE TABLE …
+    * OPTIONS` and this production produce one AST, one diff, one mapping update and one read.
+    *
+    * The duration is validated HERE, by the same parse the client applies, so a misspelled TTL is
+    * refused at parse time rather than silently ignored for the lifetime of the index. `err`, never
+    * `throw`: `Parser.apply` is typed `Either[ParserError, Statement]` (#250).
+    */
+  def alterTableSchemaCacheTtl: PackratParser[AlterTableMapping] =
+    ((keyword("SET") ~ keyword("SCHEMA") ~ keyword("CACHE") ~ keyword(
+      "TTL"
+    )) ~ "=".? ~ literal) >> { case _ ~ _ ~ ttl =>
+      SchemaCacheTtl.parse(ttl.value) match {
+        case Right(_)     => success(AlterTableMapping(SchemaCacheTtl.MetadataPath, ttl))
+        case Left(reason) => err(s"Invalid ${SchemaCacheTtl.Ddl}: $reason")
+      }
+    }
+
+  def dropTableSchemaCacheTtl: PackratParser[DropTableMapping] =
+    (keyword("DROP") ~ keyword("SCHEMA") ~ keyword("CACHE") ~ keyword("TTL")) ^^ { _ =>
+      DropTableMapping(SchemaCacheTtl.MetadataPath)
+    }
+
   def alterTableAlias: PackratParser[AlterTableAlias] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("ALIAS")) ~ option ^^ { case _ ~ opt =>
       AlterTableAlias(opt._1, opt._2)
@@ -767,6 +792,8 @@ object Parser
     alterColumnFields |
     alterColumnField |
     dropColumnField |
+    alterTableSchemaCacheTtl |
+    dropTableSchemaCacheTtl |
     alterTableMapping |
     dropTableMapping |
     alterTableSetting |
