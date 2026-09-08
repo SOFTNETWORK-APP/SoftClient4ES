@@ -169,6 +169,41 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   override def out: SQLType = SQLTypes.Boolean
 
+  /** A criterion's Painless is a comparison, so the value it emits is a BOOLEAN — and `baseType` is
+    * what every `SQLTypeUtils.coerce` call site reads to learn the type of the string it was handed
+    * (`coerce(in, to, ctx)` takes `expr = in.painless(ctx)` and `from = in.baseType`).
+    *
+    * Without this override an `Expression` inherits `FunctionChain.baseType`, which walks the
+    * IDENTIFIER's function chain: `1 = 1` reported `BIGINT` (the left operand), `descr = 'x'`
+    * reported the column's type. That has always been wrong, but it was INERT while no `(_,
+    * BOOLEAN)` arm existed in `coerce` — every such pair fell to the identity fallback and the
+    * comparison was emitted untouched, which happened to be right.
+    *
+    * 🔴 Story 21.8 part A added the `-> BOOLEAN` arms, and the lie became live. `CASE WHEN 1 = 1`
+    * coerced an already-boolean comparison FROM `BIGINT`, so the numeric arm fired AND — because
+    * the arm returns a primitive — the end-of-method null guard wrapped it, emitting
+    *
+    * {{{def param1 = (1 == 1 != null ? (def)((1 == 1 != 0)) : null); param1 ? "a" : "b"}}}
+    *
+    * which Elasticsearch refuses to compile. All five clients emitted that same script and were
+    * rejected with `search_phase_execution_exception: all shards failed; compile error` (HTTP 400);
+    * the REST-high-level legs' raw response carries the detail — `script_exception: compile error`
+    * with the pointer at offset 14 and `caused_by class_cast_exception: "Cannot cast from [boolean]
+    * to [java.lang.Object]."`. So every `CASE WHEN <comparison>` failed on every ES major — the
+    * shape Superset and Tableau generate constantly, and the connection handshake's own `SELECT
+    * CASE WHEN 1 = 1 …` probe, which is what caught it.
+    *
+    * Fixing it inside `coerce` is not possible: by the time an arm matches, a genuine `CAST(1 AS
+    * BOOLEAN)` and this comparison are the same `(BIGINT, BOOLEAN)` pair. The source type has to be
+    * right before `coerce` is called.
+    *
+    * `out` above already fixes the OUTPUT type to boolean for exactly this reason; the two facts
+    * were simply never stated together. `Criteria` is the one place both belong, and `baseType`
+    * here overrides `FunctionChain`'s by linearization for `Expression` (`Criteria` is its last
+    * mixin).
+    */
+  override def baseType: SQLType = SQLTypes.Boolean
+
   override def painless(context: Option[PainlessContext]): String = this match {
     case Predicate(left, op, right, maybeNot, group) =>
       val leftStr = left.painless(context)
