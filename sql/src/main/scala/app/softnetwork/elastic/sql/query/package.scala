@@ -108,7 +108,8 @@ package object query {
     updateByQuery: Boolean = false,
     onConflict: Option[OnConflict] = None,
     schema: Option[Schema] = None,
-    explodeNested: Boolean = true
+    explodeNested: Boolean = true,
+    schemas: Map[String, Schema] = Map.empty
   ) extends SearchStatement {
     override def sql: String =
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
@@ -277,6 +278,23 @@ package object query {
       } yield updated).getOrElse(
         throw new IllegalStateException("Failed to update SQLSearchRequest")
       )
+    }
+
+    /** Resolves this statement against ONE SCHEMA PER TABLE, so every JOIN leg's columns can be
+      * typed — not just the main table's.
+      *
+      * 🔴 `schemas` is keyed the way [[From.tableAliases]] keys it: the INDEX NAME (through
+      * `aliasKey`, story 21.2 AD-6), never the SQL alias. `GenericIdentifier.update` looks it up
+      * with `Identifier.table`, which IS that key. A map keyed by alias resolves NOTHING, and does
+      * it silently — a miss leaves `baseType = Any`, which reads as "no conversion needed" rather
+      * than as an error.
+      *
+      * No default: `updateAll()` with no schemas would be an expensive way to call [[update]], and
+      * a silent no-op is the failure mode this whole area keeps producing. Callers with a single
+      * schema want `update(Some(schema))`.
+      */
+    def updateAll(schemas: Map[String, Schema]): SingleSearch = {
+      this.copy(schemas = schemas).update()
     }
 
     lazy val scriptFields: Seq[Field] = {
