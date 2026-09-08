@@ -1476,6 +1476,78 @@ advancedSearch[Product](criteria) match {
 
 ---
 
+## Schema resolution on every DQL statement
+
+Since **0.23.0**, every executed `SELECT` resolves the index schema before the statement is
+translated. This is observable from an operator's point of view — the engine issues a
+`GET <index>` against your cluster — so it is documented here rather than left implicit.
+
+### Why
+
+A cast, a function or a `CASE` over a **column** needs that column's mapped type to emit correct
+Painless. Without the schema the operand's type is `Any`, no conversion arm matches, and
+`CAST(code AS BIGINT)` silently returns the raw string. The schema is what makes the conversion
+correct, so it is resolved for every statement rather than only for statements that look like they
+need it.
+
+### When the lookup is SKIPPED
+
+Resolution is deliberately skipped when it cannot produce a usable answer:
+
+| condition | reason |
+|---|---|
+| the FROM names more than one source | a bare column reference is ambiguous |
+| the FROM is a wildcard (`events*`) | the concrete mapping is not knowable |
+| an index alias resolving to several indices | ditto — the alias must resolve to exactly one |
+| the schema cannot be loaded | the statement executes unresolved rather than failing |
+
+### What it costs
+
+Measured on Apple silicon (aarch64, 16 cores, JDK 11), medians and p95 over warmed runs. These are
+local numbers; treat them as orders of magnitude.
+
+| cost | when | median | p95 |
+|---|---|---:|---:|
+| schema cache **hit** | every statement, steady state | **0.1 µs** | 0.1 µs |
+| mapping **parse** (cache miss), 5 fields | once per index per TTL | 74 µs | 168 µs |
+| mapping **parse** (cache miss), 50 fields | once per index per TTL | 170 µs | 237 µs |
+| mapping **parse** (cache miss), 300 fields | once per index per TTL | 962 µs | 1131 µs |
+| AST **attach**, trivial `SELECT a FROM t` | every statement | 1–2 µs | 2 µs |
+| AST **attach**, several scripted fields + CASE | every statement | 7–11 µs | 12–16 µs |
+| AST **attach**, window function | every statement | 5–8 µs | 8–11 µs |
+
+Two distinct costs, with different profiles:
+
+- **The load** is amortised by the schema cache (5-minute TTL, `schemaCacheTtlMs`). A hit is a
+  concurrent-map lookup and a timestamp compare — 0.1 µs, i.e. nothing. A miss additionally costs
+  one `GET <index>` round trip to Elasticsearch plus the parse above. **Parse cost scales with
+  mapping width**, roughly linearly: a 300-field index costs ~1 ms to parse, once per five minutes.
+- **The attach** never amortises — it rebuilds the AST on every statement. It scales with
+  **statement size**, not mapping width: a 300-field mapping costs no more than a 5-field one for a
+  trivial statement. It runs **once per statement**, or **twice** for an un-`LIMIT`ed row query,
+  which is routed through scroll and resolves again inside `ScrollApi.scroll`. It is **not** per
+  page — a 10 M-row extraction pays the attach twice in total, not twice per page.
+
+**Steady-state overhead per statement is therefore ~1–25 µs**, against typical statement latencies
+of milliseconds to tens of milliseconds — well under 0.1%. The one case worth knowing about is the
+**first** statement against a very wide index after a cache expiry, which additionally pays one
+`GET` plus ~1 ms of parsing.
+
+### Tuning
+
+The mapping parse is the only cost that a longer TTL amortises, and it is the one that grows with
+your mapping: at ~1 ms for a 300-field index, a workload spread across many wide indices pays that
+once per index per TTL. Raising `schemaCacheTtlMs` trades staleness — a mapping changed outside this
+client is not seen until the entry expires — for fewer parses. The cache-hit and AST-attach costs
+are unaffected by the TTL, so tuning it does nothing for a workload against a single narrow index.
+
+### Operational note
+
+Expect one `GET <index>` per distinct index per 5 minutes from each client instance. Concurrent
+first-touch queries do **not** stampede: the cache is populated under `ConcurrentHashMap.compute`,
+so only one of them fetches.
+
+
 ## Performance Optimization
 
 ### Query Caching

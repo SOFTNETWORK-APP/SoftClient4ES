@@ -110,6 +110,31 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers {
     * cannot disable the resolution for the TTL.
     *
     * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
+    *
+    * ==Cost==
+    * MEASURED (Apple silicon, JDK 11; medians over warmed runs) — two costs, different profiles:
+    *
+    *   - the LOAD is amortised by the schema cache: a HIT is `0.1 us`. A MISS additionally costs
+    *     one `GET <index>` round trip plus the mapping parse, which scales with mapping WIDTH — `74
+    *     us` at 5 fields, `170 us` at 50, `962 us` at 300 — once per index per TTL. Concurrent
+    *     first-touch queries do not stampede: `loadSchema` populates under `compute`.
+    *   - the ATTACH (`update(Some(schema))`) never amortises. It scales with STATEMENT size, not
+    *     mapping width: `1-2 us` trivial, `7-11 us` for several scripted fields plus a CASE. It
+    *     runs ONCE per statement, TWICE for an un-LIMITed row query (`search` -> `scrollRows` ->
+    *     `ScrollApi.scroll` resolves again) — and NOT per page, so a 10M-row extraction pays it
+    *     twice in total. Verified by counting resolutions: 1 for a LIMITed statement, 2 for a
+    *     scroll-routed one.
+    *
+    * Steady-state overhead is therefore ~1-25 us per statement against millisecond-scale statement
+    * latency — under 0.1%. That is why resolution is UNCONDITIONAL rather than filtered on
+    * statement content. Documented for operators in `documentation/client/search.md`.
+    *
+    * 🔴 If a filter is ever revisited, the predicate must NOT be "the statement contains a cast":
+    * `coerce` also serves FunctionN argument and CASE branch coercion, so a cast-scoped attach
+    * would make `UPPER(col)` emit differently depending on whether a cast happened to appear
+    * ELSEWHERE in the same statement — a #205-family inconsistency driven by incidental content
+    * (AD-17). The only self-consistent predicate is "this statement emits Painless over a column",
+    * i.e. `shouldBeScripted` across the clauses.
     */
   private[client] def resolveTemporalLiterals(single: SingleSearch): ElasticResult[SingleSearch] = {
     // #306 -- the early return this used to make (`if (!TemporalLiterals.hasCandidates(single))`)
