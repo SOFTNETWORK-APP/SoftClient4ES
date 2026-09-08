@@ -139,19 +139,17 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ddl should include(
       """name VARCHAR FIELDS ( raw KEYWORD COMMENT 'sortable' ) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french")"""
     )
-    // 🔴 TIMESTAMP, not DATE, since story 21.5 / issue #306, and this is a USER-VISIBLE change
-    // that owes a release note: a column declared DATE is stored by Elasticsearch as a `date`
-    // field, which is a millisecond timestamp, so SHOW TABLE now reports it by the name of what
-    // was actually stored. Re-running the reported DDL still creates the same ES mapping (every
-    // temporal type maps to `date`), and the table diff is unaffected -- pinned by
-    // `ColumnMetaDiffSpec`.
-    ddl should include("birthdate TIMESTAMP")
+    // 🔴 DATE — what the user declared. `SHOW TABLE` reports the DECLARED type, not the runtime
+    // one; story 21.5 briefly reported TIMESTAMP here and that user-visible change was a symptom
+    // of conflating the two facts. The runtime type now lives in `SQLTypeUtils.runtimeType`,
+    // reached only through `GenericIdentifier.baseType`, so no release note is owed.
+    ddl should include("birthdate DATE")
     ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
     ddl should include("ingested_at TIMESTAMP DEFAULT _ingest.timestamp")
     ddl should include("profile STRUCT FIELDS (")
     ddl should include("bio VARCHAR")
     ddl should include("followers INT")
-    ddl should include("join_date TIMESTAMP") // same as birthdate above (#306)
+    ddl should include("join_date DATE")
     ddl should include("seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))")
     ddl should include("PRIMARY KEY (id)")
     ddl should include("PARTITION BY birthdate (MONTH)")

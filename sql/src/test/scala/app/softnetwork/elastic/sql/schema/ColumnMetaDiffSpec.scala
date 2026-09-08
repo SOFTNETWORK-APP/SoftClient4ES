@@ -7,17 +7,26 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** Story 21.5 / issue #306 — the DDL round trip, and the `_meta.columns` exclusion it forced.
+/** Story 21.5 — the DDL round trip, and why `Column.dataType` must stay the DECLARED type.
   *
-  * Mapping an Elasticsearch `date` field to `Timestamp` made a table declared `birthdate DATE` read
-  * back as TIMESTAMP. `Column.diff` was unmoved (it compares `SQLTypeUtils.elasticType`, and every
-  * temporal type is the ES type `date`), but the raw JSON comparison of `_meta.columns` — a SHADOW
-  * of those same columns, keyed on the SQL SPELLING — reported a change. One fact, two derivations,
-  * disagreeing: a spurious mapping diff on every existing index with a date column.
+  * `_meta.columns.<c>.data_type` records what the user wrote, and `IndexField.apply` prefers it
+  * over Elasticsearch's own mapping type, so a table declared `birthdate DATE` reads back as DATE
+  * and the round trip is exact.
   *
-  * `_meta.columns` is therefore excluded from the mappings diff. This spec pins BOTH halves: that
-  * the round trip is clean, and that excluding it costs nothing — every field a `_meta.columns`
-  * entry carries is still caught, by the step that owns it.
+  * 🔴 This spec exists because that was briefly broken. An earlier revision mapped an ES `date` to
+  * `Timestamp` inside `SQLTypes.apply(IndexField)` — the right intent in the wrong layer, since it
+  * conflated the DECLARED type with the type Painless sees at RUNTIME. The declared column then
+  * re-serialised its `_meta` as TIMESTAMP, and the mappings diff reported
+  * `MappingSet(_meta.columns.birthdate.data_type, 'DATE')` on a table nobody had altered — a
+  * spurious change on every existing index with a date column, on every `CREATE TABLE IF NOT
+  * EXISTS`, table diff and ALTER planning pass. The workaround (excluding `_meta.columns` from the
+  * mappings diff) then emptied that diff, which rerouted ALTER into a pipeline render that does not
+  * parse on ES 6.8, and slowed materialized-view creation past its timeout.
+  *
+  * All of that is gone: the runtime type is derived where it is needed, at
+  * `GenericIdentifier.baseType` via `SQLTypeUtils.runtimeType`, and `Column.dataType` is left
+  * alone. So the mappings diff compares `_meta.columns` in full again, and is clean because the
+  * data genuinely round-trips.
   */
 class ColumnMetaDiffSpec extends AnyFlatSpec with Matchers {
 
@@ -40,15 +49,16 @@ class ColumnMetaDiffSpec extends AnyFlatSpec with Matchers {
     Index(name = declared.name, mappings = mappings, settings = settings).schema
   }
 
-  "a DATE column" should "survive the round trip with NO diff, though its spelling changes" in {
+  "a DATE column" should "survive the round trip with its declared spelling and NO diff" in {
     val declared = schemaOf("CREATE TABLE users (id INT NOT NULL, birthdate DATE)")
     val actual = roundTrip(declared)
 
-    // the spelling DOES move -- that is the #306 fix, and it is why the diff had to be checked
+    // 🔴 The declared spelling SURVIVES the round trip. If this ever reads TIMESTAMP again, the
+    // runtime type has leaked back into `Column.dataType` and the spurious-diff cascade is back.
     declared.find("birthdate").map(_.dataType.typeId) shouldBe Some("DATE")
-    actual.find("birthdate").map(_.dataType.typeId) shouldBe Some("TIMESTAMP")
+    actual.find("birthdate").map(_.dataType.typeId) shouldBe Some("DATE")
 
-    // ...and NOTHING is reported as changed, because Elasticsearch stores one `date` either way
+    // ...and nothing is reported as changed, with `_meta.columns` fully compared
     val diff = actual.diff(declared)
     withClue(s"columns=${diff.columns} mappings=${diff.mappings}: ") {
       diff.columns shouldBe empty

@@ -1401,7 +1401,12 @@ package object sql {
       id
     }
 
-    override def baseType: SQLType = col.map(_.dataType).getOrElse(super.baseType)
+    /** The RUNTIME type of this column -- what `doc['f'].value` yields -- not the DECLARED one. See
+      * `SQLTypeUtils.runtimeType`. Every consumer of `baseType` is Painless emission or `coerce`;
+      * anything wanting the declared type reads `Column.dataType` instead.
+      */
+    override def baseType: SQLType =
+      col.map(c => SQLTypeUtils.runtimeType(c.dataType)).getOrElse(super.baseType)
 
     def update(request: SingleSearch): Identifier = {
       val bucketPath: String =

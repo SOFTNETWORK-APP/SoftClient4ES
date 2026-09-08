@@ -93,6 +93,45 @@ object SQLTypeUtils {
     case _                          => "object"
   }
 
+  /** The type a column's value has AT RUNTIME, as opposed to the type the user DECLARED.
+    *
+    * 🔴 These are two different facts, and story 21.5 spent a long night proving that one field
+    * cannot carry both. `Column.dataType` is the DECLARED type: it is what the user wrote, what
+    * `_meta.columns.<c>.data_type` persists, what `SHOW CREATE TABLE` prints and what `Column.diff`
+    * compares. The RUNTIME type is what Elasticsearch hands Painless for that column, and it is
+    * coarser, because Elasticsearch stores less than SQL can express.
+    *
+    * The temporal family is the whole of the difference. DATE, TIME, DATETIME, TIMESTAMP and the
+    * abstract TEMPORAL all map to the single Elasticsearch type `date` (see `elasticType`), which
+    * is a millisecond instant — so `doc['f'].value` yields a `ZonedDateTime` (a
+    * `JodaCompatibleZonedDateTime` on ES 6.8) no matter which of them was declared. Claiming a
+    * `LocalDate` for a column declared DATE is what produced HIGH-1 (`CAST(<date col> AS
+    * TIMESTAMP)` emitting `.atStartOfDay(...)` on a `ZonedDateTime` — measured on ES 8.18 as `all
+    * shards failed`) and HIGH-2 (`CAST(<date col> AS DATE)` hitting the identity arm and returning
+    * the un-truncated timestamp — a silent wrong answer, and the date-truncation idiom Superset and
+    * Tableau emit constantly).
+    *
+    * Everything else is returned unchanged: a KEYWORD is a `String` at runtime too, an INT is an
+    * int. ARRAY types are deliberately NOT collapsed — `elasticType(Array(Date))` is also `"date"`,
+    * but the runtime value is a list, so the temporal arms must not fire on it.
+    *
+    * `date_nanos` needs no arm: `SQLTypes.apply` maps it to `Any` (BIDC-4's deliberate exclusion),
+    * and `Any` is not temporal, so it falls to the identity case here.
+    *
+    * Applied at exactly ONE site — `GenericIdentifier.baseType` — because every consumer of
+    * `baseType` is Painless emission or `coerce`; the DDL, `_meta` and diff paths read
+    * `Column.dataType` and are untouched. That separation is the fix: it removes the need for the
+    * `date` -> `Timestamp` remap in `SQLTypes.apply(IndexField)`, and with it the spurious
+    * `_meta.columns` diff, the `_meta.columns` diff exclusion, the unparseable ES 6.8 ALTER that
+    * exclusion exposed, and the materialized-view slowdown it caused.
+    */
+  def runtimeType(declared: SQLType): SQLType = declared match {
+    case SQLTypes.Date | SQLTypes.Time | SQLTypes.DateTime | SQLTypes.Timestamp |
+        SQLTypes.Temporal =>
+      SQLTypes.Timestamp
+    case other => other
+  }
+
   def matches(out: SQLType, in: SQLType): Boolean =
     out.typeId == in.typeId ||
     (out.typeId == Temporal.typeId && Set(

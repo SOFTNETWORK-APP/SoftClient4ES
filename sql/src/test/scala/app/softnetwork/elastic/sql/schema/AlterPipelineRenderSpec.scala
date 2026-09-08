@@ -20,8 +20,8 @@ import scala.collection.immutable.ListMap
   * MEASURED before the fix: three consecutive reads of one processor's `column` returned three
   * different UUIDs, and the third is the one that reached the DDL.
   *
-  * On ES 7/8/9 this was unreachable: their processors keep the `description` that re-types them into
-  * a `ScriptProcessor` (processor `description` is an ES 7.9+ field), so they never become
+  * On ES 7/8/9 this was unreachable: their processors keep the `description` that re-types them
+  * into a `ScriptProcessor` (processor `description` is an ES 7.9+ field), so they never become
   * anonymous. ES 6.8 drops it, which is why only 6.8 failed.
   */
 class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {

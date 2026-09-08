@@ -81,38 +81,18 @@ object SQLTypes {
     case _                          => Any
   }
 
-  /** The ELASTICSEARCH-mapping direction, which is NOT the same vocabulary as the SQL one above.
+  /** The Elasticsearch-mapping direction. A field's DECLARED type is preserved verbatim: when we
+    * created the index we recorded it in `_meta.columns.<c>.data_type`, and `IndexField.apply`
+    * prefers that over Elasticsearch's own mapping type, so `CREATE TABLE t (c DATE)` reads back as
+    * DATE and the `_meta` round trip is exact.
     *
-    * 🔴 An Elasticsearch `date` field is a millisecond TIMESTAMP, not a calendar date — which is
-    * precisely why `doc['f'].value` hands Painless a `ZonedDateTime`. Mapping it to `Date` claimed
-    * a `LocalDate`, and once issue #306 let a column's mapped type reach `SQLTypeUtils.coerce` that
-    * lie became executable:
-    *   - `CAST(<date column> AS TIMESTAMP)` took `(Date, Timestamp)` and emitted
-    *     `.atStartOfDay(ZoneId.of('Z'))`, which a `ZonedDateTime` does not have — measured on real
-    *     ES 8.18 as `all shards failed`;
-    *   - `CAST(<date column> AS DATE)` was `(Date, Date)`, i.e. the IDENTITY arm, so it returned
-    *     the un-truncated timestamp — a SILENT wrong answer, and `CAST(ts AS DATE)` is the
-    *     date-truncation idiom Superset and Tableau emit constantly. With `Timestamp` the
-    *     already-correct `(Timestamp, Date) => .toLocalDate()`, `(Timestamp, Time) =>
-    *     .toLocalTime()` and `(Timestamp, BigInt) => .toEpochMilli()` arms fire, and `CAST(x AS
-    *     TIMESTAMP)` becomes the identity it should always have been. The LocalDate- shaped `(Date,
-    *     ...)` arms stay for LITERAL operands, which genuinely are calendar dates.
-    *
-    * Safe in the inverse direction, and this was verified BEFORE the change rather than after:
-    * `Column.diff` compares `elasticType(actual) != elasticType(desired)`, and `elasticType` sends
-    * Date, Time, DateTime, Timestamp and Temporal ALL to `"date"` — so no existing index reports a
-    * spurious type change in `SHOW CREATE TABLE`, table diff or ALTER. `CREATE TABLE t (c DATE)`
-    * still creates an ES `date`; it now reads back as TIMESTAMP, which is the honest name for what
-    * Elasticsearch stored (release note).
-    *
-    * `date_nanos` is deliberately untouched — it falls to `Any`, as BIDC-4 decided.
-    *
-    * Kept on THIS overload rather than in `apply(String)`: that one also parses SQL type names, so
-    * moving the arm there would make `CREATE TABLE t (c DATE)` declare a TIMESTAMP column.
+    * 🔴 This deliberately does NOT map `date` to `Timestamp`. Story 21.5 tried that here and it was
+    * the wrong layer: it conflated the type the USER DECLARED with the type Painless SEES at
+    * runtime, and the consequences cascaded — a spurious `_meta.columns` diff on every existing
+    * index with a date column, and from the workaround for that, an unparseable ALTER on ES 6.8 and
+    * a materialized-view slowdown. The runtime type is now derived where it is actually needed, at
+    * `GenericIdentifier.baseType`; see `SQLTypeUtils.runtimeType`.
     */
-  def apply(field: IndexField): SQLType = field.`type`.toLowerCase match {
-    case "date" => Timestamp
-    case other  => apply(other)
-  }
+  def apply(field: IndexField): SQLType = apply(field.`type`)
 
 }
