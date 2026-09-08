@@ -34,11 +34,11 @@ import org.scalatest.matchers.should.Matchers
   * `schemas` map. Both spellings are pinned below, because keying by alias silently resolves
   * nothing rather than failing, and silence is this family's whole failure mode.
   *
-  * 🔴 **`update` is not the first pass.** The parser normalises `c.zip` to `name = "zip"`,
-  * `table = Some("customers")` before these tests run, so the qualified branch of
-  * `GenericIdentifier.update` is NOT the one that resolves a JOIN leg here — `this.table` is. A
-  * lookup keyed on the alias-bearing `name` is therefore unreachable on the production path; that
-  * is exactly the defect these tests were written against.
+  * 🔴 **`update` is not the first pass.** The parser normalises `c.zip` to `name = "zip"`, `table =
+  * Some("customers")` before these tests run, so the qualified branch of `GenericIdentifier.update`
+  * is NOT the one that resolves a JOIN leg here — `this.table` is. A lookup keyed on the
+  * alias-bearing `name` is therefore unreachable on the production path; that is exactly the defect
+  * these tests were written against.
   */
 class MultiSchemasSpec extends AnyFlatSpec with Matchers {
 
