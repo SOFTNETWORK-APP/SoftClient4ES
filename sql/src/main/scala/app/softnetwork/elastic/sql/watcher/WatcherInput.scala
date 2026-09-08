@@ -20,7 +20,7 @@ import app.softnetwork.elastic.sql.http.HttpRequest
 import app.softnetwork.elastic.sql.query.Criteria
 import app.softnetwork.elastic.sql.schema.mapper
 import app.softnetwork.elastic.sql.transform.TransformTimeInterval
-import app.softnetwork.elastic.sql.{DdlToken, ObjectValue}
+import app.softnetwork.elastic.sql.{renderColumnName, DdlToken, ObjectValue}
 import com.fasterxml.jackson.databind.JsonNode
 
 import scala.collection.immutable.ListMap
@@ -114,7 +114,10 @@ case class HttpInput(request: HttpRequest) extends WatcherInput {
 
 case class ChainInput(inputs: ListMap[String, WatcherInput]) extends WatcherInput {
   override def sql: String = {
-    val inputsSql = inputs.map { case (name, input) => s"$name AS ${input.sql}" }.mkString(", ")
+    val inputsSql =
+      inputs
+        .map { case (name, input) => s"${renderColumnName(name)} AS ${input.sql}" }
+        .mkString(", ")
     s" WITH INPUTS $inputsSql"
   }
 

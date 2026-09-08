@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.watcher
 import app.softnetwork.elastic.sql.query.Criteria
 import app.softnetwork.elastic.sql.schema.mapper
 import app.softnetwork.elastic.sql.transform.{Delay, TransformTimeInterval, TransformTimeUnit}
-import app.softnetwork.elastic.sql.{DdlToken, ObjectValue, StringValue, Value}
+import app.softnetwork.elastic.sql.{renderColumnName, DdlToken, ObjectValue, StringValue, Value}
 import com.fasterxml.jackson.databind.JsonNode
 
 import scala.collection.immutable.ListMap
@@ -85,10 +85,10 @@ case class Watcher(
         case opts if opts.nonEmpty => s"\n\tWITH ${ObjectValue(opts).ddl}"
         case _                     => ""
       }
-    s"CREATE OR REPLACE WATCHER $id AS\n\t${trigger.sql.trim}\n\t${input.ddl}\n\t${condition.ddl}\n\tDO\n" +
+    s"CREATE OR REPLACE WATCHER ${renderColumnName(id)} AS\n\t${trigger.sql.trim}\n\t${input.ddl}\n\t${condition.ddl}\n\tDO\n" +
     actions
       .map { case (name, action) =>
-        s"\t\t$name AS ${action.sql}"
+        s"\t\t${renderColumnName(name)} AS ${action.sql}"
       }
       .mkString(",\n") + "\n\tEND" + optionsClause
   }

@@ -825,8 +825,9 @@ package object query {
     override def sql: String = {
       val targetSql =
         target match {
-          case Some(t) => if (t.isEmpty) " () " else s" (${t.mkString(", ")}) "
-          case None    => " "
+          case Some(t) =>
+            if (t.isEmpty) " () " else s" (${t.map(renderColumnName).mkString(", ")}) "
+          case None => " "
         }
       val actionSql = if (doUpdate) "DO UPDATE" else "DO NOTHING"
       s" ON CONFLICT$targetSql$actionSql"
@@ -837,7 +838,14 @@ package object query {
     table: String,
     cols: Seq[String],
     values: Either[SearchStatement, Seq[Seq[Value[_]]]],
-    onConflict: Option[OnConflict] = None
+    onConflict: Option[OnConflict] = None,
+    /** The reference as the ordered part list the statement wrote — never split, never
+      * role-assigned, never dropped (#85, story 21.2 AD-1; extended to every DDL/DML statement by
+      * story 21.7). `Nil` for a programmatic construction AND for a single bare part, which IS the
+      * name — so the AST of every bare-spelled statement is byte-identical to what it was before
+      * story 21.7. Read by the render only; `name` stays what every consumer reads.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends DmlStatement {
     lazy val conflictTarget: Option[Seq[String]] = onConflict.flatMap(_.target)
 
@@ -870,16 +878,17 @@ package object query {
     }
 
     override def sql: String = {
+      val target = renderName(parts, table)
       values match {
         case Left(query) if cols.isEmpty =>
-          s"INSERT INTO $table ${query.sql}${asString(onConflict)}"
+          s"INSERT INTO $target ${query.sql}${asString(onConflict)}"
         case Left(query) =>
-          s"INSERT INTO $table (${cols.mkString(",")}) ${query.sql}${asString(onConflict)}"
+          s"INSERT INTO $target (${cols.map(renderColumnName).mkString(",")}) ${query.sql}${asString(onConflict)}"
         case Right(rows) =>
           val valuesSql = rows
             .map(rowToSql)
             .mkString(", ")
-          s"INSERT INTO $table (${cols.mkString(",")}) VALUES $valuesSql${asString(onConflict)}"
+          s"INSERT INTO $target (${cols.map(renderColumnName).mkString(",")}) VALUES $valuesSql${asString(onConflict)}"
       }
     }
 
@@ -947,19 +956,30 @@ package object query {
     }
   }
 
-  case class Update(table: String, values: ListMap[String, PainlessScript], where: Option[Where])
-      extends DmlStatement {
+  case class Update(
+    table: String,
+    values: ListMap[String, PainlessScript],
+    where: Option[Where],
+    /** The reference as the ordered part list the statement wrote — never split, never
+      * role-assigned, never dropped (#85, story 21.2 AD-1; extended to every DDL/DML statement by
+      * story 21.7). `Nil` for a programmatic construction AND for a single bare part, which IS the
+      * name — so the AST of every bare-spelled statement is byte-identical to what it was before
+      * story 21.7. Read by the render only; `name` stays what every consumer reads.
+      */
+    parts: Seq[NamePart] = Nil
+  ) extends DmlStatement {
     // Uses `value.sql` (not `value.value`) for the literal branch so the rendered string is
     // re-parseable into the same AST. `value.value` loses the syntactic shape of string
     // literals (`'USA'` becomes `USA`), and any downstream consumer that re-parses this output
     // — e.g. GatewayApi.run → api.updateByQuery(table, update.sql) before it was changed to
     // accept the AST directly — would mis-parse the bare token as an Identifier and silently
     // null the column via a broken painless script.
-    override def sql: String = s"UPDATE $table SET ${values
+    override def sql: String = s"UPDATE ${renderName(parts, table)} SET ${values
       .map { case (k, v) =>
+        val key = renderColumnName(k)
         v match {
-          case value: Value[_] => s"$k = ${value.sql}"
-          case painlessScript  => s"$k = ${painlessScript.sql}"
+          case value: Value[_] => s"$key = ${value.sql}"
+          case painlessScript  => s"$key = ${painlessScript.sql}"
         }
       }
       .mkString(", ")}${where.map(w => s"${w.sql}").getOrElse("")}"
@@ -1043,7 +1063,14 @@ package object query {
     source: String,
     targetTable: String,
     fileFormat: Option[FileFormat] = None,
-    onConflict: Option[OnConflict] = None
+    onConflict: Option[OnConflict] = None,
+    /** The reference as the ordered part list the statement wrote — never split, never
+      * role-assigned, never dropped (#85, story 21.2 AD-1; extended to every DDL/DML statement by
+      * story 21.7). `Nil` for a programmatic construction AND for a single bare part, which IS the
+      * name — so the AST of every bare-spelled statement is byte-identical to what it was before
+      * story 21.7. Read by the render only; `name` stays what every consumer reads.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends DmlStatement {
     override def sql: String = {
       // The grammar only accepts a quoted source literal, so render one — an unquoted path
@@ -1051,7 +1078,9 @@ package object query {
       // ONE owner (`escapeStringLiteral`); this site used to inline a byte-identical fourth copy,
       // which is how a rule and its reverse drift apart.
       val quoted = s"'${escapeStringLiteral(source)}'"
-      s"COPY INTO $targetTable FROM $quoted${asString(fileFormat)}${asString(onConflict)}"
+      s"COPY INTO ${renderName(parts, targetTable)} FROM $quoted${asString(fileFormat)}${asString(
+        onConflict
+      )}"
     }
   }
 
@@ -1064,14 +1093,21 @@ package object query {
     pipelineType: IngestPipelineType,
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
-    processors: Seq[IngestProcessor]
+    processors: Seq[IngestProcessor],
+    /** The reference as the ordered part list the statement wrote — never split, never
+      * role-assigned, never dropped (#85, story 21.2 AD-1; extended to every DDL/DML statement by
+      * story 21.7). `Nil` for a programmatic construction AND for a single bare part, which IS the
+      * name — so the AST of every bare-spelled statement is byte-identical to what it was before
+      * story 21.7. Read by the render only; `name` stays what every consumer reads.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends PipelineStatement
       with DdlStatement {
     override def sql: String = {
       val processorsDdl = processors.map(_.ddl).mkString(", ")
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
-      s"CREATE$replaceClause PIPELINE$ineClause $name WITH PROCESSORS ($processorsDdl)"
+      s"CREATE$replaceClause PIPELINE$ineClause ${renderName(parts, name)} WITH PROCESSORS ($processorsDdl)"
     }
 
     lazy val ddlPipeline: IngestPipeline =
@@ -1086,7 +1122,8 @@ package object query {
   }
   case class DropPipelineProcessor(processorType: IngestProcessorType, column: String)
       extends AlterPipelineStatement {
-    override def sql: String = s"DROP PROCESSOR ${processorType.name.toUpperCase}($column)"
+    override def sql: String =
+      s"DROP PROCESSOR ${processorType.name.toUpperCase}(${renderColumnName(column)})"
   }
   case class AlterPipelineProcessor(processor: IngestProcessor) extends AlterPipelineStatement {
     override def sql: String = s"ALTER PROCESSOR ${processor.ddl}"
@@ -1096,7 +1133,10 @@ package object query {
   case class AlterPipeline(
     name: String,
     ifExists: Boolean,
-    statements: List[AlterPipelineStatement]
+    statements: List[AlterPipelineStatement],
+    /** See `Table.parts` / story 21.7: `Nil` unless the reference carries a qualifier or quoting.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends PipelineStatement
       with DdlStatement {
     override def sql: String = {
@@ -1107,7 +1147,7 @@ package object query {
       } else {
         statements.map(_.sql).mkString("")
       }
-      s"ALTER PIPELINE$ifExistsClause $name $statementsSql"
+      s"ALTER PIPELINE$ifExistsClause ${renderName(parts, name)} $statementsSql"
     }
 
     lazy val ddlProcessors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
@@ -1120,25 +1160,31 @@ package object query {
       )
   }
 
-  case class DropPipeline(name: String, ifExists: Boolean = false)
+  case class DropPipeline(name: String, ifExists: Boolean = false, parts: Seq[NamePart] = Nil)
       extends PipelineStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
-      s"DROP PIPELINE $ifExistsClause$name"
+      s"DROP PIPELINE $ifExistsClause${renderName(parts, name)}"
     }
   }
 
-  case class ShowPipeline(name: String) extends PipelineStatement with DqlStatement {
-    override def sql: String = s"SHOW PIPELINE $name"
+  case class ShowPipeline(name: String, parts: Seq[NamePart] = Nil)
+      extends PipelineStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW PIPELINE ${renderName(parts, name)}"
   }
 
-  case class ShowCreatePipeline(name: String) extends PipelineStatement with DqlStatement {
-    override def sql: String = s"SHOW CREATE PIPELINE $name"
+  case class ShowCreatePipeline(name: String, parts: Seq[NamePart] = Nil)
+      extends PipelineStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW CREATE PIPELINE ${renderName(parts, name)}"
   }
 
-  case class DescribePipeline(name: String) extends PipelineStatement with DqlStatement {
-    override def sql: String = s"DESCRIBE PIPELINE $name"
+  case class DescribePipeline(name: String, parts: Seq[NamePart] = Nil)
+      extends PipelineStatement
+      with DqlStatement {
+    override def sql: String = s"DESCRIBE PIPELINE ${renderName(parts, name)}"
   }
 
   case object ShowPipelines extends PipelineStatement with DqlStatement {
@@ -1155,7 +1201,10 @@ package object query {
     ifNotExists: Boolean = false,
     orReplace: Boolean = false,
     frequency: Option[Frequency] = None,
-    options: ListMap[String, Value[_]] = ListMap.empty
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    /** See `Table.parts` / story 21.7: `Nil` unless the reference carries a qualifier or quoting.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends MaterializedViewStatement
       with DdlStatement {
     override def sql: String = {
@@ -1172,7 +1221,10 @@ package object query {
       }
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
-      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause $view$frequencySql$optionsSql AS ${dql.sql}"
+      s"CREATE$replaceClause MATERIALIZED VIEW$ineClause ${renderName(
+        parts,
+        view
+      )}$frequencySql$optionsSql AS ${dql.sql}"
     }
 
     lazy val search: SingleSearch = dql match {
@@ -1202,22 +1254,29 @@ package object query {
     }
   }
 
-  case class DropMaterializedView(name: String, ifExists: Boolean = false)
-      extends MaterializedViewStatement
+  case class DropMaterializedView(
+    name: String,
+    ifExists: Boolean = false,
+    parts: Seq[NamePart] = Nil
+  ) extends MaterializedViewStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
-      s"DROP MATERIALIZED VIEW $ifExistsClause$name"
+      s"DROP MATERIALIZED VIEW $ifExistsClause${renderName(parts, name)}"
     }
   }
 
-  case class RefreshMaterializedView(name: String, ifExists: Boolean, scheduleNow: Boolean)
-      extends MaterializedViewStatement
+  case class RefreshMaterializedView(
+    name: String,
+    ifExists: Boolean,
+    scheduleNow: Boolean,
+    parts: Seq[NamePart] = Nil
+  ) extends MaterializedViewStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       val scheduleNowClause = if (scheduleNow) " WITH SCHEDULE NOW" else ""
-      s"REFRESH MATERIALIZED VIEW $ifExistsClause$name$scheduleNowClause"
+      s"REFRESH MATERIALIZED VIEW $ifExistsClause${renderName(parts, name)}$scheduleNowClause"
     }
   }
 
@@ -1225,28 +1284,28 @@ package object query {
     override def sql: String = s"SHOW MATERIALIZED VIEWS"
   }
 
-  case class ShowMaterializedView(name: String)
+  case class ShowMaterializedView(name: String, parts: Seq[NamePart] = Nil)
       extends MaterializedViewStatement
       with DqlStatement {
-    override def sql: String = s"SHOW MATERIALIZED VIEW $name"
+    override def sql: String = s"SHOW MATERIALIZED VIEW ${renderName(parts, name)}"
   }
 
-  case class ShowMaterializedViewStatus(name: String)
+  case class ShowMaterializedViewStatus(name: String, parts: Seq[NamePart] = Nil)
       extends MaterializedViewStatement
       with DqlStatement {
-    override def sql: String = s"SHOW MATERIALIZED VIEW STATUS $name"
+    override def sql: String = s"SHOW MATERIALIZED VIEW STATUS ${renderName(parts, name)}"
   }
 
-  case class ShowCreateMaterializedView(name: String)
+  case class ShowCreateMaterializedView(name: String, parts: Seq[NamePart] = Nil)
       extends MaterializedViewStatement
       with DqlStatement {
-    override def sql: String = s"SHOW CREATE MATERIALIZED VIEW $name"
+    override def sql: String = s"SHOW CREATE MATERIALIZED VIEW ${renderName(parts, name)}"
   }
 
-  case class DescribeMaterializedView(name: String)
+  case class DescribeMaterializedView(name: String, parts: Seq[NamePart] = Nil)
       extends MaterializedViewStatement
       with DqlStatement {
-    override def sql: String = s"DESCRIBE MATERIALIZED VIEW $name"
+    override def sql: String = s"DESCRIBE MATERIALIZED VIEW ${renderName(parts, name)}"
   }
 
   case class CreateTable(
@@ -1256,7 +1315,10 @@ package object query {
     orReplace: Boolean = false,
     primaryKey: List[String] = Nil,
     partitionBy: Option[PartitionDate] = None,
-    options: ListMap[String, Value[_]] = ListMap.empty
+    options: ListMap[String, Value[_]] = ListMap.empty,
+    /** See `Table.parts` / story 21.7: `Nil` unless the reference carries a qualifier or quoting.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends TableStatement
       with DdlStatement {
 
@@ -1265,14 +1327,15 @@ package object query {
     override def sql: String = {
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val ineClause = if (!orReplace && ifNotExists) " IF NOT EXISTS" else ""
+      val target = renderName(parts, table)
       ddl match {
         case Left(select) =>
-          s"CREATE$replaceClause TABLE$ineClause $table AS ${select.sql}"
+          s"CREATE$replaceClause TABLE$ineClause $target AS ${select.sql}"
         case Right(columns) =>
           val colsSql = columns.map(_.sql).mkString(",\n ")
           val primaryKeyClause =
             if (primaryKey.nonEmpty)
-              s",\n PRIMARY KEY (${primaryKey.mkString(", ")})"
+              s",\n PRIMARY KEY (${primaryKey.map(renderColumnName).mkString(", ")})"
             else
               ""
           val partitionClause = partitionBy match {
@@ -1284,7 +1347,7 @@ package object query {
               s" OPTIONS ${ObjectValue(options).ddl}"
             else
               ""
-          s"CREATE$replaceClause TABLE$ineClause $table (\n $colsSql$primaryKeyClause\n)$partitionClause$optionsClause"
+          s"CREATE$replaceClause TABLE$ineClause $target (\n $colsSql$primaryKeyClause\n)$partitionClause$optionsClause"
       }
     }
 
@@ -1391,8 +1454,14 @@ package object query {
 
   }
 
-  case class AlterTable(table: String, ifExists: Boolean, statements: List[AlterTableStatement])
-      extends TableStatement
+  case class AlterTable(
+    table: String,
+    ifExists: Boolean,
+    statements: List[AlterTableStatement],
+    /** See `Table.parts` / story 21.7: `Nil` unless the reference carries a qualifier or quoting.
+      */
+    parts: Seq[NamePart] = Nil
+  ) extends TableStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
@@ -1402,7 +1471,7 @@ package object query {
       } else {
         statements.map(_.sql).mkString("")
       }
-      s"ALTER TABLE$ifExistsClause $table $statementsSql"
+      s"ALTER TABLE$ifExistsClause ${renderName(parts, table)} $statementsSql"
     }
 
     lazy val processors: Seq[IngestProcessor] = statements.flatMap(_.ddlProcessor)
@@ -1423,14 +1492,15 @@ package object query {
   case class DropColumn(columnName: String, ifExists: Boolean = false) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"DROP COLUMN$ifExistsClause $columnName"
+      s"DROP COLUMN$ifExistsClause ${renderColumnName(columnName)}"
     }
     override def ddlProcessor: Option[IngestProcessor] = Some(
       RemoveProcessor(column = columnName)
     )
   }
   case class RenameColumn(oldName: String, newName: String) extends AlterTableStatement {
-    override def sql: String = s"RENAME COLUMN $oldName TO $newName"
+    override def sql: String =
+      s"RENAME COLUMN ${renderColumnName(oldName)} TO ${renderColumnName(newName)}"
     override def ddlProcessor: Option[IngestProcessor] = Some(
       RenameProcessor(column = oldName, newName = newName)
     )
@@ -1442,7 +1512,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET OPTIONS (${options
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET OPTIONS (${options
         .map { case (k, v) => s"$k = $v" }
         .mkString(", ")})"
     }
@@ -1455,7 +1525,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET OPTION ($optionKey = $optionValue)"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET OPTION ($optionKey = $optionValue)"
     }
   }
   case class DropColumnOption(
@@ -1465,14 +1535,14 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP OPTION $optionKey"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP OPTION $optionKey"
     }
   }
   case class AlterColumnType(columnName: String, newType: SQLType, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET DATA TYPE $newType"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET DATA TYPE $newType"
     }
   }
   case class AlterColumnScript(
@@ -1482,14 +1552,14 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET SCRIPT AS (${newScript.script})"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET SCRIPT AS (${newScript.script})"
     }
   }
   case class DropColumnScript(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP SCRIPT"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP SCRIPT"
     }
   }
   case class AlterColumnDefault(
@@ -1499,7 +1569,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET DEFAULT $defaultValue"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET DEFAULT $defaultValue"
     }
     override def ddlProcessor: Option[IngestProcessor] =
       Some(
@@ -1513,7 +1583,7 @@ package object query {
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP DEFAULT"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP DEFAULT"
     }
   }
   case class AlterColumnComment(
@@ -1523,28 +1593,28 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET COMMENT '${escapeStringLiteral(comment)}'"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET COMMENT '${escapeStringLiteral(comment)}'"
     }
   }
   case class DropColumnComment(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP COMMENT"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP COMMENT"
     }
   }
   case class AlterColumnNotNull(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET NOT NULL"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET NOT NULL"
     }
   }
   case class DropColumnNotNull(columnName: String, ifExists: Boolean = false)
       extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP NOT NULL"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP NOT NULL"
     }
   }
   case class AlterColumnFields(
@@ -1555,7 +1625,7 @@ package object query {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
       val fieldsSql = fields.map(_.sql).mkString("(\n\t\t", ",\n\t\t", "\n\t)")
-      s"ALTER COLUMN$ifExistsClause $columnName SET FIELDS $fieldsSql"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET FIELDS $fieldsSql"
     }
   }
   case class AlterColumnField(
@@ -1565,7 +1635,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName SET FIELD ${field.sql}"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} SET FIELD ${field.sql}"
     }
   }
   case class DropColumnField(
@@ -1575,7 +1645,7 @@ package object query {
   ) extends AlterTableStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) " IF EXISTS" else ""
-      s"ALTER COLUMN$ifExistsClause $columnName DROP FIELD $fieldName"
+      s"ALTER COLUMN$ifExistsClause ${renderColumnName(columnName)} DROP FIELD $fieldName"
     }
   }
   case class AlterTableMapping(optionKey: String, optionValue: Value[_])
@@ -1605,22 +1675,30 @@ package object query {
       s"DROP ALIAS $optionKey"
   }
 
-  case class DropTable(table: String, ifExists: Boolean = false, cascade: Boolean = false)
-      extends TableStatement
+  case class DropTable(
+    table: String,
+    ifExists: Boolean = false,
+    cascade: Boolean = false,
+    parts: Seq[NamePart] = Nil
+  ) extends TableStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
       val cascadeClause = if (cascade) " CASCADE" else ""
-      s"DROP TABLE $ifExistsClause$table$cascadeClause"
+      s"DROP TABLE $ifExistsClause${renderName(parts, table)}$cascadeClause"
     }
   }
 
-  case class TruncateTable(table: String) extends TableStatement with DdlStatement {
-    override def sql: String = s"TRUNCATE TABLE $table"
+  case class TruncateTable(table: String, parts: Seq[NamePart] = Nil)
+      extends TableStatement
+      with DdlStatement {
+    override def sql: String = s"TRUNCATE TABLE ${renderName(parts, table)}"
   }
 
-  case class ShowTable(table: String) extends TableStatement with DqlStatement {
-    override def sql: String = s"SHOW TABLE $table"
+  case class ShowTable(table: String, parts: Seq[NamePart] = Nil)
+      extends TableStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW TABLE ${renderName(parts, table)}"
   }
 
   case class ShowTables(indices: Seq[String] = Seq.empty) extends TableStatement with DqlStatement {
@@ -1631,12 +1709,16 @@ package object query {
     }
   }
 
-  case class ShowCreateTable(table: String) extends TableStatement with DqlStatement {
-    override def sql: String = s"SHOW CREATE TABLE $table"
+  case class ShowCreateTable(table: String, parts: Seq[NamePart] = Nil)
+      extends TableStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW CREATE TABLE ${renderName(parts, table)}"
   }
 
-  case class DescribeTable(table: String) extends TableStatement with DqlStatement {
-    override def sql: String = s"DESCRIBE TABLE $table"
+  case class DescribeTable(table: String, parts: Seq[NamePart] = Nil)
+      extends TableStatement
+      with DqlStatement {
+    override def sql: String = s"DESCRIBE TABLE ${renderName(parts, table)}"
   }
 
   sealed trait WatcherStatement extends Statement
@@ -1681,16 +1763,18 @@ package object query {
     override def sql: String = watcher.sql
   }
 
-  case class ShowWatcherStatus(name: String) extends WatcherStatement with DqlStatement {
-    override def sql: String = s"SHOW WATCHER STATUS $name"
+  case class ShowWatcherStatus(name: String, parts: Seq[NamePart] = Nil)
+      extends WatcherStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW WATCHER STATUS ${renderName(parts, name)}"
   }
 
-  case class DropWatcher(name: String, ifExists: Boolean = false)
+  case class DropWatcher(name: String, ifExists: Boolean = false, parts: Seq[NamePart] = Nil)
       extends WatcherStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
-      s"DROP WATCHER $ifExistsClause$name"
+      s"DROP WATCHER $ifExistsClause${renderName(parts, name)}"
     }
   }
 
@@ -1708,15 +1792,23 @@ package object query {
     enrichFields: List[String],
     where: Option[Where] = None,
     orReplace: Boolean = false,
-    ifNotExists: Boolean = false
+    ifNotExists: Boolean = false,
+    /** See `Table.parts` / story 21.7: `Nil` unless the reference carries a qualifier or quoting.
+      */
+    parts: Seq[NamePart] = Nil
   ) extends EnrichPolicyStatement
       with DdlStatement {
     override def sql: String = {
       val ineClause = if (ifNotExists) " IF NOT EXISTS" else ""
       val replaceClause = if (orReplace) " OR REPLACE" else ""
       val whereClause = this.where.map(w => s" $w").getOrElse("")
-      s"CREATE$replaceClause ENRICH POLICY$ineClause $name TYPE ${policyType.name.toUpperCase} FROM ${from
-        .mkString(",")} ON $on ENRICH ${enrichFields
+      s"CREATE$replaceClause ENRICH POLICY$ineClause ${renderName(
+        parts,
+        name
+      )} TYPE ${policyType.name.toUpperCase} FROM ${from
+        .map(renderColumnName)
+        .mkString(",")} ON ${renderColumnName(on)} ENRICH ${enrichFields
+        .map(renderColumnName)
         .mkString(", ")}$whereClause"
     }
 
@@ -1744,21 +1836,25 @@ package object query {
     }
   }
 
-  case class ExecuteEnrichPolicy(name: String) extends EnrichPolicyStatement with DdlStatement {
-    override def sql: String = s"EXECUTE ENRICH POLICY $name"
+  case class ExecuteEnrichPolicy(name: String, parts: Seq[NamePart] = Nil)
+      extends EnrichPolicyStatement
+      with DdlStatement {
+    override def sql: String = s"EXECUTE ENRICH POLICY ${renderName(parts, name)}"
   }
 
-  case class DropEnrichPolicy(name: String, ifExists: Boolean = false)
+  case class DropEnrichPolicy(name: String, ifExists: Boolean = false, parts: Seq[NamePart] = Nil)
       extends EnrichPolicyStatement
       with DdlStatement {
     override def sql: String = {
       val ifExistsClause = if (ifExists) "IF EXISTS " else ""
-      s"DROP ENRICH POLICY $ifExistsClause$name"
+      s"DROP ENRICH POLICY $ifExistsClause${renderName(parts, name)}"
     }
   }
 
-  case class ShowEnrichPolicy(name: String) extends EnrichPolicyStatement with DqlStatement {
-    override def sql: String = s"SHOW ENRICH POLICY $name"
+  case class ShowEnrichPolicy(name: String, parts: Seq[NamePart] = Nil)
+      extends EnrichPolicyStatement
+      with DqlStatement {
+    override def sql: String = s"SHOW ENRICH POLICY ${renderName(parts, name)}"
   }
 
   case object ShowEnrichPolicies extends EnrichPolicyStatement with DqlStatement {

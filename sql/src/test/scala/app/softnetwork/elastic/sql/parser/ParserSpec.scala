@@ -1462,6 +1462,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             false,
             List("id"),
             Some(PartitionDate("birthdate", TimeUnit.MONTHS)),
+            _,
             _
           ) =>
         cols.map(_.name) should contain allOf ("id", "name")
@@ -1774,8 +1775,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DropTable("users", ie, _) if ie =>
-      case _                               => fail("Expected DropTable")
+      case DropTable("users", ie, _, _) if ie =>
+      case _                                  => fail("Expected DropTable")
     }
   }
 
@@ -1785,8 +1786,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case TruncateTable("users") =>
-      case _                      => fail("Expected TruncateTable")
+      case TruncateTable("users", _) =>
+      case _                         => fail("Expected TruncateTable")
     }
   }
 
@@ -1799,7 +1800,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(AddColumn(c, ine)) if ine =>
             c.name shouldBe "age"
@@ -1820,7 +1821,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(RenameColumn(o, n)) =>
             o shouldBe "name"
@@ -1840,7 +1841,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(AlterColumnOptions(c, d, ie)) if ie =>
             c shouldBe "status"
@@ -1860,7 +1861,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(AlterColumnDefault(c, d, _)) =>
             c shouldBe "status"
@@ -1880,7 +1881,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(DropColumnDefault(c, _)) =>
             c shouldBe "status"
@@ -1899,7 +1900,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(AlterColumnNotNull(c, _)) =>
             c shouldBe "status"
@@ -1918,7 +1919,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(DropColumnNotNull(c, _)) =>
             c shouldBe "status"
@@ -1937,7 +1938,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts match {
           case List(AlterColumnType(c, d, _)) =>
             c shouldBe "status"
@@ -1957,7 +1958,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterTable("users", ifExists, stmts) if ifExists =>
+      case AlterTable("users", ifExists, stmts, _) if ifExists =>
         stmts match {
           case List(AlterColumnDefault(c, d, _)) =>
             c shouldBe "status"
@@ -1986,7 +1987,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     println(stmt.sql)
     stmt.sql.replaceAll("\t", "  ") shouldBe sql
     stmt match {
-      case AlterTable("users", _, stmts) =>
+      case AlterTable("users", _, stmts, _) =>
         stmts.length shouldBe 4
         stmts.collect { case AddColumn(c, true) => c.name } should contain("age")
         stmts.collect { case RenameColumn(o, n) => (o, n) } should contain(("name", "full_name"))
@@ -2018,7 +2019,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     // SET and ADD are synonyms here — the grammar keeps neither, so both yield the same AST.
     setField shouldBe addField
     setField.toOption.get match {
-      case AlterTable("users", _, Seq(AlterColumnField("profile", field, false))) =>
+      case AlterTable("users", _, Seq(AlterColumnField("profile", field, false)), _) =>
         field.name shouldBe "followers"
         field.dataType.typeId shouldBe "INT"
       case other => fail(s"Expected a single AlterColumnField, got $other")
@@ -2041,7 +2042,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     )
     result.isRight shouldBe true
     result.toOption.get match {
-      case AlterTable("users", _, Seq(AlterColumnFields("profile", fields, false))) =>
+      case AlterTable("users", _, Seq(AlterColumnFields("profile", fields, false)), _) =>
         fields.map(_.name) should contain inOrder ("city", "followers")
       case other => fail(s"Expected a single AlterColumnFields, got $other")
     }
@@ -2063,7 +2064,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     println(stmt.sql)
     stmt.sql.replaceAll("\t", "  ") shouldBe sql
     stmt match {
-      case AlterTable("orders", _, stmts) =>
+      case AlterTable("orders", _, stmts, _) =>
         stmts.length shouldBe 2
         stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
         stmts.collect { case AlterTableMapping(k, v) => (k, v) } should contain(
@@ -2084,7 +2085,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     println(stmt.sql)
     stmt.sql.replaceAll("\t", "  ") shouldBe sql
     stmt match {
-      case AlterTable("orders", _, stmts) =>
+      case AlterTable("orders", _, stmts, _) =>
         stmts.length shouldBe 2
         stmts.collect { case AddColumn(c, false) => c.name } should contain("_last_updated")
         stmts.collect { case AlterTableSetting(k, v) => (k, v) } should contain(
@@ -2100,8 +2101,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DescribeTable("users") =>
-      case _                      => fail("Expected DescTable")
+      case DescribeTable("users", _) =>
+      case _                         => fail("Expected DescTable")
     }
   }
 
@@ -2111,8 +2112,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DescribeTable("ecommerce") =>
-      case _                          => fail("Expected DescribeTable")
+      case DescribeTable("ecommerce", _) =>
+      case _                             => fail("Expected DescribeTable")
     }
   }
 
@@ -2122,8 +2123,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DescribeTable("ecommerce") =>
-      case _                          => fail("Expected DescribeTable")
+      case DescribeTable("ecommerce", _) =>
+      case _                             => fail("Expected DescribeTable")
     }
   }
 
@@ -2133,8 +2134,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DescribePipeline("mypipe") =>
-      case _                          => fail("Expected DescribePipeline")
+      case DescribePipeline("mypipe", _) =>
+      case _                             => fail("Expected DescribePipeline")
     }
   }
 
@@ -2257,13 +2258,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case CreatePipeline(
-            "user_pipeline",
-            _,
-            false,
-            true,
-            processors
-          ) =>
+      case CreatePipeline("user_pipeline", _, false, true, processors, _) =>
         processors.size shouldBe 7
         processors.find(_.column == "name") match {
           case Some(
@@ -2403,11 +2398,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case AlterPipeline(
-            "user_pipeline",
-            ie,
-            statements
-          ) if ie =>
+      case AlterPipeline("user_pipeline", ie, statements, _) if ie =>
         statements.size shouldBe 2
         statements.collect { case AddPipelineProcessor(p) => p } match {
           case SetProcessor(
@@ -2436,8 +2427,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DropPipeline("user_pipeline", ie) if ie =>
-      case _                                       => fail("Expected DropPipeline")
+      case DropPipeline("user_pipeline", ie, _) if ie =>
+      case _                                          => fail("Expected DropPipeline")
     }
   }
 
@@ -3312,7 +3303,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             List("name", "email"),
             None, // ✅ Pas de WHERE
             false, // ✅ Pas de OR REPLACE
-            false
+            false,
+            _
           ) => // success
       case _ => fail("Expected CreateEnrichPolicy without WHERE")
     }
@@ -3328,7 +3320,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(sql)
     result.isRight shouldBe true
     result.toOption.get match {
-      case CreateEnrichPolicy(_, _, _, _, _, _, orReplace, _) =>
+      case CreateEnrichPolicy(_, _, _, _, _, _, orReplace, _, _) =>
         orReplace shouldBe false
       case _ => fail("Expected CreateEnrichPolicy")
     }
@@ -3354,7 +3346,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             List("user_id", "user_email"),
             Some(whereClause),
             true,
-            false
+            false,
+            _
           ) => // success
         whereClause.sql should include("active = true")
       case _ => fail("Expected CreateEnrichPolicy")
@@ -3382,7 +3375,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             List("user_id", "user_email"),
             Some(whereClause),
             true,
-            false
+            false,
+            _
           ) => // success
         whereClause.sql should include("active = true")
       case _ => fail("Expected CreateEnrichPolicy")
@@ -3410,7 +3404,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             List("user_id", "user_email"),
             Some(whereClause),
             true,
-            false
+            false,
+            _
           ) => // success
         whereClause.sql should include("active = true")
       case _ => fail("Expected CreateEnrichPolicy")
@@ -3435,6 +3430,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             List("name", "email", "company"),
             _,
             _,
+            _,
             _
           ) => // success
       case _ => fail("Expected CreateEnrichPolicy with multiple indices")
@@ -3451,7 +3447,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(sql)
     result.isRight shouldBe true
     result.toOption.get match {
-      case CreateEnrichPolicy(_, _, _, _, List("name", "email", "country"), _, _, _) =>
+      case CreateEnrichPolicy(_, _, _, _, List("name", "email", "country"), _, _, _, _) =>
       // success
       case _ => fail("Expected CreateEnrichPolicy")
     }
@@ -3507,8 +3503,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case DropEnrichPolicy("my_policy", true) => // success
-      case _                                   => fail("Expected DropEnrichPolicy")
+      case DropEnrichPolicy("my_policy", true, _) => // success
+      case _                                      => fail("Expected DropEnrichPolicy")
     }
   }
 
@@ -3517,8 +3513,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(sql)
     result.isRight shouldBe true
     result.toOption.get match {
-      case DropEnrichPolicy("my_policy", false) => // success
-      case _                                    => fail("Expected DropEnrichPolicy")
+      case DropEnrichPolicy("my_policy", false, _) => // success
+      case _                                       => fail("Expected DropEnrichPolicy")
     }
   }
 
@@ -3528,8 +3524,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case ExecuteEnrichPolicy("my_policy") => // success
-      case _                                => fail("Expected ExecuteEnrichPolicy")
+      case ExecuteEnrichPolicy("my_policy", _) => // success
+      case _                                   => fail("Expected ExecuteEnrichPolicy")
     }
   }
 
@@ -3547,7 +3543,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(sql)
     result.isRight shouldBe true
     result.toOption.get match {
-      case CreateEnrichPolicy(_, _, _, _, _, Some(whereClause), _, _) =>
+      case CreateEnrichPolicy(_, _, _, _, _, Some(whereClause), _, _, _) =>
         whereClause.sql should include("status = 'active'")
         whereClause.sql should include("tier IN")
         whereClause.sql should include("created_at >")
@@ -3578,7 +3574,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     val result = Parser(sql)
     result.isRight shouldBe true
     result.toOption.get match {
-      case CreateEnrichPolicy(_, EnrichPolicyType.GeoMatch, _, _, _, _, _, _) =>
+      case CreateEnrichPolicy(_, EnrichPolicyType.GeoMatch, _, _, _, _, _, _, _) =>
       // success
       case _ => fail("Expected GEO_MATCH policy")
     }
@@ -3649,7 +3645,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", cols, Right(values), Some(OnConflict(None, false))) =>
+      case Insert("users", cols, Right(values), Some(OnConflict(None, false)), _) =>
         cols should contain inOrder ("id", "name")
         values.head.map(_.value) should contain inOrder (1, "Alice")
       case _ => fail("Expected Insert with values")
@@ -3662,7 +3658,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", cols, Right(values), Some(OnConflict(None, true))) =>
+      case Insert("users", cols, Right(values), Some(OnConflict(None, true)), _) =>
         cols should contain inOrder ("id", "name")
         values.head.map(_.value) should contain inOrder (1, "Alice")
         values.last.map(_.value) should contain inOrder (2, "BOB")
@@ -3676,7 +3672,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false))) =>
+      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(None, false)), _) =>
         sel.sql should include("SELECT id, name FROM old_users ON CONFLICT DO NOTHING")
       case _ => fail("Expected Insert with select")
     }
@@ -3699,7 +3695,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
             "orders_with_customers_mv_customers_changelog",
             Nil,
             Left(sel: DqlStatement),
-            None
+            None,
+            _
           ) =>
         sel.sql should include(
           "SELECT id, name, email, department.zipcode AS department.zip_code FROM customers"
@@ -3714,7 +3711,13 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Insert("users", Nil, Left(sel: DqlStatement), Some(OnConflict(Some(Seq("id")), true))) =>
+      case Insert(
+            "users",
+            Nil,
+            Left(sel: DqlStatement),
+            Some(OnConflict(Some(Seq("id")), true)),
+            _
+          ) =>
         sel.sql should include("SELECT id, name FROM old_users ON CONFLICT (id) DO UPDATE")
       case _ => fail("Expected Insert with select")
     }
@@ -3837,7 +3840,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case Update("users", values, Some(where)) =>
+      case Update("users", values, Some(where), _) =>
         values("name").asInstanceOf[Value[_]].value shouldBe "Bob"
         values("age").asInstanceOf[Value[_]].value shouldBe 42
         where.sql should include("id = 1")
@@ -3871,7 +3874,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case u @ Update("products", values, Some(where)) =>
+      case u @ Update("products", values, Some(where), _) =>
         // CURRENT_TIMESTAMP must not be captured as a plain Value[_]
         values("price") should not be a[Value[_]]
         values("updated_at") should not be a[Value[_]]

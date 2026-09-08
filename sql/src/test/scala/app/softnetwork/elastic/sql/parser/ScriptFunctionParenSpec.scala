@@ -21,7 +21,7 @@ class ScriptFunctionParenSpec extends AnyFlatSpec with Matchers {
 
   private def scriptOf(sql: String): String =
     Parser(sql) match {
-      case Right(CreateTable(_, Right(columns), _, _, _, _, _)) =>
+      case Right(CreateTable(_, Right(columns), _, _, _, _, _, _)) =>
         columns
           .find(_.script.isDefined)
           .flatMap(_.script.map(_.sql))

@@ -16,8 +16,8 @@ class ColumnScriptFieldsExclusionSpec extends AnyFlatSpec with Matchers {
 
   private def statementsOf(sql: String): Seq[AlterTableStatement] =
     Parser(sql) match {
-      case Right(AlterTable(_, _, statements)) => statements
-      case other                               => fail(s"Expected an AlterTable, got $other")
+      case Right(AlterTable(_, _, statements, _)) => statements
+      case other                                  => fail(s"Expected an AlterTable, got $other")
     }
 
   private val withFields: Table =

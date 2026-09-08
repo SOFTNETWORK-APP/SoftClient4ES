@@ -113,6 +113,11 @@ object Parser
   def rows: PackratParser[List[List[Value[_]]]] =
     repsep(row, comma)
 
+  /** DELIBERATELY still `ident` (story 21.7 Task 1.1). This selects a processor TYPE, not a name:
+    * it never reaches Elasticsearch as an identifier, and `IngestProcessor.sql` renders
+    * `processorType.name.toUpperCase`, so a quoted spelling could not round-trip even if it parsed.
+    * The one `ident` position that is not a name is not converted.
+    */
   def processorType: PackratParser[IngestProcessorType] =
     ident ^^ { name =>
       name.toLowerCase match {
@@ -134,31 +139,45 @@ object Parser
   def createOrReplacePipeline: PackratParser[CreatePipeline] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
       "PIPELINE"
-    )) ~ ident ~ (keyword("WITH") ~ keyword("PROCESSORS")) ~ start ~ repsep(
+    )) ~ identRef ~ (keyword("WITH") ~ keyword("PROCESSORS")) ~ start ~ repsep(
       processor,
       separator
     ) ~ end ^^ { case _ ~ name ~ _ ~ _ ~ proc ~ _ =>
-      CreatePipeline(name, IngestPipelineType.Custom, orReplace = true, processors = proc)
+      CreatePipeline(
+        name._1,
+        IngestPipelineType.Custom,
+        orReplace = true,
+        processors = proc,
+        parts = name._2
+      )
     }
 
   def createPipeline: PackratParser[CreatePipeline] =
-    (keyword("CREATE") ~ keyword("PIPELINE")) ~ ifNotExists ~ ident ~ (keyword("WITH") ~ keyword(
+    (keyword("CREATE") ~ keyword("PIPELINE")) ~ ifNotExists ~ identRef ~ (keyword(
+      "WITH"
+    ) ~ keyword(
       "PROCESSORS"
     ) ~ start) ~ repsep(
       processor,
       separator
     ) <~ end ^^ { case _ ~ ine ~ name ~ _ ~ proc =>
-      CreatePipeline(name, IngestPipelineType.Custom, ifNotExists = ine, processors = proc)
+      CreatePipeline(
+        name._1,
+        IngestPipelineType.Custom,
+        ifNotExists = ine,
+        processors = proc,
+        parts = name._2
+      )
     }
 
   def dropPipeline: PackratParser[DropPipeline] =
-    (keyword("DROP") ~ keyword("PIPELINE")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
-      DropPipeline(name, ifExists = ie)
+    (keyword("DROP") ~ keyword("PIPELINE")) ~ ifExists ~ identRef ^^ { case _ ~ ie ~ name =>
+      DropPipeline(name._1, ifExists = ie, parts = name._2)
     }
 
   def showPipeline: PackratParser[ShowPipeline] =
-    (keyword("SHOW") ~ keyword("PIPELINE")) ~ ident ^^ { case _ ~ pipeline =>
-      ShowPipeline(pipeline)
+    (keyword("SHOW") ~ keyword("PIPELINE")) ~ identRef ^^ { case _ ~ pipeline =>
+      ShowPipeline(pipeline._1, parts = pipeline._2)
     }
 
   def showPipelines: PackratParser[ShowPipelines.type] =
@@ -167,15 +186,15 @@ object Parser
     }
 
   def showCreatePipeline: PackratParser[ShowCreatePipeline] =
-    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("PIPELINE")) ~ ident ^^ {
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("PIPELINE")) ~ identRef ^^ {
       case _ ~ _ ~ _ ~ pipeline =>
-        ShowCreatePipeline(pipeline)
+        ShowCreatePipeline(pipeline._1, parts = pipeline._2)
     }
 
   def describePipeline: PackratParser[DescribePipeline] =
-    ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("PIPELINE")) ~ ident ^^ {
+    ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("PIPELINE")) ~ identRef ^^ {
       case _ ~ pipeline =>
-        DescribePipeline(pipeline)
+        DescribePipeline(pipeline._1, parts = pipeline._2)
     }
 
   def addProcessor: PackratParser[AddPipelineProcessor] =
@@ -184,7 +203,7 @@ object Parser
     }
 
   def dropProcessor: PackratParser[DropPipelineProcessor] =
-    (keyword("DROP") ~ keyword("PROCESSOR")) ~ processorType ~ start ~ ident ~ end ^^ {
+    (keyword("DROP") ~ keyword("PROCESSOR")) ~ processorType ~ start ~ identName ~ end ^^ {
       case _ ~ pt ~ _ ~ name ~ _ =>
         DropPipelineProcessor(pt, name)
     }
@@ -193,7 +212,7 @@ object Parser
     addProcessor | dropProcessor
 
   def alterPipeline: PackratParser[AlterPipeline] =
-    (keyword("ALTER") ~ keyword("PIPELINE")) ~ ifExists ~ ident ~ start.? ~ repsep(
+    (keyword("ALTER") ~ keyword("PIPELINE")) ~ ifExists ~ identRef ~ start.? ~ repsep(
       alterPipelineStatement,
       separator
     ) ~ end.? >> { case _ ~ ie ~ pipeline ~ s ~ stmts ~ e =>
@@ -204,7 +223,7 @@ object Parser
       } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
         err("Multiple ALTER PIPELINE statements require parentheses")
       } else
-        success(AlterPipeline(pipeline, ie, stmts))
+        success(AlterPipeline(pipeline._1, ie, stmts, parts = pipeline._2))
     }
 
   /** `FIELDS (…)` — required. The empty fallback belongs to `optionalMultiFields`, whose only
@@ -336,7 +355,7 @@ object Parser
     script ~ opt(keyword("STORED")) ^^ { case s ~ stored => (s, stored.isDefined) }
 
   def column: PackratParser[Column] =
-    ident ~ extension_type ~ (storedScript | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
+    identName ~ extension_type ~ (storedScript | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       ListMap.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {
@@ -360,9 +379,11 @@ object Parser
     start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
 
   def primaryKey: PackratParser[List[String]] =
-    separator ~ keyword("PRIMARY") ~ keyword("KEY") ~ start ~ repsep(ident, separator) ~ end ^^ {
-      case _ ~ _ ~ _ ~ _ ~ keys ~ _ =>
-        keys
+    separator ~ keyword("PRIMARY") ~ keyword("KEY") ~ start ~ repsep(
+      identName,
+      separator
+    ) ~ end ^^ { case _ ~ _ ~ _ ~ _ ~ keys ~ _ =>
+      keys
     } | success(Nil)
 
   def granularity: PackratParser[TimeUnit] = start ~
@@ -374,7 +395,7 @@ object Parser
     (keyword("SECOND") ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
 
   def partitionBy: PackratParser[Option[PartitionDate]] =
-    opt(keyword("PARTITION") ~ keyword("BY") ~ ident ~ opt(granularity)) ^^ {
+    opt(keyword("PARTITION") ~ keyword("BY") ~ identName ~ opt(granularity)) ^^ {
       case Some(_ ~ _ ~ pb ~ gf) => Some(PartitionDate(pb, gf.getOrElse(TimeUnit.DAYS)))
       case None                  => None
     }
@@ -393,7 +414,7 @@ object Parser
   def createOrReplaceTable: PackratParser[CreateTable] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
       "TABLE"
-    )) ~ ident ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
+    )) ~ identRef ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
       case _ ~ name ~ lr =>
         lr match {
           case (
@@ -403,34 +424,50 @@ object Parser
                 opts: ListMap[String, Value[_]]
               ) =>
             CreateTable(
-              name,
+              name._1,
               Right(cols),
               ifNotExists = false,
               orReplace = true,
               primaryKey = pk,
               partitionBy = p,
-              options = opts
+              options = opts,
+              parts = name._2
             )
           case sel: SearchStatement =>
-            CreateTable(name, Left(sel), ifNotExists = false, orReplace = true)
+            CreateTable(
+              name._1,
+              Left(sel),
+              ifNotExists = false,
+              orReplace = true,
+              parts = name._2
+            )
         }
     }
 
   def createTable: PackratParser[CreateTable] =
     (keyword("CREATE") ~ keyword(
       "TABLE"
-    )) ~ ifNotExists ~ ident ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
-      case _ ~ ine ~ name ~ lr =>
-        lr match {
-          case (
-                cols: List[Column],
-                pk: List[String],
-                p: Option[PartitionDate],
-                opts: ListMap[String, Value[_]]
-              ) =>
-            CreateTable(name, Right(cols), ine, primaryKey = pk, partitionBy = p, options = opts)
-          case sel: SearchStatement => CreateTable(name, Left(sel), ine)
-        }
+    )) ~ ifNotExists ~ identRef ~ (columnsWithPartitionBy | (keyword(
+      "AS"
+    ) ~> searchStatement)) ^^ { case _ ~ ine ~ name ~ lr =>
+      lr match {
+        case (
+              cols: List[Column],
+              pk: List[String],
+              p: Option[PartitionDate],
+              opts: ListMap[String, Value[_]]
+            ) =>
+          CreateTable(
+            name._1,
+            Right(cols),
+            ine,
+            primaryKey = pk,
+            partitionBy = p,
+            options = opts,
+            parts = name._2
+          )
+        case sel: SearchStatement => CreateTable(name._1, Left(sel), ine, parts = name._2)
+      }
     }
 
   def patterns: PackratParser[List[String]] = keyword("LIKE") ~> repsep(literal, comma) ^^ {
@@ -444,29 +481,31 @@ object Parser
     }
 
   def showTable: PackratParser[ShowTable] =
-    (keyword("SHOW") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ table =>
-      ShowTable(table)
+    (keyword("SHOW") ~ keyword("TABLE")) ~ identRef ^^ { case _ ~ table =>
+      ShowTable(table._1, parts = table._2)
     }
 
   def showCreateTable: PackratParser[ShowCreateTable] =
-    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ _ ~ _ ~ table =>
-      ShowCreateTable(table)
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("TABLE")) ~ identRef ^^ {
+      case _ ~ _ ~ _ ~ table =>
+        ShowCreateTable(table._1, parts = table._2)
     }
 
   def describeTable: PackratParser[DescribeTable] =
-    ((keyword("DESCRIBE") | keyword("DESC")) ~ opt(keyword("TABLE"))) ~ ident ^^ { case _ ~ table =>
-      DescribeTable(table)
+    ((keyword("DESCRIBE") | keyword("DESC")) ~ opt(keyword("TABLE"))) ~ identRef ^^ {
+      case _ ~ table =>
+        DescribeTable(table._1, parts = table._2)
     }
 
   def dropTable: PackratParser[DropTable] =
-    (keyword("DROP") ~ (keyword("TABLE") | keyword("INDEX"))) ~ ifExists ~ ident ^^ {
+    (keyword("DROP") ~ (keyword("TABLE") | keyword("INDEX"))) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
-        DropTable(name, ifExists = ie)
+        DropTable(name._1, ifExists = ie, parts = name._2)
     }
 
   def truncateTable: PackratParser[TruncateTable] =
-    (keyword("TRUNCATE") ~ keyword("TABLE")) ~ ident ^^ { case _ ~ name =>
-      TruncateTable(name)
+    (keyword("TRUNCATE") ~ keyword("TABLE")) ~ identRef ^^ { case _ ~ name =>
+      TruncateTable(name._1, parts = name._2)
     }
 
   def frequency: PackratParser[Frequency] =
@@ -485,63 +524,68 @@ object Parser
   def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("MATERIALIZED") ~ keyword(
       "VIEW"
-    )) ~ ident ~ opt(frequency) ~ opt(
+    )) ~ identRef ~ opt(frequency) ~ opt(
       withOptions
     ) ~ (keyword("AS") ~> searchStatement) ^^ { case _ ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
-        view,
+        view._1,
         dql,
         ifNotExists = false,
         orReplace = true,
         frequency = freq,
-        options = opts.getOrElse(ListMap.empty)
+        options = opts.getOrElse(ListMap.empty),
+        parts = view._2
       )
     }
 
   def createMaterializedView: PackratParser[CreateMaterializedView] =
-    (keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifNotExists ~ ident ~ opt(
+    (keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifNotExists ~ identRef ~ opt(
       frequency
     ) ~ opt(
       withOptions
     ) ~ (keyword("AS") ~> searchStatement) ^^ { case _ ~ ine ~ view ~ freq ~ opts ~ dql =>
       CreateMaterializedView(
-        view,
+        view._1,
         dql,
         ifNotExists = ine,
         orReplace = false,
         frequency = freq,
-        options = opts.getOrElse(ListMap.empty)
+        options = opts.getOrElse(ListMap.empty),
+        parts = view._2
       )
     }
 
   def dropMaterializedView: PackratParser[DropMaterializedView] =
-    (keyword("DROP") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ ident ^^ {
+    (keyword("DROP") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
-        DropMaterializedView(name, ifExists = ie)
+        DropMaterializedView(name._1, ifExists = ie, parts = name._2)
     }
 
   def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
-    (keyword("REFRESH") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ ident ~ opt(
+    (keyword("REFRESH") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ identRef ~ opt(
       keyword("WITH") ~ keyword("SCHEDULE") ~ keyword("NOW")
     ) ^^ { case _ ~ ie ~ view ~ wn =>
-      RefreshMaterializedView(view, ifExists = ie, scheduleNow = wn.isDefined)
+      RefreshMaterializedView(view._1, ifExists = ie, scheduleNow = wn.isDefined, parts = view._2)
     }
 
   def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
-    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW") ~ keyword("STATUS")) ~ ident ^^ {
-      case _ ~ _ ~ _ ~ _ ~ view =>
-        ShowMaterializedViewStatus(view)
+    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW") ~ keyword(
+      "STATUS"
+    )) ~ identRef ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowMaterializedViewStatus(view._1, parts = view._2)
     }
 
   def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
-    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ident ^^ {
-      case _ ~ _ ~ _ ~ _ ~ view =>
-        ShowCreateMaterializedView(view)
+    (keyword("SHOW") ~ keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword(
+      "VIEW"
+    )) ~ identRef ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
+      ShowCreateMaterializedView(view._1, parts = view._2)
     }
 
   def showMaterializedView: PackratParser[ShowMaterializedView] =
-    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ident ^^ { case _ ~ _ ~ view =>
-      ShowMaterializedView(view)
+    (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ identRef ^^ {
+      case _ ~ _ ~ view =>
+        ShowMaterializedView(view._1, parts = view._2)
     }
 
   def showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
@@ -552,8 +596,8 @@ object Parser
   def describeMaterializedView: PackratParser[DescribeMaterializedView] =
     ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("MATERIALIZED") ~ keyword(
       "VIEW"
-    )) ~ ident ^^ { case _ ~ _ ~ _ ~ view =>
-      DescribeMaterializedView(view)
+    )) ~ identRef ^^ { case _ ~ _ ~ _ ~ view =>
+      DescribeMaterializedView(view._1, parts = view._2)
     }
 
   def addColumn: PackratParser[AddColumn] =
@@ -562,12 +606,12 @@ object Parser
     }
 
   def dropColumn: PackratParser[DropColumn] =
-    (keyword("DROP") ~ keyword("COLUMN")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
+    (keyword("DROP") ~ keyword("COLUMN")) ~ ifExists ~ identName ^^ { case _ ~ ie ~ name =>
       DropColumn(name, ifExists = ie)
     }
 
   def renameColumn: PackratParser[RenameColumn] =
-    (keyword("RENAME") ~ keyword("COLUMN")) ~ ident ~ (keyword("TO") ~> ident) ^^ {
+    (keyword("RENAME") ~ keyword("COLUMN")) ~ identName ~ (keyword("TO") ~> identName) ^^ {
       case _ ~ oldName ~ newName =>
         RenameColumn(oldName, newName)
     }
@@ -578,50 +622,51 @@ object Parser
     }
 
   def alterColumnOptions: PackratParser[AlterColumnOptions] =
-    alterColumnIfExists ~ ident ~ keyword("SET") ~ options ^^ { case ie ~ col ~ _ ~ opts =>
+    alterColumnIfExists ~ identName ~ keyword("SET") ~ options ^^ { case ie ~ col ~ _ ~ opts =>
       AlterColumnOptions(col, opts, ifExists = ie)
     }
 
   def alterColumnOption: PackratParser[AlterColumnOption] =
-    alterColumnIfExists ~ ident ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
+    alterColumnIfExists ~ identName ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
       "OPTION"
     )) ~ start ~ option ~ end ^^ { case ie ~ col ~ _ ~ _ ~ opt ~ _ =>
       AlterColumnOption(col, opt._1, opt._2, ifExists = ie)
     }
 
   def dropColumnOption: PackratParser[DropColumnOption] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("OPTION")) ~ ident ^^ {
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("OPTION")) ~ identName ^^ {
       case ie ~ col ~ _ ~ optionName =>
         DropColumnOption(col, optionName, ifExists = ie)
     }
 
   def alterColumnFields: PackratParser[AlterColumnFields] =
-    alterColumnIfExists ~ ident ~ keyword("SET") ~ multiFields ^^ { case ie ~ col ~ _ ~ fields =>
-      AlterColumnFields(col, fields, ifExists = ie)
+    alterColumnIfExists ~ identName ~ keyword("SET") ~ multiFields ^^ {
+      case ie ~ col ~ _ ~ fields =>
+        AlterColumnFields(col, fields, ifExists = ie)
     }
 
   def alterColumnField: PackratParser[AlterColumnField] =
-    alterColumnIfExists ~ ident ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
+    alterColumnIfExists ~ identName ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
       "FIELD"
     )) ~ column ^^ { case ie ~ col ~ _ ~ field =>
       AlterColumnField(col, field, ifExists = ie)
     }
 
   def dropColumnField: PackratParser[DropColumnField] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("FIELD")) ~ ident ^^ {
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("FIELD")) ~ identName ^^ {
       case ie ~ col ~ _ ~ fieldName =>
         DropColumnField(col, fieldName, ifExists = ie)
     }
 
   def alterColumnType: PackratParser[AlterColumnType] =
-    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("DATA") ~ keyword(
+    alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("DATA") ~ keyword(
       "TYPE"
     )) ~ extension_type ^^ { case ie ~ name ~ _ ~ newType =>
       AlterColumnType(name, newType, ifExists = ie)
     }
 
   def alterColumnScript: PackratParser[AlterColumnScript] =
-    alterColumnIfExists ~ ident ~ keyword("SET") ~ storedScript ^^ {
+    alterColumnIfExists ~ identName ~ keyword("SET") ~ storedScript ^^ {
       case ie ~ name ~ _ ~ ((ns, stored)) =>
         AlterColumnScript(
           name,
@@ -631,8 +676,9 @@ object Parser
     }
 
   def dropColumnScript: PackratParser[DropColumnScript] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("SCRIPT")) ^^ { case ie ~ name ~ _ =>
-      DropColumnScript(name, ifExists = ie)
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("SCRIPT")) ^^ {
+      case ie ~ name ~ _ =>
+        DropColumnScript(name, ifExists = ie)
     }
 
   /** The value grammar must match `defaultVal`'s: a column declares `DEFAULT _ingest.timestamp` at
@@ -642,38 +688,40 @@ object Parser
     * runs the rendered SQL).
     */
   def alterColumnDefault: PackratParser[AlterColumnDefault] =
-    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword(
+    alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword(
       "DEFAULT"
     )) ~ (value | ingest_id | ingest_timestamp) ^^ { case ie ~ name ~ _ ~ dv =>
       AlterColumnDefault(name, dv, ifExists = ie)
     }
 
   def dropColumnDefault: PackratParser[DropColumnDefault] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("DEFAULT")) ^^ { case ie ~ name ~ _ =>
-      DropColumnDefault(name, ifExists = ie)
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("DEFAULT")) ^^ {
+      case ie ~ name ~ _ =>
+        DropColumnDefault(name, ifExists = ie)
     }
 
   def alterColumnNotNull: PackratParser[AlterColumnNotNull] =
-    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
+    alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
       case ie ~ name ~ _ =>
         AlterColumnNotNull(name, ifExists = ie)
     }
 
   def dropColumnNotNull: PackratParser[DropColumnNotNull] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
       case ie ~ name ~ _ =>
         DropColumnNotNull(name, ifExists = ie)
     }
 
   def alterColumnComment: PackratParser[AlterColumnComment] =
-    alterColumnIfExists ~ ident ~ (keyword("SET") ~ keyword("COMMENT")) ~ literal ^^ {
+    alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("COMMENT")) ~ literal ^^ {
       case ie ~ name ~ _ ~ c =>
         AlterColumnComment(name, c.value, ifExists = ie)
     }
 
   def dropColumnComment: PackratParser[DropColumnComment] =
-    alterColumnIfExists ~ ident ~ (keyword("DROP") ~ keyword("COMMENT")) ^^ { case ie ~ name ~ _ =>
-      DropColumnComment(name, ifExists = ie)
+    alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("COMMENT")) ^^ {
+      case ie ~ name ~ _ =>
+        DropColumnComment(name, ifExists = ie)
     }
 
   def alterTableMapping: PackratParser[AlterTableMapping] =
@@ -682,7 +730,7 @@ object Parser
     }
 
   def dropTableMapping: PackratParser[DropTableMapping] =
-    (keyword("DROP") ~ keyword("MAPPING")) ~> ident ^^ { m => DropTableMapping(m) }
+    (keyword("DROP") ~ keyword("MAPPING")) ~> identName ^^ { m => DropTableMapping(m) }
 
   def alterTableSetting: PackratParser[AlterTableSetting] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("SETTING")) ~ option ^^ { case _ ~ opt =>
@@ -690,7 +738,7 @@ object Parser
     }
 
   def dropTableSetting: PackratParser[DropTableSetting] =
-    (keyword("DROP") ~ keyword("SETTING")) ~> ident ^^ { m => DropTableSetting(m) }
+    (keyword("DROP") ~ keyword("SETTING")) ~> identName ^^ { m => DropTableSetting(m) }
 
   def alterTableAlias: PackratParser[AlterTableAlias] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("ALIAS")) ~ option ^^ { case _ ~ opt =>
@@ -698,7 +746,7 @@ object Parser
     }
 
   def dropTableAlias: PackratParser[DropTableAlias] =
-    (keyword("DROP") ~ keyword("ALIAS")) ~> ident ^^ { m => DropTableAlias(m) }
+    (keyword("DROP") ~ keyword("ALIAS")) ~> identName ^^ { m => DropTableAlias(m) }
 
   def alterTableStatement: PackratParser[AlterTableStatement] =
     addColumn |
@@ -727,7 +775,7 @@ object Parser
     dropTableAlias
 
   def alterTable: PackratParser[AlterTable] =
-    (keyword("ALTER") ~ keyword("TABLE")) ~ ifExists ~ ident ~ start.? ~ repsep(
+    (keyword("ALTER") ~ keyword("TABLE")) ~ ifExists ~ identRef ~ start.? ~ repsep(
       alterTableStatement,
       separator
     ) ~ end.? >> { case _ ~ ie ~ table ~ s ~ stmts ~ e =>
@@ -744,7 +792,7 @@ object Parser
       } else if (s.isEmpty && e.isEmpty && stmts.size > 1) {
         err("Multiple ALTER TABLE statements require parentheses")
       } else
-        success(AlterTable(table, ie, stmts))
+        success(AlterTable(table._1, ie, stmts, parts = table._2))
     }
 
   // Watcher parsers
@@ -764,7 +812,7 @@ object Parser
     date_add | datetime_add | date_sub | datetime_sub
 
   def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
-    keyword("WHEN") ~> opt(not) ~ ident ~ comparison_operator ~ opt(value) ~ opt(
+    keyword("WHEN") ~> opt(not) ~ identName ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
     ) >> { case n ~ field ~ op ~ v ~ fun =>
       val target_op =
@@ -930,7 +978,7 @@ object Parser
     }
 
   def chainInput: PackratParser[(String, WatcherInput)] =
-    ident ~ opt(keyword("AS")) ~ watcherInput ^^ { case name ~ _ ~ input =>
+    identName ~ opt(keyword("AS")) ~ watcherInput ^^ { case name ~ _ ~ input =>
       (name, input)
     }
 
@@ -978,7 +1026,7 @@ object Parser
     }
 
   def watcherAction: PackratParser[(String, WatcherAction)] =
-    ident ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) >> { case name ~ _ ~ wa =>
+    identName ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) >> { case name ~ _ ~ wa =>
       wa match {
         case Some(wa) => success((name, wa))
         case _        => err(s"Unsupported watcher action type in action '$name'")
@@ -993,15 +1041,24 @@ object Parser
       ListMap(actions: _*)
     }
 
+  /** The two CREATE WATCHER forms take `identRef` and use only its NAME: `CreateWatcher.sql`
+    * delegates to `Watcher.sql`, whose `id` is the Elasticsearch watch id, so there is nowhere to
+    * put a render-only quoting bit and none is carried (story 21.7 AD-3 — `Watcher.sql` re-quotes
+    * by shape instead). `identRef` rather than `identName` so that CREATE, SHOW STATUS and DROP
+    * accept the SAME watcher-name spellings; the discarded qualifier run is the price of that
+    * uniformity, and it is one allocation on a statement that opens a watch.
+    */
   def createOrReplaceWatcher: PackratParser[CreateWatcher] =
-    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("WATCHER")) ~> ident ~ opt(
+    (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
+      "WATCHER"
+    )) ~> identRef ~ opt(
       keyword("AS")
     ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ (keyword(
       "DO"
     ) ~> watcherActions <~ keyword("END")) ^^ {
       case name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
-          name = name,
+          name = name._1,
           orReplace = true,
           ifNotExists = false,
           condition = condition,
@@ -1012,14 +1069,14 @@ object Parser
     }
 
   def createWatcher: PackratParser[CreateWatcher] =
-    (keyword("CREATE") ~ keyword("WATCHER")) ~ ifNotExists ~ ident ~ opt(
+    (keyword("CREATE") ~ keyword("WATCHER")) ~ ifNotExists ~ identRef ~ opt(
       keyword("AS")
     ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ (keyword(
       "DO"
     ) ~> watcherActions <~ keyword("END")) ^^ {
       case _ ~ _ ~ ine ~ name ~ _ ~ trigger ~ input ~ condition ~ actions =>
         CreateWatcher(
-          name = name,
+          name = name._1,
           orReplace = false,
           ifNotExists = ine,
           condition = condition,
@@ -1030,8 +1087,8 @@ object Parser
     }
 
   def showWatcherStatus: PackratParser[ShowWatcherStatus] =
-    (keyword("SHOW") ~ keyword("WATCHER") ~ keyword("STATUS")) ~> ident ^^ { name =>
-      ShowWatcherStatus(name)
+    (keyword("SHOW") ~ keyword("WATCHER") ~ keyword("STATUS")) ~> identRef ^^ { name =>
+      ShowWatcherStatus(name._1, parts = name._2)
     }
 
   def showWatchers: PackratParser[ShowWatchers.type] =
@@ -1040,31 +1097,32 @@ object Parser
     }
 
   def dropWatcher: PackratParser[DropWatcher] =
-    (keyword("DROP") ~ keyword("WATCHER")) ~ ifExists ~ ident ^^ { case _ ~ ie ~ name =>
-      DropWatcher(name, ifExists = ie)
+    (keyword("DROP") ~ keyword("WATCHER")) ~ ifExists ~ identRef ^^ { case _ ~ ie ~ name =>
+      DropWatcher(name._1, ifExists = ie, parts = name._2)
     }
 
   def createEnrichPolicy: PackratParser[CreateEnrichPolicy] =
     (keyword("CREATE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~
     ifNotExists ~
-    ident ~
+    identRef ~
     opt(keyword("TYPE") ~> (keyword("MATCH") | keyword("GEO_MATCH") | keyword("RANGE"))) ~
-    (keyword("FROM") ~> repsep(ident, separator)) ~
-    (keyword("ON") ~> ident) ~
-    (keyword("ENRICH") ~> repsep(ident, separator)) ~
+    (keyword("FROM") ~> repsep(identName, separator)) ~
+    (keyword("ON") ~> identName) ~
+    (keyword("ENRICH") ~> repsep(identName, separator)) ~
     opt(where) ^^ { case _ ~ ine ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
       val policyType = policyTypeOpt match {
         case Some(value) => EnrichPolicyType(value)
         case _           => EnrichPolicyType.Match
       }
       CreateEnrichPolicy(
-        name = name,
+        name = name._1,
         policyType = policyType,
         from = sources,
         on = on,
         refreshFields,
         whereOpt,
-        ifNotExists = ine
+        ifNotExists = ine,
+        parts = name._2
       )
     }
 
@@ -1072,11 +1130,11 @@ object Parser
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("ENRICH") ~ keyword(
       "POLICY"
     )) ~
-    ident ~
+    identRef ~
     opt(keyword("TYPE") ~> (keyword("MATCH") | keyword("GEO_MATCH") | keyword("RANGE"))) ~
-    (keyword("FROM") ~> repsep(ident, separator)) ~
-    (keyword("ON") ~> ident) ~
-    (keyword("ENRICH") ~> repsep(ident, separator)) ~
+    (keyword("FROM") ~> repsep(identName, separator)) ~
+    (keyword("ON") ~> identName) ~
+    (keyword("ENRICH") ~> repsep(identName, separator)) ~
     opt(where) ^^ { case _ ~ name ~ policyTypeOpt ~ sources ~ on ~ refreshFields ~ whereOpt =>
       val policyType = policyTypeOpt match {
         case Some("MATCH")     => EnrichPolicyType.Match
@@ -1085,30 +1143,31 @@ object Parser
         case _                 => EnrichPolicyType.Match
       }
       CreateEnrichPolicy(
-        name = name,
+        name = name._1,
         policyType = policyType,
         from = sources,
         on = on,
         refreshFields,
         whereOpt,
-        orReplace = true
+        orReplace = true,
+        parts = name._2
       )
     }
 
   def executeEnrichPolicy: PackratParser[ExecuteEnrichPolicy] =
-    (keyword("EXECUTE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> ident ^^ { name =>
-      ExecuteEnrichPolicy(name)
+    (keyword("EXECUTE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> identRef ^^ { name =>
+      ExecuteEnrichPolicy(name._1, parts = name._2)
     }
 
   def dropEnrichPolicy: PackratParser[DropEnrichPolicy] =
-    (keyword("DROP") ~ keyword("ENRICH") ~ keyword("POLICY")) ~ ifExists ~ ident ^^ {
+    (keyword("DROP") ~ keyword("ENRICH") ~ keyword("POLICY")) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
-        DropEnrichPolicy(name, ifExists = ie)
+        DropEnrichPolicy(name._1, ifExists = ie, parts = name._2)
     }
 
   def showEnrichPolicy: PackratParser[ShowEnrichPolicy] =
-    (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> ident ^^ { name =>
-      ShowEnrichPolicy(name)
+    (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> identRef ^^ { name =>
+      ShowEnrichPolicy(name._1, parts = name._2)
     }
 
   def showEnrichPolicies: PackratParser[ShowEnrichPolicies.type] =
@@ -1190,21 +1249,23 @@ object Parser
     }
 
   def conflictTarget: PackratParser[List[String]] =
-    start ~> repsep(ident, separator) <~ end
+    start ~> repsep(identName, separator) <~ end
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
   def insert: PackratParser[Insert] =
-    (keyword("INSERT") ~ keyword("INTO")) ~ ident ~ opt(lparen ~> repsep(ident, comma) <~ rparen) ~
+    (keyword("INSERT") ~ keyword("INTO")) ~ identRef ~ opt(
+      lparen ~> repsep(identName, comma) <~ rparen
+    ) ~
     ((keyword("VALUES") ~> rows) ^^ { vs => Right(vs) }
     | keyword("AS").? ~> searchStatement ^^ { q => Left(q) }) ~ opt(onConflict) ^^ {
       case _ ~ table ~ colsOpt ~ vals ~ conflict =>
         conflict match {
-          case Some(c) => Insert(table, colsOpt.getOrElse(Nil), vals, Some(c))
+          case Some(c) => Insert(table._1, colsOpt.getOrElse(Nil), vals, Some(c), parts = table._2)
           case _ =>
             vals match {
               case Left(q: SingleSearch) =>
-                Insert(table, colsOpt.getOrElse(Nil), vals, q.onConflict)
-              case _ => Insert(table, colsOpt.getOrElse(Nil), vals)
+                Insert(table._1, colsOpt.getOrElse(Nil), vals, q.onConflict, parts = table._2)
+              case _ => Insert(table._1, colsOpt.getOrElse(Nil), vals, parts = table._2)
             }
         }
     }
@@ -1226,6 +1287,9 @@ object Parser
       (keyword("DELTA_LAKE") ^^^ Delta) |
       // Quoted format names (the form dml_statements.md documents) land here; so does anything
       // unrecognised, which must err rather than backtrack into a silent drop.
+      //
+      // DELIBERATELY still `ident` (story 21.7 Task 1.1): a FILE_FORMAT is an enum value, not a
+      // name, and `literal` ahead of it already accepts every quoted spelling a caller writes.
       ((literal ^^ (_.value) | ident) >> { name =>
         name.toUpperCase(java.util.Locale.ROOT) match {
           case "PARQUET"    => success(Parquet)
@@ -1242,10 +1306,16 @@ object Parser
 
   /** COPY INTO table FROM source */
   def copy: PackratParser[CopyInto] =
-    (keyword("COPY") ~ keyword("INTO")) ~ ident ~ (keyword("FROM") ~> literal) ~ opt(
+    (keyword("COPY") ~ keyword("INTO")) ~ identRef ~ (keyword("FROM") ~> literal) ~ opt(
       fileFormat
     ) ~ opt(onConflict) ^^ { case _ ~ table ~ source ~ format ~ conflict =>
-      CopyInto(source.value, table, fileFormat = format, onConflict = conflict)
+      CopyInto(
+        source.value,
+        table._1,
+        fileFormat = format,
+        onConflict = conflict,
+        parts = table._2
+      )
     }
 
   /** UPDATE table SET col1 = v1, col2 = v2 [WHERE ...]
@@ -1256,8 +1326,8 @@ object Parser
     * both operand orders: written before the WHERE, `where.?` yields None and this fires.
     */
   def update: PackratParser[Update] =
-    (keyword("UPDATE") ~> ident) ~ (keyword("SET") ~> repsep(
-      ident ~ "=" ~ (value | scriptValue),
+    (keyword("UPDATE") ~> identRef) ~ (keyword("SET") ~> repsep(
+      identName ~ "=" ~ (value | scriptValue),
       separator
     )) ~ where.? ~ opt(from) >> { case table ~ assigns ~ w ~ extraFrom =>
       extraFrom match {
@@ -1271,7 +1341,11 @@ object Parser
           val values = ListMap(assigns.map { case col ~ _ ~ v => col -> v }: _*)
           // UPDATE keeps only the bare table name, so its WHERE needs the same qualifier
           // resolution DELETE and watcher inputs get — `WHERE orders.id = 1` must filter on `id`.
-          success(Update(table, values, resolveWhere(From(Seq(Table(table))), w)))
+          // The `Table` built for that resolution deliberately carries NO parts: it exists to
+          // resolve alias qualifiers against the bare index name and never reaches a render.
+          success(
+            Update(table._1, values, resolveWhere(From(Seq(Table(table._1))), w), parts = table._2)
+          )
       }
     }
 
@@ -1506,7 +1580,15 @@ trait Parser
 
   protected def keyword(word: String): Parser[String] = s"(?i)$word\\b".r ^^ (_ => word)
 
-  def ident: Parser[String] = """[a-zA-Z_][a-zA-Z0-9_.]*""".r
+  /** The pre-21.7 DDL/DML name regex. It is no longer used directly by any statement: story 21.7
+    * routed every one of its call sites through `identRef` (object references) or `identName`
+    * (columns, option keys, struct-entry keys), which accept the same bare spelling PLUS both quote
+    * styles. It survives as the LAST alternative of each of those, and only for that — see
+    * `identParts` for why removing it would be a customer-visible narrowing.
+    */
+  private val identRegex: Regex = bareNameRegex.r
+
+  def ident: Parser[String] = identRegex
 
   val lparen: Parser[String] = "("
   val rparen: Parser[String] = ")"
@@ -1530,7 +1612,7 @@ trait Parser
   // metadata a column's DEFAULT is mirrored into (`_meta.columns.<c>.default_value`) is written
   // through this production.
   def option: PackratParser[(String, Value[_])] =
-    (ident | literal) ~ "=" ~ (objectValues | objectValue | value | ingest_id | ingest_timestamp) ^^ {
+    (identName | literal) ~ "=" ~ (objectValues | objectValue | value | ingest_id | ingest_timestamp) ^^ {
       case key ~ _ ~ value =>
         key match {
           case lit: StringValue => (lit.value, value)
@@ -1549,7 +1631,7 @@ trait Parser
     }
 
   def struct_entry: PackratParser[(String, Value[_])] =
-    ident ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
+    identName ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
       key -> v
     }
 
@@ -1976,6 +2058,101 @@ trait Parser
     */
   def tableParts: PackratParser[Seq[NamePart]] =
     rep(qualifierPart) ~ qualifiedName ^^ { case ps ~ nq => ps :+ NamePart(nq._1, nq._2) }
+
+  // -----------------------------------------------------------------------------------------------
+  // The DDL/DML name surface (story 21.7). `Parser.ident` was the THIRD name surface of this
+  // dialect and the only one story 21.1/21.2 left untouched, so `INSERT`, `UPDATE`, `CREATE`,
+  // `DROP`, `ALTER`, `COPY INTO` and every SHOW/DESCRIBE disagreed with `SELECT` — and with each
+  // other — about what a name may look like. Lead ruling 2026-09-04: DQL, DML and DDL all respect
+  // the same rules. These two productions are how: every former `ident` call site takes one of
+  // them, and neither adds a lexer (both are built from 21.1's `qualifiedName` / 21.2's
+  // `tableParts`).
+  // -----------------------------------------------------------------------------------------------
+
+  /** An object reference in a DDL/DML statement, as its ordered part list: 21.2's `tableParts`,
+    * with the legacy `ident` regex retained as the LAST alternative.
+    *
+    * 🔴 The fallback is not belt-and-braces, it is what keeps this a pure widening. `tableParts`
+    * reaches the name through `bareFirstPart`, which carries the reserved-word negative lookahead
+    * `identifier` needs so that `SELECT FROM t` does not read `FROM` as a column. `ident` never had
+    * it — so `CREATE TABLE t (count INTEGER)`, `DROP TABLE order`, `INSERT INTO t (min) …` and
+    * roughly 130 further bare names parse today and would stop parsing if `tableParts` replaced
+    * `ident` outright. That is a customer-visible regression with no migration path inside the
+    * release, and AC-5 of this story forbids it. Keeping `ident` last is also what makes the
+    * normalising render of a COLUMN name (below) a fixed point for every legacy name.
+    *
+    * What that leaves is a residual asymmetry — `FROM count` is rejected while `DROP TABLE count`
+    * is accepted — which is PRE-EXISTING (DQL has always rejected it) and is not made worse here.
+    * Narrowing DDL onto DQL's reserved-word rule is a product decision about a breaking change, not
+    * a grammar clean-up, and belongs to whoever schedules that deprecation.
+    *
+    * Ordering: `tableParts` FIRST, because it is the one that can consume MORE — `logs-2025.03`, ``
+    * `#Tableau…` ``, `"sch".tbl` are all invisible to `ident`.
+    *
+    * 🔴 `<~ not(".")` is what keeps that ordering from NARROWING. `|` commits to the first
+    * SUCCEEDING alternative, and on a dangling dot `tableParts` succeeds on a PREFIX — `a` out of
+    * `a.`, `a` out of `a..b` — leaving the rest unconsumed, so the enclosing sequence fails and a
+    * name `ident` used to swallow whole stops parsing. The lookahead makes `tableParts` DECLINE
+    * exactly there, handing the lexeme to `ident` unchanged. It consumes nothing and cannot alter a
+    * well-formed name: every accepted shape ends at a delimiter, not at a dot.
+    *
+    * The story is a PURE widening by lead ruling (2026-09-08): nothing that parsed before stops
+    * parsing, on any surface. `identName` carries the identical guard for the same reason — the
+    * measurement that forced it was an OPTION key (`OPTIONS (a. = 1)`), and a rule justified by "no
+    * regression in existing parsing" cannot hold for option keys and not for table names.
+    */
+  def identParts: PackratParser[Seq[NamePart]] =
+    (tableParts <~ not(".")) | (ident ^^ (n => Seq(NamePart(n, quoted = false))))
+
+  /** `identParts` reduced to what an AST node carries: the name (the LAST part's value,
+    * structurally — never an interpretation) and the parts, `Nil` when they hold nothing the name
+    * does not.
+    *
+    * 🔴 The `Nil` normalisation is load-bearing. A single BARE part IS `name`, so recording it
+    * would make every parsed DDL node unequal to the programmatically built one — `TableDiff`,
+    * `IndicesApi` and `AlterTableRoundTripSpec` all build `AlterTable("dest", …)` with no parts and
+    * compare it against a re-parse. Story 21.2 hit exactly this with
+    * `FromlessSelect.toSingleSearch` and fixed it at the construction site; here the reference is
+    * normalised at the ONE site that produces it, so the AST and the render of every bare-spelled
+    * statement stay byte-identical to what they were before this story (AC-5).
+    */
+  def identRef: PackratParser[(String, Seq[NamePart])] =
+    identParts ^^ { ps =>
+      (ps.last.value, if (ps.size == 1 && !ps.head.quoted) Nil else ps)
+    }
+
+  /** A DDL/DML name that takes NO qualifier run: a column, an option key, a struct-entry key.
+    *
+    * Both quote styles accepted, delimiters stripped, case preserved verbatim, the reserved-word
+    * lookahead bypassed inside quotes — exactly what story 21.1 pinned for expression positions, so
+    * `"c"` in `INSERT INTO t ("c") …` denotes the same column as `"c"` in `SELECT "c" FROM t`.
+    *
+    * `qualifiedName` JOINS its dot-separated parts, which is what a name in these positions needs:
+    * an ES sub-field path (`a.b`) and a mapping metadata path (`_meta.columns.<c>.default_value`,
+    * written through `option`) are ONE key, not two.
+    *
+    * A column list is not a table reference, so there is deliberately no `qualifierPart` run here.
+    * MEASURED consequence, and it is the wanted one: `INSERT INTO t ("sch".c)` names the single
+    * column `sch.c` — every part is JOINED and none can be dropped — exactly as `SELECT "e"."c"`
+    * names the single identifier `e.c` on the expression surface. Adding a qualifier run instead
+    * would let a DDL statement silently DISCARD a leading part of a column name.
+    *
+    * The render is `renderColumnName`, whose predicate is this production's own `ident` fallback:
+    * bare when the name matches `bareNameRegex`, ANSI-quoted otherwise. That keeps the render a
+    * fixed point for a name that needs quoting WITHOUT threading a per-name bit through the
+    * `List[String]` / `ListMap[String, _]` these positions live in.
+    *
+    * 🔴 `<~ not(".")` for the same reason `identParts` carries it, and MEASURED on an option key:
+    * `OPTIONS (a. = 1)` and `OPTIONS (a..b = 1)` parse today, `qualifiedName` succeeds on the
+    * PREFIX `a`, `|` commits, and the enclosing `~ "="` then fails against the leftover dot — a key
+    * that parsed would have stopped parsing. The lookahead makes `qualifiedName` decline on a
+    * dangling dot and `ident` take the lexeme whole, exactly as before. Differential probe against
+    * `origin/main` over 28 option/struct shapes: 25 byte-identical, 3 widened (a backtick key, a
+    * backtick struct-entry key, and a hyphenated key such as `Content-Type` that `ident`'s charset
+    * could never spell), 0 narrowed.
+    */
+  def identName: PackratParser[String] =
+    ((qualifiedName ^^ (_._1)) <~ not(".")) | ident
 
   /** Kept, and kept FIRST in `SelectParser.field`, `GroupByParser.bucketWithFunction`,
     * `OrderByParser.fieldWithFunction` and `WhereParser.any_identifier`/`isNull`/`isNotNull`, for

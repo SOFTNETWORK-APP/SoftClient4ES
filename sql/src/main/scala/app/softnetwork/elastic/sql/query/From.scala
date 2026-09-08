@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.operator.{AND, EQ}
 import app.softnetwork.elastic.sql.{
   asString,
-  quoteIdentifier,
+  renderName,
   Alias,
   Expr,
   Identifier,
@@ -300,26 +300,12 @@ object Table {
 
   /** Renders a table reference from its ordered part list (story 21.2 AD-1 rule 5).
     *
-    * Two rules, both load-bearing:
-    *
-    *   1. 🔴 Each part is emitted as ONE lexeme, NEVER split on its dots — the OPPOSITE of
-    *      `Identifier.sql`. In an identifier `a.b` means *alias a, column b*: two things, which
-    *      DuckDB must see as `"a"."b"` (softclient4es-arrow's JoinPlanner builds its SELECT list
-    *      from `identifier.sql`). In a table name `a.b` is ONE Elasticsearch index whose dot is
-    *      literal. Splitting would render `logs-2025.03` as `"logs-2025"."03"`, which re-parses as
-    *      qualifier `logs-2025` + index `03` — a silent index move manufactured by a renderer. Both
-    *      spellings are fixed points *of the text they emit*; only one is a fixed point *of the
-    *      statement the user wrote*. 2. 🔴 A qualifier part is ALWAYS emitted quoted (its `quoted`
-    *      bit is true by construction — `Parser.qualifierPart` matches nothing else). An unquoted
-    *      prefix is not a prefix: rendering `elastic.bi_events` for parts=[elastic(q), bi_events]
-    *      would re-parse as the INDEX `elastic.bi_events`.
-    *
-    * `parts` empty ⇒ the caller built the `Table` programmatically (`IndicesApi`, `toSingleSearch`)
-    * ⇒ render `name` verbatim, i.e. exactly today's render.
+    * The rules and the reasons live with the ONE implementation, `sql.renderName` — story 21.7
+    * needed the same rendering for every DDL/DML statement that names an object, and a second copy
+    * here is exactly the "one key, two derivations" drift story 21.3 paid for four times. This
+    * alias is kept because `Table.render` is the name the FROM/JOIN surface documents.
     */
-  def render(parts: Seq[NamePart], name: String): String =
-    if (parts.isEmpty) name
-    else parts.map(p => if (p.quoted) quoteIdentifier(p.value) else p.value).mkString(".")
+  def render(parts: Seq[NamePart], name: String): String = renderName(parts, name)
 }
 
 case class Table(

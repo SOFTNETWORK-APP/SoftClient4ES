@@ -264,6 +264,42 @@ Unlike a column name, a table name is quoted as **one lexeme** — `FROM "logs-2
 `FROM "logs-2025"."03"` — because a table name's dots are literal while a column name's separate
 the alias from the field.
 
+### The same rules bind DML and DDL
+
+Everything above applies unchanged to `INSERT`, `UPDATE`, `CREATE`, `DROP`, `TRUNCATE`, `ALTER`,
+`COPY INTO` and every `SHOW`/`DESCRIBE` — for the **table** name and for **column** names alike.
+There is no per-statement-kind exception: a name you may write in a `SELECT` you may write
+anywhere.
+
+```sql
+INSERT INTO `prod_eu`.dest SELECT a FROM src;
+INSERT INTO "prod_eu".dest (`c`) VALUES ('a');
+UPDATE `orders` SET "a" = 1 WHERE id = 1;
+CREATE TABLE "dest" ("c" INTEGER);
+DROP TABLE IF EXISTS `#Tableau_sid_1_Connect_Chec`;
+ALTER TABLE "dest" ALTER COLUMN "c" SET DATA TYPE BIGINT;
+DROP MATERIALIZED VIEW "mv1";
+CREATE TABLE dest (c INTEGER) OPTIONS (`number_of_shards` = 1);
+```
+
+Three details worth knowing:
+
+- **A column list is not a table reference.** A column name has no qualifier run, so every part of
+  a dotted column name is kept: `INSERT INTO tbl ("sch".c)` names the single column `sch.c` — the
+  same reading `SELECT "e"."c"` gives on the expression surface.
+- **Renderings carry the quoting back.** A table, view, pipeline, watcher or enrich-policy name
+  keeps the qualifier and the quoting it was written with, canonicalised to the ANSI double quote;
+  a column name is re-quoted only when the bare spelling could not be read back as the same name
+  (so `("c")` renders `(c)`, while `("my col")` renders `("my col")`).
+- **Bare names are unchanged.** Every statement that parsed before this release still parses to the
+  same statement, including the ones that name a table or column with a word this dialect reserves
+  elsewhere (`DROP TABLE count`, `CREATE TABLE t (min INTEGER)`). Quoting is now simply also
+  available for them.
+
+Two spellings that were rejected before and still are: `CREATE LOCAL TEMPORARY TABLE …` (there is
+no `LOCAL TEMPORARY` clause, quoted or not) and an empty quoted lexeme in any name position — an
+empty pair of delimiters is a string literal, never a name.
+
 ---
 
 ## FROM-less SELECT (connection handshake)
