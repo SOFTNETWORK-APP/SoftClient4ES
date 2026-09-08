@@ -88,6 +88,24 @@ class ElasticsearchVersionSpec extends AnyWordSpec with Matchers {
     }
   }
 
+  "ElasticsearchVersion.supportsDeprecationIndexing" should {
+    // 🔴 The boundary is load-bearing, not cosmetic: the testkit writes
+    // `cluster.deprecation_indexing.enabled` into `elasticsearch.yml` behind this gate, and
+    // Elasticsearch REFUSES TO START on an unknown setting. Getting 7.16 wrong does not degrade a
+    // feature, it kills every container on the versions below it.
+    "start at 7.16, where deprecation indexing was introduced" in {
+      ElasticsearchVersion.supportsDeprecationIndexing("7.16.0") shouldBe true
+      ElasticsearchVersion.supportsDeprecationIndexing("7.15.2") shouldBe false
+    }
+
+    "hold across the supported matrix" in {
+      ElasticsearchVersion.supportsDeprecationIndexing("6.8.23") shouldBe false
+      ElasticsearchVersion.supportsDeprecationIndexing("7.17.29") shouldBe true
+      ElasticsearchVersion.supportsDeprecationIndexing("8.18.3") shouldBe true
+      ElasticsearchVersion.supportsDeprecationIndexing("9.0.3") shouldBe true
+    }
+  }
+
   "ElasticsearchVersion.isEs8OrHigher" should {
     "return true for ES >= 8.0" in {
       ElasticsearchVersion.isEs8OrHigher("8.0.0") shouldBe true
