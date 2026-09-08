@@ -151,6 +151,43 @@ Use single quotes for strings and backticks for names if you would rather not re
 
 ---
 
+## String literals
+
+A string literal is written between **single quotes**. Double quotes also delimit a string, but only
+in value position — see *Double quotes are also string delimiters* above — so single quotes are the
+unambiguous spelling.
+
+### Escaping the quote
+
+The delimiter is escaped by **doubling** it, exactly as it is inside a quoted identifier. This is the
+SQL standard and what every client and BI tool emits:
+
+```sql
+SELECT 'O''Brien' AS name FROM t;                 -- the value  O'Brien
+SELECT id FROM t WHERE greeting = "say ""hi""";   -- the value  say "hi"
+```
+
+⚠️ The second example is in a **value** position. In a SELECT list the same lexeme is a **column**:
+`SELECT "say ""hi""" FROM t` reads the field *named* `say "hi"`, per *Double quotes are also string
+delimiters* above — and a reference to a field that does not exist returns nulls, not an error.
+Single quotes have only one reading and are the safe spelling for a string.
+
+A backslash before the delimiter or before another backslash is also accepted (`'it\'s'`, `'C:\\'`).
+That form is not standard and is kept only because this engine has always accepted it. Any other
+backslash sequence is **literal**: `'a\nb'` is the four characters `a`, `\`, `n`, `b` — there is no
+`\n` newline escape, and a path such as `'C:\logs'` keeps its separator.
+
+A value that ends in a single backslash must be written `'C:\\'`: a lone trailing backslash escapes
+the closing quote and the literal never terminates.
+
+### How a string literal is rendered back
+
+Statements are re-rendered with the **backslash** form, whichever spelling was written, so
+`SELECT 'O''Brien'` comes back as `SELECT 'O\'Brien'`. Both spellings parse, and a rendered
+statement always re-parses to the same query.
+
+---
+
 ## Qualified and quoted table names
 
 The name after `FROM` (and after `JOIN`, and after `DELETE FROM`) may be written quoted, in either
@@ -318,9 +355,10 @@ functions of literals. Rejected with a named reason (`... requires a FROM clause
   negative `LIMIT`/`OFFSET`
 
 Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `UNION ALL`
-after a FROM-less select-list, and `DISTINCT` literals. Note that `CAST('125' AS BIGINT)`
-does not parse (a pre-existing grammar gap for literal operands) — use the `'125'::BIGINT`
-spelling for constant casts.
+after a FROM-less select-list, and `DISTINCT` literals. A constant cast works in every
+spelling — `CAST('125' AS BIGINT)`, `CONVERT('125', BIGINT)` and `'125'::BIGINT` all parse.
+Prefer `TRY_CAST('125' AS BIGINT)` when the value may not convert: `::` is always the
+unsafe form and raises on a bad value.
 
 ---
 

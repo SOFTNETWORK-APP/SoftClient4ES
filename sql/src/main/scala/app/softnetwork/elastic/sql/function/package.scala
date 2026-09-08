@@ -312,15 +312,11 @@ package object function {
                         case SQLTypes.Any if !ctx.isProcessor =>
                           in match {
                             case SQLTypes.DateTime | SQLTypes.Timestamp =>
-                              identifier.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                              identifier.addPainlessMethod(painlessUtcZonedDateTime)
                             case SQLTypes.Date =>
-                              identifier.addPainlessMethod(
-                                ".toInstant().atZone(ZoneId.of('Z')).toLocalDate()"
-                              )
+                              identifier.addPainlessMethod(painlessUtcLocalDate)
                             case SQLTypes.Time =>
-                              identifier.addPainlessMethod(
-                                ".toInstant().atZone(ZoneId.of('Z')).toLocalTime()"
-                              )
+                              identifier.addPainlessMethod(painlessUtcLocalTime)
                             case _ =>
                           }
                           Option(paramName)

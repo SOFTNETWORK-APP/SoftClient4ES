@@ -81,6 +81,18 @@ object SQLTypes {
     case _                          => Any
   }
 
+  /** The Elasticsearch-mapping direction. A field's DECLARED type is preserved verbatim: when we
+    * created the index we recorded it in `_meta.columns.<c>.data_type`, and `IndexField.apply`
+    * prefers that over Elasticsearch's own mapping type, so `CREATE TABLE t (c DATE)` reads back as
+    * DATE and the `_meta` round trip is exact.
+    *
+    * 🔴 This deliberately does NOT map `date` to `Timestamp`. Story 21.5 tried that here and it was
+    * the wrong layer: it conflated the type the USER DECLARED with the type Painless SEES at
+    * runtime, and the consequences cascaded — a spurious `_meta.columns` diff on every existing
+    * index with a date column, and from the workaround for that, an unparseable ALTER on ES 6.8 and
+    * a materialized-view slowdown. The runtime type is now derived where it is actually needed, at
+    * `GenericIdentifier.baseType`; see `SQLTypeUtils.runtimeType`.
+    */
   def apply(field: IndexField): SQLType = apply(field.`type`)
 
 }

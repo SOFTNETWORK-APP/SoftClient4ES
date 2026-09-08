@@ -139,6 +139,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ddl should include(
       """name VARCHAR FIELDS ( raw KEYWORD COMMENT 'sortable' ) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french")"""
     )
+    // 🔴 DATE — what the user declared. `SHOW TABLE` reports the DECLARED type, not the runtime
+    // one; story 21.5 briefly reported TIMESTAMP here and that user-visible change was a symptom
+    // of conflating the two facts. The runtime type now lives in `SQLTypeUtils.runtimeType`,
+    // reached only through `GenericIdentifier.baseType`, so no release note is owed.
     ddl should include("birthdate DATE")
     ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
     ddl should include("ingested_at TIMESTAMP DEFAULT _ingest.timestamp")
@@ -1348,6 +1352,370 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
 
     val res = client.run(sql).futureValue
     assertSelectResult(System.nanoTime(), res)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Story 21.5 — the CAST conversion defect (parts C1/C2) and Painless literal
+  // escaping (part D), on a REAL index.
+  //
+  // A dedicated table: `dql_users` has no keyword column holding a numeric string and no DOUBLE
+  // column, and adding either would move every 4-row oracle above. These three defects are all
+  // EXECUTION-time — a schema-less unit test cannot see C1 at all, and only Elasticsearch can
+  // prove a Painless-syntax claim — so they need their own fixture and their own content
+  // assertions, not `isSuccess`.
+  // ---------------------------------------------------------------------------
+
+  it should "prepare the cast-conversion test data (story 21.5)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_conversions (
+        |  id INT NOT NULL,
+        |  code KEYWORD,
+        |  bad KEYWORD,
+        |  amount DOUBLE,
+        |  when_dt DATE
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO cast_conversions (id, code, bad, amount, when_dt) VALUES
+        |  (1, '125', 'abc', 1.9, '2024-03-15T14:30:00Z');
+        |""".stripMargin
+
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 1)))
+  }
+
+  /** `script_fields` values arrive wrapped in Elasticsearch's per-field array on the row path (a
+    * pre-existing divergence, recorded by story 21.3), so unwrap a single-element list before
+    * asserting the VALUE. What matters here is the TYPE and the value, not the wrapper.
+    */
+  private def scalarOf(row: Map[String, Any], key: String): Any =
+    row.getOrElse(key, fail(s"no column [$key] in $row")) match {
+      case Seq(one)  => one
+      case List(one) => one
+      case other     => other
+    }
+
+  it should "narrow a cast over a LITERAL instead of returning the unnarrowed value (C2)" in {
+    // BEFORE story 21.5 this came back 1.9: `coerce` carried widening arms only, so every
+    // narrowing pair fell to the identity fallback. This is the case that proves Elasticsearch
+    // accepts the emitted `((int) 1.9)` — a Painless claim only ES can settle.
+    //
+    // Asserted as an EXACT double, deliberately: `longValue()` alone would be satisfied by the
+    // unnarrowed 1.9 too, i.e. a gate that cannot fail.
+    val sql = "SELECT id, CAST(1.9 AS INT) AS n, CAST(300 AS TINYINT) AS b FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.0
+    // 300 does not fit in a byte. Java/Painless narrowing DISCARDS THE HIGH-ORDER BITS, so the
+    // answer is deterministic: `(byte) 300` is 44. Asserted exactly — `should not be 300` would be
+    // satisfied by a clamp to 127, by 0, or by any other wrong narrowing, i.e. a gate that cannot
+    // fail. (It was written that way first; this is the tightened form.)
+    scalarOf(rows.head, "b").asInstanceOf[java.lang.Number].intValue() shouldBe 44
+  }
+
+  it should "convert a cast over a LITERAL string exactly as documented (C1's reachable half)" in {
+    val sql =
+      """SELECT id,
+        |       CAST('125' AS SIGNED) AS signed_n,
+        |       CAST('1.5' AS DECIMAL(10,2)) AS dec_n,
+        |       CAST(1 AS CHAR(10)) AS as_char,
+        |       TRY_CAST('abc' AS BIGINT) AS bad_n
+        |FROM cast_conversions;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "signed_n").asInstanceOf[java.lang.Number].longValue() shouldBe 125L
+    scalarOf(rows.head, "dec_n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.5
+    // `CAST(<non-string> AS CHAR)` was a silent no-op before this story: it emitted the bare `1`.
+    scalarOf(rows.head, "as_char") shouldBe "1"
+    // `shouldBe null` does not compile on an `Any` (Cannot prove that Any <:< AnyRef); `Option(...)`
+    // is the exact same assertion and does.
+    Option(scalarOf(rows.head, "bad_n")) shouldBe None
+  }
+
+  /** 🔴 RETARGETED by issue #306 — this used to pin the DEFECT ("should NOT yet convert a cast over
+    * a COLUMN") and the defect is gone, so the pin asserts the fixed behaviour instead of being
+    * relaxed or deleted.
+    *
+    * `SQLTypeUtils.coerce` is indexed by the operand's `baseType`, which for an identifier is
+    * `col.map(_.dataType)`, and `col` is populated only by `SingleSearch.update(Some(schema))`.
+    * Until #306 that had ONE production call site — `Table.mergeWithSearch`, inferring a CTAS
+    * target's columns — so no executing query carried a schema and a cast over a column emitted no
+    * conversion at all, for ANY source type. `SearchApi.resolveWithSchema` now attaches the schema
+    * it was already loading, on every execution path.
+    *
+    * Values asserted EXACTLY: `should not be` here would be the fourth can't-fail gate of this
+    * epic.
+    */
+  it should "convert a cast over a COLUMN, now that the schema reaches the execution path (#306)" in {
+    val sql =
+      "SELECT id, CAST(code AS BIGINT) AS n, CAST(amount AS BIGINT) AS m FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    // a KEYWORD column cast to BIGINT: the STRING "125" before #306, the NUMBER 125 after (C1)
+    val n = scalarOf(rows.head, "n")
+    n shouldBe a[java.lang.Number]
+    n.asInstanceOf[java.lang.Number].longValue() shouldBe 125L
+    // a DOUBLE column narrowed to BIGINT: 1.9 before #306, 1 after (C2). Asserted as an exact
+    // double, because `longValue()` alone is satisfied by the unnarrowed 1.9 too.
+    val m = scalarOf(rows.head, "m")
+    m shouldBe a[java.lang.Number]
+    m.asInstanceOf[java.lang.Number].doubleValue() shouldBe 1.0
+  }
+
+  /** Every message a failure carries, cause chain and suppressed included. ES 6/7 nest the shard
+    * root cause as SUPPRESSED under "all shards failed", so a plain `getMessage` sees none of it.
+    */
+  private def throwableText(t: Throwable): String = {
+    val seen = scala.collection.mutable.Set.empty[Throwable]
+    def walk(x: Throwable): List[String] =
+      if (x == null || !seen.add(x)) Nil
+      else
+        Option(x.getMessage).toList ::: walk(x.getCause) ::: x.getSuppressed.toList.flatMap(walk)
+    walk(t).mkString(" | ")
+  }
+
+  /** 🔴 The MEDIUM-5 replacement, and the evidence for the two HIGH findings.
+    *
+    * `when_dt` is declared DATE — deliberately, because that is the case both HIGHs were measured
+    * on and the harder one: our own CREATE TABLE records `_meta.columns.when_dt.data_type = DATE`,
+    * and `IndexField.apply` PREFERS that recorded spelling over Elasticsearch's own `date`. So it
+    * is not enough to fix the ES-mapping fallback; the declared spelling has to resolve to
+    * TIMESTAMP too, which is what `SQLTypes.apply(IndexField)` now does.
+    *
+    * It carries a TIME OF DAY (14:30Z) on purpose: with a midnight value, "truncated to the date"
+    * and "not truncated at all" are nearly the same string, and the gate would barely fail.
+    *
+    * Every one of the four is falsifiable against the unfixed branch, where the operand resolved to
+    * `Date`:
+    *   - AS TIMESTAMP and AS DATETIME took `(Date, DateTime | Timestamp)` and emitted
+    *     `.atStartOfDay(ZoneId.of('Z'))`, which a `ZonedDateTime` does not have ⇒ all shards
+    *     failed;
+    *   - AS DATE was `(Date, Date)`, the IDENTITY arm ⇒ the un-truncated timestamp came back;
+    *   - AS TIME had no `(Date, Time)` arm at all ⇒ the fallback returned the timestamp whole.
+    */
+  /** 🔴 The INGEST path, which this suite has never exercised end to end.
+    *
+    * `users` is created with an ingest `DATEDIFF` column but nothing is ever inserted into it, and
+    * the `age` assertions elsewhere belong to `dql_users`, which has no script column. So no test
+    * has ever observed what an ingest script actually computes — which is why story 21.5's ingest
+    * guard rested on inference rather than measurement.
+    *
+    * What is being measured: the RUNTIME TYPE of `ctx.<date field>`. `SQLTypeUtils.coerce` guards
+    * its temporal arms on `isProcessorContext` because `ctx.d` is the raw JSON value of the
+    * document being indexed, NOT the temporal object `doc['d'].value` hands a query. If that is
+    * right, `DATEDIFF(d, CURRENT_DATE, DAY)` cannot compute at ingest — `ChronoUnit.DAYS.between`
+    * gets a String — and the processor's `ignore_failure` leaves the column unset. If it is wrong,
+    * `days` comes back a number and the guard is wrong; this test says which.
+    */
+  it should "record what an ingest script sees for a DATE column (ctx runtime type)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS ingest_probe (
+        |  id INT NOT NULL,
+        |  d DATE,
+        |  label KEYWORD,
+        |  days INT SCRIPT AS (DATEDIFF(d, CURRENT_DATE, DAY))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO ingest_probe (id, d, label) VALUES (1, '2024-03-15', 'x');")
+        .futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    val rows = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, d, label, days FROM ingest_probe;").futureValue
+    )
+    rows.size shouldBe 1
+    val row = rows.head
+
+    // CONTROL: the document was indexed and the plain columns round-tripped, so anything observed
+    // about `days` is about the ingest SCRIPT and not about a failed insert.
+    String.valueOf(scalarOf(row, "d")) should startWith("2024-03-15")
+    scalarOf(row, "label") shouldBe "x"
+
+    val days = row.get("days").map(v => scalarOf(row, "days")).orNull
+    withClue(s"ingest-computed days = [$days] (null/absent => ctx.d is NOT a temporal object): ") {
+      // The measurement. Asserted, not merely printed, so a change in either direction is loud.
+      Option(days) shouldBe None
+    }
+  }
+
+  it should "convert every temporal cast over a DATE column (HIGH-1 + HIGH-2)" in {
+    val sql =
+      """SELECT id,
+        |       CAST(when_dt AS DATE) AS d,
+        |       CAST(when_dt AS TIME) AS t,
+        |       CAST(when_dt AS TIMESTAMP) AS ts,
+        |       CAST(when_dt AS DATETIME) AS dt
+        |FROM cast_conversions;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    val row = rows.head
+
+    // HIGH-2, and the one that earns an exact value: `CAST(ts AS DATE)` is the date-truncation
+    // idiom Superset and Tableau emit constantly. The time of day must be GONE.
+    val d = String.valueOf(scalarOf(row, "d"))
+    withClue(s"CAST(when_dt AS DATE) returned [$d]: ") {
+      d should startWith("2024-03-15")
+      d should not include "14:30" // the un-truncated timestamp, i.e. the defect
+    }
+
+    // the complementary half: the time survives its own cast
+    val t = String.valueOf(scalarOf(row, "t"))
+    withClue(s"CAST(when_dt AS TIME) returned [$t]: ") {
+      t should startWith("14:30")
+    }
+
+    // HIGH-1: these two merely have to EXECUTE — on the unfixed branch they are a compile error
+    // inside Elasticsearch, so reaching a value at all is the assertion. The value is pinned too,
+    // since it costs nothing.
+    Seq("ts", "dt").foreach { col =>
+      val v = String.valueOf(scalarOf(row, col))
+      withClue(s"CAST(when_dt AS ${col.toUpperCase}) returned [$v]: ") {
+        v should startWith("2024-03-15")
+        v should include("14:30")
+      }
+    }
+  }
+
+  it should "fail a cast over a COLUMN whose value cannot be parsed, and null it under TRY_CAST" in {
+    // The other half of the C1 contract, and the reason the release note leads on it: a value that
+    // used to pass through raw now FAILS, and TRY_CAST is the documented escape hatch.
+    //
+    // `isFailure shouldBe true` on its own is NOT evidence: `collectRows` itself asserts
+    // `res.isSuccess`, so a missing index, a parse rejection, a dead cluster - any breakage at all
+    // - satisfies it identically, and it would keep passing if the conversion were reverted to the
+    // pass-through and something ELSE broke. The failure has to be shown to be THE one under test:
+    // Painless running `Long.parseLong` over the unparseable value the fixture stored.
+    val bad = "SELECT id, CAST(bad AS BIGINT) AS n FROM cast_conversions;"
+    val thrown = scala.util
+      .Try(collectRows(System.nanoTime(), client.run(bad).futureValue))
+      .failed
+      .getOrElse(fail("CAST(bad AS BIGINT) over an unparseable value was expected to fail"))
+    val reported = throwableText(thrown)
+
+    // (i) CONTROL - the same index, the same column, the same value, WITHOUT the cast. It
+    // succeeds and yields 'abc', so nothing upstream of the conversion is broken and the CAST is
+    // the only difference between this pair.
+    val control =
+      collectRows(
+        System.nanoTime(),
+        client.run("SELECT id, bad FROM cast_conversions;").futureValue
+      )
+    control.size shouldBe 1
+    scalarOf(control.head, "bad") shouldBe "abc"
+
+    // (ii) and the failure is Elasticsearch rejecting the query AT EXECUTION, not the testkit
+    // refusing something earlier. MEASURED on ES 8.18: the Painless NumberFormatException does NOT
+    // reach any Throwable message - the client keeps the root cause in its typed ErrorCause tree,
+    // outside the exception chain (the same asymmetry #224 had to work around), so `include("abc")`
+    // is unassertable here and the shard-failure marker is the most specific text every client
+    // surfaces. Together with (i) that is the conversion, and nothing else.
+    withClue(s"reported failure text was [$reported]: ") {
+      reported.toLowerCase should include("shards failed")
+    }
+
+    val safe = "SELECT id, TRY_CAST(bad AS BIGINT) AS n FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(safe).futureValue)
+    rows.size shouldBe 1
+    Option(scalarOf(rows.head, "n")) shouldBe None
+  }
+
+  // 🔴 REMOVED — this test could not fail, and it was the evidence for the #306 Any-branch risk.
+  // It asserted `YEAR(birthdate)` / `DATE_TRUNC(birthdate, MONTH)`, which route through
+  // `Identifier.painless` -> `originalType`, and `originalType` is
+  // `if (name.trim.nonEmpty) SQLTypes.Any` (sql/.../package.scala) — `Any` for ANY NAMED COLUMN,
+  // schema attached or not. So both shapes emit byte-identical Painless with and without the
+  // attach and the test passes on unfixed code.
+  //
+  // The branch that actually moves is `Conversion.toPainless`'s own guard, and the shapes that
+  // move through it are `CAST(<date column> AS TIMESTAMP|DATETIME|DATE|TIME)` — the subject of the
+  // two HIGH findings, whose fix is with the lead. The real Any-branch evidence lands with that
+  // fix; a gate that cannot fail is worse than none, so it is not left standing in the meantime.
+  //
+  // Epic lesson, for the fourth time: a test chosen to demonstrate a change must be SHOWN to fail
+  // without it.
+
+  // 🔴 RESTORED. These two were deleted by the #306 commit's splice and the suite count hid
+  // it — two out, two in, so es8java read 70/70 on both sides. They are the ONLY real-ES
+  // executions of issue #305's escaping claims; `PainlessLiteralEscapingSpec` asserts the
+  // emitted string, not that Painless ACCEPTS it, and only a real index settles that.
+  it should "execute a script whose string literal contains a double quote (D)" in {
+    // BEFORE: `Value.painless` emitted `"a"b"` and Elasticsearch rejected the script at COMPILE
+    // time. A Painless-syntax claim is only provable by Elasticsearch, which is why this case
+    // cannot live in the sql module.
+    val sql = """SELECT id, CONCAT('a"b', code) AS c FROM cast_conversions;"""
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe """a"b125"""
+  }
+
+  it should "execute a script whose string literal ends in a backslash (D)" in {
+    val sql = """SELECT id, CONCAT('C:\\', code) AS c FROM cast_conversions;"""
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe """C:\125"""
+  }
+
+  it should "execute a script whose string literal contains a RAW newline (D)" in {
+    // A raw line terminator DOES reach a literal: `Parser.normalize` collapses newlines only
+    // OUTSIDE quoted runs, and the literal regex's `[^'\\]` matches LF. The JDBC driver inlines
+    // PreparedStatement parameters as SQL literals, so any multi-line string value lands here.
+    //
+    // 🔴 It must be passed through RAW. Painless accepts only `\\` and `\"` as escape sequences and
+    // its content rule `~[\\"]` admits a raw line terminator, so the two-character `\n` form is a
+    // script COMPILE ERROR - the opposite of Java. Review proposed escaping it; this case is what
+    // measured that proposal breaking, and it fails if anyone re-introduces it.
+    val sql = "SELECT id, CONCAT('a\nb', code) AS c FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "c") shouldBe "a\nb125"
+  }
+
+  it should "accept the SQL-standard doubled quote end to end (A)" in {
+    val sql = "SELECT id, UPPER('it''s') AS s FROM cast_conversions;"
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    scalarOf(rows.head, "s") shouldBe "IT'S"
+  }
+
+  it should "accept the new CAST target types over a column end to end (B)" in {
+    // 🔴 This deferred to "the known limitation above" - that a cast over a COLUMN emitted no
+    // conversion - and asserted only the ROW COUNT. #306 removed the limitation, so the reference
+    // was stale AND the assertion was weak: `nbResults = Some(1)` passes just as well when every
+    // one of these six columns comes back as the raw keyword "125". The values are assertable now,
+    // so they are asserted.
+    val sql =
+      """SELECT id,
+        |       CAST(code AS SIGNED) AS signed_n,
+        |       CAST(code AS DECIMAL(10,2)) AS dec_n,
+        |       CAST(code AS TEXT) AS as_text,
+        |       CAST(code AS CHAR(10)) AS as_char,
+        |       CAST(code AS INT(11)) AS as_int,
+        |       CONVERT(code USING utf8) AS as_utf8
+        |FROM cast_conversions;""".stripMargin
+    val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+    rows.size shouldBe 1
+    val row = rows.head
+    // SIGNED is an alias of BIGINT (documented as such, not pretended to be unsigned-aware)
+    scalarOf(row, "signed_n") shouldBe a[java.lang.Number]
+    scalarOf(row, "signed_n").asInstanceOf[java.lang.Number].longValue() shouldBe 125L
+    // DECIMAL(p,s): OQ-7's uniform rule DISCARDS the parameters, the target is DOUBLE
+    scalarOf(row, "dec_n") shouldBe a[java.lang.Number]
+    scalarOf(row, "dec_n").asInstanceOf[java.lang.Number].doubleValue() shouldBe 125.0
+    // INT(11): the display width is discarded, the CONVERSION is not
+    scalarOf(row, "as_int") shouldBe a[java.lang.Number]
+    scalarOf(row, "as_int").asInstanceOf[java.lang.Number].intValue() shouldBe 125
+    // the three string targets keep the value AS A STRING - a number here would mean the cast
+    // fell through to the identity fallback
+    scalarOf(row, "as_text") shouldBe "125"
+    scalarOf(row, "as_char") shouldBe "125"
+    scalarOf(row, "as_utf8") shouldBe "125"
   }
 
   // ---------------------------------------------------------------------------

@@ -65,7 +65,10 @@ class FromlessSelectParserSpec extends AnyFlatSpec with Matchers {
       "SELECT 1/0 AS boom", // parses — no local evaluation; fails at EXECUTION on ES
       "SELECT CURRENT_TIMESTAMP AS ts",
       "SELECT CURRENT_DATE AS d",
-      "SELECT '125'::BIGINT AS c", // CAST('125' AS BIGINT) does NOT parse — OQ-5
+      // `CAST('125' AS BIGINT)` parses too, in EVERY spelling - #267 was refuted and closed.
+      // The comment that used to sit here claimed the opposite, and it is what produced that
+      // wrong filing (story 21.5 D1 required removing it in the same commit as the docs half).
+      "SELECT '125'::BIGINT AS c",
       "SELECT COALESCE(NULL, 1) AS c",
       "SELECT UPPER('ok') AS u",
       "SELECT LENGTH('abc') AS l",

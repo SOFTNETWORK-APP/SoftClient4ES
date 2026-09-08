@@ -55,13 +55,154 @@ package object sql {
     case _       => ""
   }
 
-  /** Escapes a bare string for a single-quoted SQL literal, exactly reversing how the grammar's
-    * `'([^'\\]|\\.)*'` unescapes it — backslash first, then the quote. Renderers that hold a plain
-    * `String` rather than a `StringValue` (a column COMMENT, for one) need it too, which is why it
-    * lives here rather than on the value.
+  /** Escapes a bare string for a single-quoted SQL literal — backslash first, then the quote, so
+    * the composition reverses. Renderers that hold a plain `String` rather than a `StringValue` (a
+    * column COMMENT, for one) need it too, which is why it lives here rather than on the value.
+    *
+    * The grammar accepts TWO spellings of an embedded quote — the SQL-standard doubled delimiter
+    * (`''`, issue #274) and this legacy backslash form — and `unescapeStringLiteral` reads both.
+    * Only the backslash form is ever EMITTED, deliberately (story 21.5 AD-2): an ANSI-doubling
+    * render would also have to stop escaping backslashes, and `StringValue("C:\\").sql` would then
+    * emit `'C:\'`, which this grammar rejects — an un-reparseable render, the #218 class.
     */
   def escapeStringLiteral(value: String): String =
     value.replace("\\", "\\\\").replace("'", "\\'")
+
+  /** Un-escapes a quoted string literal's interior, in ONE left-to-right scan.
+    *
+    * Handles both accepted forms in a single pass: the SQL-standard doubled delimiter (`''` / `""`)
+    * and the grammar's legacy backslash escapes (`\'`, `\"`, `\\`). Any OTHER `\x` sequence is
+    * copied VERBATIM, exactly as the two-`replace` chain this supersedes did — `'a\nb'` keeps its
+    * literal backslash, and COPY INTO paths depend on that.
+    *
+    * Parameterised by delimiter so both branches of `TypeParser.literal` share one scan rather than
+    * growing a second copy.
+    *
+    * 🔴 It is NOT shared with `Parser.unquoteName`, and the difference is not an oversight: an
+    * IDENTIFIER un-escapes a backslash before ANY character (measured: `SELECT "a\nb" FROM t` is
+    * the column `anb`), a LITERAL only before the delimiter or another backslash. The two escape
+    * alphabets genuinely differ, so folding them — which a note on `unquoteName` used to prescribe
+    * — would silently change what a quoted identifier means (story 21.5 AD-12).
+    */
+  def unescapeStringLiteral(content: String, delimiter: Char): String = {
+    val out = new StringBuilder(content.length)
+    var i = 0
+    while (i < content.length) {
+      val c = content.charAt(i)
+      if (
+        c == '\\' && i + 1 < content.length &&
+        (content.charAt(i + 1) == '\\' || content.charAt(i + 1) == delimiter)
+      ) {
+        out.append(content.charAt(i + 1))
+        i += 2
+      } else if (c == delimiter && i + 1 < content.length && content.charAt(i + 1) == delimiter) {
+        out.append(delimiter)
+        i += 2
+      } else {
+        out.append(c)
+        i += 1
+      }
+    }
+    out.toString
+  }
+
+  /** The UTC normalisation every Painless emission over an Elasticsearch `date` VALUE must go
+    * through — and the single place the rule is written down.
+    *
+    * 🔴 Elasticsearch does not hand Painless the same object on every major. ES 7+ gives a
+    * `java.time.ZonedDateTime`; ES 6.8 gives an
+    * `org.elasticsearch.script.JodaCompatibleZonedDateTime`. They overlap, but not completely, and
+    * the gap is not theoretical — MEASURED on real ES 6.8.23:
+    * {{{
+    *   dynamic method [org.elasticsearch.script.JodaCompatibleZonedDateTime, toLocalTime/0] not found
+    * }}}
+    * `toLocalDate()` happens to exist there and `toLocalTime()` does not, which is exactly the kind
+    * of accident that produces a rule with an "except" in it. There is no except: every temporal
+    * conversion over a date VALUE normalises first.
+    *
+    * `toInstant()` exists on BOTH classes, so re-zoning through it yields a real `ZonedDateTime` on
+    * every supported major.
+    *
+    * 🔴 On ES 7/8/9 this chain is an IDENTITY, and that is the point rather than an objection:
+    * Elasticsearch stores and returns UTC and `'Z'` IS UTC, so
+    * `x.toInstant().atZone(ZoneId.of('Z'))` denotes the same instant, the same zone and the same
+    * local fields as `x`. It therefore reads as verbosity that could be "simplified" back to a bare
+    * `.toLocalDate()` / `.toLocalTime()` — do not. Deleting it breaks ES 6.8 and changes nothing
+    * anywhere else.
+    *
+    * Applies to a TIMESTAMP-typed operand, which is what an ES `date` field resolves to (story 21.5
+    * / issue #306). NOT to a DATETIME-typed one: `coerce`'s `(varchar, DateTime)` arm emits
+    * `LocalDateTime.parse(...)`, and `LocalDateTime` has no zero-argument `toInstant()`, so the
+    * same chain there is a compile error inside Elasticsearch. (That DATETIME denotes a
+    * `LocalDateTime` from one arm and a `ZonedDateTime` from another is a pre-existing
+    * inconsistency, recorded not fixed here.)
+    *
+    * ONE derivation, shared by both emitters — `SQLTypeUtils.coerce` and the transform-function
+    * chain in `function/package.scala`. It was previously four separate string literals, with the
+    * whole rule carried by a three-word `// compatible ES6+` comment on one of them. Story 21.5 hit
+    * "one key, two derivations" for the third time; this is the extraction rather than a fifth
+    * copy.
+    */
+  val painlessUtcZonedDateTime: String = ".toInstant().atZone(ZoneId.of('Z'))"
+
+  /** [[painlessUtcZonedDateTime]] followed by the calendar-date part. */
+  val painlessUtcLocalDate: String = s"$painlessUtcZonedDateTime.toLocalDate()"
+
+  /** [[painlessUtcZonedDateTime]] followed by the time-of-day part. */
+  val painlessUtcLocalTime: String = s"$painlessUtcZonedDateTime.toLocalTime()"
+
+  /** Escapes a bare string for a DOUBLE-quoted Painless string literal.
+    *
+    * The escaped set is ENUMERATED from Painless's own lexer rather than patched case by case,
+    * because the whole justification for this function is "otherwise the literal is broken" and a
+    * rule stated that way admits no "except" (`feedback_constant_uniform_justification`). Painless
+    * accepts EXACTLY TWO escape sequences in a double-quoted string, and this is quoted verbatim
+    * from the Elasticsearch 8.18 compile error, not inferred:
+    *
+    * {{{
+    * unexpected character ["a\n]. The only valid escape sequences in strings
+    * starting with ["] are [\\] and [\"].
+    * }}}
+    *
+    * So the set is exactly the backslash and the double quote:
+    *
+    *   - the BACKSLASH — a lone one starts an escape sequence, so unescaped it either forms an
+    *     INVALID sequence with whatever follows or, at the end of a value, escapes the closing
+    *     quote and leaves the string unterminated;
+    *   - the DOUBLE QUOTE — the delimiter itself, which otherwise ends the literal early.
+    *
+    * 🔴 Nothing else may be escaped, and that is a CORRECTNESS constraint, not a minimalism
+    * preference. Painless's lexer content rule is `~[\\"]`, i.e. every other character — including
+    * a RAW LINE FEED or CARRIAGE RETURN, a tab, non-ASCII — is legal raw inside the literal, while
+    * the two-character `\n` / `\r` forms are NOT valid escapes and are a script COMPILE ERROR.
+    * Painless differs from Java here. A raw line terminator genuinely reaches this function
+    * (`Parser.normalize` collapses newlines only OUTSIDE quoted runs, and the JDBC driver inlines
+    * `PreparedStatement` parameters as SQL literals), it passes through untouched, and it WORKS —
+    * measured end to end on real Elasticsearch. Adding `\n` / `\r` escaping here was proposed in
+    * review and MEASURED to break exactly those statements; `PainlessLiteralEscapingSpec` and the
+    * testkit's raw-newline case now guard against re-introducing it.
+    *
+    * Backslash FIRST, then the quote, so the composition reverses: escaping the quote first would
+    * then double the backslash it had just introduced.
+    *
+    * For a value containing NEITHER character the result is byte-identical to the unescaped form,
+    * which is what bounds the change: only literals that were already broken alter shape.
+    *
+    * 🔴 A different channel from `escapeStringLiteral`, deliberately not shared with it even though
+    * the rules rhyme: this escapes for PAINLESS (double-quoted), that escapes for a SQL literal
+    * (single-quoted, and it must stay reversible by `unescapeStringLiteral`). They answer to
+    * different grammars — the SQL literal's escape alphabet is `\'` and `\\`, this one's is `\"`
+    * and `\\` — and only the transport JSON layer escapes line terminators, on its own.
+    *
+    * ⚠️ It IS byte-identical to `StringValue.ddl`'s inline escape today, and the twin is
+    * deliberate: `ddl` renders a DOUBLE-QUOTED SQL literal that `TypeParser.literal`'s double-quote
+    * branch must read back, so it is pinned to the SQL grammar, not to Painless's. Sharing them
+    * would couple the DDL render to a channel whose rules can change independently.
+    */
+  def escapePainlessString(value: String): String =
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
 
   /** Re-emits a name that was written quoted.
     *
@@ -353,7 +494,9 @@ package object sql {
     override def painless(context: Option[PainlessContext]): String =
       SQLTypeUtils.coerce(
         value match {
-          case s: String  => s""""$s""""
+          // Escaped, since #274/story 21.5: an unescaped `"` produced a Painless SYNTAX error and a
+          // trailing backslash an unterminated string. Byte-identical for a value carrying neither.
+          case s: String  => s""""${escapePainlessString(s)}""""
           case b: Boolean => b.toString
           case n: Number  => n.toString
           case _          => value.toString
@@ -610,9 +753,11 @@ package object sql {
   }
 
   case class StringValue(override val value: String) extends Value[String](value) {
-    // Escaped exactly as the grammar's literal (`'([^'\\]|\\.)*'`) unescapes it — backslash first,
-    // then the quote, so the composition reverses. Without this a value holding an apostrophe
-    // rendered `'it's'`, which no longer parses.
+    // Escaped in the backslash form the grammar's literal accepts — backslash first, then the
+    // quote, so the composition reverses. Without this a value holding an apostrophe rendered
+    // `'it's'`, which no longer parses. The grammar ALSO accepts the SQL-standard doubled quote on
+    // input (#274); the render deliberately stays backslash-escaped (story 21.5 AD-2), so
+    // `SELECT 'O''Brien'` re-renders `'O\'Brien'` and re-parses to an equal AST.
     override def sql: String = s"""'${escapeStringLiteral(value)}'"""
     override def baseType: SQLType = SQLTypes.Varchar
 
@@ -1144,8 +1289,8 @@ package object sql {
                 case SQLTypes.Temporal => // the first function to apply required a Temporal as input type
                   context match {
                     case Some(_) =>
-                      // compatible ES6+
-                      this.addPainlessMethod(".toInstant().atZone(ZoneId.of('Z'))")
+                      // compatible ES6+ -- see `painlessUtcZonedDateTime` for WHY
+                      this.addPainlessMethod(painlessUtcZonedDateTime)
                       currType = SQLTypes.Timestamp
                     case _ => // do nothing
                   }
@@ -1256,7 +1401,12 @@ package object sql {
       id
     }
 
-    override def baseType: SQLType = col.map(_.dataType).getOrElse(super.baseType)
+    /** The RUNTIME type of this column -- what `doc['f'].value` yields -- not the DECLARED one. See
+      * `SQLTypeUtils.runtimeType`. Every consumer of `baseType` is Painless emission or `coerce`;
+      * anything wanting the declared type reads `Column.dataType` instead.
+      */
+    override def baseType: SQLType =
+      col.map(c => SQLTypeUtils.runtimeType(c.dataType)).getOrElse(super.baseType)
 
     def update(request: SingleSearch): Identifier = {
       val bucketPath: String =

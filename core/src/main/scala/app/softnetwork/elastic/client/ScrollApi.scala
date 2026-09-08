@@ -285,10 +285,10 @@ trait ScrollApi extends ElasticClientHelpers {
         // plain-projection route every BI tool takes. Thrown, it takes the same path as the
         // extended-stats refusal the ES 6 client raises during translation and comes back from
         // `GatewayApi.run` as the `ElasticFailure(400)` it always was. `ElasticError extends
-        // Throwable`, and every `SearchApi` call site of `resolveTemporalLiterals` already returns
+        // Throwable`, and every `SearchApi` call site of `resolveWithSchema` already returns
         // `ElasticResult.failure(error)` -- this is the one place that could not, because it must
         // return a `Source`.
-        val single = resolveTemporalLiterals(parsed) match {
+        val single = resolveWithSchema(parsed) match {
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => throw error
         }

@@ -1029,8 +1029,10 @@ package object query {
   ) extends DmlStatement {
     override def sql: String = {
       // The grammar only accepts a quoted source literal, so render one — an unquoted path
-      // (`FROM /tmp/data.json`) is not valid SQL and cannot survive a re-parse.
-      val quoted = s"'${source.replace("\\", "\\\\").replace("'", "\\'")}'"
+      // (`FROM /tmp/data.json`) is not valid SQL and cannot survive a re-parse. The escape rule has
+      // ONE owner (`escapeStringLiteral`); this site used to inline a byte-identical fourth copy,
+      // which is how a rule and its reverse drift apart.
+      val quoted = s"'${escapeStringLiteral(source)}'"
       s"COPY INTO $targetTable FROM $quoted${asString(fileFormat)}${asString(onConflict)}"
     }
   }

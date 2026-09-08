@@ -16,17 +16,36 @@ CONVERT(expr, TYPE)
 **Inputs:**
 - `expr` - Expression to convert
 - `TYPE` - Target data type:
-  - `VARCHAR` / `STRING` / `CHAR`
-  - `INT` / `INTEGER` / `BIGINT` / `SMALLINT` / `TINYINT`
-  - `DOUBLE` / `FLOAT` / `REAL`
+  - `VARCHAR` / `STRING` / `CHAR` / `TEXT` / `KEYWORD`
+  - `INT` / `INTEGER` / `BIGINT` / `SMALLINT` / `TINYINT` / `SIGNED` / `UNSIGNED`
+  - `DOUBLE` / `FLOAT` / `REAL` / `DECIMAL` / `NUMERIC` / `DEC`
   - `BOOLEAN`
   - `DATE`
   - `TIMESTAMP` / `DATETIME`
   - `TIME`
+  - `BINARY` / `VARBINARY`
 
-> `DECIMAL` / `NUMERIC` are **not** cast targets (see
-> [known limitations](known_limitations.md)) — use `DOUBLE` and round explicitly. `TEXT`, `KEYWORD`
-> and `BOOL` are column types in `CREATE TABLE`, not cast targets; write `VARCHAR` and `BOOLEAN`.
+A length, precision or scale may be written on any type SQL parameterises — `CHAR(10)`,
+`VARCHAR(255)`, `DECIMAL(10,2)`, `INT(11)`, `TIMESTAMP(3)` — and is **accepted and ignored**.
+
+Three limitations, stated plainly rather than hidden:
+
+> - `SIGNED` and `UNSIGNED` are both 64-bit **signed** integers (`BIGINT`). Elasticsearch's
+>   `unsigned_long` is not addressable from a cast, so a value above `Long.MAX_VALUE` is not
+>   representable.
+> - `DECIMAL` / `NUMERIC` / `DEC` are **approximate**: they map to `DOUBLE`. Elasticsearch has no
+>   exact decimal type.
+> - A precision or length is **ignored** — no rounding, no truncation. Nothing pretends otherwise:
+>   the statement re-renders **without** it (`CAST(x AS DECIMAL(10,2))` becomes
+>   `CAST(x AS DOUBLE)`, `CHAR(10)` becomes `CHAR`), so every artifact that echoes a statement —
+>   `SHOW CREATE TABLE`, a materialized view's `.sql`, a log line — shows the type the engine
+>   actually applied.
+>
+> `BOOL` is still not a cast target; write `BOOLEAN`. `BLOB`, `CLOB`, `BIT`, `MONEY`, `UUID` and
+> `INTERVAL` as a type are rejected.
+
+`CONVERT(expr USING <charset>)` is accepted as a synonym for `CONVERT(expr, VARCHAR)`:
+Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
 
 **Output:**
 - Value converted to target `TYPE`
@@ -58,9 +77,15 @@ SELECT CAST('123' AS INT) AS i;
 SELECT CAST('123.45' AS DOUBLE) AS d;
 -- Result: 123.45
 
--- DOUBLE to INT (truncates)
+-- DOUBLE to INT (truncates toward zero)
 SELECT CAST(123.99 AS INT) AS i;
 -- Result: 123
+
+-- Integer to a NARROWER integer: the high-order bits are discarded, i.e. it WRAPS. It does not
+-- clamp to the target's range and it does not raise - Java/Painless cast semantics. Engines that
+-- clamp, or reject, an out-of-range narrowing will disagree.
+SELECT CAST(300 AS TINYINT) AS b;
+-- Result: 44
 
 -- Using CONVERT alias
 SELECT CONVERT(salary, DOUBLE) AS s FROM emp;
@@ -96,38 +121,45 @@ SELECT CAST(CURRENT_TIMESTAMP AS VARCHAR) AS ts_str;
 SELECT CAST('2025-01-10' AS DATE) AS d;
 -- Result: 2025-01-10
 
--- String to TIMESTAMP
-SELECT CAST('2025-01-10 14:30:00' AS TIMESTAMP) AS ts;
--- Result: 2025-01-10 14:30:00
+-- String to TIMESTAMP. WARNING - the conversion is pinned to ISO_ZONED_DATE_TIME, so a
+-- SPACE-separated timestamp with no zone RAISES. Write it in ISO form, or use DATETIME_PARSE.
+SELECT CAST('2025-01-10T14:30:00Z' AS TIMESTAMP) AS ts;
+-- Result: 2025-01-10T14:30:00Z
 
 -- Timestamp to DATE
 SELECT CAST(CURRENT_TIMESTAMP AS DATE) AS d;
 -- Result: 2025-10-27
 
--- String with format to DATE
-SELECT CAST('2025/01/10' AS DATE) AS d;
--- Result: 2025-01-10
+-- WARNING - a slash-separated date does NOT convert: the DATE conversion is pinned to the pattern
+-- yyyy-MM-dd, so this RAISES rather than returning a date. Rewrite the value in ISO form.
+-- SELECT CAST('2025/01/10' AS DATE) AS d;   -- error
 
--- Unix timestamp to TIMESTAMP
-SELECT CAST(1704902400 AS TIMESTAMP) AS ts;
+-- Epoch MILLISECONDS to TIMESTAMP. WARNING - the operand is read as milliseconds, not seconds, so
+-- a seconds-precision epoch lands in 1970. Multiply by 1000, or use a millisecond epoch.
+SELECT CAST(1704902400000 AS TIMESTAMP) AS ts;
 -- Result: 2024-01-10 12:00:00
 ```
 
 **Boolean Conversions:**
+
+> WARNING - a conversion TO `BOOLEAN` is currently a no-op: the value is returned unchanged
+> (`CAST(1 AS BOOLEAN)` yields `1`, `CAST('true' AS BOOLEAN)` yields the string `'true'`). Only the
+> conversions FROM boolean below are applied. Use a comparison (`col = 1`) instead.
+
 ```sql
--- Number to BOOLEAN
+-- Number to BOOLEAN - NOT APPLIED, returns the number unchanged
 SELECT CAST(1 AS BOOLEAN) AS b;
--- Result: true
+-- Result: 1
 
 SELECT CAST(0 AS BOOLEAN) AS b;
--- Result: false
+-- Result: 0
 
--- String to BOOLEAN
+-- String to BOOLEAN - NOT APPLIED, returns the string unchanged
 SELECT CAST('true' AS BOOLEAN) AS b;
--- Result: true
+-- Result: 'true'
 
 SELECT CAST('false' AS BOOLEAN) AS b;
--- Result: false
+-- Result: 'false'
 
 -- Boolean to INT
 SELECT CAST(true AS INT) AS i;
@@ -138,18 +170,23 @@ SELECT CAST(false AS INT) AS i;
 ```
 
 **Decimal/Numeric Conversions:**
+
+> The precision and scale are parsed and IGNORED - there is no rounding and no padding, and the
+> target is `DOUBLE`. The statement re-renders as `CAST(x AS DOUBLE)` so what the engine applied is
+> always visible.
+
 ```sql
--- To DECIMAL with precision
+-- The scale is NOT applied: no rounding to 2 decimal places
 SELECT CAST(123.456 AS DECIMAL(10, 2)) AS dec;
--- Result: 123.46
+-- Result: 123.456
 
 -- String to DECIMAL
 SELECT CAST('123.456' AS DECIMAL(10, 3)) AS dec;
 -- Result: 123.456
 
--- INT to DECIMAL
+-- INT to DECIMAL: widened to a double, NOT padded to the scale
 SELECT CAST(100 AS DECIMAL(10, 2)) AS dec;
--- Result: 100.00
+-- Result: 100.0
 ```
 
 **Practical Examples:**

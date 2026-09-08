@@ -165,7 +165,7 @@ permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev
 
 ## Deferred (a future release, demand-driven — tell us what you need)
 
-- `MERGE`, `RETURNING`, `INFORMATION_SCHEMA`, non-materialized `CREATE VIEW`, `DECIMAL`, `TIMESTAMP WITH TIME ZONE`, `INTERVAL` as a type, and `UUID`. No committed date — these are prioritised by customer demand. (Current-release DML already supports `INSERT … ON CONFLICT` upsert — a different feature from `MERGE`.)
+- `MERGE`, `RETURNING`, `INFORMATION_SCHEMA`, non-materialized `CREATE VIEW`, `TIMESTAMP WITH TIME ZONE`, `INTERVAL` as a type, and `UUID`. (`DECIMAL` / `NUMERIC` are now accepted as cast targets and column types, but **approximately** — they map to `DOUBLE`, and a precision or scale is accepted and ignored. Elasticsearch has no exact decimal type.) No committed date — these are prioritised by customer demand. (Current-release DML already supports `INSERT … ON CONFLICT` upsert — a different feature from `MERGE`.)
 
 ## Roadmap timing
 

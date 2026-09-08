@@ -40,7 +40,8 @@ import scala.language.implicitConversions
   *
   * Covered entry points (AC 5): `search` (single + UNION ALL), `searchAsync`, `scroll`. The
   * schema-absent path (no schema, several sources, wildcard source) is asserted verbatim, and the
-  * lookup is asserted SKIPPED when the WHERE carries no candidate literal.
+  * lookup is asserted CACHED (issue #306 made it unconditional for a single concrete index; it is
+  * still SKIPPED for a multi-source or wildcard FROM, asserted below).
   */
 class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
 
@@ -77,7 +78,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
 
     /** Set to 0 by a test to expire the negative cache immediately. */
     @volatile var missTtlMs: Long = 5 * 60 * 1000L
-    override protected def temporalLiteralSchemaMissTtlMs: Long = missTtlMs
+    override protected def schemaMissTtlMs: Long = missTtlMs
 
     override private[client] implicit def singleSearchToJsonQuery(
       sqlSearch: SingleSearch
@@ -177,7 +178,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.search(statement)
     client.search(statement)
     client.schemaLookups shouldBe 2 // a 503 is retried on the next statement
-    client.temporalLiteralSchemaMissCount shouldBe 0
+    client.schemaMissCount shouldBe 0
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
   }
 
@@ -189,7 +190,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
         SelectStatement(s"SELECT id FROM unknown_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
       )
     }
-    expiring.temporalLiteralSchemaMissCount should be < 257 // the purge ran at least once
+    expiring.schemaMissCount should be < 257 // the purge ran at least once
 
     val flooding = new RecordingClient // default TTL: nothing expires, only the cap can act
     (1 to 1100).foreach { i =>
@@ -197,7 +198,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
         SelectStatement(s"SELECT id FROM probe_$i WHERE event_ts >= '$spaceForm' LIMIT 5")
       )
     }
-    flooding.temporalLiteralSchemaMissCount should be <= 1024
+    flooding.schemaMissCount should be <= 1024
   }
 
   it should "resolve the schema through an alias over one index, and treat an alias over several as unknown" in {
@@ -220,7 +221,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
       SelectStatement(s"SELECT id FROM events_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
-    client.temporalLiteralSchemaMissCount shouldBe 0 // a resolved alias is never a miss
+    client.schemaMissCount shouldBe 0 // a resolved alias is never a miss
     client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // ambiguous: not found
     val before = client.schemaLookups
     client.search(
@@ -228,7 +229,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
     client.schemaLookups shouldBe (before + 1)
-    client.temporalLiteralSchemaMissCount shouldBe 1
+    client.schemaMissCount shouldBe 1
     // R4-19: the ambiguous alias is BOUNDED -- a second statement costs no further lookup
     client.search(
       SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts < '$spaceForm' LIMIT 5")
@@ -263,13 +264,47 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
   }
 
-  it should "not look the schema up at all when the WHERE carries no candidate literal" in {
+  // 🔴 RETARGETED by issue #306, not relaxed. This used to assert `schemaLookups shouldBe 0` for a
+  // statement with no temporal candidate — a real BIDC-4 performance guarantee, and one that #306
+  // had to give up: the schema is now attached to the AST for EVERY statement over a single
+  // concrete index, because `GenericIdentifier.baseType` needs it and a cast over a column emitted
+  // no conversion at all without it.
+  //
+  // The cost is stated rather than hidden: ONE lookup per index per cache TTL, served from
+  // `loadSchema`'s 5-minute cache. The test now pins that cost — the lookup happens ONCE and is
+  // then cached — so a regression to a per-statement fetch still fails here.
+  it should "look the schema up even when the WHERE carries no candidate literal" in {
     val client = seeded()
     client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))
     client.lastQuery shouldBe defined
-    client.schemaLookups shouldBe 0
+    client.schemaLookups shouldBe 1
     client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
-    client.schemaLookups shouldBe 0
+    // `schemaLookups` counts CALLS, and this fixture overrides `loadSchema`, so it is one per
+    // statement by construction — it cannot show the COST.
+    client.schemaLookups shouldBe 2
+  }
+
+  it should "cost ONE round trip per index per TTL, not one per statement" in {
+    // The number the #306 guarantee is actually about. `schemaLookups` above counts calls; this
+    // counts real fetches through the production cache, using the same local-override pattern as
+    // the alias test above (an unseeded client, so the first statement genuinely misses).
+    var fetches = 0
+    val client = new RecordingClient {
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+        fetches += 1
+        ElasticResult.success(
+          Some(
+            """{"mappings":{"properties":{"id":{"type":"keyword"},"event_ts":{"type":"date"},
+              |"label":{"type":"keyword"},"amount":{"type":"integer"}}},
+              |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
+          )
+        )
+      }
+    }
+    client.search(SelectStatement("SELECT id FROM events WHERE amount > 10 LIMIT 5"))
+    client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
+    client.search(SelectStatement("SELECT id FROM events WHERE amount > 20 LIMIT 5"))
+    fetches shouldBe 1 // three statements, ONE round trip - a per-statement regression fails here
   }
 
   it should "forward the literal verbatim over several sources or a wildcard source" in {

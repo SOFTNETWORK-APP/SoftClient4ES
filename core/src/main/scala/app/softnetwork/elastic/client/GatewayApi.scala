@@ -2165,10 +2165,17 @@ object GatewayApi {
     *
     * Quote-aware: a `;` inside a single-quoted literal, a double-quoted identifier or a backticked
     * identifier is not a boundary. Backslash escapes are honored inside single- and double-quoted
-    * runs, matching the grammar's literal rule (`([^'\\]|\\.)*`); inside backticks the only escape
-    * is a doubled backtick, so a backslash there is data. An unterminated quote consumes to the end
-    * of the input — the parser then reports the malformed statement itself, which beats guessing
-    * where it was meant to end. Empty fragments (`;;`, a trailing `;`) are dropped.
+    * runs, matching the grammar's literal rule (`([^'\\]|\\.|'')*`); inside backticks the only
+    * escape is a doubled backtick, so a backslash there is data. An unterminated quote consumes to
+    * the end of the input — the parser then reports the malformed statement itself, which beats
+    * guessing where it was meant to end. Empty fragments (`;;`, a trailing `;`) are dropped.
+    *
+    * A DOUBLED delimiter (`''`, `""`, ` `` `) needs no branch of its own and deliberately has none:
+    * the first quote closes the run and the second, immediately adjacent, re-opens it, so the
+    * window in which this scanner is outside a quoted run while the grammar is inside it is ZERO
+    * characters wide. No `;` can fall into it. That is why issue #274 — which added the doubled
+    * escape to `TypeParser.literal` — changed this method by not one byte, and
+    * `SplitStatementsSpec` pins it so a future rewrite cannot quietly break the property.
     */
   private[client] def splitStatements(sql: String): List[String] = {
     val statements = scala.collection.mutable.ListBuffer.empty[String]

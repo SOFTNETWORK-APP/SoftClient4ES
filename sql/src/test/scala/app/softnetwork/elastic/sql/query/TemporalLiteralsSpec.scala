@@ -330,7 +330,6 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
 
   "TemporalLiterals" should "rewrite a range comparison against a date column" in {
     val sql = "SELECT id FROM events WHERE event_ts >= '2026-06-04 00:00:00.000000'"
-    TemporalLiterals.hasCandidates(single(sql)) shouldBe true
     whereSql(resolved(sql)) shouldBe "WHERE event_ts >= '2026-06-04T00:00:00.000000'"
   }
 
@@ -358,14 +357,10 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     include("'2026-06-04T00:00:00'")
   }
 
-  it should "return the very same statement, and report no candidate, when nothing qualifies" in {
-    val sql = "SELECT id FROM events WHERE amount > 10 AND label IS NOT NULL"
-    TemporalLiterals.hasCandidates(single(sql)) shouldBe false
-    untouched(sql)
-    TemporalLiterals.hasCandidates(single("SELECT id FROM events")) shouldBe false
-    TemporalLiterals.hasCandidates(
-      single("SELECT id FROM events WHERE YEAR(event_ts) = 2026")
-    ) shouldBe false
+  it should "return the very same statement when nothing qualifies" in {
+    untouched("SELECT id FROM events WHERE amount > 10 AND label IS NOT NULL")
+    untouched("SELECT id FROM events")
+    untouched("SELECT id FROM events WHERE YEAR(event_ts) = 2026")
   }
 
   it should "leave keyword, TIME, LIKE, function-wrapped, unknown and custom-format columns untouched" in {
@@ -432,6 +427,11 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
         |}},"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}}""".stripMargin
     val table = Index("events", json).schema
 
+    // 🔴 DATE — the DECLARED type, preserved. An Elasticsearch `date` field IS a millisecond
+    // timestamp at runtime, but that is a different fact and it belongs to
+    // `SQLTypeUtils.runtimeType`, read via `GenericIdentifier.baseType`. Story 21.5 briefly mapped
+    // it here instead and the spurious `_meta` diff that caused cascaded into an unparseable ES 6.8
+    // ALTER and a materialized-view slowdown. `Column.dataType` stays what the user wrote.
     table.find("event_ts").map(_.dataType) shouldBe Some(SQLTypes.Date)
     table.find("fmt_ts").flatMap(_.options.get("format")) shouldBe Some(
       StringValue("yyyy-MM-dd HH:mm:ss")
@@ -506,7 +506,6 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     val table = Index("events", json).schema
     val sql =
       "SELECT id FROM events e JOIN UNNEST(e.items) AS i WHERE i.ts >= '2026-06-04 00:00:00' AND i.qty > 0"
-    TemporalLiterals.hasCandidates(single(sql)) shouldBe true
     val where = whereSql(resolved(sql, table))
     where should include("'2026-06-04T00:00:00'")
     where should not include "'2026-06-04 00:00:00'"
