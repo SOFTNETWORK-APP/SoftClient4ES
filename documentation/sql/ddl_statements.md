@@ -216,7 +216,7 @@ CREATE TABLE store (
 	- `NOT NULL`
 	- `COMMENT`
 	- `OPTIONS`
-	- `SCRIPT AS` (except inside ARRAY\<STRUCT>)
+	- `SCRIPT AS` — optionally `STORED` (except inside ARRAY\<STRUCT>)
 - Multi-level nesting is supported.
 
 ---
@@ -364,6 +364,50 @@ The gateway:
 
 ---
 
+### Computed columns: `SCRIPT AS` and `STORED`
+
+A column declared `SCRIPT AS (expression)` is **computed on ingest**: the expression becomes a
+script processor in the table's default pipeline, and every document written to the index has the
+value derived for it.
+
+```sql
+CREATE TABLE users (
+  id INT,
+  birthdate DATE,
+  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))
+);
+```
+
+Adding `STORED` keeps the expression as **documentation of how the column was derived**, without
+computing it here:
+
+```sql
+CREATE TABLE users_view (
+  id INT,
+  birthdate DATE,
+  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)) STORED
+);
+```
+
+| | ingest pipeline | `DESCRIBE` `Script` column | `SHOW CREATE` |
+| --- | --- | --- | --- |
+| `SCRIPT AS (...)` | runs the script | shows the expression | `SCRIPT AS (...)` |
+| `SCRIPT AS (...) STORED` | **no processor** | shows the expression | `SCRIPT AS (...) STORED` |
+
+Use `STORED` when the value **already arrives materialized** and only its lineage needs recording —
+the value is written by whatever produced it upstream, not recomputed on arrival.
+
+The primary consumer is the materialized-view pipeline. A view's computed column is calculated once,
+in the stage that owns it; every index downstream of that stage carries the column with `STORED`, so
+the value flows through unchanged. Recomputing it downstream would be redundant, and wrong whenever
+the expression's source columns did not survive the transform — the projection would then overwrite
+a good value with `NULL`.
+
+> **Note** — `STORED` describes *this* index only. The same column can be an executing
+> `SCRIPT AS` in the index that computes it and a `STORED` one in every index it flows into.
+
+---
+
 ## ALTER TABLE
 
 **Supported statements:**
@@ -371,7 +415,7 @@ The gateway:
 - `ADD COLUMN [IF NOT EXISTS] column_definition`
 - `DROP COLUMN [IF EXISTS] column_name`
 - `RENAME COLUMN old_name TO new_name`
-- `ALTER COLUMN column_name SET SCRIPT AS (sql)`
+- `ALTER COLUMN column_name SET SCRIPT AS (sql) [STORED]`
 - `ALTER COLUMN column_name DROP SCRIPT`
 - `ALTER COLUMN column_name SET|ADD OPTION (key = value)`
 - `ALTER COLUMN column_name DROP OPTION key`

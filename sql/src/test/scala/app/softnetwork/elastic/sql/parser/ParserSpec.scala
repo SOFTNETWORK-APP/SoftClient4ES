@@ -2290,7 +2290,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                   "age",
                   SQLTypes.Int,
                   source,
-                  true
+                  true,
+                  false // materialized: a DDL-declared script IS executed here
                 )
               ) =>
             source should include(
@@ -2325,7 +2326,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                   "profile.seniority",
                   SQLTypes.Int,
                   source,
-                  true
+                  true,
+                  false // materialized: a DDL-declared script IS executed here
                 )
               ) =>
             source should include(

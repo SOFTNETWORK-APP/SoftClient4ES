@@ -158,12 +158,22 @@ package object schema {
                 case Some(script: StringValue) =>
                   map.get("painless") match {
                     case Some(source: StringValue) =>
+                      // 🔴 `materialized` MUST be read back. It is absent from the DDL text by
+                      // design (`Column.sql` omits `SCRIPT AS` for it), so `_meta` is its only
+                      // carrier; losing it here would re-arm the processor on the next render of a
+                      // schema loaded from Elasticsearch -- exactly the diff/ALTER path.
+                      val materialized = map.get("materialized") match {
+                        case Some(b: BooleanValue) => b.value
+                        case Some(v: StringValue)  => v.value.toBoolean
+                        case _                     => false
+                      }
                       Some(
                         ScriptProcessor(
                           script = script.value,
                           column = name,
                           dataType = SQLTypes(tpe),
-                          source = source.value
+                          source = source.value,
+                          materialized = materialized
                         )
                       )
                   }

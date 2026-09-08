@@ -98,6 +98,29 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
       } else {
         "" // not compatible with ES versions < 8.x
       }
+
+    /* 🔴 The suite must not CREATE the index it asserts is absent.
+     *
+     * `beforeAll` registers a LEGACY index template (`all_templates`, pattern `*`). From ES 7.16
+     * that draws a deprecation warning which Elasticsearch INDEXES into the
+     * `.logs-deprecation.elasticsearch-default` data stream, whose hidden `.ds-…` backing index is
+     * then found by `SHOW TABLES LIKE '.%'` — the assertion that no such index exists
+     * (`GatewayApiIntegrationSpec` / `ReplGatewayIntegrationSpec`). Deterministic cause, RACY
+     * timing: the indexing is asynchronous, so the suite failed intermittently and on ES 7+ only,
+     * which is exactly what made it read as noise. It cost time on three PRs.
+     *
+     * Turning the indexing off removes the provocation rather than the assertion, which still
+     * guards what it was written to guard.
+     *
+     * ⚠️ Version-gated because the setting does not exist before 7.16 and Elasticsearch refuses to
+     * START on an unknown setting — an ungated line would kill every ES 6.8 leg outright. */
+    val deprecationIndexingLine =
+      if (ElasticsearchVersion.supportsDeprecationIndexing(elasticVersion)) {
+        "\n# Deprecation indexing (the suite must not create the index it asserts is absent)\n" +
+        "cluster.deprecation_indexing.enabled: false\n"
+      } else {
+        "" // the setting does not exist before 7.16 and an unknown setting stops the node booting
+      }
     val config =
       s"""# Cluster settings
         |cluster.name: docker-cluster
@@ -110,7 +133,7 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
         |
         |# Discovery
         |discovery.type: single-node
-        |
+        |$deprecationIndexingLine
         |# X-Pack License (forced; see xpackLicenseType)
         |xpack.license.self_generated.type: $xpackLicenseType
         |

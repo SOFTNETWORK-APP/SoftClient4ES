@@ -134,6 +134,18 @@ object ElasticsearchVersion {
     isAtLeast(version, 7, 9)
   }
 
+  /** Check if deprecation INDEXING is supported (ES >= 7.16).
+    *
+    * From 7.16 Elasticsearch writes its own deprecation warnings into the
+    * `.logs-deprecation.elasticsearch-default` data stream, creating a hidden `.ds-…` backing
+    * index. ⚠️ The setting that governs it (`cluster.deprecation_indexing.enabled`) does not exist
+    * before 7.16, and Elasticsearch REFUSES TO START on an unknown setting in `elasticsearch.yml` —
+    * so anything writing that key must gate on this.
+    */
+  def supportsDeprecationIndexing(version: String): Boolean = {
+    isAtLeast(version, 7, 16)
+  }
+
   /** Check if Composable Templates are supported (ES >= 7.8)
     */
   def supportsComposableTemplates(version: String): Boolean = {

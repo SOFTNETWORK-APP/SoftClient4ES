@@ -454,6 +454,21 @@ package object schema {
     }
   }
 
+  /** @param materialized
+    *   the column's value is ALREADY materialized in this index -- the script records how it was
+    *   DERIVED, and must not be executed here.
+    *
+    * 🔴 The distinction exists because `script` does two jobs: it is the provenance `DESCRIBE` and
+    * `_meta` publish, and it is the ingest processor `Column.processors` emits. A stage downstream
+    * of the one that computed the column needs the first and must not have the second — re-running
+    * a projection over a document that already carries its result is redundant, and wrong whenever
+    * the source operands did not survive the transform that produced it.
+    *
+    * ⚠️ The flag is carried by `_meta`, NOT by the DDL text: `Column.sql` omits `SCRIPT AS` when it
+    * is set, precisely so that re-parsing the rendered DDL cannot resurrect the processor. Reading
+    * it back is `IndexField`'s job (`elastic/schema/package.scala`), which is the path `DESCRIBE`
+    * and `SHOW CREATE` take. The two surfaces have different authorities and that is deliberate.
+    */
   case class ScriptProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,
@@ -461,9 +476,11 @@ package object schema {
     column: String,
     dataType: SQLType,
     source: String,
-    ignoreFailure: Boolean = true
+    ignoreFailure: Boolean = true,
+    materialized: Boolean = false
   ) extends IngestProcessor {
-    override def sql: String = s"$column $dataType SCRIPT AS ($script)"
+    override def sql: String =
+      s"$column $dataType SCRIPT AS ($script)${if (materialized) " STORED" else ""}"
 
     override def baseType: SQLType = dataType
 
@@ -483,7 +500,8 @@ package object schema {
       column: String,
       script: PainlessScript,
       dataType: Option[SQLType] = None,
-      pipelineType: IngestPipelineType = IngestPipelineType.Default
+      pipelineType: IngestPipelineType = IngestPipelineType.Default,
+      materialized: Boolean = false
     ): ScriptProcessor = {
       val ctx = PainlessContext(PainlessContextType.Processor)
       val scr = script.painless(Some(ctx))
@@ -502,7 +520,8 @@ package object schema {
         script = script.sql,
         column = column,
         dataType = dataType.getOrElse(script.out),
-        source = source
+        source = source,
+        materialized = materialized
       )
     }
   }
@@ -976,7 +995,8 @@ package object schema {
               "sql"      -> StringValue(sc.script),
               "column"   -> StringValue(path),
               "painless" -> StringValue(sc.source)
-            )
+            ) ++ (if (sc.materialized) ListMap("materialized" -> BooleanValue(true))
+                  else ListMap.empty[String, Value[_]])
           )
         }
         .map("script" -> _) ++ (if (multiFields.nonEmpty)
@@ -1061,7 +1081,12 @@ package object schema {
       } else {
         ""
       }
-      val scriptOpt = script.map(s => s" SCRIPT AS (${s.script})").getOrElse("")
+      // 🔴 The `STORED` marker MUST be rendered. The DDL text is the only carrier: `Table.update()`
+      // rebuilds `_meta.columns` from the parsed columns, so a flag that lives only in `_meta` is
+      // erased on the first round-trip and the suppressed processor comes back.
+      val scriptOpt = script
+        .map(s => s" SCRIPT AS (${s.script})${if (s.materialized) " STORED" else ""}")
+        .getOrElse("")
       val tabs = "\t" * level
       s"$tabs$name $dataType$fieldsOpt$scriptOpt$defaultOpt$notNullOpt$commentOpt$opts"
     }
@@ -1083,7 +1108,8 @@ package object schema {
       )
     ) ++ multiFields.flatMap(_.asMap(table))
 
-    def processors: Seq[IngestProcessor] = script.map(st => st.copy(column = path)).toSeq ++
+    def processors: Seq[IngestProcessor] =
+      script.filterNot(_.materialized).map(st => st.copy(column = path)).toSeq ++
       defaultValue.map { dv =>
         SetProcessor(
           column = path,

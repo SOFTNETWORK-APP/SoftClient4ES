@@ -425,6 +425,7 @@ object SQLKeywords {
     "RETURNS",
     "SCHEDULE",
     "SCRIPT",
+    "STORED",
     "SECOND",
     "SET",
     "SETTING",

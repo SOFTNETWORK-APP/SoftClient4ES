@@ -325,16 +325,26 @@ object Parser
       }
     }
 
+  /** `SCRIPT AS (<expr>) STORED` — the column's value is already materialized in this index, so the
+    * script records how it was DERIVED and is NOT executed here.
+    *
+    * 🔴 The marker has to live in the DDL TEXT. `_meta` cannot carry it: `Table.update()` REBUILDS
+    * `_meta.columns` from the parsed columns (it drops the incoming `columns` key), so anything not
+    * recoverable from the column list is erased on the first round-trip. Measured, not assumed.
+    */
+  def storedScript: PackratParser[(PainlessScript, Boolean)] =
+    script ~ opt(keyword("STORED")) ^^ { case s ~ stored => (s, stored.isDefined) }
+
   def column: PackratParser[Column] =
-    ident ~ extension_type ~ (script | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
+    ident ~ extension_type ~ (storedScript | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       ListMap.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
       mfs match {
-        case script: PainlessScript =>
+        case (script: PainlessScript, stored: Boolean) =>
           Column(
             name,
             dt,
-            Some(ScriptProcessor.fromScript(name, script, Some(dt))),
+            Some(ScriptProcessor.fromScript(name, script, Some(dt), materialized = stored)),
             Nil,
             dv,
             nn,
@@ -611,12 +621,13 @@ object Parser
     }
 
   def alterColumnScript: PackratParser[AlterColumnScript] =
-    alterColumnIfExists ~ ident ~ keyword("SET") ~ script ^^ { case ie ~ name ~ _ ~ ns =>
-      AlterColumnScript(
-        name,
-        ScriptProcessor.fromScript(name, ns, Some(ns.out)),
-        ifExists = ie
-      )
+    alterColumnIfExists ~ ident ~ keyword("SET") ~ storedScript ^^ {
+      case ie ~ name ~ _ ~ ((ns, stored)) =>
+        AlterColumnScript(
+          name,
+          ScriptProcessor.fromScript(name, ns, Some(ns.out), materialized = stored),
+          ifExists = ie
+        )
     }
 
   def dropColumnScript: PackratParser[DropColumnScript] =
