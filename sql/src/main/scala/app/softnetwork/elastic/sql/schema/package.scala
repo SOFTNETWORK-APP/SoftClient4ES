@@ -477,10 +477,49 @@ package object schema {
     dataType: SQLType,
     source: String,
     ignoreFailure: Boolean = true,
-    materialized: Boolean = false
+    materialized: Boolean = false,
+    /** The parsed expression this processor's `source` was derived FROM, when it came from a
+      * `SCRIPT AS (…)` in DDL rather than from a pipeline read back out of Elasticsearch.
+      *
+      * 🔴 It exists so the derivation can be RE-RUN once the sibling columns are known. At parse
+      * time a `CREATE TABLE`'s column list does not exist yet, so every operand's `baseType` was
+      * `Any` and no `SQLTypeUtils.coerce` arm fired: `CREATE TABLE t (zip_code KEYWORD, zip_n
+      * BIGINT SCRIPT AS (CAST(zip_code AS BIGINT)))` stored `ctx.zip_n = param1` — the UNCONVERTED
+      * keyword string into a `long`-mapped field. Elasticsearch never rewrites `_source` and
+      * `coerce` defaults true, so the mapping stayed correct while the document was wrong
+      * (`local-21.8-ddl-script-processor-has-no-schema.md`, the #205 silent-wrong-value family).
+      *
+      * Appended LAST and defaulted, so every positional construction keeps compiling; `None` for a
+      * processor loaded from Elasticsearch, which has JSON and no AST, and whose stored `source` is
+      * therefore left exactly as it was found.
+      */
+    expr: Option[PainlessScript] = None
   ) extends IngestProcessor {
     override def sql: String =
       s"$column $dataType SCRIPT AS ($script)${if (materialized) " STORED" else ""}"
+
+    /** Re-derive `source` from [[expr]] with `schema` attached, so the conversion arms that `#306`
+      * made reachable for a query are reachable for an ingest script too.
+      *
+      * Returns `this` unchanged whenever there is no expression to re-derive from — which is both
+      * the Elasticsearch-load path and the lead's OQ-4 ruling for an operand the schema cannot
+      * resolve: it stays SILENT and emits the identity, exactly as before. A DDL statement that
+      * works today keeps working; it just stops storing the wrong value.
+      */
+    def resolvedAgainst(schema: Schema, columnPath: String): ScriptProcessor =
+      expr match {
+        case Some(e) =>
+          ScriptProcessor
+            .fromScript(
+              column = columnPath,
+              script = resolveAgainstSchema(e, schema),
+              dataType = Some(dataType),
+              pipelineType = pipelineType,
+              materialized = materialized
+            )
+            .copy(description = description, ignoreFailure = ignoreFailure)
+        case None => this
+      }
 
     override def baseType: SQLType = dataType
 
@@ -494,6 +533,44 @@ package object schema {
     )
 
   }
+
+  /** Attach `schema` to a DDL `SCRIPT AS (…)` expression, so each operand resolves to its declared
+    * column and `SQLTypeUtils.coerce` can see a real type instead of `Any`.
+    *
+    * 🔴 It goes through the SAME `Identifier.update` every executed query uses, over a minimal
+    * synthetic `SingleSearch`, rather than through a second identifier-resolution walk written for
+    * DDL. A parallel walk would be a second derivation of "which column is this operand", and this
+    * area has already paid for that four times over (story 21.3). Every `scriptValue` alternative
+    * yields an `Identifier`, so one `update` call is the whole job.
+    *
+    * The synthetic statement carries no SELECT, no GROUP BY and one placeholder table: `update`
+    * reads `request.schemas.get(<main table>)` first and falls back to `request.schema`, which is
+    * the schema handed in here, so the table's NAME is irrelevant and no alias, bucket or field
+    * alias can resolve. An operand the schema does not know simply keeps `col = None` — the lead's
+    * OQ-4 ruling, and byte-for-byte today's emission.
+    *
+    * 🔴 A temporal-SOURCE arm still must NOT fire here, and does not: the processor context makes
+    * `SQLTypeUtils.coerce`'s `isProcessorContext` guard decline them, because in an ingest script
+    * the operand is `ctx.<field>` — the raw JSON scalar — not the temporal object a query's
+    * `doc['f'].value` yields. Attaching the schema is what makes those arms REACHABLE for the first
+    * time, so that guard stops being theoretical the moment this function exists.
+    */
+  private[schema] def resolveAgainstSchema(
+    script: PainlessScript,
+    schema: Schema
+  ): PainlessScript =
+    script match {
+      case id: Identifier =>
+        id.update(
+          SingleSearch(
+            select = Select(Seq.empty),
+            from = From(Seq(query.Table(schema.name))),
+            where = None,
+            schema = Some(schema)
+          )
+        )
+      case other => other
+    }
 
   object ScriptProcessor {
     def fromScript(
@@ -521,7 +598,8 @@ package object schema {
         column = column,
         dataType = dataType.getOrElse(script.out),
         source = source,
-        materialized = materialized
+        materialized = materialized,
+        expr = Some(script)
       )
     }
   }
@@ -1067,6 +1145,17 @@ package object schema {
       )
     }
 
+    /** Re-derive this column's ingest script — and its sub-fields' — against `schema`.
+      *
+      * Runs AFTER [[update]], so `path` is settled and the derivation targets the final
+      * `ctx.<path>` directly instead of patching a string that was built for a different name.
+      */
+    def resolveScript(schema: Schema): Column =
+      copy(
+        script = script.map(_.resolvedAgainst(schema, path)),
+        multiFields = multiFields.map(_.resolveScript(schema))
+      )
+
     def sql: String = {
       val opts = if (options.nonEmpty) {
         s" OPTIONS ${ObjectValue(options).ddl}"
@@ -1566,8 +1655,15 @@ package object schema {
             else ListMap.empty[String, Value[_]])
 
     def update(): Table = {
-      val updated =
+      val withPaths =
         this.copy(columns = columns.map(_.update())) // update columns first with struct info
+      // ...THEN re-derive every `SCRIPT AS (…)` against the settled column list. This is the single
+      // seam that covers BOTH DDL sites: `CreateTable.schema` builds its table from the parsed
+      // columns and ends here, and `Table.merge` applies `ALTER … SET SCRIPT AS` to the LIVE table
+      // and ends here too. The spec expected `ALTER` to need a client-side schema load, because the
+      // STATEMENT carries no column list — but the point where it is APPLIED already holds the
+      // whole table, so both are one derivation with no I/O and nothing new on the parse path.
+      val updated = withPaths.copy(columns = withPaths.columns.map(_.resolveScript(withPaths)))
       updated.copy(
         mappings = updated.mappings ++ ListMap(
           "_meta" ->

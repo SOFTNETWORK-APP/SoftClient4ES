@@ -515,9 +515,27 @@ package object time {
   sealed trait FunctionWithDateTimeFormat {
     def format: String
 
-    def includeTimeZone: Boolean = false
-
     protected def param: String = "DateTimeFormatter.ofPattern(\"" + convert() + "\")"
+
+    /** The same formatter with a DEFAULT zone, for a parse that must produce a `ZonedDateTime`.
+      *
+      * 🔴 This replaces appending `" XXX"` to the user's pattern, which was wrong in BOTH
+      * directions and MEASURED so on real ES 8.18 (story 21.8):
+      *
+      *   - formatting: `DATETIME_FORMAT(ts, 'yyyy')` emitted `ofPattern("yyyy XXX")` and returned
+      *     `"2025 Z"` — a silent wrong answer on the ordinary script-field path, for a caller who
+      *     asked for four characters;
+      *   - parsing: `DATETIME_PARSE('2025-01-10 10:00:00', 'yyyy-MM-dd HH:mm:ss')` emitted
+      *     `ofPattern("yyyy-MM-dd HH:mm:ss XXX")`, which demands a space and an offset the caller's
+      *     format never declared, so the parse failed at runtime. It "worked" only for input that
+      *     happened to carry ` +01:00`.
+      *
+      * `withZone` is the right tool because it does NOT rewrite the caller's pattern: at parse time
+      * it supplies a zone only when the text carried none, and an explicit offset still wins
+      * (verified — `2025-01-10T14:30:00+01:00` resolves to `13:30Z`). It is the same mechanism
+      * `SQLTypeUtils`' `<string> -> TIMESTAMP` arm uses, deliberately: one derivation, not two.
+      */
+    protected def zonedParam: String = s"$param.withZone(ZoneId.of('Z'))"
 
     val sqlToJava: Map[String, String] = Map(
       "%Y" -> "yyyy",
@@ -552,12 +570,11 @@ package object time {
         pattern.replace(sql, java)
       }
 
-      val patternWithTZ =
-        if (basePattern.contains("Z")) basePattern.replace("Z", "X")
-        else if (includeTimeZone) s"$basePattern XXX"
-        else basePattern
-
-      patternWithTZ
+      // A literal `Z` in the caller's pattern means "zone NAME" to `ofPattern`, which does not
+      // accept the `Z` that ISO-8601 writes for UTC; `X` does. Unchanged, and unrelated to the
+      // default-zone question `zonedParam` answers.
+      if (basePattern.contains("Z")) basePattern.replace("Z", "X")
+      else basePattern
     }
   }
 
@@ -751,8 +768,6 @@ package object time {
       s"$sql($base, '$format')"
     }
 
-    override def includeTimeZone: Boolean = true
-
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case arg :: Nil =>
@@ -760,7 +775,7 @@ package object time {
             case Some(ctx) =>
               identifier.baseType match {
                 case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $param)")) match {
+                  ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $zonedParam)")) match {
                     case Some(p) => return p
                     case _       =>
                   }
@@ -768,7 +783,7 @@ package object time {
               }
             case _ =>
           }
-          s"ZonedDateTime.parse($arg, $param)"
+          s"ZonedDateTime.parse($arg, $zonedParam)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
@@ -812,8 +827,6 @@ package object time {
     override def toSQL(base: String): String = {
       s"$sql($base, '$format')"
     }
-
-    override def includeTimeZone: Boolean = true
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {

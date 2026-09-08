@@ -16,7 +16,17 @@
 
 package app.softnetwork.elastic.client.repl
 
-import app.softnetwork.elastic.client.result.{DmlResult, OutputFormat, QueryRows, QueryStructured}
+import app.softnetwork.elastic.client.result.{
+  DmlResult,
+  OutputFormat,
+  QueryRows,
+  QueryStream,
+  QueryStructured,
+  StreamResult
+}
+import akka.stream.scaladsl.Sink
+
+import scala.collection.immutable.ListMap
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 
 import java.time.LocalDate
@@ -1522,5 +1532,159 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     row("previous_tier") shouldBe "Community"
     row should contain key "new_tier"
     row should contain key "expires_at"
+  }
+
+  // =========================================================================
+  // Story 21.8 — conversion defects, on a REAL cluster, on every client
+  // =========================================================================
+
+  behavior of "REPL - story 21.8 conversions"
+
+  /** Rows from a SELECT, whatever variant the result came back as.
+    *
+    * 🔴 `assertQueryRows` accepts `QueryRows` ONLY, and the variant is not a property of the
+    * statement: it depends on the client and on the statement's SHAPE. An un-LIMITed row query is
+    * routed through scroll (#209) and arrives as `StreamResult`; an aggregation arrives as
+    * `QueryStructured`; ES 9 hands back a `QueryStream`. Asserting through `assertQueryRows` here
+    * would fail for reasons that have nothing to do with the conversion under test — it did, on ES
+    * 8.18, before this helper existed.
+    */
+  /** The scalar behind a SCRIPT FIELD's value.
+    *
+    * 🔴 Elasticsearch returns `script_fields` values inside its per-field ARRAY — a computed column
+    * arrives as `List(true)`, not `true` — on every path and every client. That is pre-existing and
+    * unrelated to this story (it is the unfiled `script_fields` wrapping recorded against #209);
+    * unwrapping here keeps these cases about the CONVERSION rather than about the envelope. Columns
+    * read from `_source` are not wrapped, so this is a no-op for them.
+    */
+  private def scalar(v: Any): Any = v match {
+    case Seq(one) => one
+    case other    => other
+  }
+
+  private def conversionRows(res: ExecutionResult): Seq[ListMap[String, Any]] = {
+    res shouldBe a[ExecutionSuccess]
+    res.asInstanceOf[ExecutionSuccess].result match {
+      case q: QueryRows           => q.rows
+      case q: QueryStructured     => q.response.results
+      case QueryStream(stream, _) => stream.map(_._1).runWith(Sink.seq).futureValue
+      case StreamResult(_, _)     => testRepl.consumeStreamSync()
+      case other                  => fail(s"Unexpected result variant for a SELECT: $other")
+    }
+  }
+
+  /** 🔴 Part G, and the assertion is on the STORED VALUE, not on the mapping and not on a read-time
+    * conversion.
+    *
+    * A DDL computed column used to be compiled with no schema attached, so `CAST(zip_code AS
+    * BIGINT)` emitted the operand unchanged and the ingest pipeline stored the KEYWORD STRING into
+    * a `long`-mapped field. Nothing failed: Elasticsearch never rewrites `_source` and `coerce`
+    * defaults true, so the mapping stayed correct while the document was wrong. A mapping-level
+    * check cannot see that, and neither can a read path that converts on the way out — which is why
+    * this reads the value back and asserts its RUNTIME TYPE is a number.
+    */
+  it should "store a DDL computed column CONVERTED, not as the raw operand" in {
+    assertDdl(
+      System.nanoTime(),
+      executeSync(
+        """CREATE TABLE IF NOT EXISTS conv_ddl (
+          |  id INT NOT NULL,
+          |  zip_code KEYWORD,
+          |  zip_n BIGINT SCRIPT AS (CAST(zip_code AS BIGINT)),
+          |  amount DOUBLE,
+          |  cents BIGINT SCRIPT AS (CAST(amount AS BIGINT)),
+          |  PRIMARY KEY (id)
+          |)""".stripMargin
+      )
+    )
+
+    assertDml(
+      System.nanoTime(),
+      executeSync("INSERT INTO conv_ddl (id, zip_code, amount) VALUES (1, '75001', 12.9)")
+    )
+
+    val rows = conversionRows(executeSync("SELECT zip_n, cents FROM conv_ddl WHERE id = 1"))
+    rows should have size 1
+    val row = rows.head
+
+    withClue(s"zip_n came back as ${row("zip_n").getClass.getName}: ") {
+      row("zip_n") shouldBe a[java.lang.Number]
+    }
+    row("zip_n").asInstanceOf[java.lang.Number].longValue() shouldBe 75001L
+    withClue(s"cents came back as ${row("cents").getClass.getName}: ") {
+      row("cents") shouldBe a[java.lang.Number]
+    }
+    // 12.9 narrowed to a long TRUNCATES toward zero, exactly as a Java cast does.
+    row("cents").asInstanceOf[java.lang.Number].longValue() shouldBe 12L
+  }
+
+  /** Parts A and B: `CAST(… AS BOOLEAN)` was a silent no-op, and the temporal arms hard-coded one
+    * format per target so the commonest spelling of a timestamp raised at script-execution time.
+    *
+    * Executed rather than inspected: `Boolean.parseBoolean`, `String.replace(CharSequence,
+    * CharSequence)` and `DateTimeFormatter.withZone` are Painless whitelist claims, and only a real
+    * Elasticsearch settles those — on EVERY major, which is what this spec's five subclasses buy.
+    */
+  it should "convert a cast to BOOLEAN instead of returning the operand" in {
+    assertDdl(
+      System.nanoTime(),
+      executeSync(
+        """CREATE TABLE IF NOT EXISTS conv_cast (
+          |  id INT NOT NULL,
+          |  flag KEYWORD,
+          |  n INT,
+          |  PRIMARY KEY (id)
+          |)""".stripMargin
+      )
+    )
+    assertDml(
+      System.nanoTime(),
+      executeSync("INSERT INTO conv_cast (id, flag, n) VALUES (1, 'true', 0), (2, 'nope', 7)")
+    )
+
+    val rows = conversionRows(
+      executeSync(
+        "SELECT id, CAST(flag AS BOOLEAN) AS f, CAST(n AS BOOLEAN) AS b FROM conv_cast ORDER BY id ASC"
+      )
+    )
+    rows should have size 2
+    val byId = rows.map(r => r("id").toString -> r).toMap
+    // C-style, the lead's PD-1 ruling: 'true' parses true, any other string is false; zero is
+    // false and every other number true.
+    scalar(byId("1")("f")) shouldBe true
+    scalar(byId("1")("b")) shouldBe false
+    scalar(byId("2")("f")) shouldBe false
+    scalar(byId("2")("b")) shouldBe true
+  }
+
+  it should "accept the space-separated spelling of a timestamp in a CAST" in {
+    // The inconsistency a user met immediately: #276 taught the WHERE path to accept this literal
+    // while the CAST of the SAME literal raised. Both spellings must now yield the same instant.
+    val rows = conversionRows(
+      executeSync(
+        """SELECT CAST('2025-01-10 14:30:00' AS TIMESTAMP) AS spaced,
+          |       CAST('2025-01-10T14:30:00Z' AS TIMESTAMP) AS iso,
+          |       CAST('2025/01/10' AS DATE) AS slashed,
+          |       CAST('2025-01-10' AS DATE) AS dashed
+          |  FROM conv_cast WHERE id = 1""".stripMargin
+      )
+    )
+    rows should have size 1
+    val row = rows.head
+    scalar(row("spaced")).toString shouldBe scalar(row("iso")).toString
+    scalar(row("slashed")).toString shouldBe scalar(row("dashed")).toString
+  }
+
+  it should "format a DATETIME with EXACTLY the requested pattern" in {
+    // Before this story the engine appended ` XXX` to the caller's pattern, so a request for
+    // `'yyyy'` returned `"2025 Z"` — a silent wrong answer on the ordinary script-field path.
+    val rows = conversionRows(
+      executeSync(
+        "SELECT DATETIME_FORMAT(CAST('2025-01-10 14:30:00' AS TIMESTAMP), 'yyyy') AS y " +
+        "FROM conv_cast WHERE id = 1"
+      )
+    )
+    rows should have size 1
+    scalar(rows.head("y")) shouldBe "2025"
   }
 }

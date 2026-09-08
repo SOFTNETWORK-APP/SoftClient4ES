@@ -410,6 +410,35 @@ object SQLTypeUtils {
         case (SQLTypes.Boolean, SQLTypes.TinyInt) =>
           s"(byte)($expr ? 1 : 0)"
 
+        // ---- -> BOOLEAN ----
+        // 🔴 There were seven arms FROM boolean and NONE to it, so every `(_, Boolean)` pair fell
+        // to the identity fallback at the bottom of this match and `CAST(1 AS BOOLEAN)` emitted
+        // `1`, `CAST('true' AS BOOLEAN)` emitted `"true"` — a cast that silently did nothing, the
+        // #205 family. Recorded as `local-21.8-cast-to-boolean-is-a-no-op.md`.
+        //
+        // Semantics are the lead's PD-1 ruling (story 21.8): C-STYLE, i.e. what MySQL and SQLite do
+        // and what a BI tool generating `CAST(flag AS BOOLEAN)` expects. It never raises, so no
+        // statement that runs today starts failing — it starts returning the right answer.
+        //
+        //   - numeric: zero is false, anything else true. `!= 0` compares fine against a `double`
+        //     or a `float` too, so the whole numeric lattice is one arm.
+        //   - string: `Boolean.parseBoolean`, i.e. case-insensitive `"true"` is true and EVERY
+        //     other string — `"1"`, `"yes"`, `"T"` — is false. That is the documented sharp edge of
+        //     the C-style ruling and it is written down in functions_type_conversion.md rather than
+        //     hidden: a numeric STRING does not go through the numeric rule.
+        //
+        // The sources are ENUMERATED rather than matched with a wildcard so that `(Boolean,
+        // Boolean)` still reaches the identity arm below, and so a temporal or struct source keeps
+        // falling through instead of being silently coerced.
+        case (
+              SQLTypes.Numeric | SQLTypes.Int | SQLTypes.BigInt | SQLTypes.Double | SQLTypes.Real |
+              SQLTypes.SmallInt | SQLTypes.TinyInt,
+              SQLTypes.Boolean
+            ) =>
+          s"($expr != 0)"
+        case (_: SQLVarchar, SQLTypes.Boolean) =>
+          s"Boolean.parseBoolean($expr)"
+
         // ---- LITERAL (VARCHAR / TEXT / KEYWORD) -> NUMERIC ----
         // 🔴 These arms matched the `SQLTypes.Varchar` case OBJECT, and no Elasticsearch mapping
         // ever reports VARCHAR — `SQLTypes.apply(String)` maps every string field to `Text` or
@@ -445,7 +474,8 @@ object SQLTypeUtils {
         // applying a second time. No boxing — every one of these returns a reference.
         case (_: SQLVarchar, SQLTypes.Date) =>
           val guarded = temporalGuard(
-            "LocalDate.parse(" + expr + ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
+            "LocalDate.parse(" + temporalSeparator(expr, "/", "-") +
+            ", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))"
           )
           context match {
             case Some(ctx) =>
@@ -458,7 +488,7 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.Time) =>
           val guarded = temporalGuard(
-            "LocalTime.parse(" + expr + ", DateTimeFormatter.ofPattern(\"HH:mm:ss\"))"
+            "LocalTime.parse(" + expr + ", DateTimeFormatter.ISO_LOCAL_TIME)"
           )
           context match {
             case Some(ctx) =>
@@ -471,7 +501,8 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.DateTime) =>
           val guarded = temporalGuard(
-            s"LocalDateTime.parse($expr, DateTimeFormatter.ISO_DATE_TIME)"
+            "LocalDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            ", DateTimeFormatter.ISO_DATE_TIME)"
           )
           context match {
             case Some(ctx) =>
@@ -484,7 +515,8 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.Timestamp) =>
           val guarded = temporalGuard(
-            s"ZonedDateTime.parse($expr, DateTimeFormatter.ISO_ZONED_DATE_TIME)"
+            "ZonedDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            ", DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z')))"
           )
           context match {
             case Some(ctx) =>
@@ -546,6 +578,40 @@ object SQLTypeUtils {
     if (producesPainlessPrimitive(to)) s"($expr != null ? (def)($ret) : null)"
     else s"($expr != null ? $ret : null)"
   }
+
+  /** The one normalisation the four `<string> -> <temporal>` arms share, so that a literal written
+    * the way a human writes one is accepted alongside the ISO spelling.
+    *
+    * 🔴 Why a normalisation and not an ordered list of formatters. The lead's OQ-3 ruling (story
+    * 21.8) is "accept a small ordered format set per target". Painless has no expression-level
+    * `try`/`catch` — `coerce` returns an EXPRESSION that is embedded anywhere, so a
+    * parse-then-fall-back chain cannot be written — and `DateTimeFormatter.ofPattern`'s optional
+    * sections cannot express ISO's variable-length fractional seconds, so a hand-written pattern
+    * would NARROW what is accepted today. Rewriting the separator in front of a WIDER ISO formatter
+    * yields the same accepted set in one parse, and is a strict superset of the old behaviour: a
+    * literal that already parsed is untouched by the rewrite.
+    *
+    * The accepted sets, after this:
+    *
+    *   - `DATE` — `2025-01-10` and `2025/01/10`. `10/01/2025` still fails, LOUDLY: rewriting its
+    *     separators gives `10-01-2025`, which no pattern accepts. Day-first and month-first are
+    *     ambiguous and guessing between them is how a date silently becomes a different date.
+    *   - `TIME` — `ISO_LOCAL_TIME` replaces the hard-coded `HH:mm:ss`, so `14:30` and
+    *     `14:30:00.123` join `14:30:00`. Pure widening, and included for uniformity: a constant
+    *     justified by correctness applies with no "except".
+    *   - `DATETIME` / `TIMESTAMP` — the space separator becomes `T`.
+    *
+    * `TIMESTAMP` additionally moves from `ISO_ZONED_DATE_TIME` to `ISO_DATE_TIME.withZone(UTC)`.
+    * `ISO_ZONED_DATE_TIME` REQUIRES an offset, so `2025-01-10 14:30:00` failed twice over — wrong
+    * separator AND no zone — while `ISO_DATE_TIME` parses the offset optionally and `withZone`
+    * supplies UTC only when the text carried none. An explicit `+01:00` still wins, so this widens
+    * without reinterpreting anything that already worked.
+    *
+    * The operand is parenthesised because it is an arbitrary expression: `a + b.replace(...)` and
+    * `(a + b).replace(...)` are different scripts, and only the second is this one.
+    */
+  private def temporalSeparator(expr: String, from: String, to: String): String =
+    s"""($expr).replace("$from", "$to")"""
 
   private val numericRank: Map[Class[_], Int] = Map(
     classOf[SQLTinyInt]  -> 1,

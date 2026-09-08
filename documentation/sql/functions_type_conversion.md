@@ -117,22 +117,31 @@ SELECT CAST(CURRENT_TIMESTAMP AS VARCHAR) AS ts_str;
 
 **Date and Time Conversions:**
 ```sql
--- String to DATE
+-- String to DATE. Both the dash and the slash layout are accepted.
 SELECT CAST('2025-01-10' AS DATE) AS d;
 -- Result: 2025-01-10
 
--- String to TIMESTAMP. WARNING - the conversion is pinned to ISO_ZONED_DATE_TIME, so a
--- SPACE-separated timestamp with no zone RAISES. Write it in ISO form, or use DATETIME_PARSE.
+SELECT CAST('2025/01/10' AS DATE) AS d;
+-- Result: 2025-01-10
+
+-- String to TIMESTAMP. The ISO spelling and the SQL-standard space-separated spelling are both
+-- accepted, and a missing zone defaults to UTC. An explicit offset always wins.
 SELECT CAST('2025-01-10T14:30:00Z' AS TIMESTAMP) AS ts;
 -- Result: 2025-01-10T14:30:00Z
+
+SELECT CAST('2025-01-10 14:30:00' AS TIMESTAMP) AS ts;
+-- Result: 2025-01-10T14:30:00Z
+
+SELECT CAST('2025-01-10T14:30:00+01:00' AS TIMESTAMP) AS ts;
+-- Result: 2025-01-10T13:30:00Z
 
 -- Timestamp to DATE
 SELECT CAST(CURRENT_TIMESTAMP AS DATE) AS d;
 -- Result: 2025-10-27
 
--- WARNING - a slash-separated date does NOT convert: the DATE conversion is pinned to the pattern
--- yyyy-MM-dd, so this RAISES rather than returning a date. Rewrite the value in ISO form.
--- SELECT CAST('2025/01/10' AS DATE) AS d;   -- error
+-- A DAY-FIRST date still RAISES, on purpose: `10/01/2025` could be 10 January or 1 October, and
+-- guessing between them is how a date silently becomes a different date. Write it ISO-first.
+-- SELECT CAST('10/01/2025' AS DATE) AS d;   -- error
 
 -- Epoch MILLISECONDS to TIMESTAMP. WARNING - the operand is read as milliseconds, not seconds, so
 -- a seconds-precision epoch lands in 1970. Multiply by 1000, or use a millisecond epoch.
@@ -142,24 +151,32 @@ SELECT CAST(1704902400000 AS TIMESTAMP) AS ts;
 
 **Boolean Conversions:**
 
-> WARNING - a conversion TO `BOOLEAN` is currently a no-op: the value is returned unchanged
-> (`CAST(1 AS BOOLEAN)` yields `1`, `CAST('true' AS BOOLEAN)` yields the string `'true'`). Only the
-> conversions FROM boolean below are applied. Use a comparison (`col = 1`) instead.
+A cast TO `BOOLEAN` follows the C rule: **zero is false and every other number is true**, and a
+string is read by `Boolean.parseBoolean`, so `'true'` (in any case) is true and **every other
+string is false**.
+
+> The sharp edge worth knowing: the numeric rule applies to a numeric OPERAND, not to a string that
+> looks numeric. `CAST('1' AS BOOLEAN)` is **false**, because `'1'` is not the word `true`. Cast it
+> to a number first — `CAST(CAST('1' AS INT) AS BOOLEAN)` — or compare instead (`col = '1'`).
 
 ```sql
--- Number to BOOLEAN - NOT APPLIED, returns the number unchanged
+-- Number to BOOLEAN
 SELECT CAST(1 AS BOOLEAN) AS b;
--- Result: 1
+-- Result: true
 
 SELECT CAST(0 AS BOOLEAN) AS b;
--- Result: 0
+-- Result: false
 
--- String to BOOLEAN - NOT APPLIED, returns the string unchanged
+-- String to BOOLEAN
 SELECT CAST('true' AS BOOLEAN) AS b;
--- Result: 'true'
+-- Result: true
 
 SELECT CAST('false' AS BOOLEAN) AS b;
--- Result: 'false'
+-- Result: false
+
+-- A numeric STRING is not the word 'true', so it is false
+SELECT CAST('1' AS BOOLEAN) AS b;
+-- Result: false
 
 -- Boolean to INT
 SELECT CAST(true AS INT) AS i;
@@ -343,16 +360,20 @@ FROM dates_table;
 ```
 
 **Safe Boolean Conversions:**
-```sql
--- Invalid boolean returns NULL
-SELECT TRY_CAST('maybe' AS BOOLEAN) AS b;
--- Result: NULL
 
--- Valid values work
+> `TRY_CAST` catches a conversion that RAISES. A cast to `BOOLEAN` never raises — every string that
+> is not the word `true` is simply `false` — so `TRY_CAST(<anything> AS BOOLEAN)` behaves exactly
+> like `CAST`, and never yields `NULL`.
+
+```sql
+-- Not the word 'true', so it is false - NOT null
+SELECT TRY_CAST('maybe' AS BOOLEAN) AS b;
+-- Result: false
+
 SELECT TRY_CAST('true' AS BOOLEAN) AS b1,
        TRY_CAST('false' AS BOOLEAN) AS b2,
        TRY_CAST('1' AS BOOLEAN) AS b3;
--- Results: true, false, true
+-- Results: true, false, false
 ```
 
 **Practical Examples:**
@@ -591,7 +612,7 @@ WHERE denominator != 0;
 | VARCHAR    | INT       | `CAST('123' AS INT)`          | Must be valid integer string    |
 | VARCHAR    | DOUBLE    | `CAST('123.45' AS DOUBLE)`    | Must be valid number string     |
 | VARCHAR    | DATE      | `CAST('2025-01-10' AS DATE)`  | Must be valid date format       |
-| VARCHAR    | BOOLEAN   | `CAST('true' AS BOOLEAN)`     | Accepts 'true'/'false', '1'/'0' |
+| VARCHAR    | BOOLEAN   | `CAST('true' AS BOOLEAN)`     | `'true'` is true, ALL else false |
 | INT        | VARCHAR   | `CAST(123 AS VARCHAR)`        | Always succeeds                 |
 | INT        | DOUBLE    | `CAST(123 AS DOUBLE)`         | Always succeeds                 |
 | INT        | BOOLEAN   | `CAST(1 AS BOOLEAN)`          | 0=false, non-zero=true          |

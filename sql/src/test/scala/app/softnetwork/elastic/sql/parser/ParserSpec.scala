@@ -2286,7 +2286,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                   SQLTypes.Int,
                   source,
                   true,
-                  false // materialized: a DDL-declared script IS executed here
+                  false, // materialized: a DDL-declared script IS executed here
+                  _ // expr: the parsed AST, carried for the story-21.8 schema re-derivation
                 )
               ) =>
             source should include(
@@ -2322,7 +2323,8 @@ class ParserSpec extends AnyFlatSpec with Matchers {
                   SQLTypes.Int,
                   source,
                   true,
-                  false // materialized: a DDL-declared script IS executed here
+                  false, // materialized: a DDL-declared script IS executed here
+                  _ // expr: the parsed AST, carried for the story-21.8 schema re-derivation
                 )
               ) =>
             source should include(
