@@ -496,13 +496,43 @@ class QuotedDmlDdlNameSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // The one shape `ident` used to swallow whole that `identParts` does not: `|` commits to the
-  // first SUCCEEDING alternative, and `tableParts` succeeds on the leading `a`, leaving the rest
-  // unconsumed. A loud rejection of a name nobody meant, never a silent reading change.
-  it should "reject a malformed dotted name instead of inventing one" in {
-    rejected("DROP TABLE a..b")
-    rejected("DROP TABLE a.")
-    rejected("SHOW TABLE a.")
+  // RETARGETED (lead ruling 2026-09-08), not deleted: these three rows pinned this story's ONE
+  // narrowing, and the ruling is that 21.7 narrows nothing anywhere. `|` commits to the first
+  // SUCCEEDING alternative and `tableParts` succeeds on the leading `a`, so without a guard the
+  // leftover dot fails the enclosing sequence and a name that parses today stops parsing. The
+  // `<~ not(".")` in `identParts` makes it decline exactly there and hands the lexeme to `ident`.
+  //
+  // Nobody means `a.` as an index name, but "nobody means it" is not a reason to stop accepting
+  // it inside a release: rejecting it is a breaking change and belongs to whoever schedules one.
+  it should "keep swallowing a malformed dotted name whole, exactly as it always has" in {
+    parsed("DROP TABLE a..b").asInstanceOf[DropTable].table shouldBe "a..b"
+    parsed("DROP TABLE a.").asInstanceOf[DropTable].table shouldBe "a."
+    parsed("SHOW TABLE a.").isInstanceOf[ShowTable] shouldBe true
+    // …and the guard consumes nothing, so a well-formed dotted name is untouched.
+    parsed("DROP TABLE logs-2025.03").asInstanceOf[DropTable].table shouldBe "logs-2025.03"
+    parsed("""DROP TABLE "sch".tbl""").asInstanceOf[DropTable].table shouldBe "tbl"
+  }
+
+  // 🔴 The measurement that forced the guard, and it was NOT on a table name. An option key runs
+  // through `identName`, which had the same prefix-commit shape, so `OPTIONS (a. = 1)` — accepted
+  // on `origin/main`, key `a.` — became a rejection. No test covered a malformed option key, which
+  // is why only a differential probe against the other tree could see it.
+  it should "keep every option and struct-entry key that parses today" in {
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (a. = 1)")
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (a..b = 1)")
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (analyzer = 'french')")
+    parsed("""CREATE TABLE t (a INTEGER) OPTIONS ("analyzer" = 'french')""")
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS ('my key' = 1)")
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (mappings = (dynamic = false))")
+  }
+
+  // The widenings the same production buys, all three REJECT on `origin/main`.
+  it should "accept a quoted option key, a quoted struct-entry key and a hyphenated key" in {
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (`analyzer` = 'french')")
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (mappings = (`dynamic` = false))")
+    // `ident`'s charset stops at the hyphen, so this key was never spellable in SQL before —
+    // while `Headers(ListMap("Content-Type" -> …))` has always been buildable programmatically.
+    parsed("CREATE TABLE t (a INTEGER) OPTIONS (Content-Type = 'application/json')")
   }
 
   // A watcher's name, its chain-input names and its action names became quotable here, and their

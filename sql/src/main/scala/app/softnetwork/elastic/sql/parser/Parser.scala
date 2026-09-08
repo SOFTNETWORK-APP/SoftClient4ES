@@ -2087,13 +2087,22 @@ trait Parser
     * a grammar clean-up, and belongs to whoever schedules that deprecation.
     *
     * Ordering: `tableParts` FIRST, because it is the one that can consume MORE — `logs-2025.03`, ``
-    * `#Tableau…` ``, `"sch".tbl` are all invisible to `ident`. `|` commits to the first SUCCEEDING
-    * alternative, so the two malformed shapes `ident` alone used to swallow whole (`a..b`, a
-    * trailing `a.`) now leave the leftover unconsumed and the statement is a LOUD rejection instead
-    * of a name nobody meant.
+    * `#Tableau…` ``, `"sch".tbl` are all invisible to `ident`.
+    *
+    * 🔴 `<~ not(".")` is what keeps that ordering from NARROWING. `|` commits to the first
+    * SUCCEEDING alternative, and on a dangling dot `tableParts` succeeds on a PREFIX — `a` out of
+    * `a.`, `a` out of `a..b` — leaving the rest unconsumed, so the enclosing sequence fails and a
+    * name `ident` used to swallow whole stops parsing. The lookahead makes `tableParts` DECLINE
+    * exactly there, handing the lexeme to `ident` unchanged. It consumes nothing and cannot alter a
+    * well-formed name: every accepted shape ends at a delimiter, not at a dot.
+    *
+    * The story is a PURE widening by lead ruling (2026-09-08): nothing that parsed before stops
+    * parsing, on any surface. `identName` carries the identical guard for the same reason — the
+    * measurement that forced it was an OPTION key (`OPTIONS (a. = 1)`), and a rule justified by "no
+    * regression in existing parsing" cannot hold for option keys and not for table names.
     */
   def identParts: PackratParser[Seq[NamePart]] =
-    tableParts | (ident ^^ (n => Seq(NamePart(n, quoted = false))))
+    (tableParts <~ not(".")) | (ident ^^ (n => Seq(NamePart(n, quoted = false))))
 
   /** `identParts` reduced to what an AST node carries: the name (the LAST part's value,
     * structurally — never an interpretation) and the parts, `Nil` when they hold nothing the name
@@ -2132,9 +2141,18 @@ trait Parser
     * bare when the name matches `bareNameRegex`, ANSI-quoted otherwise. That keeps the render a
     * fixed point for a name that needs quoting WITHOUT threading a per-name bit through the
     * `List[String]` / `ListMap[String, _]` these positions live in.
+    *
+    * 🔴 `<~ not(".")` for the same reason `identParts` carries it, and MEASURED on an option key:
+    * `OPTIONS (a. = 1)` and `OPTIONS (a..b = 1)` parse today, `qualifiedName` succeeds on the
+    * PREFIX `a`, `|` commits, and the enclosing `~ "="` then fails against the leftover dot — a key
+    * that parsed would have stopped parsing. The lookahead makes `qualifiedName` decline on a
+    * dangling dot and `ident` take the lexeme whole, exactly as before. Differential probe against
+    * `origin/main` over 28 option/struct shapes: 25 byte-identical, 3 widened (a backtick key, a
+    * backtick struct-entry key, and a hyphenated key such as `Content-Type` that `ident`'s charset
+    * could never spell), 0 narrowed.
     */
   def identName: PackratParser[String] =
-    (qualifiedName ^^ (_._1)) | ident
+    ((qualifiedName ^^ (_._1)) <~ not(".")) | ident
 
   /** Kept, and kept FIRST in `SelectParser.field`, `GroupByParser.bucketWithFunction`,
     * `OrderByParser.fieldWithFunction` and `WhereParser.any_identifier`/`isNull`/`isNotNull`, for
