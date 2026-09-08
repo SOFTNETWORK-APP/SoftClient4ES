@@ -7,7 +7,7 @@
     "  column_name data_type [NOT NULL] [DEFAULT value] [COMMENT 'text']",
     "    [FIELDS (subfield_name subfield_type [OPTIONS (...)])]",
     "    [OPTIONS (option = value, ...)]",
-    "    [SCRIPT AS (expression)],",
+    "    [SCRIPT AS (expression) [STORED]],",
     "  ...",
     "  [PRIMARY KEY (column, ...)]",
     ")",
@@ -61,6 +61,11 @@
     {
       "name": "SCRIPT AS",
       "description": "Computed column using a Painless expression. Calculated at ingest time.",
+      "optional": true
+    },
+    {
+      "name": "STORED",
+      "description": "Record the expression as the column's derivation WITHOUT computing it here: no script processor is added to this index's pipeline, and the value is expected to arrive already materialized. DESCRIBE and SHOW CREATE still report the expression. Used by materialized views, where a computed column is calculated once and flows unchanged through every downstream index.",
       "optional": true
     },
     {

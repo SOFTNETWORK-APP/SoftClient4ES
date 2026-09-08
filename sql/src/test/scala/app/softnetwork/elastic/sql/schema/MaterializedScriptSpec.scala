@@ -24,8 +24,8 @@ import app.softnetwork.elastic.sql.query.CreateTable
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** `ScriptProcessor.materialized` — the column's value is ALREADY materialized in this index, so the
-  * script is provenance and must not be executed here.
+/** `ScriptProcessor.materialized` — the column's value is ALREADY materialized in this index, so
+  * the script is provenance and must not be executed here.
   *
   * The pair of properties this pins is the whole point, and neither half is sufficient alone:
   * `DESCRIBE` must still report the derivation, and the ingest pipeline must not carry it.

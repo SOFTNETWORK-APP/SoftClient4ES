@@ -24,7 +24,7 @@
     "ALTER COLUMN [IF EXISTS] column_name SET COMMENT 'text'",
     "ALTER COLUMN [IF EXISTS] column_name DROP COMMENT",
     "ALTER COLUMN [IF EXISTS] column_name SET DATA TYPE new_type",
-    "ALTER COLUMN [IF EXISTS] column_name SET SCRIPT AS (expression)",
+    "ALTER COLUMN [IF EXISTS] column_name SET SCRIPT AS (expression) [STORED]",
     "ALTER COLUMN [IF EXISTS] column_name DROP SCRIPT",
     "ALTER COLUMN [IF EXISTS] column_name SET OPTIONS (option = value, ...)",
     "ALTER COLUMN [IF EXISTS] column_name SET OPTION (option = value)",
@@ -93,7 +93,7 @@
     },
     {
       "name": "SET SCRIPT AS",
-      "description": "Define or update a computed column using a Painless expression",
+      "description": "Define or update a computed column using a Painless expression. Add STORED to record the expression as the column's derivation without computing it on this index.",
       "optional": false
     },
     {
