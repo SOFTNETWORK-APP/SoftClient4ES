@@ -426,10 +426,21 @@ it currently exists.
 > statement still succeeds and the raw value is stored. Check the column names if a computed column
 > comes back with the type of its source instead of its own.
 
-⚠️ **Date and time FUNCTIONS are not usable in a computed column.** In an ingest script the operand
-is the raw JSON value of the incoming document — for a `date` column, the string as written — so
-`YEAR(created)`, `DATE_TRUNC(...)` and `DATE_DIFF(...)` fail at ingest and the column is left
-absent from the document. Conversions (`CAST`) and string functions (`UPPER`, ...) are unaffected.
+**Date and time functions in a computed column.** In an ingest script the operand is the raw JSON
+value of the incoming document, not the temporal object a query sees, so `YEAR(created)`,
+`DATE_TRUNC(...)`, `DATE_ADD(...)`, `DATE_FORMAT(...)` and `DATE_DIFF(...)` parse it first. Both
+shapes Elasticsearch accepts into a `date` field work — an ISO string (`"2025-01-10"`,
+`"2025-01-10 14:30:00"`, `"2025-01-10T14:30:00Z"`) and epoch milliseconds (`1736467200000`) — and
+the column's DECLARED type chooses how a string is read, so a `DATE` column expects a date-only
+spelling. `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `NOW` and `TODAY` are the ingest time of the
+document.
+
+> A document that does not carry the source field leaves the computed column absent, as before.
+
+> Before `0.23.0` these functions failed at ingest and the column was silently missing from the
+> stored document. If a table was created on an earlier version, re-run its `CREATE TABLE` (or
+> `ALTER TABLE ... ALTER COLUMN ... SET SCRIPT AS`) so the pipeline is re-derived, and reindex any
+> documents whose computed column is absent.
 
 ---
 

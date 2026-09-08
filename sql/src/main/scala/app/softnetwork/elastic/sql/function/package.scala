@@ -322,7 +322,11 @@ package object function {
                           Option(paramName)
                         case SQLTypes.Any if ctx.isProcessor =>
                           in match {
-                            case SQLTypes.DateTime | SQLTypes.Timestamp =>
+                            // Every temporal target, not just two. `DATE_FORMAT` (input DATE) and
+                            // the `Temporal`-input functions matched nothing here, so they got no
+                            // coercion at all and formatted the raw JSON scalar.
+                            case SQLTypes.Date | SQLTypes.Time | SQLTypes.DateTime |
+                                SQLTypes.Timestamp | SQLTypes.Temporal =>
                               val param = SQLTypeUtils
                                 .coerce(
                                   a,
@@ -407,15 +411,85 @@ package object function {
                 param.addPainlessMethod(p)
                 base
               case _ =>
-                s"$base$p"
+                // 🔴 `base` is a COMPOUND expression, not a parameter name, so the method cannot be
+                // pushed inside a parameter's own null guard the way the branch above does. Simply
+                // appending it put the method OUTSIDE the guard the previous function emitted:
+                //
+                //   (param1 == null) ? null : LocalDate.parse(param1, F).get(ChronoField.YEAR)
+                //
+                // MEASURED on real Elasticsearch 8.18.3, that is a script COMPILE error --
+                // `class_cast_exception: Cannot cast from [int] to [java.lang.Object]` -- because
+                // `.get(...)` returns a PRIMITIVE and Painless cannot unify a primitive with the
+                // `null` branch. `YEAR(DATE_PARSE(col, fmt))` and `MONTH(...)` failed on every
+                // client. It is the same unification rule `SQLTypeUtils.coerce` already answers
+                // with `(def)`, and the same answer is given here.
+                //
+                // 🔴 The cast is UNCONDITIONAL, and that is deliberate rather than lazy. The
+                // obvious guard is `producesPainlessPrimitive(out)` -- but `out` describes the SQL
+                // type, not the Painless expression: `Extract.outputType` is `Numeric`, whose
+                // `painlessType` is `java.math.BigDecimal`, a reference, while `.get(ChronoField)`
+                // really returns `int`. Keying on it would have left `YEAR` broken while looking
+                // correct. `(def)` on a value that is already a reference is a no-op, so the rule
+                // holds with no exception -- and this branch emitted nothing that ran before it
+                // existed, so no working emission moves because of it.
+                //
+                // ⚠️ Boxing alone does NOT fix it and neither does the null-safe `?.`: measured,
+                // Painless types `cond ? null : X` as `Object`, so `(…)?.get(…)` and
+                // `((…)).get(…)` both fail with `member method [java.lang.Object, get/1] not
+                // found`. The method has to land INSIDE the guard, which means binding the guarded
+                // expression to a name first -- the shape `DateTrunc`'s QUARTERS branch already
+                // uses, reused rather than re-invented.
+                //
+                // 🔴 The guarded result is returned INLINE and deliberately not bound as a
+                // parameter of its own. Binding it makes it findable, and the next function in the
+                // chain would then take the `addPainlessMethod` branch above and append to a
+                // parameter whose value is a guarded ternary — landing outside the guard again,
+                // one level up. MEASURED on the three-function chain
+                // `YEAR(DATE_TRUNC(DATETIME_PARSE(col, fmt), MINUTE))`, which produced
+                // `(param2 == null) ? null : (def)(param2.truncatedTo(…)).get(ChronoField.YEAR)`.
+                // Left inline, the next function finds nothing, binds THIS expression, and guards
+                // again — so a chain of any length composes by the same rule.
+                //
+                // ⚠️ Scoped to a NULLABLE operand, because that is exactly when the previous
+                // function emitted a guard for the method to land outside of. A non-nullable
+                // operand produces no ternary, appending was always correct there, and re-binding
+                // it would move working bytes for nothing (`LAST_DAY(...)` in a HAVING is the
+                // case that caught it).
+                if (!nullable) s"$base$p" // no guard to land outside of: append, as before
+                else
+                  ctx.addParam(LiteralParam(base)) match {
+                    case Some(bound) =>
+                      s"($bound == null) ? null : (def)($bound$p)"
+                    case None =>
+                      s"$base$p"
+                  }
             }
           } else
             p
         case None =>
-          if (checkIfNullable && base.nonEmpty)
-            s"(def e$idx = $base; e$idx != null ? e$idx${painless(context)} : null)"
+          val p = painless(context)
+          // 🔴 The operand is a PREFIX only when the call is CHAINED onto it, i.e. when it
+          // starts with `.`. A STANDALONE call -- `LocalDate.parse(<operand>, ...)`,
+          // `ZonedDateTime.parse(<operand>, ...)`, `DateTimeFormatter.ofPattern(f).format(<operand>)`
+          // -- already carries the operand in its own arguments, so prefixing `base` emitted it
+          // TWICE and fused two tokens with no operator between them:
+          //
+          //   DATE_PARSE('2025-01-10','yyyy-MM-dd') -> "2025-01-10"LocalDate.parse("2025-01-10", ...)
+          //   DATE_PARSE(name,'yyyy-MM-dd')         -> ... e0 != null ? e0def arg0 = (doc['name']...
+          //
+          // Painless that cannot compile, for a literal operand and a column operand alike.
+          //
+          // The decision is taken HERE, at the assembly, and not in the four `toPainlessCall`s that
+          // happen to be standalone today: each of those is correct in isolation, and encoding the
+          // assembly's assumption into them would leave the next standalone-call function broken on
+          // arrival. It is also the same decision the context-bearing branch above already makes
+          // with its `else p` -- one rule, one place, so the two renderings cannot drift.
+          // Guarded family-wide by `StandaloneCallAssemblySpec`.
+          if (base.nonEmpty && !p.startsWith(".")) p
+          else if (checkIfNullable && base.nonEmpty)
+            s"(def e$idx = $base; e$idx != null ? e$idx$p : null)"
           else
-            s"$base${painless(context)}"
+            s"$base$p"
       }
     }
 

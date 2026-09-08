@@ -244,13 +244,9 @@ object SQLTypeUtils {
                   case _ => // do nothing
                 }
               case SQLTypes.Any if ctx.isProcessor =>
-                to match {
-                  case SQLTypes.DateTime | SQLTypes.Timestamp =>
-                    val expr = identifier.painless(context)
-                    val from = SQLTypes.BigInt
-                    val ret = coerce(expr, from, to, identifier.nullable, context)
-                    return ret
-                  case _ => // do nothing
+                processorTemporal(identifier.painless(context), identifier.declaredType) match {
+                  case Some(parsed) => return parsed
+                  case None         => // do nothing
                 }
               case _ => // do nothing
             }
@@ -634,6 +630,57 @@ object SQLTypeUtils {
     * `painlessType` is the single existing derivation of "the Painless type of an SQLType", so the
     * question is asked of it rather than by re-listing the primitives here.
     */
+  /** The runtime shape of `ctx.<field>` in an INGEST script, resolved at RUNTIME rather than
+    * guessed.
+    *
+    * 🔴 In a query the operand of a temporal function is what Elasticsearch hands Painless for a
+    * `date` field — a temporal object. In an ingest script it is `ctx.<field>`: the RAW JSON value
+    * of the document being indexed, so `String` has no `get(ChronoField)`, no `plus`, no
+    * `withDayOfMonth`. The script threw, `ignore_failure: true` swallowed it, and the computed
+    * column was simply ABSENT from the stored document — measured on real Elasticsearch 8.18.3 for
+    * `YEAR`, `MONTH`, `DATE_TRUNC`, `DATE_ADD`/`DATE_SUB` and `DATE_DIFF`, the last of which is a
+    * PUBLISHED example (`documentation/sql/ddl_statements.md`).
+    *
+    * ⚠️ The previous code answered the shape question one way, without a test: it hard-coded `from
+    * = BigInt`, i.e. it ASSUMED epoch millis and emitted `Instant.ofEpochMilli(...)`, which throws
+    * for a document written with an ISO string — and ISO strings are what every documented example
+    * ingests. It also covered only `DateTime`/`Timestamp` targets, so `YEAR`, `MONTH` and
+    * `DATE_TRUNC` (whose input is `Temporal`/`Date`) got no coercion at all.
+    *
+    * Elasticsearch accepts BOTH shapes into a `date` field, so neither guess is right and the
+    * decision belongs at runtime (the lead's ruling, story 21.8 Part C). `instanceof` costs one
+    * type check per document and removes a whole class of silently-missing columns. Verified on
+    * real ingest pipelines against `"2025-01-10"`, `"2025-01-10 14:30:00"`,
+    * `"2025-01-10T14:30:00Z"` and `1736467200000`.
+    *
+    * The DECLARED type chooses the temporal the value becomes, and the string branch reuses the
+    * very `<string> -> <temporal>` arms a CAST uses, so the accepted format set cannot differ
+    * between `CAST(col AS DATE)` and a date function over the same column.
+    *
+    * Returns `None` — leaving the emission byte-identical — for any non-temporal declared type: a
+    * `keyword` is a `String` in BOTH contexts, which is why `UPPER(a)` and `CAST(zip AS BIGINT)`
+    * always worked and must not move.
+    */
+  private[sql] def processorTemporal(expr: String, declared: SQLType): Option[String] = {
+    val epoch = s"Instant.ofEpochMilli($expr).atZone(ZoneId.of('Z'))"
+    val parsed = declared match {
+      // A DATE is written date-only, and `ZonedDateTime.parse` REFUSES a date with no time
+      // (measured), so it is parsed as a `LocalDate` and then given the UTC start of day.
+      case SQLTypes.Date =>
+        Some(
+          coerce(expr, SQLTypes.Varchar, SQLTypes.Date, nullable = false, None) +
+          ".atStartOfDay(ZoneId.of('Z'))"
+        )
+      case SQLTypes.DateTime | SQLTypes.Timestamp | SQLTypes.Temporal =>
+        Some(coerce(expr, SQLTypes.Varchar, SQLTypes.Timestamp, nullable = false, None))
+      // 🔴 TIME is deliberately absent: Elasticsearch has no time-of-day type, so no column is
+      // ever declared one from a real mapping, and inventing an emission for it would be a guess
+      // of exactly the kind this method exists to remove.
+      case _ => None
+    }
+    parsed.map(p => s"($expr instanceof String ? $p : $epoch)")
+  }
+
   private val painlessPrimitives: Set[String] =
     Set("byte", "short", "int", "long", "float", "double", "boolean", "char")
 

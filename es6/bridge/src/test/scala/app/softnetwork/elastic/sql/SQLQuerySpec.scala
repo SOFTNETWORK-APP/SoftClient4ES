@@ -1534,7 +1534,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |            "field": "createdAt",
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))).truncatedTo(ChronoUnit.MINUTES).get(ChronoField.YEAR)"
+      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))); def param3 = (param2 == null) ? null : (def)(param2.truncatedTo(ChronoUnit.MINUTES)); (param3 == null) ? null : (def)(param3.get(ChronoField.YEAR))"
       |            }
       |          }
       |        }
