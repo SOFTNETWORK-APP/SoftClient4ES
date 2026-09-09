@@ -1209,7 +1209,14 @@ class TableExecutor(
               pipelineType = Some(pipelineType)
             )
             // compute diff for pipeline update
-            val pipelineDiff: List[PipelineDiff] = pipeline.diff(table.defaultPipeline)
+            //
+            // 🔴 21.8 Part F.1 — this read `table.defaultPipeline` for BOTH pipeline types, so what
+            // had just been read back under the FINAL name was compared against the DEFAULT
+            // pipeline. Measured: the Final-typed entries the caller applies are the same either
+            // way, but the old comparison also produced Default-typed `ProcessorAdded` entries that
+            // `alterExistingIndex` splices in and applies as default-pipeline changes.
+            val pipelineDiff: List[PipelineDiff] =
+              pipeline.diff(table.declaredPipeline(pipelineType))
             ElasticSuccess(Some(pipelineDiff))
           case ElasticSuccess(_) =>
             val error =

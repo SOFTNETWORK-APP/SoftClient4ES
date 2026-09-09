@@ -622,6 +622,28 @@ package object sql {
       }
     }
 
+    /** The raw Scala value behind a [[Value]], all the way down.
+      *
+      * 🔴 21.8 Part F.1. `Value.value` is NOT this for a container: `Values.value` is the
+      * `Seq[Value[_]]` of WRAPPED elements and `ObjectValue.value` is a `ListMap[String,
+      * Value[_]]`. Handing either to `mapToJsonNode` serialises each element as a Jackson BEAN —
+      * `{"value":"a","regex":{…},"expr":{…}}` — so a list-valued ingest processor was written back
+      * to Elasticsearch in a shape Elasticsearch would store verbatim. MEASURED both ways: from
+      * `.value` the JSON is that bean; from here it is `["a","b"]`.
+      *
+      * Recursive, because one level is not enough: `{"tags":["a","b"],"n":1}` still emitted beans
+      * for `tags` after the outer map was unwrapped.
+      *
+      * `Values.innerValues` is the one-level cousin of this and stays as it is — it is typed
+      * `Seq[R]`, which is what its callers want, and it cannot express the nested case.
+      */
+    def unwrap(value: Value[_]): Any = value match {
+      case Null                 => null
+      case values: Values[_, _] => values.values.map(unwrap)
+      case obj: ObjectValue     => obj.value.map { case (k, v) => k -> unwrap(v) }
+      case other                => other.value
+    }
+
     def apply(node: JsonNode): Option[Any] = {
       node match {
         case n if n.isNull    => Some(null)
