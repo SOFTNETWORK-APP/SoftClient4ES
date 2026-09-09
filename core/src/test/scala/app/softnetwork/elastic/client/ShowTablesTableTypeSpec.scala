@@ -146,7 +146,9 @@ class ShowTablesTableTypeSpec
       )
     ).map(r => r("name").toString -> r("type").toString).toMap
 
-    rows("orders_mv") shouldBe "MATERIALIZED_VIEW"
+    // AD-A-6-SUPERSEDED - SPACED, matching `CREATE MATERIALIZED VIEW`. The JDBC/Flight
+    // `TABLE_TYPE` contracts collapse this onto `VIEW`; that mapping lives in the drivers.
+    rows("orders_mv") shouldBe "MATERIALIZED VIEW"
     rows("orders_v") shouldBe "VIEW"
   }
 }

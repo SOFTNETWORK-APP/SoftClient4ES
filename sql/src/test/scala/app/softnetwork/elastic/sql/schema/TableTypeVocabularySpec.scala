@@ -27,7 +27,7 @@ class TableTypeVocabularySpec extends AnyFlatSpec with Matchers {
   private val expected: Map[TableType, (String, String)] = Map(
     TableType.Regular          -> (("regular", "TABLE")),
     TableType.View             -> (("view", "VIEW")),
-    TableType.MaterializedView -> (("materialized_view", "MATERIALIZED_VIEW")),
+    TableType.MaterializedView -> (("materialized_view", "MATERIALIZED VIEW")),
     TableType.External         -> (("external", "EXTERNAL")),
     TableType.Changelog        -> (("changelog", "CHANGELOG")),
     TableType.Enrichment       -> (("enrichment", "ENRICHMENT"))
@@ -81,14 +81,37 @@ class TableTypeVocabularySpec extends AnyFlatSpec with Matchers {
     declaredTableTypes.map(_.sqlName) should not contain "REGULAR"
   }
 
-  it should "keep MATERIALIZED_VIEW distinct from VIEW" in {
+  /** AD-A-6-SUPERSEDED: the ENGINE surface keeps the two apart. The JDBC and Flight `TABLE_TYPE`
+    * contracts deliberately collapse a materialized view onto `VIEW` - that mapping lives in the
+    * drivers and is pinned there, not here.
+    */
+  it should "keep MATERIALIZED VIEW distinct from VIEW" in {
     TableType.MaterializedView.sqlName should not be TableType.View.sqlName
   }
 
+  /** 🔴 The spelling is SPACED because every statement naming this object is spaced (`CREATE
+    * MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEW STATUS`, ...). An underscore would make the `SHOW
+    * TABLES` `type` column the only place the product spells its own object differently from the
+    * statement that creates it. Pinned literally: a property assertion cannot see this.
+    */
+  it should "spell a materialized view the way our own SQL spells it" in {
+    TableType.MaterializedView.sqlName shouldBe "MATERIALIZED VIEW"
+    TableType.MaterializedView.sqlName should not include "_"
+  }
+
+  /** Well-formed = upper-case words separated by single spaces. A SPACE is legal (AD-A-6-
+    * SUPERSEDED, `MATERIALIZED VIEW`); an underscore is not, so this assertion is also what stops
+    * the spaced spelling silently regressing. Distinctness matters because two types sharing a
+    * client name would make `SHOW TABLES` ambiguous.
+    */
   it should "give every type a distinct, well-formed client name" in {
     val names = declaredTableTypes.map(_.sqlName)
     names.distinct.size shouldBe names.size
-    names.foreach(n => n should fullyMatch regex "[A-Z][A-Z_]*")
+    names.foreach { n =>
+      withClue(s"client name `$n`: ") {
+        n should fullyMatch regex "[A-Z]+( [A-Z]+)*"
+      }
+    }
   }
 
   /** 🔴 The migration guard. Adding a display name must NOT make an existing index's stored
