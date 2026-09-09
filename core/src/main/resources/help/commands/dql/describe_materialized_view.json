@@ -1,0 +1,35 @@
+{
+  "name": "DESCRIBE MATERIALIZED VIEW",
+  "category": "DQL",
+  "shortDescription": "Show the columns of a materialized view index",
+  "syntax": [
+    "{DESCRIBE | DESC} MATERIALIZED VIEW view_name"
+  ],
+  "description": "Show the schema of the index a materialized view writes to: one row per column, with its type, nullability, default, comment and script. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Describe a view",
+      "description": "List the view's columns and types",
+      "sql": "DESCRIBE MATERIALIZED VIEW orders_with_customers_mv"
+    },
+    {
+      "title": "DESC abbreviation",
+      "description": "DESC is accepted wherever DESCRIBE is",
+      "sql": "DESC MATERIALIZED VIEW orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "IF EXISTS is not accepted here - the parser rejects DESCRIBE MATERIALIZED VIEW IF EXISTS view_name",
+    "Computed columns of the view appear with the script that produces them"
+  ],
+  "limitations": [],
+  "seeAlso": [
+    "DESCRIBE TABLE",
+    "SHOW MATERIALIZED VIEW",
+    "SHOW CREATE MATERIALIZED VIEW"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

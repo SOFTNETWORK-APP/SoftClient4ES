@@ -1,0 +1,29 @@
+{
+  "name": "SHOW CREATE MATERIALIZED VIEW",
+  "category": "DQL",
+  "shortDescription": "Show the CREATE statement that defines a materialized view",
+  "syntax": [
+    "SHOW CREATE MATERIALIZED VIEW view_name"
+  ],
+  "description": "Return the CREATE MATERIALIZED VIEW statement the engine recorded for a view, rendered from the stored definition. The rendered statement is itself accepted by the parser, so it can be replayed against another cluster. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show the definition",
+      "description": "Recover the statement that created a view",
+      "sql": "SHOW CREATE MATERIALIZED VIEW orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "The rendered statement is normalised, not the original text: clauses appear in canonical order and identifiers in canonical spelling"
+  ],
+  "limitations": [],
+  "seeAlso": [
+    "SHOW MATERIALIZED VIEW",
+    "CREATE MATERIALIZED VIEW",
+    "SHOW CREATE TABLE"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

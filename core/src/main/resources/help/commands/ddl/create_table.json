@@ -3,7 +3,7 @@
   "category": "DDL",
   "shortDescription": "Create a new table (Elasticsearch index)",
   "syntax": [
-    "CREATE [OR REPLACE] TABLE [IF NOT EXISTS] table_name (",
+    "CREATE TABLE [IF NOT EXISTS] table_name (",
     "  column_name data_type [NOT NULL] [DEFAULT value] [COMMENT 'text']",
     "    [FIELDS (subfield_name subfield_type [OPTIONS (...)])]",
     "    [OPTIONS (option = value, ...)]",
@@ -18,6 +18,9 @@
     "  [aliases = (alias = value, ...)],",
     ")]",
     "",
+    "-- Or replace an existing table (IF NOT EXISTS is not accepted after OR REPLACE):",
+    "CREATE OR REPLACE TABLE table_name ( ... )",
+    "",
     "-- Or create from SELECT:",
     "CREATE [OR REPLACE] TABLE table_name AS SELECT ..."
   ],
@@ -25,7 +28,7 @@
   "clauses": [
     {
       "name": "OR REPLACE",
-      "description": "Drop existing table before creating. If the table exists, it will be deleted first.",
+      "description": "Drop existing table before creating. If the table exists, it will be deleted first. Cannot be combined with IF NOT EXISTS - the parser rejects CREATE OR REPLACE TABLE IF NOT EXISTS.",
       "optional": true
     },
     {

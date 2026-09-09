@@ -10,7 +10,11 @@
     "[GROUP BY columns]",
     "[HAVING condition]",
     "[ORDER BY columns [ASC|DESC]]",
-    "[LIMIT n [OFFSET m]]"
+    "[LIMIT n [OFFSET m]]",
+    "",
+    "-- Two or more SELECTs may be concatenated. UNION ALL is the ONLY spelling accepted:",
+    "-- bare UNION (de-duplicating) is rejected.",
+    "SELECT ... UNION ALL SELECT ..."
   ],
   "description": "The SELECT statement retrieves rows from Elasticsearch indices. It supports most standard SQL features including joins, aggregations, and subqueries.",
   "clauses": [
@@ -52,6 +56,11 @@
       "modifiers": ["ASC", "DESC", "NULLS FIRST", "NULLS LAST"]
     },
     {
+      "name": "UNION ALL",
+      "description": "Concatenate the rows of two or more SELECT statements. Only UNION ALL is accepted - bare UNION, which would de-duplicate, is rejected by the parser.",
+      "optional": true
+    },
+    {
       "name": "LIMIT/OFFSET",
       "description": "Limit number of returned rows",
       "optional": true
@@ -80,6 +89,12 @@
       "title": "Select with ordering and limit",
       "description": "Get the 10 most recent products",
       "sql": "SELECT name, created_at\nFROM products\nORDER BY created_at DESC\nLIMIT 10",
+      "output": null
+    },
+    {
+      "title": "Concatenate two result sets",
+      "description": "UNION ALL keeps every row of both sides; bare UNION is not accepted",
+      "sql": "SELECT id, amount FROM orders UNION ALL SELECT id, amount FROM archived_orders",
       "output": null
     }
   ],

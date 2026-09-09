@@ -1,0 +1,52 @@
+{
+  "name": "REFRESH MATERIALIZED VIEW",
+  "category": "DDL",
+  "shortDescription": "Force a materialized view to pick up new data now",
+  "syntax": [
+    "REFRESH MATERIALIZED VIEW [IF EXISTS] view_name [WITH SCHEDULE NOW]"
+  ],
+  "description": "Refresh a materialized view immediately: the changelog indices are refreshed and the enrich policies re-executed - exactly the work the view's watcher performs on a schedule. Use it on a cluster where Watcher is unavailable, or to make a change visible without waiting for the next refresh interval. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Do not raise an error when the view does not exist.",
+      "optional": true
+    },
+    {
+      "name": "WITH SCHEDULE NOW",
+      "description": "Also schedule the view's transforms for immediate execution instead of waiting for their next run.",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Refresh a view",
+      "description": "Re-run the changelogs and enrich policies",
+      "sql": "REFRESH MATERIALIZED VIEW orders_with_customers_mv"
+    },
+    {
+      "title": "Refresh and schedule now",
+      "description": "Also trigger the transforms immediately",
+      "sql": "REFRESH MATERIALIZED VIEW orders_with_customers_mv WITH SCHEDULE NOW"
+    },
+    {
+      "title": "Refresh if it exists",
+      "description": "No error when the view is absent",
+      "sql": "REFRESH MATERIALIZED VIEW IF EXISTS orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "This is the documented manual equivalent of the view's watcher, and the supported path on a cluster whose licence does not include Watcher"
+  ],
+  "limitations": [
+    "A single-table view deploys no enrich policy and no watcher, so it has nothing to re-execute here - it is refreshed by its own transform on its REFRESH EVERY schedule"
+  ],
+  "seeAlso": [
+    "CREATE MATERIALIZED VIEW",
+    "SHOW MATERIALIZED VIEW STATUS",
+    "DROP MATERIALIZED VIEW"
+  ],
+  "minVersion": null,
+  "aliases": []
+}
