@@ -23,7 +23,8 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 
-import java.time.LocalDate
+import java.time.temporal.ChronoUnit
+import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
 
 // ---------------------------------------------------------------------------
 // Base test trait — to be mixed with ElasticDockerTestKit
@@ -1494,19 +1495,28 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     *   - AS DATE was `(Date, Date)`, the IDENTITY arm ⇒ the un-truncated timestamp came back;
     *   - AS TIME had no `(Date, Time)` arm at all ⇒ the fallback returned the timestamp whole.
     */
-  /** 🔴 The INGEST path, which this suite has never exercised end to end.
+  /** 🔴 The INGEST path, end to end. This test EARNED its keep: it was written to record that the
+    * computed column did not compute, it said so loudly when that changed, and it is now the
+    * end-to-end proof that it does.
     *
-    * `users` is created with an ingest `DATEDIFF` column but nothing is ever inserted into it, and
-    * the `age` assertions elsewhere belong to `dql_users`, which has no script column. So no test
-    * has ever observed what an ingest script actually computes — which is why story 21.5's ingest
-    * guard rested on inference rather than measurement.
+    * What it measures is the RUNTIME TYPE of `ctx.<date field>`. `ctx.d` is the raw JSON value of
+    * the document being indexed, NOT the temporal object `doc['d'].value` hands a query — that part
+    * of the earlier reading was right, and `SQLTypeUtils.coerce` still guards its temporal arms on
+    * `isProcessorContext` for exactly that reason. What was wrong was the conclusion drawn from it:
+    * that `DATEDIFF(d, CURRENT_DATE, DAY)` therefore CANNOT compute at ingest. It can, once the
+    * operand is parsed first — and until story 21.8 Part C it did not, so `ignore_failure` left the
+    * column unset and the value was silently missing from every stored document.
     *
-    * What is being measured: the RUNTIME TYPE of `ctx.<date field>`. `SQLTypeUtils.coerce` guards
-    * its temporal arms on `isProcessorContext` because `ctx.d` is the raw JSON value of the
-    * document being indexed, NOT the temporal object `doc['d'].value` hands a query. If that is
-    * right, `DATEDIFF(d, CURRENT_DATE, DAY)` cannot compute at ingest — `ChronoUnit.DAYS.between`
-    * gets a String — and the processor's `ignore_failure` leaves the column unset. If it is wrong,
-    * `days` comes back a number and the guard is wrong; this test says which.
+    * Two more things had to be true and neither was visible from the emission alone:
+    *
+    *   - `CURRENT_DATE` read `ctx['_ingest']['timestamp']`, which is NULL on ES 6.8, 7.17, 8.18 AND
+    *     9.0 — so the ingest clock had never worked on any supported version;
+    *   - both sides of `ChronoUnit.between` must be the same Java type, so a processor keeps
+    *     `ZonedDateTime` throughout instead of narrowing `CURRENT_DATE` to a `LocalDate`.
+    *
+    * ⚠️ The expected value is COMPUTED, not pinned: it is a distance from `now`, so a literal would
+    * have been correct for one day. It is derived the way the ingest script derives it, and the ±1
+    * tolerance covers an ingest and an assertion that straddle UTC midnight.
     */
   it should "record what an ingest script sees for a DATE column (ctx runtime type)" in {
     val create =
@@ -1538,10 +1548,17 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     String.valueOf(scalarOf(row, "d")) should startWith("2024-03-15")
     scalarOf(row, "label") shouldBe "x"
 
-    val days = row.get("days").map(v => scalarOf(row, "days")).orNull
-    withClue(s"ingest-computed days = [$days] (null/absent => ctx.d is NOT a temporal object): ") {
-      // The measurement. Asserted, not merely printed, so a change in either direction is loud.
-      Option(days) shouldBe None
+    val days = row.get("days").map(_ => scalarOf(row, "days")).orNull
+    val expected = ChronoUnit.DAYS.between(
+      LocalDate.of(2024, 3, 15).atStartOfDay(ZoneOffset.UTC),
+      ZonedDateTime.now(ZoneOffset.UTC)
+    )
+    withClue(s"ingest-computed days = [$days], expected ~$expected: ") {
+      // The measurement. Asserted, not merely printed, so a change in either direction is loud —
+      // which is how this test caught story 21.8 Part C landing.
+      Option(days) should not be empty
+      val actual = String.valueOf(days).toDouble.toLong
+      actual.toDouble shouldBe expected.toDouble +- 1.0d
     }
   }
 

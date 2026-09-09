@@ -75,16 +75,53 @@ class DdlScriptSchemaSpec extends AnyFlatSpec with Matchers {
 
   // -- AC-G3: the ingest-context guard ----------------------------------------------------------
 
-  "a TEMPORAL-source arm" should "NOT fire in ingest context, byte for byte" in {
+  "a TEMPORAL-source arm" should "still decline in ingest context" in {
     // 🔴 In an ingest script the operand is `ctx.<field>` — the RAW JSON scalar — not the temporal
     // object a query's `doc['f'].value` yields, so an arm keyed on a temporal SOURCE must decline.
-    // Attaching the schema is what makes those arms reachable for the first time, which turns that
-    // guard from theoretical into load-bearing. The expected bytes are the PRE-fix emission,
-    // captured on the baseline: this column's script must not have moved at all.
+    // That guard is unchanged and still load-bearing: no `.toInstant()` chain is emitted here.
+    val source = createSource(
+      "CREATE TABLE t (created DATE, y INTEGER SCRIPT AS (YEAR(created)))",
+      "y"
+    )
+    source should not include ".toInstant()"
+  }
+
+  it should "PARSE the raw value first, deciding its shape at runtime (story 21.8 Part C)" in {
+    // ⚠️ This pin REPLACES story 21.8's AC-G3 "byte for byte" expectation, deliberately. That
+    // expectation recorded a script which — MEASURED on real ingest pipelines — threw
+    // `String.get(ChronoField)`, was swallowed by `ignore_failure: true`, and left the column
+    // silently ABSENT. Pinning bytes proved they had not moved; it could not notice they did not
+    // work. Part C fixes the level above the guard: the operand is parsed into a temporal BEFORE
+    // the function is applied.
+    //
+    // The shape is decided at RUNTIME rather than guessed, because Elasticsearch accepts BOTH an
+    // ISO string and epoch millis into a `date` field (the lead's ruling). The previous code had
+    // answered that question one way, hard-coded and untested, and was wrong for every documented
+    // example. Verified as an ingest pipeline on ES 6.8.23, 7.17.29, 8.18.3 and 9.0.3 against
+    // {"created":"2025-01-10"}, {"created":"2025/01/10"} and {"created":1736467200000}: all three
+    // store `y: 2025`.
     createSource(
       "CREATE TABLE t (created DATE, y INTEGER SCRIPT AS (YEAR(created)))",
       "y"
-    ) shouldBe "def param1 = ctx.created.get(ChronoField.YEAR); ctx.y = param1"
+    ) shouldBe
+    "def param1 = (ctx.created instanceof String ? " +
+    """LocalDate.parse((ctx.created).replace("/", "-"), """ +
+    """DateTimeFormatter.ofPattern("yyyy-MM-dd")).atStartOfDay(ZoneId.of('Z')) """ +
+    ": Instant.ofEpochMilli(ctx.created).atZone(ZoneId.of('Z'))).get(ChronoField.YEAR); " +
+    "ctx.y = param1"
+  }
+
+  it should "leave a NON-temporal column untouched" in {
+    // The scope of the parse: a `keyword` is a `String` in a query and in `ctx` alike, so nothing
+    // about it needs deciding at runtime. These two are byte-identical to `origin/main`.
+    createSource(
+      "CREATE TABLE t (zip_code KEYWORD, zip_n BIGINT SCRIPT AS (CAST(zip_code AS BIGINT)))",
+      "zip_n"
+    ) should not include "instanceof"
+    createSource(
+      "CREATE TABLE t (a KEYWORD, b KEYWORD SCRIPT AS (UPPER(a)))",
+      "b"
+    ) shouldBe "def param1 = ctx.a; ctx.b = (param1 == null) ? null : param1.toUpperCase()"
   }
 
   "a string function over a sibling KEYWORD" should "be unchanged" in {

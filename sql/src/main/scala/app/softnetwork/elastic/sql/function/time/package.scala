@@ -142,10 +142,18 @@ package object time {
 
     def param: String
 
+    /** The processor form. In an ingest script every temporal value is a `ZonedDateTime` — the
+      * operand parse yields one and Elasticsearch will only accept one back into `ctx.<field>` — so
+      * the DATE and TIME narrowings are dropped rather than producing a `LocalDate` that
+      * `ChronoUnit.between` then refuses to pair with the other operand. One type, one rule.
+      */
+    def processorParam: String = param
+
     override def painless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
-          ctx.addParam(LiteralParam(param.replaceAll("\\{\\{__now__}}", ctx.timestamp))) match {
+          val effective = if (ctx.isProcessor) processorParam else param
+          ctx.addParam(LiteralParam(effective.replaceAll("\\{\\{__now__}}", ctx.timestamp))) match {
             case Some(p) =>
               return SQLTypeUtils.coerce(p, this.baseType, this.out, nullable = false, context)
             case _ =>
@@ -163,7 +171,25 @@ package object time {
   }
 
   object CurrentFunction {
-    val processorTimestamp: String = "ctx['_ingest']['timestamp']"
+
+    /** 🔴 The ingest clock, and it was `ctx['_ingest']['timestamp']` — which is NULL.
+      *
+      * MEASURED on REAL indices (not `_simulate`) across every supported major — ES 6.8.23,
+      * 7.17.29, 8.18.3 and 9.0.3 — that access throws `null_pointer_exception` and, because a
+      * computed column's processor carries `ignore_failure: true`, the column was silently ABSENT.
+      * So `CURRENT_DATE` / `CURRENT_TIMESTAMP` / `NOW` / `TODAY` inside `CREATE TABLE … SCRIPT AS`
+      * has never worked on any version — including the PUBLISHED `DATE_DIFF(birthdate,
+      * CURRENT_DATE, YEAR)` example in `documentation/sql/ddl_statements.md` and the REPL testkit's
+      * `users` table.
+      *
+      * ⚠️ It is NOT a version split, which is what it first looked like: `metadata().now` works on
+      * ES 8+ and does not exist on 6/7, and a `metadata()` mention would fail COMPILATION on 6/7
+      * even inside a branch never taken. `System.currentTimeMillis()` is whitelisted on all four
+      * majors (measured) and is already the unit the surrounding emission expects — the wrapper has
+      * always been `ZonedDateTime.ofInstant(Instant.ofEpochMilli(<this>), ZoneId.of('Z'))`, written
+      * for a millis source. The accessor was the only thing wrong.
+      */
+    val processorTimestamp: String = "System.currentTimeMillis()"
     val queryTimestamp: String = "params.__now__"
   }
 
@@ -173,10 +199,12 @@ package object time {
 
   sealed trait CurrentDateFunction extends DateFunction with CurrentFunction {
     override def param: String = s"$now.toLocalDate()"
+    override def processorParam: String = now
   }
 
   sealed trait CurrentTimeFunction extends TimeFunction with CurrentFunction {
     override def param: String = s"$now.toLocalTime()"
+    override def processorParam: String = now
   }
 
   case object CurrentDate extends Expr("CURRENT_DATE") with TokenRegex {
@@ -251,17 +279,32 @@ package object time {
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
+      // 🔴 `truncatedTo` does not exist on `LocalDate`, which is what a DATE-typed operand is.
+      // MEASURED on real Elasticsearch 8.18.3: `DATE_TRUNC(DATE_PARSE(col,fmt), MONTH)` was a
+      // compile error -- `member method [java.time.LocalDate, truncatedTo/1] not found`. The
+      // day-field methods below (`withDayOfYear`, `withDayOfMonth`, `with(DayOfWeek)`) all exist on
+      // `LocalDate`; only the time truncation does not, and on a date-only value it has nothing to
+      // truncate, so omitting it is the same value and not an approximation.
+      // `expr` is what this function is applied TO, which is the only thing that says whether the
+      // value carries a time. `in` is `SQLTypes.Temporal` for every DATE_TRUNC and says nothing.
+      //
+      // ⚠️ `baseType` is right in BOTH contexts, and that is not an accident: an ingest script now
+      // parses `ctx.<field>` into a `ZonedDateTime` whatever the column was declared as, which is
+      // the same collapse `SQLTypeUtils.runtimeType` already applies for a query. One rule, one
+      // type — an ingest-only arm here would be an "except" with nothing behind it.
+      val truncateTime =
+        if (expr.baseType == SQLTypes.Date) "" else ".truncatedTo(ChronoUnit.DAYS)"
       unit match {
-        case TimeUnit.YEARS  => ".withDayOfYear(1).truncatedTo(ChronoUnit.DAYS)"
-        case TimeUnit.MONTHS => ".withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)"
-        case TimeUnit.WEEKS  => ".with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)"
+        case TimeUnit.YEARS  => s".withDayOfYear(1)$truncateTime"
+        case TimeUnit.MONTHS => s".withDayOfMonth(1)$truncateTime"
+        case TimeUnit.WEEKS  => s".with(DayOfWeek.SUNDAY)$truncateTime"
         case TimeUnit.QUARTERS =>
           context match {
             case Some(ctx) =>
               ctx.addParam(identifier) match {
                 case Some(p) =>
                   val quarter =
-                    s"$p.withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)"
+                    s"$p.withMonth(((($p.getMonthValue() - 1) / 3) * 3) + 1).withDayOfMonth(1)$truncateTime"
                   val quarterExpr =
                     if (identifier.nullable) {
                       s"$p != null ? $quarter : null"
@@ -645,6 +688,15 @@ package object time {
           context match {
             case Some(ctx) =>
               identifier.baseType match {
+                // ⚠️ DEAD for every real column, and deliberately left that way. No Elasticsearch
+                // mapping reports VARCHAR -- `SQLTypes(String)` yields `Text` or `Keyword` -- so
+                // case-object equality never matches here. Widening it to `_: SQLVarchar` was
+                // MEASURED and REVERTED: binding the parse as a parameter evaluates it EAGERLY,
+                // ahead of the null guard that `FunctionN.painless` puts around the reference, so
+                // a document merely MISSING the field ran `LocalDate.parse(null, ...)` and failed
+                // the shard. The inlined form below keeps the parse inside the guard, and the
+                // assembly binds the guarded expression itself when a later function needs to
+                // chain onto it.
                 case SQLTypes.Varchar =>
                   ctx.addParam(LiteralParam(s"LocalDate.parse($arg, $param)")) match {
                     case Some(p) => return p
@@ -654,7 +706,16 @@ package object time {
               }
             case _ =>
           }
-          s"LocalDate.parse($arg, $param)"
+          // 🔴 In an INGEST script the result is ASSIGNED to `ctx.<column>`, and Elasticsearch
+          // refuses a `java.time.LocalDate` there — `illegal_argument_exception: unexpected value
+          // type [class java.time.LocalDate]`, measured, and the computed column vanished. A
+          // `ZonedDateTime` IS accepted and serialises as ISO-8601, which a `date` field parses.
+          // Same collapse the operand side applies: in a processor every temporal value is a
+          // ZonedDateTime, so there is one rule rather than one per position.
+          if (context.exists(_.isProcessor))
+            s"LocalDate.parse($arg, $param).atStartOfDay(ZoneId.of('Z'))"
+          else
+            s"LocalDate.parse($arg, $param)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
@@ -705,24 +766,41 @@ package object time {
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case arg :: Nil =>
+          // 🔴 A STRING operand is not a `TemporalAccessor`, and `DateTimeFormatter.format` takes
+          // one. MEASURED on real Elasticsearch 8.18.3, both spellings were a script COMPILE error:
+          //
+          //   DATE_FORMAT('2025-01-10', '%Y')  -> Cannot cast from [java.lang.String] to
+          //   DATETIME_FORMAT(<keyword col>, '%Y')   [java.time.temporal.TemporalAccessor]
+          //
+          // The documented spelling `DATE_FORMAT('2025-01-10'::DATE, '%Y-%m-%d')` worked only
+          // because the CAST inserted the parse, which is why no published example ever failed.
+          // The operand is parsed here through the SAME `coerce` arms the cast uses -- one
+          // derivation, so the accepted format set cannot differ between the two spellings.
+          //
+          // ⚠️ The type test is `_: SQLVarchar`, not `SQLTypes.Varchar`. Case-object equality is
+          // what made the old branch DEAD for every real column: `SQLTypes(String)` maps an
+          // Elasticsearch string field to `Text` or `Keyword` and never to the `Varchar` object.
+          // Same defect, same fix, as the `<string> -> <numeric|temporal>` arms in story 21.5.
+          // ⚠️ `nullable = identifier.nullable`, not `false`: `coerce`'s temporal arms guard their
+          // own parse only when told the operand can be null, and the parse is bound as its own
+          // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
+          // call. Passing `false` here made a document merely MISSING the field run
+          // `LocalDate.parse(null, ...)` and fail the shard.
+          val operand = identifier.baseType match {
+            case _: SQLVarchar =>
+              SQLTypeUtils
+                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
+            case _ => arg
+          }
           context match {
             case Some(ctx) =>
-              identifier.baseType match {
-                case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"$param.format($arg)")) match {
-                    case Some(p) => return p
-                    case _       =>
-                  }
-                case _ =>
-                  ctx.addParam(LiteralParam(param)) match {
-                    case Some(p) => return s"$p.format($arg)"
-                    case _       =>
-                  }
-
+              ctx.addParam(LiteralParam(param)) match {
+                case Some(p) => return s"$p.format($operand)"
+                case _       =>
               }
             case _ =>
           }
-          s"$param.format($arg)"
+          s"$param.format($operand)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 
@@ -812,6 +890,15 @@ package object time {
           context match {
             case Some(ctx) =>
               identifier.baseType match {
+                // ⚠️ DEAD for every real column, and deliberately left that way. No Elasticsearch
+                // mapping reports VARCHAR -- `SQLTypes(String)` yields `Text` or `Keyword` -- so
+                // case-object equality never matches here. Widening it to `_: SQLVarchar` was
+                // MEASURED and REVERTED: binding the parse as a parameter evaluates it EAGERLY,
+                // ahead of the null guard that `FunctionN.painless` puts around the reference, so
+                // a document merely MISSING the field ran `LocalDate.parse(null, ...)` and failed
+                // the shard. The inlined form below keeps the parse inside the guard, and the
+                // assembly binds the guarded expression itself when a later function needs to
+                // chain onto it.
                 case SQLTypes.Varchar =>
                   ctx.addParam(LiteralParam(s"ZonedDateTime.parse($arg, $zonedParam)")) match {
                     case Some(p) => return p
@@ -869,24 +956,41 @@ package object time {
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case arg :: Nil =>
+          // 🔴 A STRING operand is not a `TemporalAccessor`, and `DateTimeFormatter.format` takes
+          // one. MEASURED on real Elasticsearch 8.18.3, both spellings were a script COMPILE error:
+          //
+          //   DATE_FORMAT('2025-01-10', '%Y')  -> Cannot cast from [java.lang.String] to
+          //   DATETIME_FORMAT(<keyword col>, '%Y')   [java.time.temporal.TemporalAccessor]
+          //
+          // The documented spelling `DATE_FORMAT('2025-01-10'::DATE, '%Y-%m-%d')` worked only
+          // because the CAST inserted the parse, which is why no published example ever failed.
+          // The operand is parsed here through the SAME `coerce` arms the cast uses -- one
+          // derivation, so the accepted format set cannot differ between the two spellings.
+          //
+          // ⚠️ The type test is `_: SQLVarchar`, not `SQLTypes.Varchar`. Case-object equality is
+          // what made the old branch DEAD for every real column: `SQLTypes(String)` maps an
+          // Elasticsearch string field to `Text` or `Keyword` and never to the `Varchar` object.
+          // Same defect, same fix, as the `<string> -> <numeric|temporal>` arms in story 21.5.
+          // ⚠️ `nullable = identifier.nullable`, not `false`: `coerce`'s temporal arms guard their
+          // own parse only when told the operand can be null, and the parse is bound as its own
+          // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
+          // call. Passing `false` here made a document merely MISSING the field run
+          // `LocalDate.parse(null, ...)` and fail the shard.
+          val operand = identifier.baseType match {
+            case _: SQLVarchar =>
+              SQLTypeUtils
+                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
+            case _ => arg
+          }
           context match {
             case Some(ctx) =>
-              identifier.baseType match {
-                case SQLTypes.Varchar =>
-                  ctx.addParam(LiteralParam(s"$param.format($arg)")) match {
-                    case Some(p) => return p
-                    case _       =>
-                  }
-                case _ =>
-                  ctx.addParam(LiteralParam(param)) match {
-                    case Some(p) => return s"$p.format($arg)"
-                    case _       =>
-                  }
-
+              ctx.addParam(LiteralParam(param)) match {
+                case Some(p) => return s"$p.format($operand)"
+                case _       =>
               }
             case _ =>
           }
-          s"$param.format($arg)"
+          s"$param.format($operand)"
         case _ => throw new IllegalArgumentException("DateParse requires exactly one argument")
       }
 

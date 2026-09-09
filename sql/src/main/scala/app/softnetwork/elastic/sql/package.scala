@@ -1328,6 +1328,11 @@ package object sql {
       if (name.trim.nonEmpty) SQLTypes.Any
       else this.baseType
 
+    /** The type the column was DECLARED as, where that differs from what a query hands Painless.
+      * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.
+      */
+    def declaredType: SQLType = baseType
+
     override def painless(context: Option[PainlessContext]): String = {
       // A context-free rendering of an AGGREGATE is a bucket-pipeline rendering (`bucket_selector`
       // for HAVING, `bucket_script` for arithmetic over aggregates): there is no document to read,
@@ -1357,10 +1362,43 @@ package object sql {
           }
         case _ => // do nothing
       }
+
+      /** 🔴 In an INGEST script the operand is `ctx.<field>` — the RAW JSON value — so a temporal
+        * function applied to it ran `String.get(ChronoField)` and threw; `ignore_failure: true`
+        * swallowed the throw and the computed column was silently ABSENT. Measured on real
+        * Elasticsearch 8.18.3 for `YEAR`, `MONTH`, `DATE_TRUNC` and `DATE_ADD`, and
+        * `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` is a PUBLISHED example.
+        *
+        * The value is parsed into a temporal FIRST, with the shape decided at runtime because
+        * Elasticsearch accepts both an ISO string and epoch millis into a `date` field. It is the
+        * base rather than a method because a processor parameter drops `painlessMethods`.
+        *
+        * Only when a temporal is actually required: a `keyword` is a `String` in both contexts, so
+        * `UPPER(a)` and `CAST(zip AS BIGINT)` stay byte-identical.
+        */
+      val processorBase: Option[String] =
+        context.filter(_.isProcessor).flatMap { _ =>
+          orderedFunctions.headOption
+            .collect {
+              // ... and only when the operand is CHAINED. A function that takes this identifier as
+              // an ARGUMENT (`DATE_FORMAT`, `DATE_PARSE`) coerces it on the argument path instead,
+              // and doing both emits a parse nobody reads.
+              case f: TransformFunction[_, _]
+                  if !f.args.exists(_ == this) &&
+                    (f.in == SQLTypes.Temporal || f.in == SQLTypes.Date ||
+                    f.in == SQLTypes.Time || f.in == SQLTypes.DateTime ||
+                    f.in == SQLTypes.Timestamp) =>
+                f
+            }
+            .flatMap(_ => SQLTypeUtils.processorTemporal(processParamName, declaredType))
+        }
       val base =
         context match {
           case Some(ctx) =>
-            ctx.addParam(this).getOrElse("")
+            processorBase
+              .flatMap(e => ctx.addParam(LiteralParam(e)))
+              .orElse(ctx.addParam(this))
+              .getOrElse("")
           case _ =>
             if (nullable)
               checkNotNull
@@ -1464,6 +1502,16 @@ package object sql {
       */
     override def baseType: SQLType =
       col.map(c => SQLTypeUtils.runtimeType(c.dataType)).getOrElse(super.baseType)
+
+    /** The DECLARED type, which an INGEST script needs and `baseType` cannot give it.
+      *
+      * `runtimeType` collapses every temporal declaration to `Timestamp`, because that is what a
+      * QUERY gets from `doc['f'].value` whatever the column was declared as. An ingest script reads
+      * `ctx.<field>` — the raw JSON — so the declaration is the only thing that says which temporal
+      * the value should become: a DATE column carrying `"2025-01-10"` must parse as a `LocalDate`,
+      * and `ZonedDateTime.parse` REFUSES a date without a time (measured on ES 8.18.3).
+      */
+    override def declaredType: SQLType = col.map(_.dataType).getOrElse(baseType)
 
     def update(request: SingleSearch): Identifier = {
       val bucketPath: String =
