@@ -1,0 +1,38 @@
+{
+  "name": "SHOW MATERIALIZED VIEWS",
+  "category": "DQL",
+  "shortDescription": "List every materialized view",
+  "syntax": [
+    "SHOW MATERIALIZED VIEWS"
+  ],
+  "description": "The plural form of SHOW MATERIALIZED VIEW: list every materialized view. The statement takes no argument. NOT IMPLEMENTED TODAY - see `limitations`: the statement parses, but no engine executes it. Use SHOW MATERIALIZED VIEW view_name for a view you can name.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "List all views",
+      "description": "The intended form. It parses; see `limitations` - no engine executes it yet",
+      "sql": "SHOW MATERIALIZED VIEWS"
+    },
+    {
+      "title": "What works today",
+      "description": "Name the view you want to inspect",
+      "sql": "SHOW MATERIALIZED VIEW orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "See `limitations`: this plural form is not implemented by any engine today",
+    "The statement takes no argument: SHOW MATERIALIZED VIEWS view_name is rejected. Use the singular SHOW MATERIALIZED VIEW for one view",
+    "There is no LIKE pattern on this form"
+  ],
+  "limitations": [
+    "NOT IMPLEMENTED. The statement parses, and the Materialized Views extension claims it (`canHandle` accepts every materialized-view statement), but its `execute` has no branch for the plural form and answers `400 Unsupported statement for Materialized Views extension`. Documented rather than hidden: an example that routes around a gap with the gap recorded nowhere turns an engine defect into invisible documentation degradation. Until it is implemented, name the view: SHOW MATERIALIZED VIEW view_name"
+  ],
+  "seeAlso": [
+    "SHOW MATERIALIZED VIEW",
+    "CREATE MATERIALIZED VIEW",
+    "SHOW TABLES"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

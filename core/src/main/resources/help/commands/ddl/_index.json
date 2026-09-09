@@ -10,5 +10,8 @@
   "drop_watcher.json",
   "create_enrich_policy.json",
   "drop_enrich_policy.json",
-  "execute_enrich_policy.json"
+  "execute_enrich_policy.json",
+  "create_materialized_view.json",
+  "drop_materialized_view.json",
+  "refresh_materialized_view.json"
 ]

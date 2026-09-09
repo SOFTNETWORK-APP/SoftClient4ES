@@ -1208,8 +1208,13 @@ package object query {
   ) extends MaterializedViewStatement
       with DdlStatement {
     override def sql: String = {
+      // The leading space belongs HERE, not to `Frequency.sql`: `TransformConfig` renders the same
+      // value on a line of its own and supplies its own indentation. Without it the render read
+      // `... MATERIALIZED VIEW mvREFRESH EVERY 8 SECONDS ...`, which re-parses as a view literally
+      // named `mvREFRESH` and then fails - so `SHOW CREATE MATERIALIZED VIEW` emitted a statement
+      // no parser accepts whenever the view carried a `REFRESH EVERY` clause (story HELP-1b).
       val frequencySql = frequency match {
-        case Some(freq) => freq.sql
+        case Some(freq) => s" ${freq.sql}"
         case None       => ""
       }
       val optionsSql = if (options.nonEmpty) {

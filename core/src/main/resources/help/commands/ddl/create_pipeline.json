@@ -3,7 +3,7 @@
   "category": "DDL",
   "shortDescription": "Create an ingest pipeline for document processing",
   "syntax": [
-    "CREATE [OR REPLACE] PIPELINE [IF NOT EXISTS] pipeline_name",
+    "CREATE PIPELINE [IF NOT EXISTS] pipeline_name",
     "WITH PROCESSORS (",
     "  processor_definition,",
     "  ...",
@@ -16,13 +16,16 @@
     "REMOVE (field = 'field_name')",
     "RENAME (field = 'old_name', target_field = 'new_name')",
     "ENRICH (policy_name = 'policy', field = 'match_field', target_field = 'enriched')",
-    "... (refer to documentation for full list of processors and syntax)"
+    "... (refer to documentation for full list of processors and syntax)",
+    "",
+    "-- Or replace an existing pipeline (IF NOT EXISTS is not accepted after OR REPLACE):",
+    "CREATE OR REPLACE PIPELINE pipeline_name WITH PROCESSORS ( ... )"
   ],
   "description": "Create an Elasticsearch ingest pipeline that processes documents before indexing. Pipelines can transform, enrich, and validate data.",
   "clauses": [
     {
       "name": "OR REPLACE",
-      "description": "Replace existing pipeline if it exists",
+      "description": "Replace existing pipeline if it exists. Cannot be combined with IF NOT EXISTS - the parser rejects CREATE OR REPLACE PIPELINE IF NOT EXISTS.",
       "optional": true
     },
     {

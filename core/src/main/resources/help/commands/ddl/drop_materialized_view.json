@@ -1,0 +1,40 @@
+{
+  "name": "DROP MATERIALIZED VIEW",
+  "category": "DDL",
+  "shortDescription": "Drop a materialized view and every artifact it deployed",
+  "syntax": [
+    "DROP MATERIALIZED VIEW [IF EXISTS] view_name"
+  ],
+  "description": "Drop a materialized view together with everything its creation deployed: the transforms, the intermediate indices, the ingest pipelines, the enrich policies, the watcher and the view index itself. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [
+    {
+      "name": "IF EXISTS",
+      "description": "Do not raise an error when the view does not exist.",
+      "optional": true
+    }
+  ],
+  "examples": [
+    {
+      "title": "Drop a view",
+      "description": "Remove the view and its artifacts",
+      "sql": "DROP MATERIALIZED VIEW orders_with_customers_mv"
+    },
+    {
+      "title": "Drop if it exists",
+      "description": "Safe in a script that may run twice",
+      "sql": "DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "The drop removes the transforms, intermediate indices, ingest pipelines, enrich policies, the watcher and the view index"
+  ],
+  "limitations": [],
+  "seeAlso": [
+    "CREATE MATERIALIZED VIEW",
+    "SHOW MATERIALIZED VIEWS",
+    "DROP TABLE"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

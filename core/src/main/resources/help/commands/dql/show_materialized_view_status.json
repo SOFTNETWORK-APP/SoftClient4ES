@@ -1,0 +1,30 @@
+{
+  "name": "SHOW MATERIALIZED VIEW STATUS",
+  "category": "DQL",
+  "shortDescription": "Show the runtime state of a materialized view's transforms",
+  "syntax": [
+    "SHOW MATERIALIZED VIEW STATUS view_name"
+  ],
+  "description": "Show one row per deployed step of a materialized view, with the live state of the transform behind it: transform_id, step_number, step_type, source_table, target_table, latency_seconds, state, documents_indexed, documents_processed, failures, lag, processing_time_ms and last_checkpoint. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show a view's status",
+      "description": "One row per step that has produced statistics",
+      "sql": "SHOW MATERIALIZED VIEW STATUS orders_with_customers_mv"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "Only steps whose transform has produced statistics are listed: an empty result means no step has checkpointed yet, most often because the source index has no ingest-timestamp column to synchronise on",
+    "STATUS is matched before BOTH the plural and the singular forms, so SHOW MATERIALIZED VIEW STATUS x is never read as SHOW MATERIALIZED VIEW on a view named STATUS"
+  ],
+  "limitations": [],
+  "seeAlso": [
+    "SHOW MATERIALIZED VIEW",
+    "REFRESH MATERIALIZED VIEW",
+    "SHOW WATCHER STATUS"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

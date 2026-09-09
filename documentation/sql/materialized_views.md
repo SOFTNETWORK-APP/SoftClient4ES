@@ -71,17 +71,39 @@ Rollback is automatic on deployment failure.
 ### Syntax
 
 ```sql
-CREATE [OR REPLACE] MATERIALIZED VIEW [IF NOT EXISTS] view_name
+CREATE MATERIALIZED VIEW [IF NOT EXISTS] view_name
 [REFRESH EVERY interval time_unit]
 [WITH (option = value [, ...])]
 AS select_statement
 ```
 
+`OR REPLACE` is a **separate form**, and it does **not** accept `IF NOT EXISTS` — the parser rejects
+`CREATE OR REPLACE MATERIALIZED VIEW IF NOT EXISTS ...`:
+
+```sql
+CREATE OR REPLACE MATERIALIZED VIEW view_name
+[REFRESH EVERY interval time_unit]
+[WITH (option = value [, ...])]
+AS select_statement
+```
+
+The clause order is fixed: `REFRESH EVERY` comes **before** `WITH (...)`. The reverse order is
+rejected.
+
+`view_name` may be written bare (`orders_mv`), double-quoted (`"orders_mv"`) or back-quoted
+(`` `orders_mv` ``) — all three name the same view.
+
+> ⚠️ A **qualifier** is not interpreted, and the two spellings are **not** equivalent. The parser
+> records a *quoted* qualifier without making it part of the name, so
+> `CREATE MATERIALIZED VIEW "analytics"."orders_mv"` creates the view **`orders_mv`**; a *bare*
+> dotted name is a single legal index name, so `CREATE MATERIALIZED VIEW analytics.orders_mv`
+> creates the view **`analytics.orders_mv`**. The two statements create two different indices.
+
 | Component          | Required | Description                                                    |
 |--------------------|----------|----------------------------------------------------------------|
 | `view_name`        | Yes      | Unique name for the materialized view                          |
-| `OR REPLACE`       | No       | Replace existing view (drops and recreates artifacts)          |
-| `IF NOT EXISTS`    | No       | Skip creation if view already exists                           |
+| `OR REPLACE`       | No       | Replace existing view (drops and recreates artifacts). Cannot be combined with `IF NOT EXISTS` |
+| `IF NOT EXISTS`    | No       | Skip creation if view already exists. Accepted only on `CREATE MATERIALIZED VIEW`, never after `OR REPLACE` |
 | `REFRESH EVERY`    | No       | Automatic refresh interval (default: engine-defined)           |
 | `WITH (...)`       | No       | Additional options (see below)                                 |
 | `AS select`        | Yes      | The SELECT query defining the view                             |
@@ -97,6 +119,10 @@ REFRESH EVERY 1 HOUR
 ```
 
 **Supported time units:** `MILLISECOND(S)`, `SECOND(S)`, `MINUTE(S)`, `HOUR(S)`, `DAY(S)`, `WEEK(S)`, `MONTH(S)`, `YEAR(S)`
+
+> ⚠️ Unlike every other keyword in the dialect, the **unit is case-sensitive** and must be upper
+> case, and the whitespace between the number and the unit is required: `REFRESH EVERY 30 seconds`
+> and `REFRESH EVERY 30SECONDS` are both rejected, while `refresh every 30 SECONDS` is accepted.
 
 ### Options
 
@@ -328,15 +354,12 @@ SHOW CREATE MATERIALIZED VIEW orders_with_customers_mv;
 Returns:
 
 ```sql
-CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv
-REFRESH EVERY 8 SECONDS
-WITH (delay = '1s', user_latency = '1s')
-AS
-SELECT o.id, o.amount, c.name AS customer_name, c.email, ...
-FROM orders AS o
-JOIN customers AS c ON o.customer_id = c.id
-WHERE o.status = 'completed'
+CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv REFRESH EVERY 8 SECONDS WITH (delay = '1s', user_latency = '1s') AS SELECT o.id, o.amount, c.name AS customer_name, c.email FROM orders AS o JOIN customers AS c ON o.customer_id = c.id WHERE o.status = 'completed'
 ```
+
+The statement is rendered from the stored definition, not replayed verbatim: clauses come back in
+canonical order and on one line. It is itself accepted by the parser, so it can be run against
+another cluster as-is.
 
 ---
 
@@ -377,7 +400,10 @@ SHOW MATERIALIZED VIEW STATUS orders_with_customers_mv;
 SHOW MATERIALIZED VIEWS;
 ```
 
-Returns a list of all materialized views registered in the system.
+> ⚠️ **Not implemented today.** The statement parses, and the Materialized Views extension claims it,
+> but the extension has no branch for the plural form and answers
+> `400 Unsupported statement for Materialized Views extension`. Until that is implemented, inspect a
+> view you can name with [`SHOW MATERIALIZED VIEW <name>`](#show-materialized-view).
 
 ---
 
@@ -398,7 +424,7 @@ CREATE TABLE IF NOT EXISTS orders (
     quantity INT,
     price DOUBLE
   ),
-  createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  createdAt TIMESTAMP DEFAULT _ingest.timestamp,
   PRIMARY KEY (id)
 );
 
@@ -579,8 +605,14 @@ Note that **transforms** (which power the continuous data sync), **enrich polici
 ### Syntax Summary
 
 ```sql
--- Create
-CREATE [OR REPLACE] MATERIALIZED VIEW [IF NOT EXISTS] name
+-- Create (IF NOT EXISTS and OR REPLACE are mutually exclusive, and REFRESH EVERY precedes WITH)
+CREATE MATERIALIZED VIEW [IF NOT EXISTS] name
+  [REFRESH EVERY n {MILLISECONDS|SECONDS|MINUTES|HOURS|DAYS|WEEKS|MONTHS|YEARS}]
+  [WITH (delay = 'interval', user_latency = 'interval')]
+  AS SELECT ...
+
+-- Replace
+CREATE OR REPLACE MATERIALIZED VIEW name
   [REFRESH EVERY n {MILLISECONDS|SECONDS|MINUTES|HOURS|DAYS|WEEKS|MONTHS|YEARS}]
   [WITH (delay = 'interval', user_latency = 'interval')]
   AS SELECT ...

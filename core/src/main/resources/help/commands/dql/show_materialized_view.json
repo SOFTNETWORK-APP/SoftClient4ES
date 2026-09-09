@@ -1,0 +1,36 @@
+{
+  "name": "SHOW MATERIALIZED VIEW",
+  "category": "DQL",
+  "shortDescription": "Show the definition and deployed artifacts of one materialized view",
+  "syntax": [
+    "SHOW MATERIALIZED VIEW view_name"
+  ],
+  "description": "Show the metadata recorded for one materialized view: its source tables, refresh frequency, delay, the transforms, ingest pipelines and enrich policies it deployed, and whether automatic refresh is available. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: an engine without it rejects the statement at execution time with `Unsupported table DDL statement`.",
+  "clauses": [],
+  "examples": [
+    {
+      "title": "Show one view",
+      "description": "Inspect a view's definition and artifacts",
+      "sql": "SHOW MATERIALIZED VIEW orders_with_customers_mv"
+    },
+    {
+      "title": "Quoted view name",
+      "description": "A view name may be double-quoted or back-quoted",
+      "sql": "SHOW MATERIALIZED VIEW \"orders_with_customers_mv\""
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "IF EXISTS is not accepted here - the parser rejects SHOW MATERIALIZED VIEW IF EXISTS view_name",
+    "Use SHOW MATERIALIZED VIEWS (plural) to list every view"
+  ],
+  "limitations": [],
+  "seeAlso": [
+    "SHOW MATERIALIZED VIEWS",
+    "SHOW MATERIALIZED VIEW STATUS",
+    "SHOW CREATE MATERIALIZED VIEW",
+    "DESCRIBE MATERIALIZED VIEW"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

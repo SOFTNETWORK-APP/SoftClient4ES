@@ -18,12 +18,15 @@ package app.softnetwork.elastic.client.help
 
 import app.softnetwork.elastic.sql.SQLKeywords
 import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.query.{SearchStatement, Statement}
 import org.json4s.{DefaultFormats, Formats, JString, JValue}
 import org.json4s.native.JsonMethods.parse
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.io.File
+import java.lang.reflect.{Modifier, ParameterizedType}
+import java.util.Locale
 import scala.io.Source
 import scala.util.{Failure, Success, Try}
 
@@ -170,7 +173,7 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
     */
   private def topicOfJson(jdoc: JValue, where: String): String =
     jdoc \ "name" match {
-      case JString(n) => n.toUpperCase
+      case JString(n) => n.toUpperCase(Locale.ROOT)
       case other      => fail(s"help document has no string `name` field: $where ($other)")
     }
 
@@ -609,6 +612,318 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
       s"${shadowed.map { case (t, ds) => s"$t <- ${ds.map(_._1).mkString(", ")}" }.mkString("; ")}\n"
     ) {
       shadowed shouldBe empty
+    }
+  }
+
+  // --- HELP-1b: the STATEMENT parser -> doc direction ----------------------------------
+  //
+  // The assertion above closes the FUNCTION half of the contract. Its statement half was open, and
+  // that is how all nine MATERIALIZED VIEW productions shipped with no help document at all - the
+  // largest hole in the corpus, invisible to every doc -> parser assertion in this file.
+  //
+  // AD-2 (story HELP-1b) - productions are enumerated by their AST RESULT TYPE, through reflection
+  // over `Parser`'s own zero-argument `PackratParser[T]` members. There is no runtime registry of
+  // productions, so the only alternative is a hand-written list of the ~46 method names - an
+  // allow-list, which is exactly the artefact that let MATERIALIZED VIEW drift, and which stops
+  // guarding the day production 47 lands. Deriving from the result type also collapses the five
+  // `createOrReplaceX` / `createX` pairs for free: they share one AST type and therefore need one
+  // document, which is a consequence of the rule rather than a rule of its own.
+
+  /** The two raw parser types a production can carry. Matched by NAME: `PackratParser` and `Parser`
+    * are inner classes of the `PackratParsers` / `Parsers` traits, so neither has a stable
+    * `classOf[...]` spelling. Both are matched because "a production is a `PackratParser`" is a
+    * convention of this file, not a rule the compiler enforces.
+    */
+  private val ParserRawTypeNames: Set[String] = Set(
+    "scala.util.parsing.combinator.PackratParsers$PackratParser",
+    "scala.util.parsing.combinator.Parsers$Parser"
+  )
+
+  /** (production name, AST result type) for every `PackratParser[T <: Statement]` on `Parser`. */
+  private def statementProductions: Seq[(String, Class[_])] =
+    Parser.getClass.getMethods.toSeq
+      .filterNot(m => m.isSynthetic || m.isBridge)
+      .filter(_.getParameterCount == 0)
+      .flatMap { m =>
+        m.getGenericReturnType match {
+          case pt: ParameterizedType if ParserRawTypeNames.contains(pt.getRawType.getTypeName) =>
+            pt.getActualTypeArguments.headOption.collect {
+              case c: Class[_] if classOf[Statement].isAssignableFrom(c) => m.getName -> c
+            }
+          case _ => None
+        }
+      }
+      .sortBy(_._1)
+
+  /** The productions whose result type is one of the SEALED TRAITS, so they name no statement a
+    * user can type. Today: the four dispatchers plus `searchStatement`.
+    */
+  private def abstractStatementProductions: Seq[(String, Class[_])] =
+    statementProductions.filter { case (_, c) =>
+      c.isInterface || Modifier.isAbstract(c.getModifiers)
+    }
+
+  private def concreteStatementProductions: Seq[(String, Class[_])] =
+    statementProductions.filterNot { case (_, c) =>
+      c.isInterface || Modifier.isAbstract(c.getModifiers)
+    }
+
+  /** 🔴 The production scan alone is INCOMPLETE, and the gap is not hypothetical.
+    *
+    * `searchStatement` is `rep1sep(single, union)` (`Parser.scala:99-102`), so `SELECT ... UNION
+    * ALL SELECT ...` yields `MultiSearch` - a concrete, user-typeable statement produced by NO
+    * `def` of its own, whose production returns the abstract `SearchStatement`. A scan of
+    * production RESULT TYPES cannot see it, and the first version of this guard shipped green with
+    * `UNION ALL` undocumented. Whenever a production returns an abstract type, its leaves hide
+    * behind it.
+    *
+    * `Statement` is `sealed`, so the compiler guarantees every subtype is declared in the same file
+    * and therefore compiled into the same package directory. Listing that one directory is the
+    * complete enumeration, and it needs no list of names.
+    *
+    * A non-`file:` classpath entry FAILS rather than skips: this spec is the deliverable, and a
+    * silent skip here would restore exactly the hole it exists to close.
+    */
+  private def astStatementTypes: Seq[Class[_]] = {
+    val pkg = classOf[Statement].getName.split('.').init.mkString("/")
+    val loader = classOf[Statement].getClassLoader
+    val url = Option(loader.getResource(pkg)).getOrElse(
+      fail(s"the AST package `$pkg` is not on the test classpath")
+    )
+    if (url.getProtocol != "file")
+      fail(
+        s"the AST package `$pkg` resolves to a ${url.getProtocol} URL ($url). This walk lists the " +
+        "compiled classes of a SEALED hierarchy and needs a directory; teach it to read the " +
+        "archive rather than letting the statement guard go vacuous."
+      )
+    val dir = new File(url.toURI)
+    entries(dir)
+      .filter(f => f.isFile && f.getName.endsWith(".class"))
+      .map(f => s"${pkg.replace('/', '.')}.${f.getName.stripSuffix(".class")}")
+      // The `Option[Class[_]]` needs its type written out: on the 2.12 leg the existential defeats
+      // `flatMap`'s inference (`no type parameters for method flatMap ... forSome { type ?0 }`).
+      .flatMap { n =>
+        val loaded: Option[Class[_]] = Try(Class.forName(n, false, loader)).toOption
+        loaded.toSeq
+      }
+      .filter(c => classOf[Statement].isAssignableFrom(c))
+      .filterNot(c => c.isInterface || Modifier.isAbstract(c.getModifiers))
+      .distinct
+  }
+
+  /** The production that yields each concrete statement type, for the failure clue. A type with no
+    * production of its own (`MultiSearch`) is produced inside a combinator.
+    */
+  private def producersOf(c: Class[_]): String =
+    concreteStatementProductions.collect { case (n, t) if t == c => n }.sorted match {
+      case Nil => "(no production of its own - built inside a combinator)"
+      case ns  => ns.mkString(", ")
+    }
+
+  /** `app.softnetwork.elastic.sql.query.package$ShowMaterializedViews$` -> `ShowMaterializedViews`.
+    * The AST lives in a package object, so every class name carries a `package$` prefix, and a
+    * Scala `case object` adds a trailing `$`. `getSimpleName` is deliberately NOT used: it is
+    * specified in terms of the SOURCE name and has historically thrown `InternalError` on
+    * Scala-shaped nested names.
+    */
+  private def astSimpleName(c: Class[_]): String = {
+    val last = c.getName.split('.').last.stripSuffix("$")
+    val i = last.lastIndexOf('$')
+    if (i >= 0) last.substring(i + 1) else last
+  }
+
+  /** `ShowMaterializedViewStatus` -> `SHOW MATERIALIZED VIEW STATUS`.
+    *
+    * The second alternative handles an acronym followed by a word (`ShowDDLStatement` -> `SHOW DDL
+    * STATEMENT`); without it the phrase would read `SHOW DDLSTATEMENT` and demand a document under
+    * that name. `Locale.ROOT` because a Turkish default locale uppercases `i` to `\u0130`, which
+    * would never equal the ASCII `name` field of any document.
+    */
+  private def camelToStatementPhrase(n: String): String =
+    n.split("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+      .mkString(" ")
+      .toUpperCase(Locale.ROOT)
+
+  /** Every concrete `SearchStatement` IS the SELECT statement - `SingleSearch`, `MultiSearch`
+    * (`UNION ALL`) and `SelectStatement` are its three leaves. This is a STRUCTURAL rule, not an
+    * exception list: a fourth leaf added tomorrow resolves to `SELECT` with no edit here, which is
+    * what keeps `MultiSearch`-shaped holes closed.
+    */
+  private def isSearchStatement(c: Class[_]): Boolean =
+    classOf[SearchStatement].isAssignableFrom(c)
+
+  /** AD-3 - the ONE AST type whose class name is not the statement phrase a user types and which
+    * the structural rule above does not reach. `FromlessSelect` (issue #251's `SELECT 1`) is
+    * deliberately NOT a `SearchStatement` - it is its own `DqlStatement` - so it needs the entry.
+    *
+    * What the two assertions below actually enforce, stated exactly: a key must name a live
+    * statement type, and its CamelCase phrase must not already be documented. That stops a stale
+    * key and stops a reroute of a still-documented statement. It does NOT stop an author who
+    * deletes a document and adds an override for it in the same edit - that is a source change
+    * saying what it does, and review is what catches it.
+    */
+  private val StatementTopicOverrides: Map[String, String] = Map(
+    "FromlessSelect" -> "SELECT"
+  )
+
+  private def topicOfAst(c: Class[_]): String = {
+    val n = astSimpleName(c)
+    if (isSearchStatement(c)) "SELECT"
+    else StatementTopicOverrides.getOrElse(n, camelToStatementPhrase(n))
+  }
+
+  "The statement grammar" should "expose every production's AST type to reflection" in {
+    // AD-2 rests entirely on the generic `Signature` attribute surviving compilation. If it ever
+    // stopped being emitted, `getGenericReturnType` would hand back the ERASED `PackratParser` and
+    // the assertion below would enumerate NOTHING while staying green - the worst possible failure
+    // mode for a guard. Assert the mechanism itself, over every production, not just the ones that
+    // happen to return a statement.
+    val erased = Parser.getClass.getMethods.toSeq
+      .filterNot(m => m.isSynthetic || m.isBridge)
+      .filter(m => m.getParameterCount == 0 && ParserRawTypeNames.contains(m.getReturnType.getName))
+    withClue("no production returns a parser type - reflection reached the wrong class\n") {
+      erased should not be empty
+    }
+    val unparameterised = erased.filterNot(_.getGenericReturnType.isInstanceOf[ParameterizedType])
+    withClue(
+      "these productions expose no generic type argument, so the parser -> doc assertion cannot " +
+      s"see them: ${unparameterised.map(_.getName).sorted.mkString(", ")}\n"
+    ) {
+      unparameterised shouldBe empty
+    }
+    // The set dropped as abstract is asserted EXACTLY, in both directions. An inclusion test would
+    // let a new abstract-typed production join silently - and every abstract production hides its
+    // concrete leaves from a result-type scan, which is precisely how `MultiSearch` (`UNION ALL`)
+    // slipped past `searchStatement`. A new entry here must be accompanied by a check that the
+    // package walk below still reaches its leaves.
+    val expectedAbstract =
+      Set("statement", "dqlStatement", "ddlStatement", "dmlStatement", "searchStatement")
+    withClue(
+      "the set of productions returning a SEALED TRAIT has changed. Every one of them hides its " +
+      "concrete leaves from a result-type scan; confirm the package walk reaches them, then " +
+      s"update this set: ${abstractStatementProductions.map(_._1).sorted.mkString(", ")}\n"
+    ) {
+      abstractStatementProductions.map(_._1).toSet shouldBe expectedAbstract
+    }
+    withClue("no concrete statement production survived - the assertion below would be vacuous\n") {
+      concreteStatementProductions should not be empty
+    }
+    // The package walk must be a strict SUPERSET of the production scan: it is the enumeration the
+    // guard actually uses, and this is what proves it did not lose anything the productions name.
+    val fromProductions = concreteStatementProductions.map(_._2).toSet
+    withClue(
+      "the AST package walk missed statement types the productions return: " +
+      s"${fromProductions.diff(astStatementTypes.toSet).map(astSimpleName).mkString(", ")}\n"
+    ) {
+      fromProductions.diff(astStatementTypes.toSet) shouldBe empty
+    }
+  }
+
+  it should "keep the statement-topic override map honest" in {
+    withClue(
+      "the help SOURCE tree was not found; the override honesty check resolves against documents " +
+      s"and cannot run on the classpath view alone. Working directory: ${new File(".").getAbsolutePath}\n"
+    ) {
+      sourceRoot("commands") should not be empty
+    }
+    val produced = astStatementTypes.map(astSimpleName).toSet
+    withClue(
+      "these override keys name no statement type - a stale entry can only hide a missing " +
+      s"document: ${StatementTopicOverrides.keySet.diff(produced).mkString(", ")}\n"
+    ) {
+      StatementTopicOverrides.keySet.diff(produced) shouldBe empty
+    }
+    // An override may only exist where the DERIVATIONAL rule has nothing to resolve. Without this,
+    // adding `"CreateTable" -> "SELECT"` would be a legal entry (the key IS a real type) that
+    // silently redirects CREATE TABLE onto `select.json` and absorbs the deletion of
+    // `create_table.json`.
+    val documented = sourceDocsUnder("commands").map(_._2).toSet
+    val reroutes =
+      StatementTopicOverrides.keySet.filter(k => documented.contains(camelToStatementPhrase(k)))
+    withClue(
+      "these override keys already resolve through the CamelCase rule, so the override can only " +
+      s"redirect a documented statement onto another document: ${reroutes.mkString(", ")}\n"
+    ) {
+      reroutes shouldBe empty
+    }
+    // The structural SELECT rule must stay a rule about SEARCH statements, not a synonym for
+    // "everything": if `SearchStatement` ever acquired a non-SELECT leaf this would need revisiting.
+    withClue(
+      "every statement type now claims to be a SELECT - the structural rule has collapsed\n"
+    ) {
+      astStatementTypes.filterNot(isSearchStatement) should not be empty
+    }
+  }
+
+  "Every statement the parser accepts" should "have a command help document" in {
+    // AD-4 - the SOURCE view alone, for the reason recorded on the union comment at the top of this
+    // file: here documents are the RESOLUTION TARGET, so a stale `target/` copy would REMOVE a
+    // failure. `docsUnder` would make this assertion weaker the fuller the classpath view is.
+    withClue(
+      "the help SOURCE tree was not found; a parser -> doc assertion cannot run against the " +
+      s"classpath view alone (AD-2b). Working directory: ${new File(".").getAbsolutePath}\n"
+    ) {
+      sourceRoot("commands") should not be empty
+    }
+    withClue("the AST package walk found no statement type - this assertion would be vacuous\n") {
+      astStatementTypes should not be empty
+    }
+    val documented = sourceDocsUnder("commands").map(_._2).toSet
+    val undocumented = astStatementTypes
+      .map(c => (topicOfAst(c), s"${astSimpleName(c)} [${producersOf(c)}]"))
+      .filterNot { case (topic, _) => documented.contains(topic) }
+      .groupBy(_._1)
+      .map { case (topic, ts) => s"  $topic <- ${ts.map(_._2).sorted.mkString(", ")}" }
+      .toSeq
+      .sorted
+    withClue(
+      "the parser accepts these statements and the corpus documents none of them - `HELP <name>` " +
+      "returns nothing for a statement the engine runs. Add a document under " +
+      "`help/commands/{ddl,dml,dql}/` AND its `_index.json` entry (`loadResourceDirectory` reads " +
+      "only what the index names, so the index update is load-bearing for the SHIPPED JAR), with " +
+      "`category` matching the directory:\n" + undocumented.mkString("\n") + "\n"
+    ) {
+      undocumented shouldBe empty
+    }
+  }
+
+  "Every command help document" should "declare the category of the directory it lives in" in {
+    // `parseCategory` (`HelpJsonLoader:196-203`) `toUpperCase`s the field and falls through to
+    // `HelpCategory.Functions` for ANYTHING it does not recognise - so a typo, or a document filed
+    // in the wrong directory, mis-files the topic in the REPL listing with no error anywhere. The
+    // statement guard above cannot see it either: `documented` is a union across ddl/dml/dql.
+    val wrong = (for {
+      root       <- sourceRoot("commands").toSeq
+      cat        <- dirsOf(root)
+      (rel, doc) <- docsOf(cat).map(d => (s"commands/${cat.getName}/${d.getName}", d))
+      declared = stringAt(json(doc), "category", rel)
+      if declared.toUpperCase(Locale.ROOT) != cat.getName.toUpperCase(Locale.ROOT)
+    } yield s"  $rel declares `$declared` but lives in `${cat.getName}`").distinct
+    withClue(
+      "these command documents declare a category that is not their directory; an unrecognised " +
+      "category silently becomes `HelpCategory.Functions`:\n" + wrong.mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+    }
+  }
+
+  it should "publish at least one example" in {
+    // A three-field stub satisfies the statement guard, the `loadAll()` containment assertion and
+    // the example probe (which iterates an EMPTY array happily). Requiring one example is what
+    // makes "documented" mean something: the example probe then has to run the parser over it.
+    val exampleless = (for {
+      root       <- sourceRoot("commands").toSeq
+      cat        <- dirsOf(root)
+      (rel, doc) <- docsOf(cat).map(d => (s"commands/${cat.getName}/${d.getName}", d))
+      if (json(doc) \ "examples").children.isEmpty
+    } yield s"  $rel").distinct
+    withClue(
+      "these command documents publish no example, so nothing about them is ever run through the " +
+      "parser - `HELP <name>` shows syntax nobody has executed:\n" + exampleless.mkString(
+        "\n"
+      ) + "\n"
+    ) {
+      exampleless shouldBe empty
     }
   }
 

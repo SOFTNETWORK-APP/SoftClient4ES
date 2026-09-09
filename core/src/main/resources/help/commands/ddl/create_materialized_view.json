@@ -1,0 +1,93 @@
+{
+  "name": "CREATE MATERIALIZED VIEW",
+  "category": "DDL",
+  "shortDescription": "Create a materialized view maintained by Elasticsearch transforms",
+  "syntax": [
+    "CREATE MATERIALIZED VIEW [IF NOT EXISTS] view_name",
+    "  [REFRESH EVERY n time_unit]",
+    "  [WITH (option = value, ...)]",
+    "  AS select_statement",
+    "",
+    "-- Or replace an existing view (IF NOT EXISTS is NOT accepted on this form):",
+    "CREATE OR REPLACE MATERIALIZED VIEW view_name",
+    "  [REFRESH EVERY n time_unit]",
+    "  [WITH (option = value, ...)]",
+    "  AS select_statement"
+  ],
+  "description": "Materialize the result of a SELECT into its own Elasticsearch index, kept up to date by a chain of transforms. A view over a single table generates one transform (source to view); a view with a JOIN also generates changelog transforms, an enrich policy, an ingest pipeline and an enrichment transform. Requires the Materialized Views extension (softclient4es-extensions) on the engine that executes the statement: the core parser accepts the statement, but an engine with no materialized-view extension registered rejects it at execution time with `Unsupported table DDL statement`.",
+  "clauses": [
+    {
+      "name": "IF NOT EXISTS",
+      "description": "Do nothing if the view already exists. Accepted only on CREATE MATERIALIZED VIEW - the parser rejects it after CREATE OR REPLACE.",
+      "optional": true
+    },
+    {
+      "name": "OR REPLACE",
+      "description": "Drop the existing view and its artifacts, then recreate them. Mutually exclusive with IF NOT EXISTS.",
+      "optional": true
+    },
+    {
+      "name": "REFRESH EVERY",
+      "description": "How often the transforms look for new data: an integer, whitespace, then MILLISECOND(S), SECOND(S), MINUTE(S), HOUR(S), DAY(S), WEEK(S), MONTH(S) or YEAR(S). Must come before WITH (...). Unlike every other keyword in the dialect the UNIT is case-SENSITIVE and must be upper case, and the whitespace is required: REFRESH EVERY 30 seconds and REFRESH EVERY 30SECONDS are both rejected.",
+      "optional": true
+    },
+    {
+      "name": "WITH (...)",
+      "description": "View options: delay (how long to wait for late-arriving data) and user_latency (acceptable query latency). Must come after REFRESH EVERY.",
+      "optional": true
+    },
+    {
+      "name": "AS select_statement",
+      "description": "The SELECT that defines the view. WHERE, GROUP BY, aggregations and one JOIN are supported.",
+      "optional": false
+    }
+  ],
+  "examples": [
+    {
+      "title": "Single-table view",
+      "description": "A view over one table generates exactly one transform - no JOIN is required",
+      "sql": "CREATE MATERIALIZED VIEW active_orders_mv REFRESH EVERY 30 SECONDS AS SELECT id, amount, status, created_at FROM orders WHERE status = 'active'"
+    },
+    {
+      "title": "Create only if absent",
+      "description": "IF NOT EXISTS makes the statement a no-op when the view is already there",
+      "sql": "CREATE MATERIALIZED VIEW IF NOT EXISTS active_orders_mv AS SELECT id, amount FROM orders WHERE status = 'active'"
+    },
+    {
+      "title": "Replace a view with a JOIN",
+      "description": "OR REPLACE drops the existing artifacts first; REFRESH EVERY precedes WITH (...)",
+      "sql": "CREATE OR REPLACE MATERIALIZED VIEW orders_with_customers_mv REFRESH EVERY 60 SECONDS WITH (delay = '1s', user_latency = '1s') AS SELECT o.id, o.amount, c.name AS customer_name FROM orders AS o JOIN customers AS c ON o.customer_id = c.id WHERE o.status = 'completed'"
+    },
+    {
+      "title": "Aggregated view",
+      "description": "A GROUP BY adds a pivot transform to the chain",
+      "sql": "CREATE MATERIALIZED VIEW orders_by_city_mv AS SELECT c.city, COUNT(*) AS order_count, SUM(o.amount) AS total_amount FROM orders o JOIN customers c ON o.customer_id = c.id GROUP BY c.city"
+    },
+    {
+      "title": "Quoted name",
+      "description": "A view name may be written bare, double-quoted or back-quoted",
+      "sql": "CREATE MATERIALIZED VIEW \"orders_mv\" AS SELECT id, amount FROM orders"
+    }
+  ],
+  "notes": [
+    "Requires the Materialized Views extension - an engine without it parses the statement and then rejects it at execution time",
+    "Clause order is fixed: REFRESH EVERY comes before WITH (...); the reverse order is rejected",
+    "IF NOT EXISTS and OR REPLACE cannot be combined",
+    "A view name may be bare, \"double-quoted\" or `back-quoted`. A QUALIFIER behaves differently in the two spellings and the parser does not interpret it: a quoted qualifier is recorded but is NOT part of the name, so \"analytics\".\"orders_mv\" creates orders_mv, while the bare analytics.orders_mv is one name and creates the index analytics.orders_mv",
+    "With REFRESH EVERY and no explicit delay, the frequency must be at least 2 x (number of transforms) x 10 seconds - 20 seconds for a single-table view, 60 seconds for one JOIN with a WHERE, 80 seconds when computed columns are present",
+    "A JOIN view creates a watcher to re-run its enrich policies. On a cluster whose LICENCE does not include Watcher the view is still created, with a warning, and REFRESH MATERIALIZED VIEW is the manual equivalent - but a cluster with Watcher explicitly DISABLED (xpack.watcher.enabled: false) fails the CREATE and rolls back"
+  ],
+  "limitations": [
+    "Only INNER and LEFT JOIN are supported; RIGHT and FULL JOIN are rejected",
+    "UNNEST is not supported in a materialized view definition"
+  ],
+  "seeAlso": [
+    "DROP MATERIALIZED VIEW",
+    "REFRESH MATERIALIZED VIEW",
+    "SHOW MATERIALIZED VIEWS",
+    "SHOW CREATE MATERIALIZED VIEW",
+    "CREATE TABLE"
+  ],
+  "minVersion": null,
+  "aliases": []
+}

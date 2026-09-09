@@ -2223,6 +2223,41 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // Story HELP-1b. `CreateMaterializedView.sql` rendered the frequency with NO separating space
+  // (`... VIEW orders_mvREFRESH EVERY 8 SECONDS ...`), so the statement `SHOW CREATE MATERIALIZED
+  // VIEW` hands back re-parsed as a view literally named `orders_mvREFRESH` and then failed. The
+  // pre-existing MV round-trip row in `QuotedTableRoundTripSpec` carries no `REFRESH EVERY` clause,
+  // which is exactly why nothing saw it. The `WITH`-only row is the control that shows the
+  // neighbouring clause was always spaced correctly.
+  //
+  // Measured while falsifying this block: restoring the defect reddens exactly the three rows whose
+  // view name is BARE, and the QUOTED row stays green - a closing quote terminates the identifier,
+  // so `"sch"."mv"REFRESH` still tokenises. A regression suite for a missing separator must
+  // therefore carry a BARE-name row; a quoted-only matrix would have certified the bug. Both the
+  // no-frequency row and the quoted row are controls, not falsifiers.
+  private val materializedViewFixedPoints = Seq(
+    "CREATE MATERIALIZED VIEW mv AS SELECT id FROM orders",
+    "CREATE MATERIALIZED VIEW mv REFRESH EVERY 30 SECONDS AS SELECT id FROM orders",
+    "CREATE MATERIALIZED VIEW IF NOT EXISTS mv REFRESH EVERY 1 MINUTE AS SELECT id FROM orders",
+    "CREATE MATERIALIZED VIEW mv WITH (delay = '1s') AS SELECT id FROM orders",
+    "CREATE OR REPLACE MATERIALIZED VIEW mv REFRESH EVERY 60 SECONDS WITH (delay = '1s') AS SELECT id FROM orders",
+    """CREATE MATERIALIZED VIEW "sch"."mv" REFRESH EVERY 2 HOURS AS SELECT id FROM orders"""
+  )
+
+  materializedViewFixedPoints.foreach { sql =>
+    it should s"render a materialized view the parser accepts back: [$sql]" in {
+      val parsed = Parser(sql)
+      withClue(s"[$sql] ") { parsed.isRight shouldBe true }
+      val stmt = parsed.toOption.get
+      // Equality against the ORIGINAL statement, never `isRight`. On the corrupt render the two
+      // happen to coincide (`mvREFRESH EVERY 30 SECONDS AS ...` fails at the `AS` keyword, because
+      // `REFRESH EVERY` has been eaten into the name) - but they need not: a render that loses a
+      // qualifier or a clause re-parses perfectly well into a DIFFERENT statement, which is the
+      // failure mode `QuotedTableRoundTripSpec` was written for.
+      Parser(stmt.sql) shouldBe Right(stmt)
+    }
+  }
+
   behavior of "Parser DDL with Pipeline Statements"
 
   it should "parse CREATE OR REPLACE PIPELINE" in {
