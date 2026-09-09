@@ -1312,7 +1312,7 @@ SHOW TABLES LIKE 'show_%';
 
 | name       | type    | pk | partitioned |
 |------------|---------|----|-------------|
-| show_users | REGULAR | id |             |
+| show_users | TABLE   | id |             |
 📊 1 row(s) (7ms)
 
 ---

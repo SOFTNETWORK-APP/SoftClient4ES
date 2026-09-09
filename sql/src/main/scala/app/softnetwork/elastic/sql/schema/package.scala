@@ -1655,30 +1655,67 @@ package object schema {
     }
   }
 
+  /** The type of a table, as recorded in the index mapping's `_meta.type`.
+    *
+    * Two names, deliberately, because they answer two different questions and only one of them is
+    * allowed to change:
+    *
+    *   - `name` is what is STORED. It is written into `_meta.type` and read back by
+    *     `TableType.apply`, so an existing index whose mapping says `"regular"` depends on it byte
+    *     for byte. It is never a display value.
+    *   - `sqlName` is what is SHOWN — the `type` column of `SHOW TABLES`, and therefore the value a
+    *     JDBC `getTables`, a Flight SQL `GET_TABLES` and an ODBC object browser receive, since all
+    *     three execute `SHOW TABLES` through the gateway. It must be a table type those clients
+    *     recognise.
+    *
+    * The projection used to be `name.toUpperCase`, which published the internal `REGULAR` to every
+    * client. Measured: the sidecar's ADBC leg failed `Expected 'TABLE' in ['REGULAR']`. Reasoned
+    * from that, not measured: a client that filters on the standard vocabulary sees no tables at
+    * all. Story BIDC-10a Part D / AD-A-6.
+    *
+    * `sqlName` is ABSTRACT on purpose: a seventh table type cannot compile until someone decides
+    * what clients should call it. That decision must not default silently.
+    */
   sealed trait TableType {
     def name: String
+    def sqlName: String
   }
 
   object TableType {
     case object Regular extends TableType {
       override def name: String = "regular"
+      override def sqlName: String = "TABLE"
     }
     case object External extends TableType {
       override def name: String = "external"
+      override def sqlName: String = "EXTERNAL"
     }
     case object Changelog extends TableType {
       override def name: String = "changelog"
+      override def sqlName: String = "CHANGELOG"
     }
     case object Enrichment extends TableType {
       override def name: String = "enrichment"
+      override def sqlName: String = "ENRICHMENT"
     }
     case object View extends TableType {
       override def name: String = "view"
-    }
-    case object MaterializedView extends TableType {
-      override def name: String = "materialized_view"
+      override def sqlName: String = "VIEW"
     }
 
+    /** A materialized view keeps its OWN type rather than collapsing into `VIEW`: it has storage, a
+      * refresh schedule and (optionally) a watcher, JDBC permits arbitrary type strings, and
+      * collapsing it would lose information at the source for every client at once.
+      */
+    case object MaterializedView extends TableType {
+      override def name: String = "materialized_view"
+      override def sqlName: String = "MATERIALIZED_VIEW"
+    }
+
+    /** Parses the STORED name (`_meta.type`), never the display `sqlName`. Widening it to accept
+      * `"TABLE"` would make two spellings of the same type storable and is not what any caller
+      * needs: every caller reads a mapping this engine wrote.
+      */
     def apply(name: String): TableType =
       name.toLowerCase match {
         case "regular"           => Regular

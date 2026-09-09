@@ -697,7 +697,7 @@ sql> SHOW TABLES LIKE 'show_%';
 
 | name       | type    | pk | partitioned |
 |------------|---------|----|-------------|
-| show_users | REGULAR | id |             |
+| show_users | TABLE   | id |             |
 📊 1 row(s) (7ms)
 ```
 
@@ -964,7 +964,7 @@ sql> tables
 
 | name       | type    | pk | partitioned |
 |------------|---------|----|-------------|
-| demo_users | REGULAR | id |             |
+| demo_users | TABLE   | id |             |
 📊 1 row(s) (5ms)
 
 sql> \dt demo_users
