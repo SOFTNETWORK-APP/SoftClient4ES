@@ -1662,11 +1662,11 @@ package object schema {
     *
     *   - `name` is what is STORED. It is written into `_meta.type` and read back by
     *     `TableType.apply`, so an existing index whose mapping says `"regular"` depends on it byte
-    *     for byte. It is never a display value.
-    *   - `sqlName` is what is SHOWN — the `type` column of `SHOW TABLES`, and therefore the value a
-    *     JDBC `getTables`, a Flight SQL `GET_TABLES` and an ODBC object browser receive, since all
-    *     three execute `SHOW TABLES` through the gateway. It must be a table type those clients
-    *     recognise.
+    *     for byte.
+    *   - `sqlName` is what is SHOWN to a CLIENT — the `type` column of `SHOW TABLES` and the `SHOW
+    *     TABLE <t>` header, and therefore the value a JDBC `getTables`, a Flight SQL `GET_TABLES`,
+    *     an ODBC object browser and the REPL receive, since all of them go through the gateway. It
+    *     must be a table type those clients recognise.
     *
     * The projection used to be `name.toUpperCase`, which published the internal `REGULAR` to every
     * client. Measured: the sidecar's ADBC leg failed `Expected 'TABLE' in ['REGULAR']`. Reasoned
@@ -1675,6 +1675,18 @@ package object schema {
     *
     * `sqlName` is ABSTRACT on purpose: a seventh table type cannot compile until someone decides
     * what clients should call it. That decision must not default silently.
+    *
+    * ⚠️ EXACTLY ONE place outside storage reads `name`, and it is deliberate: `Table.merge` throws
+    * `Cannot alter table <t> of type <name>` (below, in this file) when an ALTER targets a
+    * non-regular table. That message is the ENGINE refusing an operation on its own construct, not
+    * a catalogue answer to a client, so it legitimately names the engine's own type. It is listed
+    * here rather than left silent, because the whole point of this split is that no display of a
+    * table type may be discovered by surprise — that is how `REGULAR` reached clients, and how the
+    * `SHOW TABLE` header (`ResultRenderer`) went on printing the Scala type name `Regular`
+    * unnoticed: neither could be found by searching for `tableType.name`.
+    *
+    * A new read of `name` outside `_meta.type` and that one error message is a design change, not a
+    * detail: use `sqlName`, or amend this list.
     */
   sealed trait TableType {
     def name: String
@@ -1884,6 +1896,9 @@ package object schema {
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
       if (!isRegular)
+        // BIDC-10a Part D - the deliberate exception recorded in TableType's scaladoc: this is the
+        // engine refusing an operation on its own construct, so it names the STORED type. Every
+        // client-facing rendering of a table type uses `TableType.sqlName` instead.
         throw new Exception(s"Cannot alter table $name of type ${tableType.name}")
       statements
         .foldLeft(this) { (table, statement) =>

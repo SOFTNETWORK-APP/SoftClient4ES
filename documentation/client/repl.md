@@ -843,7 +843,7 @@ Show detailed table information:
 ```
 sql> \st users
 
-📋 Table: users [Regular]
+📋 Table: users [TABLE]
 ...
 ```
 

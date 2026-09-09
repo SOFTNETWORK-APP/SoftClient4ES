@@ -3,11 +3,6 @@ package app.softnetwork.elastic.sql.schema
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import java.io.File
-import java.lang.reflect.Modifier
-import java.net.URL
-import scala.util.Try
-
 /** Story BIDC-10a Part D (AC 10) — `SHOW TABLES` publishes the CLIENT vocabulary, and it does so
   * through one authority so the display value cannot drift from the stored one.
   *
@@ -38,70 +33,11 @@ class TableTypeVocabularySpec extends AnyFlatSpec with Matchers {
     TableType.Enrichment       -> (("enrichment", "ENRICHMENT"))
   )
 
-  /** Every `TableType` the compiler knows about, read off the compiled package directory.
-    *
-    * 🔴 `getResources`, not `getResource`. This spec lives in the SAME package as the type it
-    * enumerates, so `sql/target/.../test-classes/app/.../schema` shadows the main classes directory
-    * and the singular lookup returns the test tree — which holds no `TableType` at all. The first
-    * version of this walk therefore enumerated NOTHING, and every per-type assertion below passed
-    * VACUOUSLY over an empty sequence. Union every classpath root that carries the package, and
-    * make emptiness a failure HERE so no caller can be vacuous.
-    *
-    * A non-`file:` classpath entry FAILS rather than skips, for the same reason. A concrete subtype
-    * that is not a Scala `object` likewise fails rather than being dropped.
+  /** The enumeration is derived from the COMPILED package, never from a hand-written list, and it
+    * is shared with `ShowTablesTableTypeSpec` so the two cannot disagree about how many types
+    * exist. Every drop path in that walk FAILS rather than skipping - see [[TableTypeEnumeration]].
     */
-  private def declaredTableTypes: Seq[TableType] = {
-    val pkgPath = classOf[TableType].getName.split('.').init.mkString("/")
-    val loader = classOf[TableType].getClassLoader
-    val roots: Seq[URL] = {
-      val e = loader.getResources(pkgPath)
-      val b = Seq.newBuilder[URL]
-      while (e.hasMoreElements) b += e.nextElement()
-      b.result()
-    }
-    if (roots.isEmpty) fail(s"the schema package `$pkgPath` is not on the test classpath")
-    roots.foreach { url =>
-      if (url.getProtocol != "file")
-        fail(
-          s"the schema package `$pkgPath` resolves to a ${url.getProtocol} URL ($url). This walk " +
-          "lists the compiled classes of a SEALED hierarchy and needs a directory; teach it to " +
-          "read the archive rather than letting the vocabulary guard go vacuous."
-        )
-    }
-    val subtypes: Seq[Class[_]] = roots
-      .flatMap(url => Option(new File(url.toURI).listFiles).getOrElse(Array.empty[File]).toSeq)
-      .filter(f => f.isFile && f.getName.endsWith(".class"))
-      .map(f => pkgPath.replace('/', '.') + "." + f.getName.stripSuffix(".class"))
-      .distinct
-      .sorted
-      // The `Option[Class[_]]` needs its type written out: on the 2.12 leg the existential defeats
-      // `flatMap`'s inference.
-      .flatMap { n =>
-        val loaded: Option[Class[_]] = Try(Class.forName(n, false, loader)).toOption
-        loaded.toSeq
-      }
-      .filter(c => classOf[TableType].isAssignableFrom(c))
-      .filterNot(c => c.isInterface || Modifier.isAbstract(c.getModifiers))
-      .distinct
-
-    if (subtypes.isEmpty)
-      fail(
-        s"no concrete TableType was found under $roots. Every assertion in this spec iterates " +
-        "this sequence, so an empty result would make them all pass vacuously."
-      )
-
-    subtypes.map { c =>
-      val instance: Option[TableType] = Try(
-        Class.forName(c.getName, true, loader).getField("MODULE$").get(null).asInstanceOf[TableType]
-      ).toOption
-      instance.getOrElse(
-        fail(
-          s"`${c.getName}` is a concrete TableType that is not a Scala `object`; this walk can " +
-          "only instantiate case objects. Teach it, or the vocabulary guard silently loses a type."
-        )
-      )
-    }
-  }
+  private def declaredTableTypes: Seq[TableType] = TableTypeEnumeration.declaredTableTypes
 
   "The TableType hierarchy" should "be enumerated exactly by the reconciled vocabulary table" in {
     val declared = declaredTableTypes

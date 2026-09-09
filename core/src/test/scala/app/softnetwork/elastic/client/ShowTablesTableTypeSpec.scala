@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.result._
-import app.softnetwork.elastic.sql.schema.TableType
+import app.softnetwork.elastic.sql.schema.{Table, TableType, TableTypeEnumeration}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.flatspec.AnyFlatSpec
@@ -71,14 +71,14 @@ class ShowTablesTableTypeSpec
       case other                              => fail(s"expected QueryRows, got $other")
     }
 
-  private val allTypes: Seq[TableType] = Seq(
-    TableType.Regular,
-    TableType.View,
-    TableType.MaterializedView,
-    TableType.External,
-    TableType.Changelog,
-    TableType.Enrichment
-  )
+  /** Derived from the SAME sealed-hierarchy walk `TableTypeVocabularySpec` uses (reachable here
+    * because `core -> macros -> sql` carries `test->test`), never hand-listed.
+    *
+    * A hand-written list would leave THIS spec green when a seventh table type is added while the
+    * sql-side vocabulary spec goes red - i.e. the projection guard would silently stop covering the
+    * projection, which is the exact shape of the defect this story closes.
+    */
+  private val allTypes: Seq[TableType] = TableTypeEnumeration.declaredTableTypes
 
   "SHOW TABLES" should "report the client vocabulary for every table type" in {
     val indices = allTypes.map(t => s"idx_${t.name}" -> mappingOf(t)).toMap
@@ -100,6 +100,42 @@ class ShowTablesTableTypeSpec
   it should "report an index with no _meta as TABLE" in {
     val rows = showTables(Map("legacy" -> """{"properties":{"name":{"type":"keyword"}}}"""))
     rows.map(_("type").toString) shouldBe Seq("TABLE")
+  }
+
+  // -- The SECOND display projection: the `SHOW TABLE <t>` header (REPL `\st <table>`) ----------
+  //
+  // `ResultRenderer.renderTableDefinition` interpolated the case object itself and printed
+  // `[Regular]` - the Scala type name. Both projections now read `TableType.sqlName`, so a REPL
+  // session cannot show one vocabulary in `SHOW TABLES` and another in `SHOW TABLE`.
+
+  private def showTableHeader(t: TableType): String =
+    ResultRenderer.renderAscii(TableResult(Table("users", Nil, tableType = t)), 1.milli)
+
+  "SHOW TABLE" should "head its definition with the same vocabulary for every type" in {
+    allTypes.foreach { t =>
+      withClue(s"`SHOW TABLE` header for $t: ") {
+        showTableHeader(t) should include(s"[${t.sqlName}]")
+      }
+    }
+  }
+
+  it should "never head a plain table with the Scala type name" in {
+    val header = showTableHeader(TableType.Regular)
+    header should include("[TABLE]")
+    header should not include "[Regular]"
+  }
+
+  /** The divergence this closes was measurable in the repo's own walkthrough: `SHOW TABLES` and
+    * `SHOW TABLE` appear 35 lines apart in `documentation/sql/dql_statements.md` and used to
+    * disagree.
+    */
+  it should "agree with the SHOW TABLES type column" in {
+    allTypes.foreach { t =>
+      val listed = showTables(Map("users" -> mappingOf(t))).head("type").toString
+      withClue(s"SHOW TABLES says `$listed` for $t; SHOW TABLE header: ") {
+        showTableHeader(t) should include(s"[$listed]")
+      }
+    }
   }
 
   it should "keep a materialized view distinct from a view" in {

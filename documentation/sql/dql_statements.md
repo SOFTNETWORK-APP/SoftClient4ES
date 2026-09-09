@@ -1347,7 +1347,7 @@ CREATE TABLE IF NOT EXISTS users (
 SHOW TABLE users;
 ```
 
-📋 Table: users [Regular]
+📋 Table: users [TABLE]
 
 | Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
 |-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|

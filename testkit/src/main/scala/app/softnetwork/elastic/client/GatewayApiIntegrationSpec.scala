@@ -71,6 +71,15 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     rows.size should be >= 1
     rows.exists(_("name") == "show_users") shouldBe true
 
+    // Story BIDC-10a Part D (AC 10) - the ONLY live-cluster assertion of the client vocabulary in
+    // this repo, and it runs on all five clients (ES 6.8 rest + jest, 7.17, 8.18, 9.0). The
+    // Docker-free specs pin the projection; this pins that a REAL cluster's `_meta` round-trips
+    // through it. `TABLE`, never the engine's internal `REGULAR`.
+    rows.find(_("name") == "show_users") match {
+      case Some(row) => row("type") shouldBe "TABLE"
+      case None      => fail("show_users not found in SHOW TABLES LIKE 'show_%'")
+    }
+
     rows = assertQueryRows(System.nanoTime(), client.run("SHOW TABLES LIKE '.%'").futureValue)
     rows.size shouldBe 0
   }
