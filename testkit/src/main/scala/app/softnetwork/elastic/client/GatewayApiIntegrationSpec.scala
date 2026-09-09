@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.client.result.{DmlResult, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{DdlResult, DmlResult, ElasticSuccess}
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -412,6 +412,52 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         col.processors.size shouldBe 1
       case _ => fail("Column 'users_alter5_id' not found")
     }
+  }
+
+  it should "report NO changes when an ALTER leaves every processor untouched" in {
+    // 🔴 Story 21.8 Part F.1 — the ALTER pipeline churn, end to end.
+    //
+    // Nothing gated this: `assertDdl` only checks that the statement SUCCEEDED, and a churning
+    // ALTER succeeds. `DdlResult(false)` is the engine saying "no changes detected", and it can
+    // only say it when the pipeline diff is EMPTY — so re-issuing an ALTER that changes nothing is
+    // the one assertion that observes the churn from outside.
+    //
+    // The table carries both causes on purpose:
+    //   - `seniority … SCRIPT AS (…)` — a script processor, which Elasticsearch stores with no
+    //     `field`. On 6.8 the `description` that identified it is dropped, so it came back
+    //     anonymous and could never match the column that declared it. 6.8 ONLY.
+    //   - `reputation DOUBLE DEFAULT 0.0` — a non-textual stored value, which was read back as the
+    //     STRING "0.0". EVERY version, and it renders as `0.0` on both sides of the warning.
+    val create =
+      """CREATE TABLE IF NOT EXISTS users_alter_churn (
+        |  id INT NOT NULL,
+        |  join_date DATE,
+        |  reputation DOUBLE DEFAULT 0.0,
+        |  seniority INT SCRIPT AS (DATEDIFF(join_date, CURRENT_DATE, DAY))
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val alter =
+      "ALTER TABLE users_alter_churn ADD COLUMN IF NOT EXISTS nickname VARCHAR;"
+
+    // 🔴 The positive control. `assertDdl` alone would let this test pass VACUOUSLY: an engine that
+    // answered "no changes" to EVERY alter would satisfy the assertion below without ever having
+    // created the processors under test, and so would a stale index left by an earlier run, since
+    // both statements are IF [NOT] EXISTS. Requiring `true` here means the second call's `false` is
+    // a real transition.
+    val firstAlter = client.run(alter).futureValue
+    renderResults(System.nanoTime(), firstAlter)
+    firstAlter.isSuccess shouldBe true
+    firstAlter.toOption.get shouldBe DdlResult(true)
+
+    // second time: nothing to do. Before the fix the untouched script processor (6.8) and the
+    // untouched numeric default (every version) each reported themselves as changed, so the engine
+    // rewrote the pipeline and answered `DdlResult(true)`.
+    val res = client.run(alter).futureValue
+    renderResults(System.nanoTime(), res)
+    res.isSuccess shouldBe true
+    res.toOption.get shouldBe DdlResult(false)
   }
 
   // ---------------------------------------------------------------------------

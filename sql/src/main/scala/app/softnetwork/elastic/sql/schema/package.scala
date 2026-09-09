@@ -174,6 +174,38 @@ package object schema {
     private val ScriptDescRegex =
       """^\s*([a-zA-Z0-9_\\.]+)\s([a-zA-Z]+)\s+SCRIPT\s+AS\s*\((.*)\)\s*$""".r
 
+    /** Read a stored processor value back WITHOUT changing its type.
+      *
+      * 🔴 21.8 Part F.1, second half. This was `Value(v.asText())`, which renders every JSON scalar
+      * as text, so `reputation DOUBLE DEFAULT 0.0` was declared as the number `0.0` and read back
+      * as the string `"0.0"`. `IngestProcessor.diff` compares `properties`, so that processor
+      * reported `ProcessorPropertyChanged("value", "0.0", 0.0)` on EVERY ALTER — the same churn as
+      * the anonymous script processor, and unlike it not confined to Elasticsearch 6.8: it did not
+      * depend on `description`, so it fired on every version. It also reads identically in the log,
+      * both sides rendering as `0.0`.
+      *
+      * `Value(node)` is the typed read `IndexField` already uses for `null_value`; using it here is
+      * the same derivation rather than a second one.
+      *
+      * Containers are included, and the write side is what makes that safe. `Values.value` and
+      * `ObjectValue.value` hold WRAPPED elements, so handing either to `mapToJsonNode` serialises
+      * Jackson BEANS; `SetProcessor.defaultValue` therefore goes through `Value.unwrap`, and an
+      * array read here is written back as `["a","b"]`. Before this story a container value was lost
+      * to the EMPTY STRING, because Jackson's `asText()` on a container node is `""`.
+      *
+      * 🔴 The `Try` is not defensive padding. `Value.apply(Any)` THROWS
+      * `IllegalArgumentException("Unsupported Values type")` for a list whose head has no `Values`
+      * companion — MEASURED on `"value": [null, "a"]`, where the head is `Null` and no arm of the
+      * sealed hierarchy matches. That read runs inside `PipelineApi`'s pipeline load and inside
+      * `IndicesApi`'s schema cache, neither of which catches it, so without the guard a value that
+      * was merely wrong would become an ALTER that dies. Such a value keeps the old text read, i.e.
+      * exactly today's behaviour.
+      */
+    private def readValue(node: JsonNode): Value[_] =
+      Value(node)
+        .flatMap(v => scala.util.Try(Value(v)).toOption)
+        .getOrElse(Value(node.asText()))
+
     def apply(processorType: IngestProcessorType, properties: ObjectValue): IngestProcessor = {
       val node = mapper.createObjectNode()
       node.set(processorType.name, properties.toJson)
@@ -229,7 +261,7 @@ package object schema {
               pipelineType = pipelineType,
               description = desc,
               column = field,
-              value = valueNode.map(v => Value(v.asText())).getOrElse(Null),
+              value = valueNode.map(readValue).getOrElse(Null),
               copyFrom = copyFrom,
               doOverride = doOverride,
               ignoreEmptyValue = ignoreEmptyValue,
@@ -430,12 +462,14 @@ package object schema {
       *
       * Collisions: 32 bits over the handful of anonymous processors a pipeline can hold. If two DID
       * collide the diff would treat them as one processor and compare their properties, so the
-      * failure mode is a spurious `ProcessorChanged` — noisy, not silent, and no worse than the
-      * churn this class already has (21.8 Part F.1).
+      * failure mode is a spurious `ProcessorChanged` — noisy, not silent.
       *
-      * This does NOT by itself stop the churn on ES 6.8: a read-back anonymous processor still
-      * cannot match a declared one keyed by its real column. It makes the churn DETERMINISTIC and
-      * the emitted DDL VALID. The remaining half is 21.8 Part F.1.
+      * ⚠️ That reassurance covers THIS fallback only. Once 21.8 Part F.1 keys a script processor by
+      * the column its source assigns, two scripts writing the SAME column collide, and the diff
+      * builds its side maps with `toMap`, so one is dropped SILENTLY. That is not new behaviour on
+      * ES 7+ — `ScriptDescRegex` has always keyed them by their declared column there — so F.1
+      * aligns 6.8 with every other version rather than introducing it. It is stated because the
+      * paragraph above would otherwise read as a guarantee it does not give.
       */
     override def column: String = properties.get("field") match {
       case Some(s: String) => s
@@ -572,6 +606,50 @@ package object schema {
       case other => other
     }
 
+  /** The ONE place that knows how an ingest script names the column it computes.
+    *
+    * A `script` processor has no `field` property, so Elasticsearch stores nothing that says which
+    * column it feeds. The only carrier was the processor `description` — an Elasticsearch **7.9+**
+    * field, which 6.8 silently drops — and `IngestProcessor.apply` re-types a script processor from
+    * it (`ScriptDescRegex`). Without it the read-back is an anonymous `GenericProcessor`, and
+    * `IngestPipeline.diff` keys processors by `"<pipeline>-<type>-<column>"`, so it could never
+    * match the processor that declared it: every ALTER reported it REMOVED and re-ADDED, on a
+    * processor nobody had touched (21.8 Part F.1, the churn).
+    *
+    * 🔴 The identity was already in the script all along. `assign` is what `ScriptProcessor` emits
+    * as the LAST statement of every generated source, so `of` reads back exactly what `assign`
+    * wrote: ONE derivation of "which column does this script feed", used by both sides, rather than
+    * a second one that can drift from it. `Column.update` relies on the same contract when it
+    * rewrites the target of a nested column's script.
+    *
+    * `of` returns `None` for any source this object did not write — a hand-authored `ALTER PIPELINE
+    * … ADD PROCESSOR SCRIPT(…)`, say — and the caller keeps its content-addressed fallback, i.e.
+    * exactly today's behaviour for anything unrecognised.
+    */
+  private[schema] object ScriptTarget {
+
+    /** How an ingest script NAMES a column. `assign` writes an assignment to it; `Column.update`
+      * rewrites it when a nested column's path changes. Both go through here so the format has one
+      * spelling — the claim this object's name makes.
+      */
+    def reference(column: String): String = s"ctx.$column"
+
+    def assign(column: String, expression: String): String = s"${reference(column)} = $expression"
+
+    /** The LAST `ctx.<column> = …` in `source`, which is the one `assign` appended.
+      *
+      * Greedy on purpose: every statement before it is a `def paramN = …` preamble, and those read
+      * `ctx.<path>` on the RIGHT of the `=`, never on the left, so anchoring on the assignment and
+      * taking the last match cannot pick one of them up.
+      */
+    def of(source: String): Option[String] = source match {
+      case Assignment(column) => Some(column)
+      case _                  => None
+    }
+
+    private val Assignment = """(?s).*(?:^|;)\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
+  }
+
   object ScriptProcessor {
     def fromScript(
       column: String,
@@ -586,10 +664,10 @@ package object schema {
       val source = painless.split(";") match {
         case Array(single) if single.trim.startsWith("return ") =>
           val stripped = single.trim.stripPrefix("return ").trim
-          s"ctx.$column = $stripped"
+          ScriptTarget.assign(column, stripped)
         case parts =>
           val last = parts.last.trim
-          val updated = parts.dropRight(1) :+ s" ctx.$column = $last"
+          val updated = parts.dropRight(1) :+ s" ${ScriptTarget.assign(column, last)}"
           updated.mkString(";")
       }
       ScriptProcessor(
@@ -712,13 +790,20 @@ package object schema {
       withIf
     }
 
+    /** 🔴 `Value.unwrap`, not `value.value`. For a container the latter is the WRAPPED elements —
+      * `Seq[Value[_]]` / `ListMap[String, Value[_]]` — and `properties` feeds this straight into
+      * `mapToJsonNode`, which then serialises each element as a Jackson BEAN. `ALTER PIPELINE`
+      * rewrites every processor of the merged pipeline, so an untouched list-valued processor would
+      * be written back to Elasticsearch in that shape. For a scalar `unwrap` IS `value.value`, so
+      * nothing else moves.
+      */
     lazy val defaultValue: Option[Any] = {
       if (copyFrom.isDefined) None
       else
         value match {
           case IdValue | IngestTimestampValue => Some(s"{{${value.value}}}")
           case Null                           => None
-          case _                              => Some(value.value)
+          case _                              => Some(Value.unwrap(value))
         }
     }
 
@@ -897,7 +982,38 @@ package object schema {
       val desired = pipeline.processors
 
       // 1. Index processors by logical key
-      def key(p: IngestProcessor) = s"${p.pipelineType.name}-${p.processorType.name}-${p.column}"
+      //
+      // 🔴 21.8 Part F.1 — the churn lived in this one expression. A `script` processor is the only
+      // kind Elasticsearch stores with no `field`, so an anonymous one has no column; processor
+      // `description`, which `IngestProcessor.apply` re-types it from, is an ES 7.9+ field that 6.8
+      // drops and that `PipelineApi` strips before sending on 6.x besides. Keyed by `column`, such
+      // a processor could never match the one that DECLARED it: every ALTER reported it REMOVED and
+      // re-ADDED, on a processor nobody had touched.
+      //
+      // The identity was in the script all along — `ScriptProcessor` writes `ctx.<column> = …` as
+      // the last statement of every source it generates — so `ScriptTarget.of` reads back exactly
+      // what `ScriptTarget.assign` wrote.
+      //
+      // 🔴 It is applied HERE and to BOTH sides, rather than inside `GenericProcessor.column`,
+      // and that placement is the design. `column` is read by `Table.defaultPipeline`'s
+      // `filterNot`, by `IngestPipeline.merge`, by `ProcessorRemoved.stmt` and by `describe`;
+      // giving an anonymous processor a real column name there made a hand-added
+      // `ADD PROCESSOR SCRIPT(ctx.age = 1)` collide with a declared `age SCRIPT AS (…)` column and
+      // get DROPPED — data loss, to fix a cosmetic diff. Confined to the key, the recovery reaches
+      // the only consumer that needs it, and because both sides derive it the same way from the
+      // same string, a source `of` misreads still yields the SAME key on both sides and so cannot
+      // manufacture a difference.
+      def identity(p: IngestProcessor): String =
+        if (p.processorType == IngestProcessorType.Script)
+          p.properties
+            .get("source")
+            .collect { case source: String => source }
+            .flatMap(ScriptTarget.of)
+            .getOrElse(p.column)
+        else p.column
+
+      def key(p: IngestProcessor) =
+        s"${p.pipelineType.name}-${p.processorType.name}-${identity(p)}"
 
       val desiredMap = desired.map(p => key(p) -> p).toMap
       val actualMap = actual.map(p => key(p) -> p).toMap
@@ -1133,7 +1249,8 @@ package object schema {
         script.map { sc =>
           sc.copy(
             column = updated.path,
-            source = sc.source.replace(s"ctx.$name", s"ctx.${updated.path}")
+            source =
+              sc.source.replace(ScriptTarget.reference(name), ScriptTarget.reference(updated.path))
           )
         }
       updated.copy(
@@ -2093,6 +2210,37 @@ package object schema {
         processors = processors.filter(p => p.pipelineType == IngestPipelineType.Final)
       )
     }
+
+    /** The pipeline this table DECLARES for `pipelineType`.
+      *
+      * 🔴 21.8 Part F.1. `GatewayApi.loadTablePipelineDiff` takes the pipeline type, uses it to
+      * READ the right pipeline out of Elasticsearch, and then compared what it read against
+      * `defaultPipeline` for BOTH types.
+      *
+      * MEASURED, because the obvious reading of that is wrong in both directions. Filtered to the
+      * Final-typed entries the caller actually applies, comparing a stored final pipeline against
+      * `defaultPipeline` and against `finalPipeline` order the SAME `ProcessorRemoved` — so this is
+      * not, as first recorded, a change that turns churn into a deletion; the deletion is already
+      * there. What the old comparison ADDS is a set of Default-typed `ProcessorAdded` entries drawn
+      * from the default pipeline, which `alterExistingIndex` splices into `diff.pipeline` and then
+      * applies as DEFAULT-pipeline changes. Comparing like with like removes those.
+      *
+      * ⚠️ It does not make final-pipeline handling correct. A table never DECLARES a final script
+      * processor — the parser has no syntax for one, and the `Index -> Table` load attaches a final
+      * pipeline's `ScriptProcessor` to its COLUMN, which puts it in `tableProcessors` and hence in
+      * the DEFAULT pipeline — so a stored final script still diffs as removed. Only `rename`,
+      * `remove` and a non-default `set` survive the load as Final-typed. Fixing that is a change to
+      * the load path, not to this choice.
+      *
+      * Exhaustive on purpose: a catch-all answered `Custom` with the default pipeline, which is the
+      * same defect one enum value over.
+      */
+    def declaredPipeline(pipelineType: IngestPipelineType): IngestPipeline =
+      pipelineType match {
+        case IngestPipelineType.Final   => finalPipeline
+        case IngestPipelineType.Default => defaultPipeline
+        case IngestPipelineType.Custom  => diffPipeline
+      }
 
     def setDefaultPipelineName(pipelineName: String): Table = {
       this.copy(

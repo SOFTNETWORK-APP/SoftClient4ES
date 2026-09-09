@@ -26,6 +26,16 @@ import scala.collection.immutable.ListMap
   */
 class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
 
+  /** 🔴 The source must be one `ScriptTarget.of` DECLINES, or this whole file stops testing what it
+    * was written to test.
+    *
+    * Story 21.8 Part F.1 keys an anonymous script processor by the column its source assigns, and
+    * `ctx.a = 1` — the fixture this file originally used — now resolves to `a`. The
+    * content-addressed fallback below was then never reached, so every assertion here passed
+    * without exercising it, and 21.5's F8 falsification (restore the UUID, watch three of these
+    * red) would have scored GREEN. Bracket notation is a form the recovery does not read, so the
+    * fallback is reachable again. See `PipelineRoundTripIdentitySpec` for the recovery itself.
+    */
   private def anonymous(source: String): GenericProcessor =
     GenericProcessor(
       processorType = IngestProcessorType.Script,
@@ -37,7 +47,7 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
     )
 
   "an anonymous processor's column" should "be stable across reads" in {
-    val p = anonymous("ctx.a = 1")
+    val p = anonymous("ctx['a'] = 1")
     // the defect was that these three differ; `ProcessorRemoved` reads it a second time, so a
     // random value also meant the key and the rendered statement disagreed with each other.
     p.column shouldBe p.column
@@ -45,8 +55,8 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "be a function of the processor's CONTENT, not of the call" in {
-    anonymous("ctx.a = 1").column shouldBe anonymous("ctx.a = 1").column
-    anonymous("ctx.a = 1").column should not be anonymous("ctx.b = 2").column
+    anonymous("ctx['a'] = 1").column shouldBe anonymous("ctx['a'] = 1").column
+    anonymous("ctx['a'] = 1").column should not be anonymous("ctx['b'] = 2").column
   }
 
   it should "not depend on the order the properties were parsed in" in {
@@ -58,7 +68,7 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
       processorType = IngestProcessorType.Script,
       properties = ListMap[String, Any](
         "lang"           -> "painless",
-        "source"         -> "ctx.a = 1",
+        "source"         -> "ctx['a'] = 1",
         "ignore_failure" -> true
       )
     )
@@ -66,7 +76,7 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
       processorType = IngestProcessorType.Script,
       properties = ListMap[String, Any](
         "ignore_failure" -> true,
-        "source"         -> "ctx.a = 1",
+        "source"         -> "ctx['a'] = 1",
         "lang"           -> "painless"
       )
     )
@@ -79,7 +89,7 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
     // was rejected by our own parser with "Mismatched closing parentheses in ALTER PIPELINE
     // statement" -- a message that names the wrong cause, which is why this asserts the ROUND TRIP
     // rather than the message.
-    val stmt = ProcessorRemoved(anonymous("ctx.a = 1")).stmt
+    val stmt = ProcessorRemoved(anonymous("ctx['a'] = 1")).stmt
     val sql = AlterPipeline("my_pipeline", ifExists = false, List(stmt)).sql
     withClue(s"generated [$sql]: ") {
       sql should include("DROP PROCESSOR")
@@ -88,6 +98,25 @@ class AlterPipelineRenderSpec extends AnyFlatSpec with Matchers {
         case other                   => fail(s"generated DDL did not re-parse: $other")
       }
     }
+  }
+
+  "the fixtures in this file" should "actually reach the content-addressed fallback" in {
+    // The guard for the paragraph above. Without it, a change to the recovery silently empties
+    // every other assertion in this file and nothing goes red.
+    anonymous("ctx['a'] = 1").column should startWith("anonymous_")
+    ScriptTarget.of("ctx['a'] = 1") shouldBe None
+  }
+
+  "a source the recovery DOES read" should "STILL be content-addressed here" in {
+    // 🔴 The seam between the two stories, pinned in one place so they cannot drift.
+    //
+    // 21.8 Part F.1 recovers the column a script assigns, but it does so in `IngestPipeline.diff`'s
+    // KEY, not in `column`. `column` is read by `Table.defaultPipeline`'s `filterNot`, by
+    // `IngestPipeline.merge`, by `ProcessorRemoved.stmt` and by `describe`; giving an anonymous
+    // processor a real column name there made a hand-added `ADD PROCESSOR SCRIPT(ctx.age = 1)`
+    // collide with a declared `age SCRIPT AS (…)` column and get DROPPED. This assertion is what
+    // keeps the recovery out of those four consumers.
+    anonymous("ctx.a = 1").column should startWith("anonymous_")
   }
 
   "a processor that HAS a field" should "still use it, unchanged" in {
