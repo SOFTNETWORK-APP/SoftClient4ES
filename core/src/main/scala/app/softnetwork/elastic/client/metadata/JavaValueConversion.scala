@@ -31,11 +31,10 @@ package app.softnetwork.elastic.client.metadata
   *
   *   1. `ElasticConversion.jsonNodeToAny` — the array branch (a Scala `List`) and the object branch
   *      (`jsonNodeToMap`, a `ListMap`). 2. The aggregation path — a stats aggregation emits `name
-  *      -> ListMap("count" -> ..., "sum" -> ...)` and `percentiles` emits `name -> ListMap(<key> ->
-  *      <double>)`, both as CELL values, neither built from a `JsonNode` through `jsonNodeToAny`.
-  *      3. `ElasticConversion.extractInnerHits` — `innerHitName -> List[ListMap[String, Any]]`,
-  *      hand assembled. That is precisely the `List`-of-`Map` shape a shallow conversion gets
-  *      wrong.
+  * -> ListMap("count" -> ..., "sum" -> ...)` and `percentiles` emits `name -> ListMap(<key> ->
+  * <double>)`, both as CELL values, neither built from a `JsonNode` through `jsonNodeToAny`. 3.
+  * `ElasticConversion.extractInnerHits` — `innerHitName -> List[ListMap[String, Any]]`, hand
+  * assembled. That is precisely the `List`-of-`Map` shape a shallow conversion gets wrong.
   *
   * ⇒ The conversion belongs at the CONSUMER boundary, where it is producer-agnostic by
   * construction: it converts whatever value it is handed, so a fourth producer needs no change
