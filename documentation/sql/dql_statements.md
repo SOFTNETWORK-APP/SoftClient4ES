@@ -1312,7 +1312,7 @@ SHOW TABLES LIKE 'show_%';
 
 | name       | type    | pk | partitioned |
 |------------|---------|----|-------------|
-| show_users | REGULAR | id |             |
+| show_users | TABLE   | id |             |
 📊 1 row(s) (7ms)
 
 ---
@@ -1347,7 +1347,7 @@ CREATE TABLE IF NOT EXISTS users (
 SHOW TABLE users;
 ```
 
-📋 Table: users [Regular]
+📋 Table: users [TABLE]
 
 | Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
 |-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|

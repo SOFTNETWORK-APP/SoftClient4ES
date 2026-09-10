@@ -222,7 +222,12 @@ object ResultRenderer {
     // Table header
     output.append(
       s"${emoji("📋")} ${bold(cyan(s"Table: ${table.name}"))} " +
-      gray(s"[${table.tableType}]") +
+      // BIDC-10a Part D - the SECOND display projection. This is the `SHOW TABLE <t>` header
+      // (REPL `\st <table>`), which used to interpolate the case object itself and print
+      // `[Regular]` - the Scala type name, which no client vocabulary contains and which a
+      // `tableType.name` search cannot find. It now reads the SAME authority as the `type`
+      // column of `SHOW TABLES`, so the two cannot disagree inside one REPL session.
+      gray(s"[${table.tableType.sqlName}]") +
       "\n\n"
     )
 

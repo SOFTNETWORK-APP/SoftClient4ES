@@ -1655,30 +1655,95 @@ package object schema {
     }
   }
 
+  /** The type of a table, as recorded in the index mapping's `_meta.type`.
+    *
+    * Two names, deliberately, because they answer two different questions and only one of them is
+    * allowed to change:
+    *
+    *   - `name` is what is STORED. It is written into `_meta.type` and read back by
+    *     `TableType.apply`, so an existing index whose mapping says `"regular"` depends on it byte
+    *     for byte.
+    *   - `sqlName` is what is SHOWN on the ENGINE surface — the `type` column of `SHOW TABLES` and
+    *     the `SHOW TABLE <t>` header, i.e. what the REPL and anything reading `SHOW TABLES` through
+    *     the gateway receives. It must be a table type a SQL user recognises.
+    *
+    * ⚠️ `sqlName` is not, by itself, the JDBC/Flight `TABLE_TYPE`. Those drivers map it onto the
+    * two values their `getTableTypes` advertises (`TABLE` / `VIEW`) — see `MaterializedView` below,
+    * where that mapping is permanent and load-bearing rather than a temporary shim.
+    *
+    * The projection used to be `name.toUpperCase`, which published the internal `REGULAR`.
+    * Measured: the sidecar's ADBC leg failed `Expected 'TABLE' in ['REGULAR']`. Story BIDC-10a Part
+    * D.
+    *
+    * `sqlName` is ABSTRACT on purpose: a seventh table type cannot compile until someone decides
+    * what to call it. That decision must not default silently.
+    *
+    * ⚠️ EXACTLY ONE place outside storage reads `name`, and it is deliberate: `Table.merge` throws
+    * `Cannot alter table <t> of type <name>` (below, in this file) when an ALTER targets a
+    * non-regular table. That message is the ENGINE refusing an operation on its own construct, not
+    * a catalogue answer to a client, so it legitimately names the engine's own type. It is listed
+    * here rather than left silent, because the whole point of this split is that no display of a
+    * table type may be discovered by surprise — that is how `REGULAR` reached clients, and how the
+    * `SHOW TABLE` header (`ResultRenderer`) went on printing the Scala type name `Regular`
+    * unnoticed: neither could be found by searching for `tableType.name`.
+    *
+    * A new read of `name` outside `_meta.type` and that one error message is a design change, not a
+    * detail: use `sqlName`, or amend this list.
+    */
   sealed trait TableType {
     def name: String
+    def sqlName: String
   }
 
   object TableType {
     case object Regular extends TableType {
       override def name: String = "regular"
+      override def sqlName: String = "TABLE"
     }
     case object External extends TableType {
       override def name: String = "external"
+      override def sqlName: String = "EXTERNAL"
     }
     case object Changelog extends TableType {
       override def name: String = "changelog"
+      override def sqlName: String = "CHANGELOG"
     }
     case object Enrichment extends TableType {
       override def name: String = "enrichment"
+      override def sqlName: String = "ENRICHMENT"
     }
     case object View extends TableType {
       override def name: String = "view"
-    }
-    case object MaterializedView extends TableType {
-      override def name: String = "materialized_view"
+      override def sqlName: String = "VIEW"
     }
 
+    /** A materialized view keeps its OWN name on the ENGINE surface (`SHOW TABLES`, the REPL)
+      * rather than collapsing into `VIEW`: it has storage, a refresh schedule and (optionally) a
+      * watcher, and collapsing it would lose information for the human reading the listing.
+      *
+      * 🔴 The spelling is SPACED, and the reason is self-consistency with our own SQL, not any
+      * other engine's convention. Every statement that names this object is spaced - `CREATE
+      * MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEW STATUS`, `SHOW CREATE
+      * MATERIALIZED VIEW`, `DESCRIBE MATERIALIZED VIEW` (`sql/.../query/package.scala`). An
+      * underscore here would be the only place the product spells its own object differently from
+      * the statement that creates it.
+      *
+      * ⚠️ This is NOT what a JDBC or Flight SQL client sees. Those `TABLE_TYPE` contracts report
+      * `VIEW` for a materialized view, because `getTableTypes` advertises exactly `TABLE` and
+      * `VIEW` and `getTables` filters by EXACT string match - so a third value, with the advertised
+      * list unchanged, makes every materialized view vanish from an object browser that asks for
+      * the advertised types. The drivers own that collapse; it is PERMANENT and load-bearing, not a
+      * shim to be cleaned up. Story BIDC-10a, AD-A-6-SUPERSEDED.
+      */
+    case object MaterializedView extends TableType {
+      override def name: String = "materialized_view"
+      override def sqlName: String = "MATERIALIZED VIEW"
+    }
+
+    /** Parses the STORED name (`_meta.type`), never the display `sqlName`. Widening it to accept
+      * `"TABLE"` would make two spellings of the same type storable and is not what any caller
+      * needs: every caller reads a mapping this engine wrote.
+      */
     def apply(name: String): TableType =
       name.toLowerCase match {
         case "regular"           => Regular
@@ -1847,6 +1912,9 @@ package object schema {
 
     def merge(statements: Seq[AlterTableStatement]): Table = {
       if (!isRegular)
+        // BIDC-10a Part D - the deliberate exception recorded in TableType's scaladoc: this is the
+        // engine refusing an operation on its own construct, so it names the STORED type. Every
+        // client-facing rendering of a table type uses `TableType.sqlName` instead.
         throw new Exception(s"Cannot alter table $name of type ${tableType.name}")
       statements
         .foldLeft(this) { (table, statement) =>

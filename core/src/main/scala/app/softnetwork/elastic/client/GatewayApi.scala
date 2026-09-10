@@ -551,7 +551,10 @@ class TableExecutor(
                     .map { case (index, mappings) =>
                       ListMap(
                         "name" -> index,
-                        "type" -> mappings.tableType.name.toUpperCase,
+                        // BIDC-10a Part D / AD-A-6 — the CLIENT vocabulary, not the stored name.
+                        // `TableType.sqlName` is the single authority; `name` stays the
+                        // `_meta.type` storage key and never reaches a client.
+                        "type" -> mappings.tableType.sqlName,
                         "pk"   -> mappings.primaryKey.mkString(","),
                         "partitioned" -> mappings.partitionBy
                           .map(p => s"PARTITION BY ${p.column} (${p.granularity})")
