@@ -947,16 +947,18 @@ object Parser
     *
     * Testing for "any qualifier" rather than "qualifiers from two tables" is deliberate: the
     * narrower test lets a correlation through whenever one side fails to resolve — a function
-    * argument (`WHERE o.id = LOWER(c.id)`), or a self-join through duplicate table names, where
-    * `From.tableAliases` keeps only the last alias.
+    * argument (`WHERE o.id = LOWER(c.id)`), or — before story BIDC-8 — a self-join through
+    * duplicate table names, where the alias map kept only the last alias.
     *
-    * ⚠️ That last example is now conditional, and the guard WIDENED because of it (story 21.2
+    * ⚠️ That last example became conditional, and the guard WIDENED because of it (story 21.2
     * AD-6'): when two tables differ only by qualifier the alias map keeps BOTH entries, so both
     * qualifiers resolve and this guard fires where it used to be defeated. MEASURED: `CREATE OR
     * REPLACE WATCHER w AS EVERY 5 MINUTES FROM "a".orders o, "b".orders p WHERE o.x = 1 WITHIN 2
     * MINUTES ALWAYS DO … END` is accepted before 21.2 and rejected after — #191's guard finally
-    * firing on a statement it always meant to catch. A WHOLLY unqualified self-join (`FROM orders
-    * o, orders p`) still defeats it, exactly as before.
+    * firing on a statement it always meant to catch. Story BIDC-8 closed the last gap: qualifiers
+    * resolve through the lossless `From.aliasesToTable`, so a WHOLLY unqualified self-join (`FROM
+    * orders o, orders p WHERE o.x = 1`) now resolves `o` too and is rejected here as well — a
+    * qualifier over a doubled single index is still a qualifier this search cannot scope.
     */
   private def qualifiedOverManyIndices(f: From, criteria: Option[Criteria]): Boolean =
     f.tables.size > 1 && criteria.exists(_.referencedIdentifiers.exists(_.table.isDefined))

@@ -445,7 +445,50 @@ case class From(tables: Seq[Table]) extends Updateable {
   lazy val joinSourceKeys: Set[String] =
     joinReferences.values.map { case (name, qualified) => aliasKey(name, qualified) }.toSet
 
-  lazy val aliasesToTable: ListMap[String, String] = tableAliases.map(_.swap)
+  /** The alias a table is referenced by in this statement: its SQL alias when it has a non-empty
+    * one, its bare name otherwise — the VALUE `tableAliases` records for it.
+    */
+  private def effectiveAlias(table: Table): String =
+    table.tableAlias.map(_.alias).filter(_.nonEmpty).getOrElse(table.name)
+
+  /** The alias-map key of this FROM's main table — `aliasKey` applied to `mainTable` — so a
+    * consumer holding an `Identifier.table` can tell "the main index" from a join source in the
+    * SAME key language (story BIDC-8; `TemporalLiterals` needs it for a self-join, whose join
+    * source IS the main index).
+    */
+  lazy val mainTableKey: String = aliasKey(mainTable.name, mainTable.qualifiedName)
+
+  /** 🔴 FIX (story BIDC-8, softclient4es-arrow#144) — alias -> table key, built DIRECTLY and
+    * LOSSLESS. It used to be `tableAliases.map(_.swap)`.
+    *
+    * `tableAliases` is keyed by the TABLE, so by construction it holds exactly ONE alias per key:
+    * for a self-join — `FROM idx a JOIN idx b` — both legs have the IDENTICAL qualified reference,
+    * `aliasKey` returns the bare `idx` for both, and the `ListMap` keeps `idx -> b`. MEASURED at
+    * the baseline (b37ef940): `aliasesToTable` was `ListMap(b -> idx)`, alias `a` was gone from
+    * BOTH maps, `Identifier.update` could not resolve `a.id` (it stayed a literal dotted field name
+    * with no `table`), `JoinKey.apply` therefore produced no key for it and `On.joinKeyMatches` was
+    * EMPTY — which is the malformed `INNER JOIN "sq_b"` with no `ON` that the arrow issue saw as
+    * DuckDB's "syntax error at end of input".
+    *
+    * The alias is the only identity that tells the two legs apart, so the lossless direction is
+    * alias -> table. Every consumer that asks "which table does this alias name?" —
+    * `Identifier.update` (`sql/package.scala`) and `FieldSort.update` (#159's `bareTableAlias`) —
+    * reads THIS map. `tableAliases` keeps its documented single-alias-per-key semantics UNTOUCHED:
+    * softclient4es-extensions' `JoinDependencyGraph` reads it FORWARD (table -> alias) and would
+    * break under any other key language. The table side of every entry below uses the SAME
+    * `aliasKey`, so the values here ARE `tableAliases` keys — `Identifier.table` stays a
+    * `tableAliases` key (story 21.2 AD-6) and `schemas` / `joinSourceKeys` / `TemporalLiterals`
+    * need no new language. Whenever no two aliases share a key this map equals the old `.swap`.
+    *
+    * Two legs sharing an ALIAS still collapse here (last wins), exactly as `joinReferences` does.
+    */
+  lazy val aliasesToTable: ListMap[String, String] = ListMap(
+    (tables.map(table => effectiveAlias(table) -> aliasKey(table.name, table.qualifiedName)) ++
+    unnestAliases.map { case (alias, (name, _)) => alias -> name } ++
+    joinReferences.map { case (alias, (name, qualified)) =>
+      alias -> aliasKey(name, qualified)
+    }): _*
+  )
 
   lazy val joins: Seq[Join] = tables.flatMap(_.joins)
 
@@ -489,12 +532,38 @@ case class From(tables: Seq[Table]) extends Updateable {
     } else if (tables.count(_.joins.nonEmpty) > 1) {
       Left("Only one table with joins is supported in FROM clause")
     } else {
-      for {
-        _ <- tables.map(_.validate()).filter(_.isLeft) match {
-          case Nil    => Right(())
-          case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
-        }
-      } yield ()
+      // 🔴 Story BIDC-8, tripwire 2 (lead ruling: keep the behaviour or reject LOUDLY, never
+      // change it silently). A comma-separated FROM is a MULTI-INDEX SEARCH — one query over every
+      // index it names, no join engine behind it — so two aliases on the SAME table have no meaning
+      // it can honour. MEASURED at the baseline: `SELECT a.x, b.y FROM t a, t b` resolved `b.y` and
+      // left `a.x` a literal field name (the alias map kept only the last alias); with the alias
+      // map made lossless both would resolve against ONE index — a DIFFERENT wrong answer, still
+      // silent. The same alias twice (`FROM t, t`) changes nothing and stays accepted; two
+      // DIFFERENT qualified references to one bare name (`FROM "a".orders o, "b".orders p`, story
+      // 21.2) are distinct tables, not duplicates. A JOIN hangs off ONE table, so a self-JOIN can
+      // never reach this branch.
+      val duplicated: Option[Table] = tables.find { table =>
+        tables.filter(_.qualifiedName == table.qualifiedName).map(effectiveAlias).distinct.size > 1
+      }
+      duplicated match {
+        case Some(table) =>
+          val rendered = Table.render(table.parts, table.name)
+          val aliases =
+            tables.filter(_.qualifiedName == table.qualifiedName).map(effectiveAlias).distinct
+          val (a, b) = (aliases.head, aliases(1))
+          Left(
+            s"Table $rendered is listed more than once in FROM under different aliases ($a, $b); " +
+            "a comma-separated FROM searches several indices and cannot join a table to itself. " +
+            s"Write a self-join as FROM $rendered $a JOIN $rendered $b ON $a.<key> = $b.<key>"
+          )
+        case None =>
+          for {
+            _ <- tables.map(_.validate()).filter(_.isLeft) match {
+              case Nil    => Right(())
+              case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+            }
+          } yield ()
+      }
     }
   }
 

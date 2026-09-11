@@ -1556,8 +1556,14 @@ package object sql {
       // name follows it. Without the arity check a column that happens to share its table's name
       // — `FROM status WHERE status = 'done'` — matched `tableAliases` and was rewritten to
       // `parts.tail.mkString(".")`, i.e. the empty string, silently querying a nameless field.
+      //
+      // 🔴 `aliasesToTable`, never a REVERSE lookup over `tableAliases` (story BIDC-8,
+      // softclient4es-arrow#144): that map is keyed by TABLE and holds one alias per table, so on a
+      // self-join (`FROM idx a JOIN idx b`) the reverse lookup found `b` and never `a` — `a.id`
+      // stayed a literal dotted field name with no `table`, and the ON clause lost its join key.
+      // The value is still a `tableAliases` KEY (same `aliasKey`), so `table` keeps its language.
       val table =
-        if (parts.size > 1) request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+        if (parts.size > 1) request.aliasesToTable.get(tableAlias)
         else None
 
       /** The schema for THIS column's own table.

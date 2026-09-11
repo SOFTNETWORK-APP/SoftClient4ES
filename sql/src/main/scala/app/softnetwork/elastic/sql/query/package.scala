@@ -118,6 +118,11 @@ package object query {
 
     lazy val fieldAliases: ListMap[String, String] = select.fieldAliases
     lazy val tableAliases: ListMap[String, String] = from.tableAliases
+
+    /** alias -> table KEY, lossless (story BIDC-8): the map to consult when resolving a qualifier.
+      * `tableAliases` (table -> alias) cannot hold two aliases of one table.
+      */
+    lazy val aliasesToTable: ListMap[String, String] = from.aliasesToTable
     lazy val unnestAliases: ListMap[String, (String, Option[Limit])] = from.unnestAliases
 
     /** Bucket lookup, keyed by EVERY spelling a bucket can be referenced with.
@@ -1207,6 +1212,12 @@ package object query {
     parts: Seq[NamePart] = Nil
   ) extends MaterializedViewStatement
       with DdlStatement {
+
+    /** Same reasoning as `CreateTable.validate()` (story BIDC-8): the view's query is validated by
+      * the rules that govern any SELECT — this statement used to inherit the no-op default.
+      */
+    override def validate(): Either[String, Unit] = dql.validate()
+
     override def sql: String = {
       // The leading space belongs HERE, not to `Frequency.sql`: `TransformConfig` renders the same
       // value on a line of its own and supplies its own indentation. Without it the render read
@@ -1328,6 +1339,18 @@ package object query {
       with DdlStatement {
 
     lazy val partitioned: Boolean = partitionBy.isDefined
+
+    /** The AS-SELECT is a full `SearchStatement` and every rule `SingleSearch.validate()` enforces
+      * applies to it unchanged; before story BIDC-8 this statement inherited the no-op default, so
+      * a CTAS carried its query past `Parser.apply` UNVALIDATED (measured: `CREATE TABLE t AS
+      * SELECT a.x, b.y FROM t a, t b` was accepted while the bare SELECT was rejected). The column
+      * form keeps its previous acceptance — nothing validated it before and nothing new does now.
+      */
+    override def validate(): Either[String, Unit] =
+      ddl match {
+        case Left(select) => select.validate()
+        case Right(_)     => Right(())
+      }
 
     override def sql: String = {
       val replaceClause = if (orReplace) " OR REPLACE" else ""

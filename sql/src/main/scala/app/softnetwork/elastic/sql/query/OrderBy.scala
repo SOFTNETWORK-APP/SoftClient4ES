@@ -128,9 +128,11 @@ case class FieldSort(
           // caught downstream, because `Identifier.update` rewrote any bare name matching an alias
           // to the empty string; that rewrite also broke a column legitimately sharing its table's
           // name, so it is gone and the collision is recorded here, where the FROM aliases are
-          // still in scope.
+          // still in scope. `aliasesToTable`, not a reverse scan of `tableAliases` (story BIDC-8):
+          // on a self-join the table-keyed map holds only the LAST alias, so `ORDER BY a` over
+          // `FROM idx a JOIN idx b` slipped past this check.
           bareTableAlias =
-            if (!field.name.contains('.') && request.tableAliases.exists(_._2 == field.name))
+            if (!field.name.contains('.') && request.aliasesToTable.contains(field.name))
               Some(field.name)
             else
               None

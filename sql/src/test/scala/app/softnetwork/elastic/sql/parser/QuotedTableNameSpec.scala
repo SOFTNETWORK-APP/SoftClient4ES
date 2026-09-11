@@ -341,14 +341,25 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     ListMap("orders" -> "orders")
   }
 
-  it should "leave two IDENTICALLY qualified same-name tables collapsing, as before (AD-6 scope)" in {
-    // AD-6 fixes the case where the bare name is AMBIGUOUS. Two references to the SAME qualified
-    // table are not ambiguous — there is no second reading to disambiguate — so this keeps today's
-    // behaviour exactly, as does the wholly unqualified self-join below. Pinned so the scope of the
-    // fix is explicit rather than inferred.
-    single("""SELECT a FROM "elastic".orders o, "elastic".orders p""").from.tableAliases shouldBe
-    ListMap("orders" -> "p")
-    single("SELECT a FROM orders o, orders p").from.tableAliases shouldBe ListMap("orders" -> "p")
+  it should "keep BOTH aliases of two IDENTICALLY qualified same-name tables in aliasesToTable (BIDC-8)" in {
+    // Story 21.2 (AD-6) pinned this shape as "collapsing, as before": two references to the SAME
+    // qualified table are not ambiguous, so `tableAliases` — keyed by TABLE — kept `orders -> p`
+    // and alias `o` was lost from BOTH maps (`aliasesToTable` was its `.swap`). Story BIDC-8
+    // (softclient4es-arrow#144) changes that pin ON PURPOSE: `tableAliases` still holds one alias
+    // per key (its contract is unchanged — extensions read it forward), while `aliasesToTable` is
+    // now built directly and keeps every alias. The COMMA spelling is rejected by `From.validate()`
+    // (a multi-index search cannot join a table to itself — BIDC-8 tripwire 2), so the JOIN
+    // spelling carries the assertion.
+    val qualified = single(
+      """SELECT o.id FROM "elastic".orders o JOIN "elastic".orders p ON o.id = p.parent_id"""
+    )
+    qualified.from.tableAliases shouldBe ListMap("orders" -> "p")
+    qualified.from.aliasesToTable shouldBe ListMap("o" -> "orders", "p" -> "orders")
+    val bare = single("SELECT o.id FROM orders o JOIN orders p ON o.id = p.parent_id")
+    bare.from.tableAliases shouldBe ListMap("orders" -> "p")
+    bare.from.aliasesToTable shouldBe ListMap("o" -> "orders", "p" -> "orders")
+    rejected("""SELECT a FROM "elastic".orders o, "elastic".orders p""")
+    rejected("SELECT a FROM orders o, orders p")
   }
 
   it should "disambiguate only the ambiguous half of a MIXED qualified/bare FROM (AD-6)" in {
@@ -448,12 +459,15 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
       """CREATE OR REPLACE WATCHER my_watcher AS EVERY 5 MINUTES FROM "a".orders o, """ +
       """"b".orders p WHERE o.x = 1 WITHIN 2 MINUTES ALWAYS DO LOG_ACTION LOG 'x' END"""
     )
-    // A WHOLLY unqualified self-join still defeats it, exactly as before — the alias map has
-    // nothing to disambiguate, so `o` does not resolve and no identifier carries a table.
-    Parser(
+    // 21.2 pinned the WHOLLY unqualified self-join as still defeating the guard, "exactly as
+    // before" (the alias map had nothing to disambiguate, so `o` did not resolve). Story BIDC-8
+    // flips that pin ON PURPOSE: qualifiers resolve through the lossless `From.aliasesToTable`, so
+    // `o` resolves here too and the guard fires — a qualifier over a doubled single index is still
+    // a qualifier a multi-index search cannot scope.
+    rejected(
       "CREATE OR REPLACE WATCHER my_watcher AS EVERY 5 MINUTES FROM orders o, orders p " +
       "WHERE o.x = 1 WITHIN 2 MINUTES ALWAYS DO LOG_ACTION LOG 'x' END"
-    ).isRight shouldBe true
+    )
   }
 
   /** RETARGETED by story 21.7, not deleted: these rows pinned a PENDING CAPABILITY ("the DML and
