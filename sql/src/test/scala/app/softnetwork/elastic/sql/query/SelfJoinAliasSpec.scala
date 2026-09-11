@@ -136,7 +136,8 @@ class SelfJoinAliasSpec extends AnyFlatSpec with Matchers {
       "SELECT a.x, b.y FROM t a, t b",
       "Table t is listed more than once in FROM under different aliases"
     )
-    rejectedWith("SELECT x FROM t, t a", "FROM t t JOIN t a ON t.<key> = a.<key>")
+    // An alias-less occurrence carries no alias token in the remedy (review N-7).
+    rejectedWith("SELECT x FROM t, t a", "FROM t JOIN t a ON t.<key> = a.<key>")
     rejectedWith(
       """SELECT a FROM "elastic".orders o, "elastic".orders p""",
       """Table "elastic".orders is listed more than once"""
@@ -153,6 +154,42 @@ class SelfJoinAliasSpec extends AnyFlatSpec with Matchers {
       s"CREATE MATERIALIZED VIEW target REFRESH EVERY 30 SECONDS AS $comma",
       "listed more than once in FROM"
     )
+  }
+
+  behavior of "one alias for two sources (review M1)"
+
+  it should "be REJECTED for a JOIN leg reusing the main table's alias, and for two legs under one alias" in {
+    // Before BIDC-8 both parsed: `o.x` resolved against the LAST source and the arrow planner
+    // registered two legs as the same `sq_o`.
+    rejectedWith(
+      "SELECT o.x FROM orders o JOIN customers o ON o.id = o.cid",
+      "Alias 'o' is used for more than one table (orders, customers)"
+    )
+    rejectedWith(
+      "SELECT t.x FROM t JOIN t ON t.id = t.parent",
+      "Alias 't' is used for more than one table"
+    )
+    rejectedWith(
+      "SELECT a.x FROM orders a JOIN orders a ON a.id = a.parent_id",
+      "Alias 'a' is used for more than one table"
+    )
+    // Distinct aliases keep planning; the exempt comma shape stays accepted.
+    single("SELECT a.x FROM orders a JOIN orders b ON a.id = b.parent_id")
+    single("SELECT x FROM t, t")
+  }
+
+  behavior of "an UNNEST whose nested field is named like its table (review L-2)"
+
+  it should "now resolve the table's own alias, which the lossy .swap used to lose" in {
+    // `tableAliases` puts `orders -> o` (the table) and `orders -> i` (the unnest, keyed by its
+    // nested field name) under ONE key, so before BIDC-8 the `.swap` kept only `i` and `o.id`
+    // stayed a literal field name. Two aliases share a key here without any self-join.
+    val ss = single("SELECT o.id, i.qty FROM orders o JOIN UNNEST(o.orders) AS i")
+    ss.from.aliasesToTable shouldBe ListMap("o" -> "orders", "i" -> "orders")
+    val id = ss.select.fields.head.identifier
+    id.name shouldBe "id"
+    id.table shouldBe Some("orders")
+    id.tableAlias shouldBe Some("o")
   }
 
   it should "leave the same-alias duplicate and the cross-qualifier shape untouched" in {

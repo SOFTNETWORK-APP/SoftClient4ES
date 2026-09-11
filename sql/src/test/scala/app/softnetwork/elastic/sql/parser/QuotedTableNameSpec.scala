@@ -464,9 +464,13 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     // flips that pin ON PURPOSE: qualifiers resolve through the lossless `From.aliasesToTable`, so
     // `o` resolves here too and the guard fires — a qualifier over a doubled single index is still
     // a qualifier a multi-index search cannot scope.
-    rejected(
+    val watcherSelfJoin =
       "CREATE OR REPLACE WATCHER my_watcher AS EVERY 5 MINUTES FROM orders o, orders p " +
       "WHERE o.x = 1 WITHIN 2 MINUTES ALWAYS DO LOG_ACTION LOG 'x' END"
+    rejected(watcherSelfJoin)
+    // It must be #191's guard that fires, not just any grammar rejection (review M-1).
+    Parser(watcherSelfJoin).swap.toOption.map(_.msg).getOrElse("") should include(
+      "cannot qualify a column by table when it searches several indices"
     )
   }
 

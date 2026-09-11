@@ -402,13 +402,14 @@ case class From(tables: Seq[Table]) extends Updateable {
     * regression" is half of the ruling, not a footnote to it.
     *
     * ⚠️ **Narrowing the rule does not by itself keep the rest of `sql` in step — a companion change
-    * was needed and is `joinSourceKeys` below.** `Identifier.update` (`sql/package.scala`) reverse-
-    * looks-up this map and puts the KEY into `Identifier.table`, so in the ambiguous branch that
-    * value is the qualified reference. Anything inside `sql` that compares `Identifier.table`
-    * against an index name must therefore speak the same key language: `TemporalLiterals` did not,
-    * and its cross-index join-leg guard stopped firing for `FROM orders o JOIN "prod_eu".orders p`
-    * until it was routed through `joinSourceKeys`. **Any new consumer of `Identifier.table`
-    * inherits that obligation.**
+    * was needed and is `joinSourceKeys` below.** `Identifier.update` (`sql/package.scala`) resolves
+    * a qualifier through `aliasesToTable` (since story BIDC-8; it used to reverse-scan this map)
+    * and puts the resulting KEY — the same `aliasKey` language — into `Identifier.table`, so in the
+    * ambiguous branch that value is the qualified reference. Anything inside `sql` that compares
+    * `Identifier.table` against an index name must therefore speak the same key language:
+    * `TemporalLiterals` did not, and its cross-index join-leg guard stopped firing for `FROM orders
+    * o JOIN "prod_eu".orders p` until it was routed through `joinSourceKeys`. **Any new consumer of
+    * `Identifier.table` inherits that obligation.**
     */
   private def aliasKey(name: String, qualified: String): String =
     if (ambiguousTableNames.contains(name)) qualified else name
@@ -478,9 +479,14 @@ case class From(tables: Seq[Table]) extends Updateable {
     * break under any other key language. The table side of every entry below uses the SAME
     * `aliasKey`, so the values here ARE `tableAliases` keys — `Identifier.table` stays a
     * `tableAliases` key (story 21.2 AD-6) and `schemas` / `joinSourceKeys` / `TemporalLiterals`
-    * need no new language. Whenever no two aliases share a key this map equals the old `.swap`.
+    * need no new language. Whenever no two aliases share a key this map equals the old `.swap`. Two
+    * aliases share a key WITHOUT a self-join in one more shape (review L-2): an UNNEST whose nested
+    * field is named like its table — `FROM orders o JOIN UNNEST(o.orders) AS i` put `orders -> o`
+    * and `orders -> i` under one key, so `.swap` lost `o` and `o.id` stayed a literal field name;
+    * it now resolves. Pinned in `SelfJoinAliasSpec`.
     *
-    * Two legs sharing an ALIAS still collapse here (last wins), exactly as `joinReferences` does.
+    * Two legs sharing an ALIAS still collapse here (last wins), exactly as `joinReferences` does;
+    * `validate()` rejects that shape since BIDC-8.
     */
   lazy val aliasesToTable: ListMap[String, String] = ListMap(
     (tables.map(table => effectiveAlias(table) -> aliasKey(table.name, table.qualifiedName)) ++
@@ -550,19 +556,49 @@ case class From(tables: Seq[Table]) extends Updateable {
           val rendered = Table.render(table.parts, table.name)
           val aliases =
             tables.filter(_.qualifiedName == table.qualifiedName).map(effectiveAlias).distinct
+          // An alias-less occurrence has no alias token to repeat in the remedy (review N-7).
           val (a, b) = (aliases.head, aliases(1))
+          def ref(alias: String): String =
+            if (alias == table.name) rendered else s"$rendered $alias"
           Left(
             s"Table $rendered is listed more than once in FROM under different aliases ($a, $b); " +
             "a comma-separated FROM searches several indices and cannot join a table to itself. " +
-            s"Write a self-join as FROM $rendered $a JOIN $rendered $b ON $a.<key> = $b.<key>"
+            s"Write a self-join as FROM ${ref(a)} JOIN ${ref(b)} ON $a.<key> = $b.<key>"
           )
         case None =>
-          for {
-            _ <- tables.map(_.validate()).filter(_.isLeft) match {
-              case Nil    => Right(())
-              case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+          // Story BIDC-8 (review M1) — one alias for two SOURCES. `FROM orders o JOIN customers o`
+          // and `FROM t JOIN t ON t.id = t.parent` both parsed: the alias maps kept the LAST
+          // source under `o`/`t`, every `o.x` resolved against it, and the arrow planner
+          // registered two legs as the same `sq_o` (DuckDB: "Attempting to execute an
+          // unsuccessful or closed pending query result"). Comma-listed duplicates of the SAME
+          // table under the SAME alias (`FROM t, t`) are deliberately exempt — a multi-index
+          // search de-duplicates them and nothing resolves differently.
+          val sources: Seq[(String, String, Boolean)] =
+            tables.map(t => (effectiveAlias(t), t.qualifiedName, false)) ++
+            joins.collect { case sj: StandardJoin =>
+              (sj.alias.map(_.alias).getOrElse(sj.source.name), sj.qualifiedName, true)
             }
-          } yield ()
+          val reusedAlias = sources
+            .groupBy(_._1)
+            .collectFirst {
+              case (alias, uses)
+                  if uses.size > 1 && !(uses.forall(u => !u._3 && u._2 == uses.head._2)) =>
+                (alias, uses.map(_._2))
+            }
+          reusedAlias match {
+            case Some((alias, names)) =>
+              Left(
+                s"Alias '$alias' is used for more than one table (${names.mkString(", ")}); give " +
+                "each table its own alias"
+              )
+            case None =>
+              for {
+                _ <- tables.map(_.validate()).filter(_.isLeft) match {
+                  case Nil    => Right(())
+                  case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+                }
+              } yield ()
+          }
       }
     }
   }
