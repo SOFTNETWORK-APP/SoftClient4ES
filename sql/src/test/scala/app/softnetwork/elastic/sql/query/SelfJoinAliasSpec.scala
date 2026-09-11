@@ -158,24 +158,34 @@ class SelfJoinAliasSpec extends AnyFlatSpec with Matchers {
 
   behavior of "one alias for two sources (review M1)"
 
-  it should "be REJECTED for a JOIN leg reusing the main table's alias, and for two legs under one alias" in {
-    // Before BIDC-8 both parsed: `o.x` resolved against the LAST source and the arrow planner
+  it should "be REJECTED for an EXPLICIT alias written for two sources, case-insensitively" in {
+    // Before BIDC-8 these parsed: `o.x` resolved against the LAST source and the arrow planner
     // registered two legs as the same `sq_o`.
     rejectedWith(
       "SELECT o.x FROM orders o JOIN customers o ON o.id = o.cid",
       "Alias 'o' is used for more than one table (orders, customers)"
     )
     rejectedWith(
-      "SELECT t.x FROM t JOIN t ON t.id = t.parent",
-      "Alias 't' is used for more than one table"
-    )
-    rejectedWith(
       "SELECT a.x FROM orders a JOIN orders a ON a.id = a.parent_id",
       "Alias 'a' is used for more than one table"
     )
-    // Distinct aliases keep planning; the exempt comma shape stays accepted.
+    rejectedWith("SELECT a.x FROM t a, t a", "is used for more than one table")
+    // DuckDB's catalog is case-insensitive (`sq_A` == `sq_a`), so the guard is too (review NEW-3).
+    rejectedWith(
+      "SELECT a.x FROM orders A JOIN orders a ON A.id = a.parent_id",
+      "is used for more than one table"
+    )
+    // Distinct aliases keep planning.
     single("SELECT a.x FROM orders a JOIN orders b ON a.id = b.parent_id")
+  }
+
+  it should "leave alias-less duplicates alone: a bare name is not an alias anybody wrote (review NEW-4)" in {
+    // 21.2's preserve-don't-interpret multi-index searches must keep parsing; the alias-less
+    // self-JOIN is left to the join planner's own duplicate-alias guard.
     single("SELECT x FROM t, t")
+    single("""SELECT x FROM "prod_us".orders, "prod_eu".orders""")
+    single("""SELECT x FROM "a".orders, orders""")
+    single("SELECT t.x FROM t JOIN t ON t.id = t.parent")
   }
 
   behavior of "an UNNEST whose nested field is named like its table (review L-2)"

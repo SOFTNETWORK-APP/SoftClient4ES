@@ -566,25 +566,26 @@ case class From(tables: Seq[Table]) extends Updateable {
             s"Write a self-join as FROM ${ref(a)} JOIN ${ref(b)} ON $a.<key> = $b.<key>"
           )
         case None =>
-          // Story BIDC-8 (review M1) — one alias for two SOURCES. `FROM orders o JOIN customers o`
-          // and `FROM t JOIN t ON t.id = t.parent` both parsed: the alias maps kept the LAST
-          // source under `o`/`t`, every `o.x` resolved against it, and the arrow planner
-          // registered two legs as the same `sq_o` (DuckDB: "Attempting to execute an
-          // unsuccessful or closed pending query result"). Comma-listed duplicates of the SAME
-          // table under the SAME alias (`FROM t, t`) are deliberately exempt — a multi-index
-          // search de-duplicates them and nothing resolves differently.
-          val sources: Seq[(String, String, Boolean)] =
-            tables.map(t => (effectiveAlias(t), t.qualifiedName, false)) ++
-            joins.collect { case sj: StandardJoin =>
-              (sj.alias.map(_.alias).getOrElse(sj.source.name), sj.qualifiedName, true)
+          // Story BIDC-8 (review M1) — one EXPLICIT alias for two SOURCES. `FROM orders o JOIN
+          // customers o` parsed: the alias maps kept the LAST source under `o`, every `o.x`
+          // resolved against it, and the arrow planner registered two legs as the same `sq_o`
+          // (DuckDB: "Attempting to execute an unsuccessful or closed pending query result").
+          // Only aliases somebody WROTE are compared (review NEW-4): an alias-less table's bare
+          // name is not an alias, so `FROM "prod_us".orders, "prod_eu".orders` and `FROM t, t`
+          // keep their multi-index-search acceptance (21.2 preserves, it does not interpret), and
+          // the alias-less `FROM t JOIN t` is left to the join planner's own guard. The comparison
+          // is case-INSENSITIVE (review NEW-3): DuckDB's catalog folds `sq_A` and `sq_a`.
+          val explicitAliases: Seq[(String, String)] =
+            tables.flatMap(t =>
+              t.tableAlias.map(_.alias).filter(_.nonEmpty).map(_ -> t.qualifiedName)
+            ) ++
+            joins.collect {
+              case sj: StandardJoin if sj.alias.exists(_.alias.nonEmpty) =>
+                sj.alias.get.alias -> sj.qualifiedName
             }
-          val reusedAlias = sources
-            .groupBy(_._1)
-            .collectFirst {
-              case (alias, uses)
-                  if uses.size > 1 && !(uses.forall(u => !u._3 && u._2 == uses.head._2)) =>
-                (alias, uses.map(_._2))
-            }
+          val reusedAlias = explicitAliases
+            .groupBy(_._1.toLowerCase(java.util.Locale.ROOT))
+            .collectFirst { case (_, uses) if uses.size > 1 => (uses.head._1, uses.map(_._2)) }
           reusedAlias match {
             case Some((alias, names)) =>
               Left(

@@ -362,6 +362,15 @@ class QuotedTableNameSpec extends AnyFlatSpec with Matchers {
     rejected("SELECT a FROM orders o, orders p")
   }
 
+  it should "keep alias-less multi-index searches over same-name tables accepted (BIDC-8 review NEW-4)" in {
+    // The duplicate-alias guard compares EXPLICIT aliases only; a bare table name is not an alias
+    // anybody wrote, so these 21.2 shapes parse exactly as before.
+    single("""SELECT x FROM "prod_us".orders, "prod_eu".orders""").from.tableAliases shouldBe
+    ListMap("prod_us.orders" -> "orders", "prod_eu.orders" -> "orders")
+    single("""SELECT x FROM "a".orders, orders""").from.tableAliases shouldBe
+    ListMap("a.orders" -> "orders", "orders" -> "orders")
+  }
+
   it should "disambiguate only the ambiguous half of a MIXED qualified/bare FROM (AD-6)" in {
     // One leg qualified, one bare, same index name: the bare name IS ambiguous (two distinct
     // qualified references, `orders` and `prod_eu.orders`), so both keys survive and the bare leg
