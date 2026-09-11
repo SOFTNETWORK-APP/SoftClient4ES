@@ -1652,6 +1652,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -1705,6 +1707,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defp", "def p")
       .replaceAll("defe", "def e")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -2194,6 +2198,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defp", "def p")
       .replaceAll("defv", " def v")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -2363,6 +2369,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defp", "def p")
       .replaceAll("defv", " def v")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       .replaceAll("\\?", " ? ")
@@ -2659,7 +2667,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); (param1 == null) ? null : (param1 * (param2 - 10)) > 10000",
+      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().get(ChronoField.YEAR); def left1 = (param1 == null) ? null : (param1 * (param2 - 10)); (left1 == null ? false : ((left1 > 10000)))",
       |              "params": {
       |                "__now__": 1767139200000
       |              }
@@ -2721,6 +2729,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("defr", "def r")
+      .replaceAll("false:", "false : ")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
       // .replaceAll("(\\d)=", "$1 =")
@@ -2755,7 +2764,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1)) > 100.0"
+      |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def left1 = (param1 == null) ? null : Double.valueOf(Math.sqrt(param1)); (left1 == null ? false : ((left1 > 100.0)))"
       |            }
       |          }
       |        }
@@ -2884,6 +2893,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defp", "def p")
       .replaceAll("if\\(", "if (")
       .replaceAll("=\\(", " = (")
@@ -2928,7 +2939,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "script": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : param1.trim().length() > 10"
+      |              "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); def left1 = (param1 == null) ? null : param1.trim().length(); (left1 == null ? false : ((left1 > 10)))"
       |            }
       |          }
       |        }
@@ -3033,6 +3044,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3165,6 +3178,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3237,6 +3252,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3377,6 +3394,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3499,6 +3518,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defv", " def v")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3590,6 +3611,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3703,6 +3726,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3818,6 +3843,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")
@@ -3922,6 +3949,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replace("\\\"/\\\",\\\"-\\\"", "\\\"/\\\", \\\"-\\\"")
       .replaceAll("defp", "def p")
       .replaceAll("defa", "def a")
+      .replaceAll("defleft", "def left")
+      .replaceAll("false:", "false : ")
       .replaceAll("defe", "def e")
       .replaceAll("defl", "def l")
       .replaceAll("def_", "def _")

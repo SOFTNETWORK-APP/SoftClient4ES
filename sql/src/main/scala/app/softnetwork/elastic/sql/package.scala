@@ -468,6 +468,25 @@ package object sql {
       }
     }
 
+    // Unique local-variable names for a script (story BIDC-8, AD-9). A guarded boolean binds its
+    // operand to a local so the comparison lands INSIDE the null guard; two such operands in one
+    // script must not declare the same name.
+    private[this] var _locals: collection.mutable.Seq[(String, String)] =
+      collection.mutable.Seq.empty
+
+    /** Bind `expr` to a fresh local declared in this script's PROLOGUE and return its name.
+      *
+      * A Painless `def x = …;` is a STATEMENT: it cannot sit inside a parenthesised operand, so a
+      * guarded boolean cannot declare its own local inline once predicates are composed (story
+      * BIDC-8, AD-9). Declaring it beside the `param` assignments keeps every operand a pure
+      * expression and evaluates it once.
+      */
+    def bindLocal(expr: String, prefix: String = "left"): String = {
+      val name = s"$prefix${_locals.size + 1}"
+      _locals = _locals :+ (name -> expr)
+      name
+    }
+
     def exists(token: Token): Boolean = {
       token match {
         case param: PainlessParam      => _keys.contains(param)
@@ -476,7 +495,7 @@ package object sql {
       }
     }
 
-    def isEmpty: Boolean = _keys.isEmpty
+    def isEmpty: Boolean = _keys.isEmpty && _locals.isEmpty
 
     def nonEmpty: Boolean = _keys.nonEmpty
 
@@ -495,16 +514,19 @@ package object sql {
         s"${param.param}${param.painlessMethods.mkString("")}"
 
     override def toString: String = {
-      if (isEmpty) ""
-      else
-        _keys
-          .flatMap { param =>
-            get(param) match {
-              case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
-              case None    => None // should not happen
+      val params =
+        if (isEmpty) ""
+        else
+          _keys
+            .flatMap { param =>
+              get(param) match {
+                case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
+                case None    => None // should not happen
+              }
             }
-          }
-          .mkString("")
+            .mkString("")
+      // Locals bound by guarded booleans (AD-9) follow the params they read.
+      params + _locals.map { case (name, expr) => s"def $name = $expr; " }.mkString("")
     }
   }
 

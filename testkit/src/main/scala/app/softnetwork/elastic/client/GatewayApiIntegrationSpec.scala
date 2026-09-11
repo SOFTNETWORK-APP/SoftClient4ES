@@ -2418,6 +2418,90 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   // 8. POLICIES — CREATE / DROP / EXECUTE
   // ===========================================================================
 
+  behavior of "a WHERE predicate that must be scripted (story BIDC-8, AD-9)"
+
+  /** 🔴 Row-set pins for the Painless filter emission, on a REAL cluster.
+    *
+    * Before BIDC-8 a function-wrapped predicate emitted `(param == null) ? null : <boolean>`, whose
+    * ternary branches are `null` (Object) and a primitive `boolean`: Elasticsearch refused the
+    * whole query at COMPILE time (`script_exception / compile error`, caused by
+    * `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`) — data-independent,
+    * it failed even against an empty index. Two more defects sat on the same path: a composed
+    * predicate was not parenthesised, so `?:` (the loosest operator in Painless) swallowed the
+    * sibling — measured `WHERE status = 'A' OR id = 1` returning NO rows where one matches — and
+    * `check` dispatched on the RAW operator, so a NOT was silently dropped (`WHERE NOT status =
+    * 'A'` returned exactly the rows that DO equal 'A').
+    *
+    * The assertions below are ROW SETS, never script bytes, and every one of them is what ANSI
+    * three-valued logic requires of a MISSING field: a predicate over NULL is NULL, so the row does
+    * not match — and `NOT` over it stays NULL, so it does not match either.
+    */
+  it should "apply ANSI three-valued logic to a scripted WHERE, including NOT and composites" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS tvl_orders (
+        |  id INT,
+        |  status KEYWORD,
+        |  amount DOUBLE,
+        |  PRIMARY KEY (id)
+        |)""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    // id 1: status = 'A'; id 2: status = 'B'; id 3: the `status` FIELD IS ABSENT from the document.
+    // 🔴 Seeded through COPY INTO, not INSERT: `INSERT INTO tvl_orders (id, amount)` writes the
+    // omitted column as an EMPTY STRING (measured — row 3 then matched `NOT UPPER(status) = 'A'`
+    // legitimately), so it cannot express "this document never carried the field", which is the
+    // only state that exercises the null guard.
+    val tvlJsonl = java.io.File.createTempFile("tvl_orders_", ".jsonl")
+    tvlJsonl.deleteOnExit()
+    val tvlWriter = new java.io.PrintWriter(tvlJsonl)
+    try {
+      tvlWriter.println("""{"id": 1, "status": "A", "amount": 5.0}""")
+      tvlWriter.println("""{"id": 2, "status": "B", "amount": 50.0}""")
+      tvlWriter.println("""{"id": 3, "amount": 50.0}""")
+    } finally tvlWriter.close()
+    assertDml(
+      System.nanoTime(),
+      client.run(s"""COPY INTO tvl_orders FROM "${tvlJsonl.getAbsolutePath}";""").futureValue
+    )
+    // Fixture guard: the premise of every assertion below is that row 3 has NO `status` field.
+    collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM tvl_orders WHERE status IS NOT NULL").futureValue
+    ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted shouldBe Seq(1, 2)
+
+    // `collectRows`, not `assertQueryRows`: an un-LIMITed row query comes back as a QueryStream on
+    // the licensed gateway since #209, and `assertQueryRows` accepts `QueryRows` only.
+    def ids(where: String): Seq[Int] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id FROM tvl_orders $where").futureValue
+      ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted
+
+    // A function over a present field matches only the row it names; the MISSING row never matches.
+    ids("WHERE UPPER(status) = 'A'") shouldBe Seq(1)
+    // NOT over a MISSING field is NULL, not TRUE: row 3 must NOT appear.
+    ids("WHERE NOT UPPER(status) = 'A'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) <> 'A'") shouldBe Seq(2)
+    // Composition: the guard of one operand must not swallow the other.
+    ids("WHERE UPPER(status) = 'A' OR id = 1") shouldBe Seq(1)
+    ids("WHERE UPPER(status) = 'A' AND id = 1") shouldBe Seq(1)
+    ids("WHERE NOT UPPER(status) = 'A' AND id = 1") shouldBe Seq.empty[Int]
+    ids("WHERE NOT UPPER(status) = 'A' OR id = 1") shouldBe Seq(1, 2)
+    // 🔴 With NO function the engine does not script at all, and the contrast is worth pinning:
+    // a bare column becomes a TERM query, so `OR` is a `bool.should` of two clauses …
+    ids("WHERE status = 'A' OR id = 1") shouldBe Seq(1)
+    // … and `NOT` becomes Elasticsearch's `must_not`, whose semantics INCLUDE a document that does
+    // not carry the field — row 3 matches. That diverges from ANSI (`NOT NULL` is NULL), it is
+    // PRE-EXISTING, structural, and BIDC-8 does not change it: this story fixes what the Painless
+    // FILTER emits, and a bare-column predicate never reaches Painless here. Pinned so the
+    // difference between the two routes is visible rather than discovered.
+    ids("WHERE NOT status = 'A'") shouldBe Seq(2, 3)
+    // A numeric function family, so the rule is not string-specific (`amount` is present on all).
+    ids("WHERE ABS(amount) > 10") shouldBe Seq(2, 3)
+    ids("WHERE LOWER(status) = 'a' AND ABS(amount) > 10") shouldBe Seq.empty[Int]
+
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
+  }
+
   behavior of "POLICIES statements"
 
   it should "create, show, execute and drop a policy" in {

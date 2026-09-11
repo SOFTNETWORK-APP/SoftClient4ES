@@ -206,8 +206,15 @@ sealed trait Criteria extends Updateable with PainlessScript {
 
   override def painless(context: Option[PainlessContext]): String = this match {
     case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = left.painless(context)
-      val rightStr = right.painless(context)
+      // 🔴 Story BIDC-8 AD-9 — each operand is PARENTHESISED. An operand that carries a null guard
+      // renders as a ternary, and `?:` has the LOWEST precedence in Painless, so the unparenthesised
+      // composition `a == null ? false : (x) && b == null ? false : (y)` parses as
+      // `a == null ? false : (((x) && b == null) ? false : (y))` — the second predicate silently
+      // became part of the first one's condition. MEASURED at the baseline on `WHERE UPPER(status) =
+      // 'A' AND id = 1` and on the all-bare-column twin; a filter cannot be composed from ternaries
+      // without parentheses.
+      val leftStr = s"(${left.painless(context)})"
+      val rightStr = s"(${right.painless(context)})"
       val opStr = op match {
         case AND | OR => op.painless(context)
         case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
@@ -511,7 +518,18 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     */
   protected def check(context: Option[PainlessContext], param: String, value: String): String = {
     operator match {
-      case comparison: ComparisonOperator =>
+      case _: ComparisonOperator =>
+        // 🔴 Story BIDC-8 AD-9 — dispatch on the EFFECTIVE operator, i.e. with a `NOT` folded in,
+        // exactly as `painlessOp` does for the generic fallback below. Each arm here returns a
+        // HARD-CODED spelling (`compareTo(...) == 0`, `isEqual(...)`, …) chosen from the RAW
+        // operator, so `WHERE NOT status = 'A'` and `WHERE NOT UPPER(status) = 'A'` both emitted
+        // the same Painless as their un-negated twins and the NOT was silently lost — a wrong
+        // answer, not an error (MEASURED at the baseline: `maybeNot = Some(NOT)` on the AST,
+        // `compareTo("A") == 0` in the script).
+        val comparison = operator match {
+          case o: ComparisonOperator if maybeNot.isDefined => o.not
+          case o                                           => o
+        }
         comparison match {
           case LT =>
             maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
@@ -637,6 +655,42 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           case _ =>
         }
       case _ =>
+    }
+    // 🔴 Story BIDC-8 AD-9 — a left-hand side that can be NULL must be bound to a local so the
+    // comparison lands INSIDE the guard, and the guard must collapse to `false` exactly once, at the
+    // top of THIS predicate.
+    //
+    // MEASURED at the baseline: `WHERE UPPER(status) <> 'ZZZ'` emitted
+    // `(param1 == null) ? null : param1.toUpperCase().compareTo("ZZZ") != 0` — the function's own
+    // null guard with the comparison appended OUTSIDE it. `?:` binds loosest, so the ternary's
+    // branches became `null` (Object) and a primitive `boolean`, and Elasticsearch refused the whole
+    // query at COMPILE time: `script_exception / compile error`, caused by
+    // `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]` (live ES 8.18.3,
+    // data-independent — it fails on an empty index). The same held for the numeric family
+    // (`ABS(amount) > 10`); the date family escaped it only because `YEAR(...)` folds into the
+    // parameter assignment and reports `nullable`.
+    //
+    // The `false` collapse is ANSI-safe here because NOT is already folded into the operator at this
+    // point (`painlessOp` uses `o.not`), so `NOT UPPER(x) = 'A'` over a MISSING field yields `false`
+    // = no match, which is what three-valued logic requires (`NOT NULL` is NULL, not TRUE). It is
+    // applied per predicate, never to a composite: `NULL OR true` stays true and `NULL AND true`
+    // stays false under `||`/`&&` composition. Only a QUERY (filter) context collapses — script
+    // fields, sorts, aggregations and ingest processors keep `null`, where it is a legitimate value
+    // (story 21.8 Part C).
+    // What must be guarded is a rendering that READS A DOCUMENT FIELD, since that is what can be
+    // missing. MEASURED (probe over the real parser): a bare column reports `name = status`,
+    // `nullable = true`, no dependencies; a function-wrapped column reports an EMPTY name,
+    // `nullable = false` and `dependencies = [status]`; a literal (`CASE WHEN 1 = 1`, which parses
+    // to an identifier with an empty name and a ONE-element function chain — story 20.9) reports
+    // neither. So `nullable || dependencies.nonEmpty` is the discriminator: a `functions.nonEmpty`
+    // test alone guards constants and broke `BooleanCastSpec`'s 21.8 restoration pin.
+    val guardInQuery = context.exists(_.context == PainlessContextType.Query)
+    val readsDocumentField = identifier.nullable || identifier.dependencies.nonEmpty
+    if (guardInQuery && readsDocumentField) {
+      // The local is declared in the script PROLOGUE, never inline: `def x = …;` is a STATEMENT and
+      // an operand of a composed predicate must be a pure expression.
+      val v = context.map(_.bindLocal(innerLeft)).getOrElse(innerLeft)
+      return s"($v == null ? false : ($painlessNot(${check(context, v)})))"
     }
     if (identifier.nullable) {
       return s"def left = $innerLeft; left == null ? false : $painlessNot(${check(context, "left")})"

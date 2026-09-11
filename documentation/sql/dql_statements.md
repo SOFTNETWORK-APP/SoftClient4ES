@@ -410,6 +410,21 @@ The `WHERE` clause supports:
 - `LIKE`, `RLIKE` (regex)
 - conditions on nested fields (`profile.city`, `profile.followers`)
 
+> **A function in a `WHERE` predicate, and documents that do not carry the field.** A predicate that
+> applies a function to a column (`WHERE UPPER(status) = 'A'`, `WHERE ABS(amount) > 10`) is executed
+> by Elasticsearch as a Painless script. Since engine **0.23.0** such a predicate follows ANSI
+> three-valued logic for a document in which the field is **absent**: the comparison is NULL, so the
+> document does not match — and it does not match the negated form either (`WHERE NOT UPPER(status)
+> = 'A'` leaves it out, because `NOT NULL` is NULL, not TRUE). Before 0.23.0 the emitted script did
+> not compile at all and Elasticsearch rejected the whole query (`script_exception: compile error`,
+> caused by `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`), so no such
+> predicate ever ran.
+>
+> A predicate with **no** function is not scripted — it becomes a term/range query — and `NOT` over
+> it is Elasticsearch's `must_not`, which **does** return documents that lack the field. The two
+> routes therefore differ for absent fields; use `IS NULL` / `IS NOT NULL` when that distinction
+> matters.
+
 **Example**
 
 ```sql
