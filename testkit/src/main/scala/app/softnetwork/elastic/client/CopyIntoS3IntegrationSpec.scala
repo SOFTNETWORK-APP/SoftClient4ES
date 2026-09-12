@@ -21,7 +21,7 @@ import app.softnetwork.elastic.scalatest.{ElasticTestKit, MinioTestKit}
 
 import java.time.LocalDate
 
-/** Integration tests for `COPY INTO ... FROM 's3a://...'` backed by a MinIO container.
+/** Integration tests for `COPY INTO ... FROM 's3a://...'` backed by an S3 container.
   *
   * Mix this trait into a concrete test class together with
   * [[app.softnetwork.elastic.scalatest.ElasticDockerTestKit]] and [[MinioTestKit]]:
@@ -42,7 +42,7 @@ trait CopyIntoS3IntegrationSpec extends GatewayIntegrationTestKit {
   self: ElasticTestKit with MinioTestKit =>
 
   // ---------------------------------------------------------------------------
-  // COPY INTO from S3 (MinIO) integration tests
+  // COPY INTO from S3 integration tests
   // ---------------------------------------------------------------------------
 
   behavior of "COPY INTO from S3"

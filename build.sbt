@@ -305,7 +305,12 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         "ch.qos.logback" % "logback-classic" % Versions.logback,
         "app.softnetwork.persistence" %% "persistence-core-testkit" % Versions.genericPersistence,
         "org.testcontainers" % "testcontainers-elasticsearch" % Versions.testContainers excludeAll (jacksonExclusions: _*),
-        "org.testcontainers" % "testcontainers-minio"         % Versions.testContainers,
+        // MinioTestKit drives `adobe/s3mock` through a plain GenericContainer: `minio/minio` was
+        // removed from Docker Hub (so `testcontainers-minio` has no image to pull), and the s3mock
+        // Testcontainers MODULE is Java-17 bytecode built against Testcontainers 1.x. Declared
+        // explicitly even though testcontainers-elasticsearch already brings it in transitively.
+        // (Same line exists in testkit/build.sbt — keep them in step.)
+        "org.testcontainers" % "testcontainers" % Versions.testContainers,
         // Required at test runtime for COPY INTO ... FROM 's3a://...' tests via MinioTestKit
         // "org.apache.hadoop" % "hadoop-aws" % Versions.hadoop % Test excludeAll (excludeSlf4jAndLog4j: _*)
       ),

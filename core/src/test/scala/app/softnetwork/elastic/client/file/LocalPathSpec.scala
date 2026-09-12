@@ -344,6 +344,72 @@ class LocalPathSpec extends AnyWordSpec with Matchers with OptionValues {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // The AWS_* SYSTEM-PROPERTY contract, which nothing else in this repository asserts.
+  //
+  // `MinioTestKit` sets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL as JVM system
+  // properties precisely so that the PRODUCTION s3aConf() picks them up through envOrProp(). Under
+  // the old MinIO container the COPY INTO integration tests proved that end to end: MinIO answers
+  // 403 to a wrong key. The replacement (adobe/s3mock) does NOT verify credentials at ALL - a wrong
+  // key AND secret still succeed - so those integration tests can no longer detect a broken
+  // propagation. This is where that lost protection lives now.
+  //
+  // The env var, when set, WINS over the system property by design (`sys.env.get(...).orElse(...)`),
+  // so a shell exporting AWS_ACCESS_KEY_ID turns these into a measurement of that shell. The clue
+  // says so rather than an `assume`, which would cancel silently and leave the gate green-by-absence.
+  // ---------------------------------------------------------------------------------------------
+  "HadoopConfigurationFactory.s3aConf" should {
+
+    val awsProperties = Seq("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_ENDPOINT_URL")
+    val accessKey = "test-access-key"
+    val secretKey = "test-secret-key"
+    val endpoint = "http://localhost:19090"
+
+    def withAwsProperties(test: => Unit): Unit = {
+      System.setProperty("AWS_ACCESS_KEY_ID", accessKey)
+      System.setProperty("AWS_SECRET_ACCESS_KEY", secretKey)
+      System.setProperty("AWS_ENDPOINT_URL", endpoint)
+      try test
+      finally awsProperties.foreach(System.clearProperty)
+    }
+
+    // `core` tests share one JVM (Test / fork is false unless -Dtest.jdk.home is set), and
+    // `Test / parallelExecution := false` is per-project - so a system property another module's
+    // tests forgot to clear would silently reach the no-credentials case below. Clearing on the way
+    // IN as well as out makes that case deterministic without hiding a real env var, which
+    // envOrProp still prefers over any property.
+    def withoutAwsProperties(test: => Unit): Unit = {
+      awsProperties.foreach(System.clearProperty)
+      try test
+      finally awsProperties.foreach(System.clearProperty)
+    }
+
+    "read credentials and endpoint from JVM system properties (MinioTestKit's contract)" in {
+      withAwsProperties {
+        val conf = HadoopConfigurationFactory.forPath("s3a://bucket/customers.jsonl")
+        withClue(
+          "AWS_* env vars take precedence over the system properties this test sets - " +
+          "unset them in the shell running sbt: "
+        ) {
+          conf.get("fs.s3a.access.key") shouldBe accessKey
+          conf.get("fs.s3a.secret.key") shouldBe secretKey
+          conf.get("fs.s3a.endpoint") shouldBe endpoint
+        }
+        // An S3-compatible endpoint is only reachable path-style; the vhost form would resolve
+        // `bucket.localhost`. s3aConf sets this together with the endpoint - assert the pair.
+        conf.getBoolean("fs.s3a.path.style.access", false) shouldBe true
+      }
+    }
+
+    "set no static key when none is available" in {
+      withoutAwsProperties {
+        val conf = HadoopConfigurationFactory.forPath("s3a://bucket/customers.jsonl")
+        Option(conf.get("fs.s3a.access.key")) shouldBe None
+        Option(conf.get("fs.s3a.secret.key")) shouldBe None
+      }
+    }
+  }
+
   "LocalPath.scheme" should {
     "lowercase, and refuse a one-character prefix" in {
       LocalPath.scheme("S3A://b/x") shouldBe Some("s3a")
