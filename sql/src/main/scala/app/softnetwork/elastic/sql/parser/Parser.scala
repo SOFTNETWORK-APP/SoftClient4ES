@@ -842,32 +842,36 @@ object Parser
     keyword("WHEN") ~> opt(not) ~ identName ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
     ) >> { case n ~ field ~ op ~ v ~ fun =>
-      val target_op =
-        n match {
-          case Some(_) => op.not
-          case None    => op
-        }
-      v match {
-        case Some(value) =>
-          success(CompareWatcherCondition(field, target_op, Left(value)))
-        case None =>
-          fun match {
-            case Some(f) if f.identifier.dependencies.isEmpty =>
-              success(
-                CompareWatcherCondition(
-                  field,
-                  target_op,
-                  Right(f.identifier.withFunctions(f +: f.identifier.functions))
+      // A `NOT` is folded into the operator. `comparison_operator` admits only the six arithmetic
+      // comparisons, every one of which HAS a negated spelling, so `maybeNegated` is `Some` here
+      // today -- but the answer is total (story BIDC-8, review M-6: `ComparisonOperator.not` used
+      // to `MatchError` on every other comparison), so a widening of that production rejects the
+      // combination instead of emitting a silently un-negated condition.
+      val target_op = if (n.isDefined) op.maybeNegated.getOrElse(op) else op
+      if (n.isDefined && op.maybeNegated.isEmpty)
+        err(s"NOT is not supported with the $op operator in a watcher condition")
+      else
+        v match {
+          case Some(value) =>
+            success(CompareWatcherCondition(field, target_op, Left(value)))
+          case None =>
+            fun match {
+              case Some(f) if f.identifier.dependencies.isEmpty =>
+                success(
+                  CompareWatcherCondition(
+                    field,
+                    target_op,
+                    Right(f.identifier.withFunctions(f +: f.identifier.functions))
+                  )
                 )
-              )
-            case Some(_) =>
-              err(
-                "Date/datetime functions with field dependencies are not supported for comparison"
-              )
-            case None =>
-              err("A value or a date/datetime function must be provided for comparison")
-          }
-      }
+              case Some(_) =>
+                err(
+                  "Date/datetime functions with field dependencies are not supported for comparison"
+                )
+              case None =>
+                err("A value or a date/datetime function must be provided for comparison")
+            }
+        }
     }
 
   private def scriptParams: PackratParser[ListMap[String, Value[_]]] =

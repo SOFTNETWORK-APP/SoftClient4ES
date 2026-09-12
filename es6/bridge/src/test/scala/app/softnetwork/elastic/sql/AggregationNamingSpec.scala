@@ -245,7 +245,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
-      """"script":{"source":"(params.count_x == null ? false : (!(params.count_x >= 1 && params.count_x <= 5)))"}}}}}}}"""
+      """"script":{"source":"(params.count_x == null ? false : !(params.count_x >= 1 && params.count_x <= 5))"}}}}}}}"""
     ).mkString
   }
 
@@ -265,7 +265,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : (!(params.max_x == 1 || params.max_x == 2)))"}}}}}}}"""
+      """"script":{"source":"(params.max_x == null ? false : !(params.max_x == 1 || params.max_x == 2))"}}}}}}}"""
     ).mkString
   }
 
@@ -290,7 +290,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"count_x":{"value_count":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x"},""",
-      """"script":{"source":"(params.count_x == null ? false : (!(params.count_x == 1 || params.count_x == 2)))"}}}}}}}"""
+      """"script":{"source":"(params.count_x == null ? false : !(params.count_x == 1 || params.count_x == 2))"}}}}}}}"""
     ).mkString
   }
 

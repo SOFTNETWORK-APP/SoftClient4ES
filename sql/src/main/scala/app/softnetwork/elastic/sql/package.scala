@@ -444,6 +444,14 @@ package object sql {
                 val paramName = s"param${_keys.size + 1}"
                 _keys = _keys :+ param
                 _values = _values :+ paramName
+                // 🔴 Declaration ORDER is creation ORDER (story BIDC-8, review B-1). A param can be
+                // created AFTER a local — `function/cond/package.scala` captures an already-rendered
+                // CASE condition into a new `LiteralParam` — and emitting all params before all
+                // locals then produced a FORWARD REFERENCE (`def param2 = (left1 …); def left1 = …`),
+                // which Elasticsearch refuses with `cannot resolve symbol [left1]` on EVERY index.
+                // There are 18 `addParam(LiteralParam(...))` sites, so the ordering must be
+                // structural, not a special case.
+                _declarations = _declarations :+ Left(param)
                 _lastParam = Some(paramName)
                 _lastParam
               }
@@ -471,7 +479,13 @@ package object sql {
     // Unique local-variable names for a script (story BIDC-8, AD-9). A guarded boolean binds its
     // operand to a local so the comparison lands INSIDE the null guard; two such operands in one
     // script must not declare the same name.
-    private[this] var _locals: collection.mutable.Seq[(String, String)] =
+    private[this] var _locals: Int = 0
+
+    /** Every declaration this script emits, in CREATION order: a parameter (rendered from its
+      * `PainlessParam`) or a local bound by [[bindLocal]]. See the B-1 note in `addParam`.
+      */
+    private[this] var _declarations
+      : collection.mutable.Seq[Either[PainlessParam, (String, String)]] =
       collection.mutable.Seq.empty
 
     /** Bind `expr` to a fresh local declared in this script's PROLOGUE and return its name.
@@ -482,8 +496,9 @@ package object sql {
       * expression and evaluates it once.
       */
     def bindLocal(expr: String, prefix: String = "left"): String = {
-      val name = s"$prefix${_locals.size + 1}"
-      _locals = _locals :+ (name -> expr)
+      _locals += 1
+      val name = s"$prefix${_locals}"
+      _declarations = _declarations :+ Right(name -> expr)
       name
     }
 
@@ -495,9 +510,10 @@ package object sql {
       }
     }
 
-    def isEmpty: Boolean = _keys.isEmpty && _locals.isEmpty
+    def isEmpty: Boolean = _declarations.isEmpty
 
-    def nonEmpty: Boolean = _keys.nonEmpty
+    // Review M-7: the complement of `isEmpty`, so a locals-only context cannot be both.
+    def nonEmpty: Boolean = !isEmpty
 
     def last: Option[String] = _lastParam
 
@@ -513,21 +529,17 @@ package object sql {
       else
         s"${param.param}${param.painlessMethods.mkString("")}"
 
-    override def toString: String = {
-      val params =
-        if (isEmpty) ""
-        else
-          _keys
-            .flatMap { param =>
-              get(param) match {
-                case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
-                case None    => None // should not happen
-              }
+    override def toString: String =
+      _declarations
+        .flatMap {
+          case Left(param) =>
+            get(param) match {
+              case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
+              case None    => None // should not happen
             }
-            .mkString("")
-      // Locals bound by guarded booleans (AD-9) follow the params they read.
-      params + _locals.map { case (name, expr) => s"def $name = $expr; " }.mkString("")
-    }
+          case Right((name, expr)) => Some(s"def $name = $expr; ")
+        }
+        .mkString("")
   }
 
   trait PainlessParams extends PainlessScript {

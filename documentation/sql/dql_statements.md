@@ -420,10 +420,27 @@ The `WHERE` clause supports:
 > caused by `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`), so no such
 > predicate ever ran.
 >
+> This holds for **every** comparison the clause accepts, not only `=`: `<`, `>`, `<>`, `LIKE`,
+> `NOT LIKE`, `IN`, `NOT IN`, `BETWEEN` and `NOT BETWEEN` over a function all follow the same rule,
+> and a `NOT` written after `AND` / `OR` (`WHERE ABS(amount) > 10 AND NOT UPPER(status) = 'A'`)
+> negates the criterion it qualifies, not the whole composite — so the same predicate returns the
+> same rows whichever way round you write it. Before **0.23.0** several of these did not run at all:
+> `LIKE` over a function produced an uncompilable script, `NOT LIKE` failed inside the engine, and
+> `IN` / `BETWEEN` over a function were sent to Elasticsearch with an empty field name and rejected.
+>
 > A predicate with **no** function is not scripted — it becomes a term/range query — and `NOT` over
 > it is Elasticsearch's `must_not`, which **does** return documents that lack the field. The two
 > routes therefore differ for absent fields; use `IS NULL` / `IS NOT NULL` when that distinction
 > matters.
+>
+> A **projected** function keeps its `NULL`: `SELECT UPPER(status) AS u` returns `u = NULL` for a
+> document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
+> "no match" applies to a **condition**, never to a value.
+>
+> ⚠️ `LIKE` / `NOT LIKE` with `%` and `_` in the same pattern (`'A_%'`) compiles to a Painless
+> regular expression, and Elasticsearch **6.8** disables regular expressions in scripts by default
+> (`script.painless.regex.enabled`). Patterns using only `%` — which is what a BI tool emits — need
+> no regex and work on every supported version.
 
 **Example**
 

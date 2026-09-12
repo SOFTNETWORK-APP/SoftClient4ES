@@ -2499,6 +2499,73 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ids("WHERE ABS(amount) > 10") shouldBe Seq(2, 3)
     ids("WHERE LOWER(status) = 'a' AND ABS(amount) > 10") shouldBe Seq.empty[Int]
 
+    // 🔴 Review B-2 / M-5 — the SAME predicate must give the SAME rows in either writing order.
+    // `WhereParser.predicate` is `criteria ~ (and|or) ~ not.? ~ criteria`, so a `NOT` written AFTER
+    // the operator lands on the PREDICATE, and the predicate used to emit it two different ways:
+    // `asFilter` wrapped the UN-negated right criterion in a `must_not` (which MATCHES a document
+    // that lacks the field) while `painless` rendered `!(left && right)` (which negates the whole
+    // composite). MEASURED on live ES 8.18.3 BEFORE the fix: the first line returned [2], the
+    // second [2, 3] — the same query, different rows by writing order, and row 3 is the one with no
+    // `status` field at all. The NOT is now folded into the criterion it qualifies, so both paths
+    // agree and `check` folds it into the operator.
+    ids("WHERE NOT UPPER(status) = 'A' AND ABS(amount) > 10") shouldBe Seq(2)
+    ids("WHERE ABS(amount) > 10 AND NOT UPPER(status) = 'A'") shouldBe Seq(2)
+
+    // 🔴 Review M-6 / L-10 — `LIKE` over a function.
+    // BEFORE: `NOT LIKE` died with `scala.MatchError: LIKE` out of the query builder (there was no
+    // negated spelling for it and `ComparisonOperator.not` was a partial function), and plain
+    // `LIKE` emitted the un-parseable `left1 .matches "A%"` (`invalid sequence of tokens`). Two
+    // repaired spellings were then REFUTED on live ES before the shipped one:
+    // `left1.matches("A.*")` is `dynamic method [java.lang.String, matches/1] not found` and
+    // `Pattern.compile("A.*")` is `static method [java.util.regex.Pattern, compile/1] not found`.
+    // A `%`-only pattern now decomposes into whitelisted String methods, which is also the only
+    // form that works on ES 6.8 (regex literals are disabled there by default).
+    ids("WHERE UPPER(status) LIKE 'A%'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) NOT LIKE 'A%'") shouldBe Seq(2) // NOT the absent row — ANSI
+    ids("WHERE UPPER(status) LIKE '%A%'") shouldBe Seq(1)
+
+    // 🔴 Review L-8 — `IN` and `BETWEEN` over a function.
+    // BEFORE: both fell through to `termsQuery` / `rangeQuery` keyed on `identifier.name`, which is
+    // the EMPTY STRING for a function wrapper, so Elasticsearch rejected `{"terms":{"":[…]}}` and
+    // `{"range":{"":{…}}}` with the opaque `[bool] failed to parse field [filter]`.
+    ids("WHERE UPPER(status) IN ('A','B')") shouldBe Seq(1, 2)
+    ids("WHERE UPPER(status) NOT IN ('A','B')") shouldBe Seq.empty[Int] // not row 3 — ANSI
+    ids("WHERE ABS(amount) BETWEEN 1 AND 100") shouldBe Seq(1, 2, 3)
+    ids("WHERE ABS(amount) BETWEEN 1 AND 10") shouldBe Seq(1)
+
+    // 🔴 Review B-2 case C2 — the same fold inside a CASE, where the NOT used to negate the WHOLE
+    // composite: `CASE WHEN a AND NOT b` emitted `!((a) && (b))`, so an absent `b` took the THEN
+    // branch where ANSI takes ELSE. Row 3 (no `status`) must be 0; row 2 must be 1, so this is not
+    // satisfied by collapsing everything to 0.
+    def caseValue(expr: String): Seq[(Int, String)] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id, $expr AS c FROM tvl_orders").futureValue
+      ).flatMap { row =>
+        row.get("id").map(_.toString.toDouble.toInt).map { id =>
+          // A script field comes back wrapped in Elasticsearch's per-field array on every path,
+          // and its single element is `null` for the absent row -- so every unwrap here is
+          // null-safe, and an ABSENT `c` reads the same as a null one.
+          id -> row
+            .get("c")
+            .map {
+              case seq: Seq[_] =>
+                seq.headOption.map(v => if (v == null) "null" else v.toString).getOrElse("null")
+              case other => if (other == null) "null" else other.toString
+            }
+            .getOrElse("null")
+        }
+      }.sortBy(_._1)
+
+    caseValue("CASE WHEN amount > 10 AND NOT status = 'A' THEN 1 ELSE 0 END").map { case (id, v) =>
+      id -> v.toDouble.toInt
+    } shouldBe Seq(1 -> 0, 2 -> 1, 3 -> 0)
+
+    // 🔴 Review H-3 — the `false` collapse belongs to a CONDITION. A PROJECTED function keeps its
+    // `null`, because it goes through `Identifier.painless`, a different renderer. Without this the
+    // fix could have been "read" as turning every absent field into a value.
+    caseValue("UPPER(status)") shouldBe Seq(1 -> "A", 2 -> "B", 3 -> "null")
+
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
   }
 
