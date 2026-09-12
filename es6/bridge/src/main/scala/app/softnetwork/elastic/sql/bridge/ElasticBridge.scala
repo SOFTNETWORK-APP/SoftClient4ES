@@ -119,22 +119,34 @@ case class ElasticBridge(filter: ElasticFilter) {
                   val leftQuery = ElasticBridge(leftNested)
                     .query(innerHitsNames /*++ leftNested.innerHitsName.toSet*/, leftBoolQuery)
 
+                  // 🔴 NOT-FOLD: this consumer of `Predicate.not` deliberately does NOT fold.
+                  //
+                  // Round 10 (LOW-1) proposed aligning this site with the other three by reading
+                  // `Predicate.emittedRight`. That was tried and MEASURED WRONG: under a nested
+                  // relation the right criterion is evaluated over a CHILD document and the query
+                  // wraps it in an EXISTENTIAL, so `NOT` outside and `NOT` inside are different
+                  // questions. `WHERE MATCH(comments.content) AGAINST ('Nice') AND NOT
+                  // replies.lastUpdated < LAST_DAY(…)` means "no reply is before that date", which
+                  // includes a blog with NO replies; folded, it became "SOME reply is not before
+                  // it", which excludes that blog and admits one with replies on both sides. The
+                  // `SQLQuerySpec` "predicate with distinct nested" fixture caught the flip:
+                  // `must_not[nested(…)] + filter[…]` became `must[nested(…), nested(… == false)]`.
+                  //
+                  // So the fold applies where the negated criterion is evaluated over the SAME
+                  // document, and not here. Enumerated on `Predicate.emittedRight`.
                   val rightNested = ElasticNested(p.rightCriteria, p.rightCriteria.limit)
                   val rightBoolQuery = Option(ElasticBoolQuery(group = true))
                   val rightQuery = ElasticBridge(rightNested)
                     .query(innerHitsNames /*++ rightNested.innerHitsName.toSet*/, rightBoolQuery)
 
+                  val negate = p.not.isDefined
                   p.operator match {
                     case AND =>
-                      p.not match {
-                        case Some(_) => not(rightQuery).filter(leftQuery)
-                        case _       => must(leftQuery, rightQuery)
-                      }
+                      if (negate) not(rightQuery).filter(leftQuery)
+                      else must(leftQuery, rightQuery)
                     case _ =>
-                      p.not match {
-                        case Some(_) => not(rightQuery).should(leftQuery)
-                        case _       => should(leftQuery, rightQuery)
-                      }
+                      if (negate) not(rightQuery).should(leftQuery)
+                      else should(leftQuery, rightQuery)
                   }
                 case _ =>
                   val boolQuery = Option(ElasticBoolQuery(group = true))

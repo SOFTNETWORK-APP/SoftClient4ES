@@ -2418,6 +2418,290 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   // 8. POLICIES — CREATE / DROP / EXECUTE
   // ===========================================================================
 
+  behavior of "a WHERE predicate that must be scripted (story BIDC-8, AD-9)"
+
+  /** 🔴 Row-set pins for the Painless filter emission, on a REAL cluster.
+    *
+    * Before BIDC-8 a function-wrapped predicate emitted `(param == null) ? null : <boolean>`, whose
+    * ternary branches are `null` (Object) and a primitive `boolean`: Elasticsearch refused the
+    * whole query at COMPILE time (`script_exception / compile error`, caused by
+    * `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`) — data-independent,
+    * it failed even against an empty index. Two more defects sat on the same path: a composed
+    * predicate was not parenthesised, so `?:` (the loosest operator in Painless) swallowed the
+    * sibling — measured `WHERE status = 'A' OR id = 1` returning NO rows where one matches — and
+    * `check` dispatched on the RAW operator, so a NOT was silently dropped (`WHERE NOT status =
+    * 'A'` returned exactly the rows that DO equal 'A').
+    *
+    * The assertions below are ROW SETS, never script bytes, and every one of them is what ANSI
+    * three-valued logic requires of a MISSING field: a predicate over NULL is NULL, so the row does
+    * not match — and `NOT` over it stays NULL, so it does not match either.
+    */
+  it should "apply ANSI three-valued logic to a scripted WHERE, including NOT and composites" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS tvl_orders (
+        |  id INT,
+        |  status KEYWORD,
+        |  amount DOUBLE,
+        |  PRIMARY KEY (id)
+        |)""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    // id 1: status = 'A'; id 2: status = 'B'; id 3: the `status` FIELD IS ABSENT from the document.
+    // 🔴 Seeded through COPY INTO, not INSERT: `INSERT INTO tvl_orders (id, amount)` writes the
+    // omitted column as an EMPTY STRING (measured — row 3 then matched `NOT UPPER(status) = 'A'`
+    // legitimately), so it cannot express "this document never carried the field", which is the
+    // only state that exercises the null guard.
+    val tvlJsonl = java.io.File.createTempFile("tvl_orders_", ".jsonl")
+    tvlJsonl.deleteOnExit()
+    val tvlWriter = new java.io.PrintWriter(tvlJsonl)
+    try {
+      tvlWriter.println("""{"id": 1, "status": "A", "amount": 5.0}""")
+      tvlWriter.println("""{"id": 2, "status": "B", "amount": 50.0}""")
+      tvlWriter.println("""{"id": 3, "amount": 50.0}""")
+    } finally tvlWriter.close()
+    assertDml(
+      System.nanoTime(),
+      client.run(s"""COPY INTO tvl_orders FROM "${tvlJsonl.getAbsolutePath}";""").futureValue
+    )
+    // Fixture guard: the premise of every assertion below is that row 3 has NO `status` field.
+    collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM tvl_orders WHERE status IS NOT NULL").futureValue
+    ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted shouldBe Seq(1, 2)
+
+    // `collectRows`, not `assertQueryRows`: an un-LIMITed row query comes back as a QueryStream on
+    // the licensed gateway since #209, and `assertQueryRows` accepts `QueryRows` only.
+    def ids(where: String): Seq[Int] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id FROM tvl_orders $where").futureValue
+      ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted
+
+    // A function over a present field matches only the row it names; the MISSING row never matches.
+    ids("WHERE UPPER(status) = 'A'") shouldBe Seq(1)
+    // NOT over a MISSING field is NULL, not TRUE: row 3 must NOT appear.
+    ids("WHERE NOT UPPER(status) = 'A'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) <> 'A'") shouldBe Seq(2)
+    // Composition: the guard of one operand must not swallow the other.
+    ids("WHERE UPPER(status) = 'A' OR id = 1") shouldBe Seq(1)
+    ids("WHERE UPPER(status) = 'A' AND id = 1") shouldBe Seq(1)
+    ids("WHERE NOT UPPER(status) = 'A' AND id = 1") shouldBe Seq.empty[Int]
+    ids("WHERE NOT UPPER(status) = 'A' OR id = 1") shouldBe Seq(1, 2)
+    // 🔴 With NO function the engine does not script at all, and the contrast is worth pinning:
+    // a bare column becomes a TERM query, so `OR` is a `bool.should` of two clauses …
+    ids("WHERE status = 'A' OR id = 1") shouldBe Seq(1)
+    // … and `NOT` becomes Elasticsearch's `must_not`, whose semantics INCLUDE a document that does
+    // not carry the field — row 3 matches. That diverges from ANSI (`NOT NULL` is NULL), it is
+    // PRE-EXISTING, structural, and BIDC-8 does not change it: this story fixes what the Painless
+    // FILTER emits, and a bare-column predicate never reaches Painless here. Pinned so the
+    // difference between the two routes is visible rather than discovered.
+    ids("WHERE NOT status = 'A'") shouldBe Seq(2, 3)
+    // A numeric function family, so the rule is not string-specific (`amount` is present on all).
+    ids("WHERE ABS(amount) > 10") shouldBe Seq(2, 3)
+    ids("WHERE LOWER(status) = 'a' AND ABS(amount) > 10") shouldBe Seq.empty[Int]
+
+    // 🔴 Review B-2 / M-5 — the SAME predicate must give the SAME rows in either writing order.
+    // `WhereParser.predicate` is `criteria ~ (and|or) ~ not.? ~ criteria`, so a `NOT` written AFTER
+    // the operator lands on the PREDICATE, and the predicate used to emit it two different ways:
+    // `asFilter` wrapped the UN-negated right criterion in a `must_not` (which MATCHES a document
+    // that lacks the field) while `painless` rendered `!(left && right)` (which negates the whole
+    // composite). MEASURED on live ES 8.18.3 BEFORE the fix: the first line returned [2], the
+    // second [2, 3] — the same query, different rows by writing order, and row 3 is the one with no
+    // `status` field at all. The NOT is now folded into the criterion it qualifies, so both paths
+    // agree and `check` folds it into the operator.
+    ids("WHERE NOT UPPER(status) = 'A' AND ABS(amount) > 10") shouldBe Seq(2)
+    ids("WHERE ABS(amount) > 10 AND NOT UPPER(status) = 'A'") shouldBe Seq(2)
+
+    // 🔴 Review M-6 / L-10 — `LIKE` over a function.
+    // BEFORE: `NOT LIKE` died with `scala.MatchError: LIKE` out of the query builder (there was no
+    // negated spelling for it and `ComparisonOperator.not` was a partial function), and plain
+    // `LIKE` emitted the un-parseable `left1 .matches "A%"` (`invalid sequence of tokens`). Two
+    // repaired spellings were then REFUTED on live ES before the shipped one:
+    // `left1.matches("A.*")` is `dynamic method [java.lang.String, matches/1] not found` and
+    // `Pattern.compile("A.*")` is `static method [java.util.regex.Pattern, compile/1] not found`.
+    // A `%`-only pattern now decomposes into whitelisted String methods, which is also the only
+    // form that works on ES 6.8 (regex literals are disabled there by default).
+    ids("WHERE UPPER(status) LIKE 'A%'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) NOT LIKE 'A%'") shouldBe Seq(2) // NOT the absent row — ANSI
+    ids("WHERE UPPER(status) LIKE '%A%'") shouldBe Seq(1)
+
+    // 🔴 Review L-8 — `IN` and `BETWEEN` over a function.
+    // BEFORE: both fell through to `termsQuery` / `rangeQuery` keyed on `identifier.name`, which is
+    // the EMPTY STRING for a function wrapper, so Elasticsearch rejected `{"terms":{"":[…]}}` and
+    // `{"range":{"":{…}}}` with the opaque `[bool] failed to parse field [filter]`.
+    ids("WHERE UPPER(status) IN ('A','B')") shouldBe Seq(1, 2)
+    ids("WHERE UPPER(status) NOT IN ('A','B')") shouldBe Seq.empty[Int] // not row 3 — ANSI
+    ids("WHERE ABS(amount) BETWEEN 1 AND 100") shouldBe Seq(1, 2, 3)
+    ids("WHERE ABS(amount) BETWEEN 1 AND 10") shouldBe Seq(1)
+
+    // 🔴 Review B-2 case C2 — the same fold inside a CASE, where the NOT used to negate the WHOLE
+    // composite: `CASE WHEN a AND NOT b` emitted `!((a) && (b))`, so an absent `b` took the THEN
+    // branch where ANSI takes ELSE. Row 3 (no `status`) must be 0; row 2 must be 1, so this is not
+    // satisfied by collapsing everything to 0.
+    def caseValue(expr: String): Seq[(Int, String)] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id, $expr AS c FROM tvl_orders").futureValue
+      ).flatMap { row =>
+        row.get("id").map(_.toString.toDouble.toInt).map { id =>
+          // A script field comes back wrapped in Elasticsearch's per-field array on every path,
+          // and its single element is `null` for the absent row -- so every unwrap here is
+          // null-safe, and an ABSENT `c` reads the same as a null one.
+          id -> row
+            .get("c")
+            .map {
+              case seq: Seq[_] =>
+                seq.headOption.map(v => if (v == null) "null" else v.toString).getOrElse("null")
+              case other => if (other == null) "null" else other.toString
+            }
+            .getOrElse("null")
+        }
+      }.sortBy(_._1)
+
+    caseValue("CASE WHEN amount > 10 AND NOT status = 'A' THEN 1 ELSE 0 END").map { case (id, v) =>
+      id -> v.toDouble.toInt
+    } shouldBe Seq(1 -> 0, 2 -> 1, 3 -> 0)
+
+    // 🔴 Review H-3 — the `false` collapse belongs to a CONDITION. A PROJECTED function keeps its
+    // `null`, because it goes through `Identifier.painless`, a different renderer. Without this the
+    // fix could have been "read" as turning every absent field into a value.
+    caseValue("UPPER(status)") shouldBe Seq(1 -> "A", 2 -> "B", 3 -> "null")
+
+    // 🔴 Round 10, BLOCKING-1 — the round-9 mirror-order pair used `UPPER(status) = 'A'`, a
+    // `GenericExpression`, which is the ONE criteria class that already carried `negated`. That is
+    // exactly why the hole survived, so the pins below cover every OTHER class that can carry a
+    // `NOT`. MEASURED on live ES 8.18.3 before the fix, over a document with `status` but NO
+    // `amount`: `WHERE status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 10` returned that row while
+    // the mirror `WHERE ABS(amount) NOT BETWEEN 1 AND 10 AND status = 'A'` returned none — the
+    // `must_not` wrapping the guarded script INCLUDED the document the guard had excluded. Row 3 is
+    // the one with no `status`; rows 1 and 2 carry `amount` 5 and 50.
+    ids("WHERE status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 100") shouldBe Seq.empty[Int]
+    ids("WHERE ABS(amount) NOT BETWEEN 1 AND 100 AND status = 'A'") shouldBe Seq.empty[Int]
+    ids("WHERE status = 'B' AND NOT UPPER(status) IN ('A')") shouldBe Seq(2)
+    ids("WHERE UPPER(status) NOT IN ('A') AND status = 'B'") shouldBe Seq(2)
+    ids("WHERE status = 'A' AND NOT amount IS NULL") shouldBe Seq(1)
+    ids("WHERE amount IS NOT NULL AND status = 'A'") shouldBe Seq(1)
+
+    // 🔴 Round 10, HIGH-2 — in SQL only `%` and `_` are wildcards. Before the fix the SAME pattern
+    // meant three different things: the native `regexp` read `.` as any character, the
+    // string-method path read it literally, and the Painless regex read it as any character again.
+    // `status` here is 'A' / 'B' / absent, so a literal-dot pattern matches nothing and a
+    // regex-dot one would match 'A' — the assertion distinguishes them.
+    ids("WHERE status LIKE 'A.'") shouldBe Seq.empty[Int]
+    ids("WHERE UPPER(status) LIKE 'A.'") shouldBe Seq.empty[Int]
+    ids("WHERE UPPER(status) LIKE 'A'") shouldBe Seq(1)
+    // ⚠️ The `_` wildcard is NOT asserted here — it compiles to a Painless regex, which stock
+    // Elasticsearch 6.8 refuses. It has its own capability-gated test below; everything in THIS
+    // test takes the whitelisted string-method path and therefore holds on every supported major.
+
+    // 🔴 Round 10, MEDIUM-1 — `LIKE ''` over a function emitted `left1 ==~ //`, and `//` opens a
+    // Painless COMMENT: `unexpected character [//))))]`. The native form always answered `[]`.
+    ids("WHERE UPPER(status) LIKE ''") shouldBe Seq.empty[Int]
+    ids("WHERE status LIKE ''") shouldBe Seq.empty[Int]
+    // … and the all-wildcard patterns, which share the empty core, match every NON-NULL value —
+    // row 3 has no `status`, so it is absent from both.
+    ids("WHERE UPPER(status) LIKE '%'") shouldBe Seq(1, 2)
+    ids("WHERE UPPER(status) LIKE '%%'") shouldBe Seq(1, 2)
+
+    // 🔴 Round 10, MEDIUM-3 — a `CASE … THEN x END` with NO `ELSE`. SQL says the missing branch is
+    // NULL; Painless types a ternary from its branches, so the emission used to be the truncated
+    // `param2 ? 1` (`unexpected token ['<EOF>']`) and then, once the `: null` was added,
+    // `Cannot cast from [int] to [java.lang.Object]`. Both were live 400s.
+    caseValue("CASE WHEN UPPER(status) = 'A' THEN 1 END").map { case (id, v) =>
+      id -> v
+    } shouldBe Seq(1 -> "1", 2 -> "null", 3 -> "null")
+
+    // 🔴 Round 11, M-2 — `%%` means what `%` means, but the fast-path test stripped only ONE
+    // leading and ONE trailing `%`, so `'%%A'` fell through to a regex. MEASURED on live ES 8.18.3
+    // before the fix: `circuit_breaking_exception: Regular expression considered too many
+    // characters`; on 6.8 the same shape is `Regexes are disabled`. Collapsing the runs first makes
+    // the documented rule ("no `_`, `%` only at the ends") TRUE as written.
+    ids("WHERE UPPER(status) LIKE '%%A'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) LIKE 'A%%'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) LIKE '%%'") shouldBe Seq(1, 2)
+
+    // 🔴 Round 11, M-1 — a `CASE … END` with no `ELSE` is NULL-valued, and until now it reached a
+    // comparison unguarded. `= 1` hid it (Painless tolerates `null == 1`); everything else did not.
+    // MEASURED before the fix: `> 0` gave `Cannot invoke "Object.getClass()" because "leftObject"
+    // is null` and the string form `cannot access method/field [compareTo] from a null def
+    // reference`. Row 3 carries no `status`, so its CASE is NULL and it must not match either.
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) > 0") shouldBe Seq(1)
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 'y' END) = 'y'") shouldBe Seq(1)
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) = 1") shouldBe Seq(1)
+
+    // 🔴 Round 11, M-3 — A DEVIATION PINNED AS IT IS, NOT AS IT SHOULD BE. A full-text `MATCH` has
+    // no negated spelling of its own, so `NOT match(...)` takes Elasticsearch's `must_not`, which
+    // INCLUDES a document lacking the field: row 3 has no `status`, and ANSI would leave it out
+    // (`NOT UNKNOWN` is UNKNOWN). Same family as the bare-column `NOT status = 'A'` pinned above.
+    // NOT fixed in this story: it needs a `maybeNot` field on `MatchCriteria` (arity + `.sql`
+    // render, which `MaterializedViewExtension` persists) and a bridge arm emitting
+    // `must_not(match) + exists(field)` — the lead's call. `PainlessOperandFormSpec`'s class-axis
+    // gate names the exemption explicitly rather than leaving it silent.
+    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2, 3)
+
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
+  }
+
+  /** 🔴 CI CAUGHT THIS, not me (run 34683904367): the shape below was asserted on every major and
+    * FAILS on both ES 6 clients with `illegal_state_exception: Regexes are disabled. Set
+    * [script.painless.regex.enabled] to [true]`.
+    *
+    * The product behaviour is correct and documented — a `LIKE` compiles to whitelisted `String`
+    * methods only when the pattern has no `_` and uses `%` at the ends alone, and everything else
+    * becomes a Painless regex, which 6.x disables BY DEFAULT. The defect was the TEST, which
+    * certified a shape on a configuration users of 6.8 do not have.
+    *
+    * ⚠️ And a correction to this story's own record: round 9 reported this ANSI suite green on
+    * 6.8.23 / 7.17.29 / 8.18.3 / 9.0.3, which was true OF ROUND 9's CONTENT — every `LIKE` shape
+    * then took the string-method path. Round 10 added the `_` shape and re-ran only 8.18.3, so the
+    * 6.8 claim was carried forward STALE rather than re-derived. CI is the authority.
+    *
+    * The fix is a capability gate, NOT enabling `script.painless.regex.enabled` in the ES 6
+    * fixture: a suite that turns a non-default setting on certifies a cluster nobody runs.
+    */
+  it should "apply the same rule to a LIKE pattern that needs a Painless regex" in {
+    assume(
+      supportsPainlessRegex,
+      "Painless regexes are disabled by default before Elasticsearch 7 " +
+      "(script.painless.regex.enabled), so a LIKE pattern that compiles to one cannot run here"
+    )
+    val create =
+      """CREATE TABLE IF NOT EXISTS tvl_regex (
+        |  id INT,
+        |  status KEYWORD,
+        |  PRIMARY KEY (id)
+        |)""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    val jsonl = java.io.File.createTempFile("tvl_regex_", ".jsonl")
+    jsonl.deleteOnExit()
+    val writer = new java.io.PrintWriter(jsonl)
+    try {
+      writer.println("""{"id": 1, "status": "A"}""")
+      writer.println("""{"id": 2, "status": "AB"}""")
+      writer.println("""{"id": 3}""") // the `status` field is ABSENT
+    } finally writer.close()
+    assertDml(
+      System.nanoTime(),
+      client.run(s"""COPY INTO tvl_regex FROM "${jsonl.getAbsolutePath}";""").futureValue
+    )
+
+    def ids(where: String): Seq[Int] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id FROM tvl_regex $where").futureValue
+      ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted
+
+    // `_` is exactly ONE character, so `'A_'` matches `AB` and not `A` — and the row with no
+    // `status` matches neither, which is the ANSI rule this whole suite is about.
+    ids("WHERE UPPER(status) LIKE 'A_'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) LIKE 'A'") shouldBe Seq(1)
+    // A `%` that is NOT at an end also needs the regex, and this is the shape whose "pure `%`
+    // patterns are safe everywhere" claim round 10 had to retract.
+    ids("WHERE UPPER(status) LIKE 'A%B'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) NOT LIKE 'A_'") shouldBe Seq(1) // NOT the absent row — ANSI
+
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_regex").futureValue)
+  }
+
   behavior of "POLICIES statements"
 
   it should "create, show, execute and drop a policy" in {

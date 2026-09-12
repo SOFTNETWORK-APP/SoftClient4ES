@@ -375,7 +375,7 @@ object MetricSelectorScript {
         // falls back to `!( ... )`.
         maybeNot match {
           case Some(_) =>
-            negated(right) match {
+            right.negated match {
               case Some(n) => s"($leftStr) $opStr ${metricSelector(n)}"
               // Grammar-unreachable today (`NOT (A AND B)` in HAVING is a parse rejection); kept
               // as the total fallback for a compound right side.
@@ -401,17 +401,6 @@ object MetricSelectorScript {
     case _ => "1 == 1"
   }
 
-  /** The single expression `c` with its own NOT toggled, when `c` is one that carries a NOT. */
-  private def negated(c: Criteria): Option[Criteria] = {
-    def toggle(not: Option[NOT.type]): Option[NOT.type] = if (not.isDefined) None else Some(NOT)
-    c match {
-      case e: GenericExpression => Some(e.copy(maybeNot = toggle(e.maybeNot)))
-      case e: Comparison        => Some(e.copy(maybeNot = toggle(e.maybeNot)))
-      case e: BetweenExpr       => Some(e.copy(maybeNot = toggle(e.maybeNot)))
-      case e: InExpr[_, _]      => Some(e.copy(maybeNot = toggle(e.maybeNot)))
-      case _                    => None
-    }
-  }
 }
 
 case class BucketIncludesExcludes(values: Set[String] = Set.empty, regex: Option[String] = None)

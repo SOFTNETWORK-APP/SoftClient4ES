@@ -38,13 +38,30 @@ package object operator {
   trait ExpressionOperator extends Operator
 
   sealed trait ComparisonOperator extends ExpressionOperator with PainlessScript {
-    def not: ComparisonOperator = this match {
-      case EQ        => NE
-      case NE | DIFF => EQ
-      case GE        => LT
-      case GT        => LE
-      case LE        => GT
-      case LT        => GE
+
+    /** The operator that MEANS this one negated, when this operator set has a spelling for it.
+      *
+      * 🔴 Story BIDC-8 (review M-6). This was a total-looking `def not: ComparisonOperator` whose
+      * match covered only the six arithmetic comparisons, so every OTHER comparison reached it as a
+      * `scala.MatchError` escaping the query builder: MEASURED, `WHERE UPPER(status) NOT LIKE 'A%'`
+      * died with `scala.MatchError: LIKE (of class ...operator.package$LIKE$)` — an internal error
+      * where a user typed valid SQL. `IN`, `LIKE`, `RLIKE`, `BETWEEN` and `MATCH` have NO negated
+      * operator in this set; the honest answer is `None`, and the caller negates the whole check
+      * instead (`Expression.painlessNot` renders the `!` INSIDE the null guard, so ANSI
+      * three-valued logic is preserved: an absent field still collapses to `false` rather than
+      * being inverted into a match). The match is exhaustive over the sealed set, so a new
+      * comparison operator cannot be added without answering here.
+      */
+    def maybeNegated: Option[ComparisonOperator] = this match {
+      case EQ                                  => Some(NE)
+      case NE | DIFF                           => Some(EQ)
+      case GE                                  => Some(LT)
+      case GT                                  => Some(LE)
+      case LE                                  => Some(GT)
+      case LT                                  => Some(GE)
+      case IS_NULL                             => Some(IS_NOT_NULL)
+      case IS_NOT_NULL                         => Some(IS_NULL)
+      case IN | LIKE | RLIKE | BETWEEN | MATCH => None
     }
   }
 

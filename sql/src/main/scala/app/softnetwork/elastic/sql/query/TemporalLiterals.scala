@@ -301,6 +301,11 @@ object TemporalLiterals {
     * since story 21.2 that key is the QUALIFIED reference whenever a bare index name is ambiguous
     * inside one FROM. Comparing a qualified `table` against a bare set silently stops this guard
     * firing, and the literal is then resolved against the wrong index's schema.
+    *
+    * And `joinSources` must NOT contain the main table's own key (story BIDC-8): on a self-join
+    * (`FROM idx a JOIN idx b`) the join source IS the main index, whose mapping IS the one in hand,
+    * so every column of BOTH legs resolves against it. Before BIDC-8 the first leg's qualifier did
+    * not resolve at all, so the question never arose.
     */
   private def temporalColumn(
     identifier: GenericIdentifier,
@@ -324,8 +329,10 @@ object TemporalLiterals {
     search.where.flatMap(_.criteria) match {
       case Some(criteria) =>
         // `joinSourceKeys`, NOT `joinAliases.values.map(_._1)`: the comparison below is against
-        // `Identifier.table`, which is a `tableAliases` KEY (story 21.2 AD-6'). See `temporalColumn`.
-        val joinSources: Set[String] = search.from.joinSourceKeys
+        // `Identifier.table`, which is a `tableAliases` KEY (story 21.2 AD-6'). Minus the main
+        // table's own key, so a self-join's second leg resolves against the mapping in hand (story
+        // BIDC-8). See `temporalColumn`.
+        val joinSources: Set[String] = search.from.joinSourceKeys - search.from.mainTableKey
         rewrite(criteria, schema, joinSources).map { rewritten =>
           if (rewritten eq criteria) search
           else search.copy(where = Some(Where(Some(rewritten))))

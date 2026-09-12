@@ -654,6 +654,34 @@ package object bridge {
     )
   }
 
+  /** True when the ES query DSL cannot address this operand by field NAME -- it is a computed
+    * value, so the predicate has to run as a script.
+    *
+    * 🔴 Story BIDC-8 (review L-8). This condition was inline in `expressionToQuery` only, so `IN`
+    * and `BETWEEN` over a function-wrapped operand fell through to `termsQuery` / `rangeQuery`
+    * keyed on `identifier.name` -- which is the EMPTY STRING for a function wrapper. MEASURED on
+    * live ES 8.18.3: `WHERE UPPER(status) IN ('A','B')` emitted `{"terms":{"":["A","B"]}}` and
+    * `WHERE ABS(amount) BETWEEN 1 AND 100` emitted `{"range":{"":{...}}}`, both rejected with the
+    * opaque `x_content_parse_exception: [bool] failed to parse field [filter]`. `Distance` is
+    * excluded because the geo-distance query DOES address it natively.
+    */
+  private[bridge] def requiresScript(identifier: Identifier): Boolean =
+    identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {
+      case _: Distance => false
+      case _           => true
+    }))
+
+  private[bridge] def scriptQueryOf(criteria: Criteria)(implicit
+    timestamp: Long,
+    contextType: PainlessContextType
+  ): Query = {
+    val context = PainlessContext(context = contextType)
+    val script = criteria.painless(Some(context))
+    scriptQuery(
+      now(Script(script = s"$context$script").lang("painless").scriptType("source"))
+    )
+  }
+
   def applyNumericOp[A](n: NumericValue[_])(
     longOp: Long => A,
     doubleOp: Double => A
@@ -666,18 +694,7 @@ package object bridge {
     import expression._
     if (isAggregation)
       return matchAllQuery()
-    if (
-      identifier.functions.nonEmpty && (identifier.functions.size > 1 || (identifier.functions.head match {
-        case _: Distance => false
-        case _           => true
-      }))
-    ) {
-      val context = PainlessContext(context = contextType)
-      val script = painless(Some(context))
-      return scriptQuery(
-        now(Script(script = s"$context$script").lang("painless").scriptType("source"))
-      )
-    }
+    if (requiresScript(identifier)) return scriptQueryOf(expression)
     // Geo distance special case
     identifier.functions.headOption match {
       case Some(d: Distance) =>
@@ -692,11 +709,14 @@ package object bridge {
             }) match {
               case Some(g) =>
                 maybeNot match {
-                  case Some(_) =>
+                  // `maybeNegated` is total (story BIDC-8, review M-6): a comparison with no
+                  // negated spelling declines the geo shortcut and falls through to the generic
+                  // path rather than dying with a `MatchError`.
+                  case Some(_) if o.maybeNegated.isDefined =>
                     return geoDistanceToQuery(
                       DistanceCriteria(
                         d,
-                        o.not,
+                        o.maybeNegated.get,
                         g
                       )
                     )
@@ -880,7 +900,10 @@ package object bridge {
           case op: ComparisonOperator =>
             i.script match {
               case Some(script) =>
-                val o = if (maybeNot.isDefined) op.not else op
+                // `maybeNegated` is total (story BIDC-8, review M-6). A comparison the range
+                // query cannot express -- one with no negated spelling, or any operator outside
+                // the six below -- runs as a script instead of reaching a `MatchError`.
+                val o = if (maybeNot.isDefined) op.maybeNegated.getOrElse(op) else op
                 o match {
                   case GT        => rangeQuery(identifier.name) gt script
                   case GE        => rangeQuery(identifier.name) gte script
@@ -888,6 +911,7 @@ package object bridge {
                   case LE        => rangeQuery(identifier.name) lte script
                   case EQ        => rangeQuery(identifier.name) gte script lte script
                   case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
+                  case _         => scriptQueryOf(expression)
                 }
               case _ =>
                 val context = PainlessContext(context = contextType)
@@ -943,7 +967,11 @@ package object bridge {
     existsQuery(identifier.name)
   }
 
-  implicit def inToQuery[R, T <: Value[R]](in: InExpr[R, T]): Query = {
+  implicit def inToQuery[R, T <: Value[R]](in: InExpr[R, T])(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): Query = {
+    if (requiresScript(in.identifier)) return scriptQueryOf(in)
     import in._
     val _values: Seq[Any] = values.innerValues
     val t =
@@ -969,6 +997,7 @@ package object bridge {
     contextType: PainlessContextType = PainlessContextType.Query
   ): Query = {
     import between._
+    if (requiresScript(identifier)) return scriptQueryOf(between)
     // Geo distance special case
     identifier.functions.headOption match {
       case Some(d: Distance) =>

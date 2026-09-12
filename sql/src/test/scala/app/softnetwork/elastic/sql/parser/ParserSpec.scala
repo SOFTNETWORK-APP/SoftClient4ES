@@ -3281,8 +3281,10 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     Parser(sql).swap.toOption.get.msg should include(multiIndexQualifierRejection)
   }
 
-  // A self-join through duplicate table names: `From.tableAliases` is keyed by table name and
-  // keeps only the last alias, so `o.id` never resolves and a "two distinct tables" test sees one.
+  // A self-join through duplicate table names. Before story BIDC-8 the alias map kept only the
+  // last alias, so `o.id` never resolved and only `p.parent_id` carried a table; since BIDC-8 both
+  // resolve through `From.aliasesToTable`. Either way the guard fires — it tests "any qualifier",
+  // not "two distinct tables", which a one-sided resolution would have defeated.
   it should "reject a self-correlation through duplicate table names in a watcher input" in {
     val sql =
       """CREATE OR REPLACE WATCHER my_watcher AS

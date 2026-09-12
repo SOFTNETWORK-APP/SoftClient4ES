@@ -415,6 +415,18 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     where should include("c.event_ts >= '2026-06-04 00:00:00'")
   }
 
+  it should "resolve BOTH legs of a self-join against the mapping in hand (story BIDC-8)" in {
+    // The join source IS the main index, so its mapping IS the one in hand: the cross-index guard
+    // above must not fire on it. Before BIDC-8 the first leg's qualifier did not resolve at all,
+    // so neither literal was touched.
+    val sql =
+      "SELECT a.id FROM events a JOIN events b ON a.id = b.id " +
+      "WHERE a.event_ts >= '2026-06-04 00:00:00' AND b.event_ts >= '2026-06-04 00:00:00'"
+    val where = whereSql(resolved(sql))
+    where should include("a.event_ts >= '2026-06-04T00:00:00'")
+    where should include("b.event_ts >= '2026-06-04T00:00:00'")
+  }
+
   it should "resolve columns from a real Elasticsearch mapping, excluding date_nanos by construction" in {
     val json =
       """{"events":{"aliases":{},"mappings":{"properties":{

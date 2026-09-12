@@ -410,6 +410,68 @@ The `WHERE` clause supports:
 - `LIKE`, `RLIKE` (regex)
 - conditions on nested fields (`profile.city`, `profile.followers`)
 
+> **A function in a `WHERE` predicate, and documents that do not carry the field.** A predicate that
+> applies a function to a column (`WHERE UPPER(status) = 'A'`, `WHERE ABS(amount) > 10`) is executed
+> by Elasticsearch as a Painless script. Since engine **0.23.0** such a predicate follows ANSI
+> three-valued logic for a document in which the field is **absent**: the comparison is NULL, so the
+> document does not match — and it does not match the negated form either (`WHERE NOT UPPER(status)
+> = 'A'` leaves it out, because `NOT NULL` is NULL, not TRUE). Before 0.23.0 the emitted script did
+> not compile at all and Elasticsearch rejected the whole query (`script_exception: compile error`,
+> caused by `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`), so no such
+> predicate ever ran.
+>
+> This holds for the comparisons listed here, not only `=`: `<`, `>`, `<>`, `LIKE`, `NOT LIKE`,
+> `IN`, `NOT IN`, `BETWEEN` and `NOT BETWEEN` over a function all follow the same rule,
+> and a `NOT` written after `AND` / `OR` (`WHERE ABS(amount) > 10 AND NOT UPPER(status) = 'A'`)
+> negates the criterion it qualifies, not the whole composite — so the same predicate returns the
+> same rows whichever way round you write it. Before **0.23.0** several of these did not run at all:
+> `LIKE` over a function produced an uncompilable script, `NOT LIKE` failed inside the engine, and
+> `IN` / `BETWEEN` over a function were sent to Elasticsearch with an empty field name and rejected.
+>
+> A predicate with **no** function is not scripted — it becomes a term/range query — and `NOT` over
+> it is Elasticsearch's `must_not`, which **does** return documents that lack the field. The two
+> routes therefore differ for absent fields; use `IS NULL` / `IS NOT NULL` when that distinction
+> matters.
+>
+> A **projected** function keeps its `NULL`: `SELECT UPPER(status) AS u` returns `u = NULL` for a
+> document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
+> "no match" applies to a **condition**, never to a value.
+>
+> 🔴 **`ORDER BY` over a function of a column some documents do not carry LOSES ROWS SILENTLY.** The
+> engine emits a null-preserving sort script; Elasticsearch then fails the shard while building the
+> comparator (`null_pointer_exception`). What you see depends on the shard count, and the dangerous
+> case is the normal one:
+>
+> - on a **single-shard** index the whole search is rejected — you get an error;
+> - on a **multi-shard** index the search returns **HTTP 200** and the failing shard's documents are
+>   simply **absent from the result**. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with
+>   one lacking the field: `_shards.failed: 1`, `hits.total: 5` — two rows gone, no error anywhere.
+>   The engine does not surface `_shards.failures`, so nothing reaches the caller.
+>
+> Until that is fixed, sort by the bare column, or keep the field present on every document. Do not
+> rely on getting an error. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which
+> is NULL-valued for the rows no branch matches.
+>
+> ⚠️ Two limits of the rule above, stated rather than implied. `NOT <function>(x) IS NULL` is a
+> PARSE rejection — the grammar takes a bare name after `NOT` there — so the rule covers the
+> comparisons listed, not literally every clause you can write. And on a **multi-valued** field the
+> scripted and non-scripted routes differ for a reason that has nothing to do with NULL: the native
+> query matches if ANY value matches, while the script reads a single value.
+>
+> ⚠️ **When a `LIKE` over a function needs a regular expression.** The engine compiles such a
+> predicate to whitelisted string operations when the pattern contains **no `_`** and uses `%`
+> **only at the ends** (`'A%'`, `'%A'`, `'%A%'`, `'A'`, `''`, `'%'`). Every other pattern — including
+> one made only of `%`, such as `'A%B'` — compiles to a Painless regular expression, and
+> Elasticsearch **6.8** disables those by default (`script.painless.regex.enabled`), answering
+> `Regexes are disabled`. On 7.x and later every pattern works.
+>
+> 🔴 **Changed in 0.23.0 — `LIKE` reads only `%` and `_` as wildcards.** Every other character in a
+> pattern is now matched literally, on the scripted **and** the native path. `WHERE status LIKE
+> 'A.B%'` previously matched `AXB1`, because `.` reached Elasticsearch as a regular-expression
+> wildcard; it now matches only values that really begin with `A.B`. Patterns that relied on the old
+> reading must be rewritten with `_` (any single character) or `%` (any sequence). `RLIKE` is
+> unaffected — its operand is a regular expression by definition.
+
 **Example**
 
 ```sql

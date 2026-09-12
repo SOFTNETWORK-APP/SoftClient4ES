@@ -444,6 +444,14 @@ package object sql {
                 val paramName = s"param${_keys.size + 1}"
                 _keys = _keys :+ param
                 _values = _values :+ paramName
+                // 🔴 Declaration ORDER is creation ORDER (story BIDC-8, review B-1). A param can be
+                // created AFTER a local — `function/cond/package.scala` captures an already-rendered
+                // CASE condition into a new `LiteralParam` — and emitting all params before all
+                // locals then produced a FORWARD REFERENCE (`def param2 = (left1 …); def left1 = …`),
+                // which Elasticsearch refuses with `cannot resolve symbol [left1]` on EVERY index.
+                // There are 18 `addParam(LiteralParam(...))` sites, so the ordering must be
+                // structural, not a special case.
+                _declarations = _declarations :+ Left(param)
                 _lastParam = Some(paramName)
                 _lastParam
               }
@@ -468,6 +476,32 @@ package object sql {
       }
     }
 
+    // Unique local-variable names for a script (story BIDC-8, AD-9). A guarded boolean binds its
+    // operand to a local so the comparison lands INSIDE the null guard; two such operands in one
+    // script must not declare the same name.
+    private[this] var _locals: Int = 0
+
+    /** Every declaration this script emits, in CREATION order: a parameter (rendered from its
+      * `PainlessParam`) or a local bound by [[bindLocal]]. See the B-1 note in `addParam`.
+      */
+    private[this] var _declarations
+      : collection.mutable.Seq[Either[PainlessParam, (String, String)]] =
+      collection.mutable.Seq.empty
+
+    /** Bind `expr` to a fresh local declared in this script's PROLOGUE and return its name.
+      *
+      * A Painless `def x = …;` is a STATEMENT: it cannot sit inside a parenthesised operand, so a
+      * guarded boolean cannot declare its own local inline once predicates are composed (story
+      * BIDC-8, AD-9). Declaring it beside the `param` assignments keeps every operand a pure
+      * expression and evaluates it once.
+      */
+    def bindLocal(expr: String, prefix: String = "left"): String = {
+      _locals += 1
+      val name = s"$prefix${_locals}"
+      _declarations = _declarations :+ Right(name -> expr)
+      name
+    }
+
     def exists(token: Token): Boolean = {
       token match {
         case param: PainlessParam      => _keys.contains(param)
@@ -476,9 +510,10 @@ package object sql {
       }
     }
 
-    def isEmpty: Boolean = _keys.isEmpty
+    def isEmpty: Boolean = _declarations.isEmpty
 
-    def nonEmpty: Boolean = _keys.nonEmpty
+    // Review M-7: the complement of `isEmpty`, so a locals-only context cannot be both.
+    def nonEmpty: Boolean = !isEmpty
 
     def last: Option[String] = _lastParam
 
@@ -494,18 +529,17 @@ package object sql {
       else
         s"${param.param}${param.painlessMethods.mkString("")}"
 
-    override def toString: String = {
-      if (isEmpty) ""
-      else
-        _keys
-          .flatMap { param =>
+    override def toString: String =
+      _declarations
+        .flatMap {
+          case Left(param) =>
             get(param) match {
               case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
               case None    => None // should not happen
             }
-          }
-          .mkString("")
-    }
+          case Right((name, expr)) => Some(s"def $name = $expr; ")
+        }
+        .mkString("")
   }
 
   trait PainlessParams extends PainlessScript {
@@ -1066,8 +1100,35 @@ package object sql {
     override def nullable: Boolean = true
   }
 
+  /** A SQL `LIKE` pattern as a regular expression.
+    *
+    * 🔴 Story BIDC-8 (round 10, HIGH-2). This used to replace `%` and `_` and NOTHING else, so
+    * every other regex metacharacter in the pattern kept its REGEX meaning — and since a pattern
+    * only becomes a regex on some paths, the same SQL then meant different things depending on
+    * where it ran. MEASURED on live ES 8.18.3 over `A.B` and `AXB1`: `status LIKE 'A.B%'` (native
+    * `regexp`) matched BOTH, `UPPER(status) LIKE 'A.B%'` (string methods) matched only `A.B`, and
+    * `UPPER(status) LIKE 'A.B%1'` (Painless regex) matched only `AXB1` — three readings of one
+    * pattern. In SQL only `%` and `_` are wildcards; `.` is a literal. Escaping here fixes all of
+    * them in ONE place, which is the point: the native `regexp` query and the scripted forms read
+    * the shared translation, so they cannot disagree.
+    *
+    * ⚠️ USER-VISIBLE: `LIKE 'A.B%'` no longer matches `AXB1`. That is the correct SQL reading, and
+    * it is a 0.23.0 release note.
+    *
+    * The escaped set is the union of the Java and Lucene regex metacharacters. Every one of them is
+    * a legal backslash escape in BOTH engines (Java only forbids escaping an ALPHABETIC character
+    * that is not a known construct), so one escaping rule serves the query DSL and Painless alike.
+    */
   def toRegex(value: String): String = {
-    value.replaceAll("%", ".*").replaceAll("_", ".")
+    val metacharacters = "\\.[]{}()*+-?^$|#@&<>~\""
+    val out = new StringBuilder(value.length * 2)
+    value.foreach {
+      case '%'                                 => out.append(".*")
+      case '_'                                 => out.append('.')
+      case c if metacharacters.indexOf(c) >= 0 => out.append('\\').append(c)
+      case c                                   => out.append(c)
+    }
+    out.toString
   }
 
   case object Alias extends Expr("AS") with TokenRegex
@@ -1556,8 +1617,14 @@ package object sql {
       // name follows it. Without the arity check a column that happens to share its table's name
       // — `FROM status WHERE status = 'done'` — matched `tableAliases` and was rewritten to
       // `parts.tail.mkString(".")`, i.e. the empty string, silently querying a nameless field.
+      //
+      // 🔴 `aliasesToTable`, never a REVERSE lookup over `tableAliases` (story BIDC-8,
+      // softclient4es-arrow#144): that map is keyed by TABLE and holds one alias per table, so on a
+      // self-join (`FROM idx a JOIN idx b`) the reverse lookup found `b` and never `a` — `a.id`
+      // stayed a literal dotted field name with no `table`, and the ON clause lost its join key.
+      // The value is still a `tableAliases` KEY (same `aliasKey`), so `table` keeps its language.
       val table =
-        if (parts.size > 1) request.tableAliases.find(t => t._2 == tableAlias).map(_._1)
+        if (parts.size > 1) request.aliasesToTable.get(tableAlias)
         else None
 
       /** The schema for THIS column's own table.
