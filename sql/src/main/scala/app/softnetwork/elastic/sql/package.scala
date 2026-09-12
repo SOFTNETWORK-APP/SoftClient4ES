@@ -1100,8 +1100,35 @@ package object sql {
     override def nullable: Boolean = true
   }
 
+  /** A SQL `LIKE` pattern as a regular expression.
+    *
+    * 🔴 Story BIDC-8 (round 10, HIGH-2). This used to replace `%` and `_` and NOTHING else, so
+    * every other regex metacharacter in the pattern kept its REGEX meaning — and since a pattern
+    * only becomes a regex on some paths, the same SQL then meant different things depending on
+    * where it ran. MEASURED on live ES 8.18.3 over `A.B` and `AXB1`: `status LIKE 'A.B%'` (native
+    * `regexp`) matched BOTH, `UPPER(status) LIKE 'A.B%'` (string methods) matched only `A.B`, and
+    * `UPPER(status) LIKE 'A.B%1'` (Painless regex) matched only `AXB1` — three readings of one
+    * pattern. In SQL only `%` and `_` are wildcards; `.` is a literal. Escaping here fixes all of
+    * them in ONE place, which is the point: the native `regexp` query and the scripted forms read
+    * the shared translation, so they cannot disagree.
+    *
+    * ⚠️ USER-VISIBLE: `LIKE 'A.B%'` no longer matches `AXB1`. That is the correct SQL reading, and
+    * it is a 0.23.0 release note.
+    *
+    * The escaped set is the union of the Java and Lucene regex metacharacters. Every one of them is
+    * a legal backslash escape in BOTH engines (Java only forbids escaping an ALPHABETIC character
+    * that is not a known construct), so one escaping rule serves the query DSL and Painless alike.
+    */
   def toRegex(value: String): String = {
-    value.replaceAll("%", ".*").replaceAll("_", ".")
+    val metacharacters = "\\.[]{}()*+-?^$|#@&<>~\""
+    val out = new StringBuilder(value.length * 2)
+    value.foreach {
+      case '%'                                 => out.append(".*")
+      case '_'                                 => out.append('.')
+      case c if metacharacters.indexOf(c) >= 0 => out.append('\\').append(c)
+      case c                                   => out.append(c)
+    }
+    out.toString
   }
 
   case object Alias extends Expr("AS") with TokenRegex

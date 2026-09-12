@@ -2566,6 +2566,49 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // fix could have been "read" as turning every absent field into a value.
     caseValue("UPPER(status)") shouldBe Seq(1 -> "A", 2 -> "B", 3 -> "null")
 
+    // 🔴 Round 10, BLOCKING-1 — the round-9 mirror-order pair used `UPPER(status) = 'A'`, a
+    // `GenericExpression`, which is the ONE criteria class that already carried `negated`. That is
+    // exactly why the hole survived, so the pins below cover every OTHER class that can carry a
+    // `NOT`. MEASURED on live ES 8.18.3 before the fix, over a document with `status` but NO
+    // `amount`: `WHERE status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 10` returned that row while
+    // the mirror `WHERE ABS(amount) NOT BETWEEN 1 AND 10 AND status = 'A'` returned none — the
+    // `must_not` wrapping the guarded script INCLUDED the document the guard had excluded. Row 3 is
+    // the one with no `status`; rows 1 and 2 carry `amount` 5 and 50.
+    ids("WHERE status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 100") shouldBe Seq.empty[Int]
+    ids("WHERE ABS(amount) NOT BETWEEN 1 AND 100 AND status = 'A'") shouldBe Seq.empty[Int]
+    ids("WHERE status = 'B' AND NOT UPPER(status) IN ('A')") shouldBe Seq(2)
+    ids("WHERE UPPER(status) NOT IN ('A') AND status = 'B'") shouldBe Seq(2)
+    ids("WHERE status = 'A' AND NOT amount IS NULL") shouldBe Seq(1)
+    ids("WHERE amount IS NOT NULL AND status = 'A'") shouldBe Seq(1)
+
+    // 🔴 Round 10, HIGH-2 — in SQL only `%` and `_` are wildcards. Before the fix the SAME pattern
+    // meant three different things: the native `regexp` read `.` as any character, the
+    // string-method path read it literally, and the Painless regex read it as any character again.
+    // `status` here is 'A' / 'B' / absent, so a literal-dot pattern matches nothing and a
+    // regex-dot one would match 'A' — the assertion distinguishes them.
+    ids("WHERE status LIKE 'A.'") shouldBe Seq.empty[Int]
+    ids("WHERE UPPER(status) LIKE 'A.'") shouldBe Seq.empty[Int]
+    ids("WHERE UPPER(status) LIKE 'A_'") shouldBe Seq
+      .empty[Int] // `_` IS a wildcard, but 'A' is 1 char
+    ids("WHERE UPPER(status) LIKE 'A'") shouldBe Seq(1)
+
+    // 🔴 Round 10, MEDIUM-1 — `LIKE ''` over a function emitted `left1 ==~ //`, and `//` opens a
+    // Painless COMMENT: `unexpected character [//))))]`. The native form always answered `[]`.
+    ids("WHERE UPPER(status) LIKE ''") shouldBe Seq.empty[Int]
+    ids("WHERE status LIKE ''") shouldBe Seq.empty[Int]
+    // … and the all-wildcard patterns, which share the empty core, match every NON-NULL value —
+    // row 3 has no `status`, so it is absent from both.
+    ids("WHERE UPPER(status) LIKE '%'") shouldBe Seq(1, 2)
+    ids("WHERE UPPER(status) LIKE '%%'") shouldBe Seq(1, 2)
+
+    // 🔴 Round 10, MEDIUM-3 — a `CASE … THEN x END` with NO `ELSE`. SQL says the missing branch is
+    // NULL; Painless types a ternary from its branches, so the emission used to be the truncated
+    // `param2 ? 1` (`unexpected token ['<EOF>']`) and then, once the `: null` was added,
+    // `Cannot cast from [int] to [java.lang.Object]`. Both were live 400s.
+    caseValue("CASE WHEN UPPER(status) = 'A' THEN 1 END").map { case (id, v) =>
+      id -> v
+    } shouldBe Seq(1 -> "1", 2 -> "null", 3 -> "null")
+
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
   }
 

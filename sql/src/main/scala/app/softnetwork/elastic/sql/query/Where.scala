@@ -292,7 +292,33 @@ case class Predicate(
     * group, a relation) the old routing stands and `notConsumed` stays false, so nothing silently
     * changes shape.
     */
-  private[query] lazy val (emittedRight: Criteria, notConsumed: Boolean) =
+  /** 🔴 EVERY CONSUMER OF `Predicate.not`, ENUMERATED (round 10, LOW-1). Nothing listed them, which
+    * is why BLOCKING-1 (a missing `negated` override) and LOW-1 (a site still reading
+    * `rightCriteria` + `not`) both slipped through a round that was specifically about this fold:
+    *
+    *   1. `Criteria.painless`'s `Predicate` arm (`Where.scala`, ~:227) — the script form;
+    *   1. `Predicate.asFilter` (just below) — the query-DSL form;
+    *   1. `MetricSelectorScript.metricSelector` (`GroupBy.scala`, ~:378) — HAVING, via
+    *      `right.negated`; it kept its OWN copy of the negation table until round 10 collapsed it
+    *      into `Criteria.negated`, and that copy already had the `BetweenExpr` arm the shared one
+    *      was missing — two tables, one right, one wrong;
+    *   1. `ElasticBridge`'s nested/relation arm (`ElasticBridge.scala`, ~:135, and the es6 copy) —
+    *      which deliberately does NOT fold, and that is the point of enumerating them.
+    *
+    * 🔴 THE FOLD IS NOT UNIFORM, and round 10 MEASURED why. It is valid exactly where the negated
+    * criterion is evaluated over the SAME document. Under a NESTED relation the criterion runs over
+    * a CHILD document inside an EXISTENTIAL, so `NOT` outside and `NOT` inside ask different
+    * questions: `AND NOT replies.lastUpdated < d` means "no reply is before d" (a blog with no
+    * replies qualifies), while the folded form asks "some reply is not before d" (it does not).
+    * Aligning that fourth site by folding was tried and reverted; `SQLQuerySpec`'s "predicate with
+    * distinct nested" fixture is what caught the flip, turning `must_not[nested] + filter` into
+    * `must[nested, nested(… == false)]`.
+    *
+    * So the first three fold and the fourth does not, each for a stated reason.
+    * `PainlessNullSurvivalSpec`'s source scan fails if a consumer appears that states NEITHER —
+    * silence is the failure mode both round-10 defects had in common.
+    */
+  private[sql] lazy val (emittedRight: Criteria, notConsumed: Boolean) =
     not match {
       case Some(_) => rightCriteria.negated.map(_ -> true).getOrElse(rightCriteria -> false)
       case None    => rightCriteria -> false
@@ -546,20 +572,44 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * also condemns `REGEXP_LIKE`'s emission at `function/string/package.scala:469`, which uses
     * `Pattern.compile` -- PRE-EXISTING, untouched here, recorded for the lead.)
     *
-    * So: the `%`-only patterns -- which is what a BI tool emits -- decompose into whitelisted
-    * `String` methods, and only a pattern that genuinely needs a regex falls back to the literal.
-    * That is not only faster, it is the only form that works on ES 6.8, where
-    * `script.painless.regex.enabled` defaults to `false`. `_` (the single-character wildcard)
-    * always needs the regex. The regex itself comes from the SHARED `toRegex`, the same translation
-    * the query-DSL path feeds to `regexQuery` (`bridge/package.scala:826-828`), so the scripted and
-    * non-scripted spellings of one SQL pattern cannot diverge -- including `toRegex`'s own
-    * limitation, that it does not escape regex metacharacters.
+    * So the common patterns -- which is what a BI tool emits -- decompose into whitelisted `String`
+    * methods, and only a pattern that genuinely needs a regex falls back to the literal. The regex
+    * itself comes from the SHARED `toRegex`, the same translation the query-DSL path feeds to
+    * `regexQuery` (`bridge/package.scala:805-814`), so the scripted and non-scripted spellings of
+    * one SQL pattern cannot diverge -- a claim that was FALSE until round 10 escaped the regex
+    * metacharacters there.
+    *
+    * 🔴 THE EXACT RULE, because "only `%` patterns are safe" was MEASURED WRONG (round 10, HIGH-1):
+    * the string-method fast path is taken when the pattern has NO `_` and `%` appears ONLY at the
+    * ends. Everything else compiles to a Painless regex literal -- including patterns made only of
+    * `%`, such as `'A%B'`. A regex literal needs `script.painless.regex.enabled`, which stock **ES
+    * 6.8** leaves at `false`: there, `UPPER(status) LIKE 'A%B'` answers `illegal_state_exception:
+    * Regexes are disabled` while `LIKE 'A%'` returns 200 on the same cluster.
+    *
+    * 📌 FUTURE IMPROVEMENT (recorded, not a defect; no issue filed). This decomposition is reached
+    * ONLY for a function-wrapped identifier. A plain `LIKE` / `RLIKE` / `NOT LIKE` never enters
+    * Painless at all -- it becomes a native `regexp` query (`bridge/package.scala:805-814`) -- and
+    * the script path is chosen at `bridge/package.scala:668-679` (the identifier carries functions,
+    * the single geo-`Distance` case excepted). For the case-folding functions, `UPPER(x)` /
+    * `LOWER(x)` over a PLAIN column, the predicate is really a case-insensitive match, and
+    * Elasticsearch has supported `case_insensitive: true` on `regexp` and `wildcard` queries since
+    * **7.10**: that would be native, index-accelerated and free of the Painless whitelist entirely.
+    * It is not available on ES 6.8, which would still need this decomposition or a loud rejection.
+    * And it replaces nothing: a genuinely computed operand (`SUBSTRING(x, 1, 3) LIKE 'AB%'`,
+    * `CONCAT`, `TRIM`, arithmetic) cannot be expressed as a native query at all, so the scripted
+    * path and this decomposition are required for the general case. The improvement is an
+    * optimisation for a recognisable subset.
     */
   private def likePainless(param: String, pattern: String, sqlWildcards: Boolean): String = {
     def lit(value: String): String = s""""${escapePainlessString(value)}""""
     if (sqlWildcards && !pattern.contains("_")) {
       val core = pattern.stripPrefix("%").stripSuffix("%")
-      if (core.nonEmpty && !core.contains("%")) {
+      // 🔴 Round 10 (MEDIUM-1): NO `core.nonEmpty` precondition. `LIKE ''` fell through to the
+      // regex branch and emitted `left1 ==~ //`, where `//` opens a Painless COMMENT —
+      // `unexpected character [//))))]` on live ES 8.18.3, while the native `status LIKE ''`
+      // answers `[]`. An empty core is meaningful in all four shapes: `''` is `equals("")`,
+      // `'%'` is `endsWith("")` and `'%%'` is `contains("")`, both true for any non-null value.
+      if (!core.contains("%")) {
         val leading = pattern.startsWith("%")
         val trailing = pattern.endsWith("%") && pattern.length > 1
         return (leading, trailing) match {
@@ -1183,6 +1233,20 @@ case class BetweenExpr(
   fromTo: FromTo,
   maybeNot: Option[NOT.type]
 ) extends Expression {
+
+  /** \U0001f534 Story BIDC-8 (round 10, BLOCKING-1). Without this override `Predicate.emittedRight`
+    * fell back to wrapping the UN-negated criterion in an Elasticsearch `must_not`, whose semantics
+    * INCLUDE a document lacking the field — so the guarded script's `false` was inverted into a
+    * match. MEASURED on live ES 8.18.3 over a document carrying `status` but NO `amount`: `WHERE
+    * status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 10` returned `[8]` while the mirror `WHERE
+    * ABS(amount) NOT BETWEEN 1 AND 10 AND status = 'A'` returned `[]` — the same predicate,
+    * different rows by writing order, and the row it added is the one ANSI excludes. It is the
+    * defect `Criteria.negated` exists to prevent, and it survived because the round-9 pins only
+    * exercised `GenericExpression`, the one class that already had the override.
+    */
+  override def negated: Option[Criteria] =
+    Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
+
   override def sql = s"$identifier $notAsString$operator $fromTo"
   override def operator: Operator = BETWEEN
   override def update(request: SingleSearch): Criteria = {

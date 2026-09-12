@@ -283,6 +283,19 @@ package object cond {
       }
     }
 
+    /** A result rendering that can sit opposite a `null` branch.
+      *
+      * 🔴 Story BIDC-8 (round 10, MEDIUM-3). With no `ELSE`, SQL says the missing branch is NULL —
+      * but Painless types a ternary from its BRANCHES, so `param2 ? 1 : null` is
+      * `class_cast_exception: Cannot cast from [int] to [java.lang.Object]` (MEASURED live on ES
+      * 8.18.3, and MEASURED again to confirm it is the absence of a `return` that makes it fatal:
+      * the same expression compiles behind an explicit `return`). `(def)` on the result side is the
+      * spelling that compiles in BOTH positions — also measured. Applied only when there is no
+      * default, so every existing emission is byte-identical.
+      */
+    private def boxWhenNoDefault(rendered: String): String =
+      if (default.isEmpty) s"(def)$rendered" else rendered
+
     override def painless(context: Option[PainlessContext] = None): String = {
       context match {
         case Some(ctx) =>
@@ -307,7 +320,7 @@ package object cond {
                       }
                     val c = SQLTypeUtils.coerce(cond, out, context)
                     val r =
-                      res match {
+                      boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
                           SQLTypeUtils.coerce(
@@ -317,7 +330,7 @@ package object cond {
                           )
                         case _ =>
                           SQLTypeUtils.coerce(res, out, context)
-                      }
+                      })
                     expParam match {
                       case Some(e) =>
                         if (cond.nullable) {
@@ -348,7 +361,7 @@ package object cond {
                       }
                     val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean, context)
                     val r =
-                      res match {
+                      boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
                           SQLTypeUtils.coerce(
@@ -358,7 +371,7 @@ package object cond {
                           )
                         case _ =>
                           SQLTypeUtils.coerce(res, out, context)
-                      }
+                      })
                     if (!cond.isInstanceOf[CriteriaWithConditionalFunction[_]] && cond.nullable) {
                       ctx.addParam(LiteralParam(c)) match {
                         case Some(c) => s"$c ? $r"
@@ -381,7 +394,13 @@ package object cond {
               } else {
                 cases = s"$cases : $d"
               }
-            case _ =>
+            // 🔴 Story BIDC-8 (round 10, MEDIUM-3). A `CASE … THEN x END` with NO `ELSE` used to
+            // leave the ternary truncated — `param2 ? 1` — which Elasticsearch rejects at compile
+            // time: `unexpected token ['<EOF>'] was expecting one of [':']` (MEASURED live on
+            // 8.18.3). SQL says the missing ELSE is NULL, so that is what the else-branch emits.
+            // Pre-existing; it sits on the surface this story's CASE gate exercises, and the gate
+            // missed it because every fixture supplied an ELSE.
+            case _ => cases = s"$cases : null"
           }
 
           cases

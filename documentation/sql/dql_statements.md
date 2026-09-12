@@ -437,10 +437,24 @@ The `WHERE` clause supports:
 > document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
 > "no match" applies to a **condition**, never to a value.
 >
-> ⚠️ `LIKE` / `NOT LIKE` with `%` and `_` in the same pattern (`'A_%'`) compiles to a Painless
-> regular expression, and Elasticsearch **6.8** disables regular expressions in scripts by default
-> (`script.painless.regex.enabled`). Patterns using only `%` — which is what a BI tool emits — need
-> no regex and work on every supported version.
+> ⚠️ **`ORDER BY` over a function of a column some documents do not carry does not work**, on any
+> version. The engine emits a null-preserving sort script, and Elasticsearch then fails the search
+> with `null_pointer_exception` while building the comparator. Sort by the bare column, or keep the
+> field present on every document.
+>
+> ⚠️ **When a `LIKE` over a function needs a regular expression.** The engine compiles such a
+> predicate to whitelisted string operations when the pattern contains **no `_`** and uses `%`
+> **only at the ends** (`'A%'`, `'%A'`, `'%A%'`, `'A'`, `''`, `'%'`). Every other pattern — including
+> one made only of `%`, such as `'A%B'` — compiles to a Painless regular expression, and
+> Elasticsearch **6.8** disables those by default (`script.painless.regex.enabled`), answering
+> `Regexes are disabled`. On 7.x and later every pattern works.
+>
+> 🔴 **Changed in 0.23.0 — `LIKE` reads only `%` and `_` as wildcards.** Every other character in a
+> pattern is now matched literally, on the scripted **and** the native path. `WHERE status LIKE
+> 'A.B%'` previously matched `AXB1`, because `.` reached Elasticsearch as a regular-expression
+> wildcard; it now matches only values that really begin with `A.B`. Patterns that relied on the old
+> reading must be rewritten with `_` (any single character) or `%` (any sequence). `RLIKE` is
+> unaffected — its operand is a regular expression by definition.
 
 **Example**
 
