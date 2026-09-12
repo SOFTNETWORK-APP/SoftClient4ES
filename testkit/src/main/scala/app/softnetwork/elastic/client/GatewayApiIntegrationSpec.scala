@@ -2588,9 +2588,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // regex-dot one would match 'A' — the assertion distinguishes them.
     ids("WHERE status LIKE 'A.'") shouldBe Seq.empty[Int]
     ids("WHERE UPPER(status) LIKE 'A.'") shouldBe Seq.empty[Int]
-    ids("WHERE UPPER(status) LIKE 'A_'") shouldBe Seq
-      .empty[Int] // `_` IS a wildcard, but 'A' is 1 char
     ids("WHERE UPPER(status) LIKE 'A'") shouldBe Seq(1)
+    // ⚠️ The `_` wildcard is NOT asserted here — it compiles to a Painless regex, which stock
+    // Elasticsearch 6.8 refuses. It has its own capability-gated test below; everything in THIS
+    // test takes the whitelisted string-method path and therefore holds on every supported major.
 
     // 🔴 Round 10, MEDIUM-1 — `LIKE ''` over a function emitted `left1 ==~ //`, and `//` opens a
     // Painless COMMENT: `unexpected character [//))))]`. The native form always answered `[]`.
@@ -2638,6 +2639,67 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2, 3)
 
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
+  }
+
+  /** 🔴 CI CAUGHT THIS, not me (run 34683904367): the shape below was asserted on every major and
+    * FAILS on both ES 6 clients with `illegal_state_exception: Regexes are disabled. Set
+    * [script.painless.regex.enabled] to [true]`.
+    *
+    * The product behaviour is correct and documented — a `LIKE` compiles to whitelisted `String`
+    * methods only when the pattern has no `_` and uses `%` at the ends alone, and everything else
+    * becomes a Painless regex, which 6.x disables BY DEFAULT. The defect was the TEST, which
+    * certified a shape on a configuration users of 6.8 do not have.
+    *
+    * ⚠️ And a correction to this story's own record: round 9 reported this ANSI suite green on
+    * 6.8.23 / 7.17.29 / 8.18.3 / 9.0.3, which was true OF ROUND 9's CONTENT — every `LIKE` shape
+    * then took the string-method path. Round 10 added the `_` shape and re-ran only 8.18.3, so the
+    * 6.8 claim was carried forward STALE rather than re-derived. CI is the authority.
+    *
+    * The fix is a capability gate, NOT enabling `script.painless.regex.enabled` in the ES 6
+    * fixture: a suite that turns a non-default setting on certifies a cluster nobody runs.
+    */
+  it should "apply the same rule to a LIKE pattern that needs a Painless regex" in {
+    assume(
+      supportsPainlessRegex,
+      "Painless regexes are disabled by default before Elasticsearch 7 " +
+      "(script.painless.regex.enabled), so a LIKE pattern that compiles to one cannot run here"
+    )
+    val create =
+      """CREATE TABLE IF NOT EXISTS tvl_regex (
+        |  id INT,
+        |  status KEYWORD,
+        |  PRIMARY KEY (id)
+        |)""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    val jsonl = java.io.File.createTempFile("tvl_regex_", ".jsonl")
+    jsonl.deleteOnExit()
+    val writer = new java.io.PrintWriter(jsonl)
+    try {
+      writer.println("""{"id": 1, "status": "A"}""")
+      writer.println("""{"id": 2, "status": "AB"}""")
+      writer.println("""{"id": 3}""") // the `status` field is ABSENT
+    } finally writer.close()
+    assertDml(
+      System.nanoTime(),
+      client.run(s"""COPY INTO tvl_regex FROM "${jsonl.getAbsolutePath}";""").futureValue
+    )
+
+    def ids(where: String): Seq[Int] =
+      collectRows(
+        System.nanoTime(),
+        client.run(s"SELECT id FROM tvl_regex $where").futureValue
+      ).flatMap(_.get("id").map(_.toString.toDouble.toInt)).sorted
+
+    // `_` is exactly ONE character, so `'A_'` matches `AB` and not `A` — and the row with no
+    // `status` matches neither, which is the ANSI rule this whole suite is about.
+    ids("WHERE UPPER(status) LIKE 'A_'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) LIKE 'A'") shouldBe Seq(1)
+    // A `%` that is NOT at an end also needs the regex, and this is the shape whose "pure `%`
+    // patterns are safe everywhere" claim round 10 had to retract.
+    ids("WHERE UPPER(status) LIKE 'A%B'") shouldBe Seq(2)
+    ids("WHERE UPPER(status) NOT LIKE 'A_'") shouldBe Seq(1) // NOT the absent row — ANSI
+
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_regex").futureValue)
   }
 
   behavior of "POLICIES statements"

@@ -68,6 +68,15 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
     }
   }
 
+  def supportsPainlessRegex: Boolean = {
+    client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.supportsPainlessRegex(v)
+      case ElasticFailure(error) =>
+        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+        false
+    }
+  }
+
   def supportsQueryWatchers: Boolean = {
     client.asInstanceOf[VersionApi].version match {
       case ElasticSuccess(v) => ElasticsearchVersion.supportsQueryWatchers(v)

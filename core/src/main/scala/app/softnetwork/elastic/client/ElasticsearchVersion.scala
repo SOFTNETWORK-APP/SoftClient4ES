@@ -146,6 +146,25 @@ object ElasticsearchVersion {
     isAtLeast(version, 7, 16)
   }
 
+  /** Painless REGULAR EXPRESSIONS are usable in a script (ES >= 7.0).
+    *
+    * 🔴 A CONFIGURATION gate, not a feature one, and that is why it is easy to get wrong. Regex
+    * literals exist in every supported Painless, but `script.painless.regex.enabled` defaults to
+    * `false` on Elasticsearch 6.x and to `limited` from 7.0. So on a STOCK 6.8 cluster a script
+    * carrying `==~ /…/` is rejected at COMPILE time with `illegal_state_exception: Regexes are
+    * disabled. Set [script.painless.regex.enabled] to [true]`, while the identical script runs on
+    * 7.x and later. A cluster whose operator has turned the setting on would accept it — this
+    * predicate deliberately answers for the DEFAULT, because a test suite must certify the
+    * configuration users actually have.
+    *
+    * Story BIDC-8: `WHERE UPPER(x) LIKE 'A_'` is the shape that needs one — the engine compiles a
+    * `LIKE` to whitelisted `String` methods only when the pattern has no `_` and uses `%` at the
+    * ends alone; everything else becomes a regex.
+    */
+  def supportsPainlessRegex(version: String): Boolean = {
+    isAtLeast(version, 7, 0)
+  }
+
   /** Check if Composable Templates are supported (ES >= 7.8)
     */
   def supportsComposableTemplates(version: String): Boolean = {

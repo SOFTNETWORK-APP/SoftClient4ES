@@ -43,6 +43,26 @@ class ElasticsearchVersionSpec extends AnyWordSpec with Matchers {
     }
   }
 
+  "ElasticsearchVersion.supportsPainlessRegex" should {
+    // 🔴 Story BIDC-8. CI (run 34683904367) failed BOTH ES 6 clients on a `LIKE` pattern that
+    // compiles to a Painless regex: `illegal_state_exception: Regexes are disabled. Set
+    // [script.painless.regex.enabled] to [true]`. The boundary is a DEFAULT, not a feature —
+    // 6.x ships the setting `false`, 7.0 ships it `limited` — so it is pinned here as well as
+    // exercised live, because a live run only ever sees the majors someone remembered to run.
+    "return false for ES 6, where regexes are disabled by default" in {
+      ElasticsearchVersion.supportsPainlessRegex("6.8.23") shouldBe false
+      ElasticsearchVersion.supportsPainlessRegex("6.0.0") shouldBe false
+      ElasticsearchVersion.supportsPainlessRegex("5.6.0") shouldBe false
+    }
+
+    "return true from ES 7.0 on" in {
+      ElasticsearchVersion.supportsPainlessRegex("7.0.0") shouldBe true
+      ElasticsearchVersion.supportsPainlessRegex("7.17.29") shouldBe true
+      ElasticsearchVersion.supportsPainlessRegex("8.18.3") shouldBe true
+      ElasticsearchVersion.supportsPainlessRegex("9.0.3") shouldBe true
+    }
+  }
+
   "ElasticsearchVersion.supportsPit" should {
     "return true for ES >= 7.12" in {
       ElasticsearchVersion.supportsPit("7.12.0") shouldBe true
