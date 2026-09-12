@@ -15,5 +15,9 @@ libraryDependencies ++= elasticClientDependencies(elasticSearchVersion.value) ++
   //  "org.apache.logging.log4j" % "log4j-slf4j-impl"  % log4jVersion(elasticSearchVersion.value),
   "app.softnetwork.persistence" %% "persistence-core-testkit" % Versions.genericPersistence,
   "org.testcontainers" % "testcontainers-elasticsearch" % Versions.testContainers excludeAll (jacksonExclusions: _*),
-  "org.testcontainers" % "testcontainers-minio"         % Versions.testContainers
+  // MinioTestKit drives `adobe/s3mock` through a plain GenericContainer: `minio/minio` was removed
+  // from Docker Hub (so `testcontainers-minio` has no image to pull), and the s3mock Testcontainers
+  // MODULE is Java-17 bytecode built against Testcontainers 1.x. Declared explicitly even though
+  // testcontainers-elasticsearch already brings it in transitively.
+  "org.testcontainers" % "testcontainers" % Versions.testContainers
 )
