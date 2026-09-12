@@ -149,4 +149,68 @@ class PainlessOperandFormSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"expected a SingleSearch, got $other")
     }
   }
+
+  /** 🔴 Round 11 (M-3) — the CLASS axis, which is the axis BLOCKING-1 actually lived on.
+    *
+    * Round 10 added a gate over the CONSUMERS of `Predicate.not`. That is orthogonal to the defect
+    * that blocked: `BetweenExpr` was a criteria CLASS with no `negated` override, and no
+    * consumer-side check could ever see it. A class that can carry its own `NOT` and does not say
+    * how to flip it silently falls back to an Elasticsearch `must_not`, which MATCHES a document
+    * lacking the field — the semantics this story exists to remove.
+    *
+    * The rule has no allow-list: if the constructor declares a `maybeNot` field, the body must
+    * override `negated`. Shown failing by deleting one override (measured: removing
+    * `BetweenExpr.negated` reddens this with that class named).
+    *
+    * ⚠️ SCOPE, stated rather than implied. `MatchCriteria` and `MultiMatchCriteria` declare NO
+    * `maybeNot` field — a full-text match has no negated spelling of its own — so they are outside
+    * this rule by construction, and `NOT match(x) AGAINST ('y')` still takes the `must_not` route.
+    * MEASURED live on ES 8.18.3: it matches a document that does not carry the field. That is the
+    * same deviation the bare-column `NOT status = 'A'` route has, it is pinned in
+    * `GatewayApiIntegrationSpec`, and it is NOT fixed here: giving `MatchCriteria` a `maybeNot`
+    * changes its arity and its `.sql` render (which `MaterializedViewExtension` persists) and needs
+    * a new bridge arm emitting `must_not(match) + exists(field)` — too much for the round that
+    * closes this story, and the lead's call, not the dev's.
+    */
+  "every criteria class that can carry its own NOT" should "say how to flip it" in {
+    def root: java.io.File = {
+      var d = new java.io.File(".").getAbsoluteFile
+      while (d != null && !new java.io.File(d, "build.sbt").isFile) d = d.getParentFile
+      if (d == null) fail("could not locate the build root") else d
+    }
+    def scalaFilesUnder(dir: java.io.File): Seq[java.io.File] =
+      if (!dir.isDirectory) Nil
+      else
+        Option(dir.listFiles).toSeq.flatten.flatMap { f =>
+          if (f.isDirectory) scalaFilesUnder(f)
+          else if (f.getName.endsWith(".scala")) Seq(f)
+          else Nil
+        }
+    val sources = scalaFilesUnder(new java.io.File(root, "sql/src/main"))
+    sources should not be empty
+    val offenders = sources.flatMap { f =>
+      val text = new String(java.nio.file.Files.readAllBytes(f.toPath), "UTF-8")
+        .replaceAll("(?s)/\\*.*?\\*/", " ")
+        .replaceAll("(?m)//.*$", " ")
+      // Each top-level `case class` body, up to the next top-level definition.
+      val starts = """(?m)^case class (\w+)\(""".r.findAllMatchIn(text).toSeq
+      starts.zipWithIndex.flatMap { case (m, i) =>
+        val end = if (i + 1 < starts.size) starts(i + 1).start else text.length
+        val body = text.substring(m.start, end)
+        val declaresMaybeNot =
+          """(?m)^\s*(override\s+)?(val\s+)?maybeNot:\s*Option\[NOT\.type\]""".r
+            .findFirstIn(body)
+            .isDefined
+        if (declaresMaybeNot && !body.contains("override def negated"))
+          Some(s"${m.group(1)} (${f.getName})")
+        else None
+      }
+    }
+    withClue(
+      "these criteria classes declare a `maybeNot` field but never override `negated`, so a " +
+      "predicate's NOT over them falls back to an Elasticsearch `must_not`, which MATCHES a " +
+      "document lacking the field:\n  " + offenders.mkString("\n  ") + "\n"
+    )(offenders shouldBe empty)
+  }
+
 }

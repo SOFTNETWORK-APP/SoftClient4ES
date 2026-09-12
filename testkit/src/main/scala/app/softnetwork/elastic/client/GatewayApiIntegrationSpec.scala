@@ -2609,6 +2609,34 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       id -> v
     } shouldBe Seq(1 -> "1", 2 -> "null", 3 -> "null")
 
+    // 🔴 Round 11, M-2 — `%%` means what `%` means, but the fast-path test stripped only ONE
+    // leading and ONE trailing `%`, so `'%%A'` fell through to a regex. MEASURED on live ES 8.18.3
+    // before the fix: `circuit_breaking_exception: Regular expression considered too many
+    // characters`; on 6.8 the same shape is `Regexes are disabled`. Collapsing the runs first makes
+    // the documented rule ("no `_`, `%` only at the ends") TRUE as written.
+    ids("WHERE UPPER(status) LIKE '%%A'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) LIKE 'A%%'") shouldBe Seq(1)
+    ids("WHERE UPPER(status) LIKE '%%'") shouldBe Seq(1, 2)
+
+    // 🔴 Round 11, M-1 — a `CASE … END` with no `ELSE` is NULL-valued, and until now it reached a
+    // comparison unguarded. `= 1` hid it (Painless tolerates `null == 1`); everything else did not.
+    // MEASURED before the fix: `> 0` gave `Cannot invoke "Object.getClass()" because "leftObject"
+    // is null` and the string form `cannot access method/field [compareTo] from a null def
+    // reference`. Row 3 carries no `status`, so its CASE is NULL and it must not match either.
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) > 0") shouldBe Seq(1)
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 'y' END) = 'y'") shouldBe Seq(1)
+    ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) = 1") shouldBe Seq(1)
+
+    // 🔴 Round 11, M-3 — A DEVIATION PINNED AS IT IS, NOT AS IT SHOULD BE. A full-text `MATCH` has
+    // no negated spelling of its own, so `NOT match(...)` takes Elasticsearch's `must_not`, which
+    // INCLUDES a document lacking the field: row 3 has no `status`, and ANSI would leave it out
+    // (`NOT UNKNOWN` is UNKNOWN). Same family as the bare-column `NOT status = 'A'` pinned above.
+    // NOT fixed in this story: it needs a `maybeNot` field on `MatchCriteria` (arity + `.sql`
+    // render, which `MaterializedViewExtension` persists) and a bridge arm emitting
+    // `must_not(match) + exists(field)` — the lead's call. `PainlessOperandFormSpec`'s class-axis
+    // gate names the exemption explicitly rather than leaving it silent.
+    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2, 3)
+
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
   }
 

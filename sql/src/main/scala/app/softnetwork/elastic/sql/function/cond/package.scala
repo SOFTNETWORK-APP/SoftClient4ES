@@ -294,7 +294,11 @@ package object cond {
       * default, so every existing emission is byte-identical.
       */
     private def boxWhenNoDefault(rendered: String): String =
-      if (default.isEmpty) s"(def)$rendered" else rendered
+      // 🔴 Round 11 — PARENTHESISED. `(def)$rendered` casts only the first token, so a result that
+      // is itself a ternary came out as `param4 ? (def)param3 ? (def)1 : null : null`, casting the
+      // nested CONDITION rather than the value. Benign today (a `def` condition still works) and
+      // wrong as written.
+      if (default.isEmpty) s"(def)($rendered)" else rendered
 
     override def painless(context: Option[PainlessContext] = None): String = {
       context match {

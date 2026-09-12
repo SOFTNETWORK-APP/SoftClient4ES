@@ -420,8 +420,8 @@ The `WHERE` clause supports:
 > caused by `class_cast_exception: Cannot cast from [boolean] to [java.lang.Object]`), so no such
 > predicate ever ran.
 >
-> This holds for **every** comparison the clause accepts, not only `=`: `<`, `>`, `<>`, `LIKE`,
-> `NOT LIKE`, `IN`, `NOT IN`, `BETWEEN` and `NOT BETWEEN` over a function all follow the same rule,
+> This holds for the comparisons listed here, not only `=`: `<`, `>`, `<>`, `LIKE`, `NOT LIKE`,
+> `IN`, `NOT IN`, `BETWEEN` and `NOT BETWEEN` over a function all follow the same rule,
 > and a `NOT` written after `AND` / `OR` (`WHERE ABS(amount) > 10 AND NOT UPPER(status) = 'A'`)
 > negates the criterion it qualifies, not the whole composite — so the same predicate returns the
 > same rows whichever way round you write it. Before **0.23.0** several of these did not run at all:
@@ -437,10 +437,26 @@ The `WHERE` clause supports:
 > document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
 > "no match" applies to a **condition**, never to a value.
 >
-> ⚠️ **`ORDER BY` over a function of a column some documents do not carry does not work**, on any
-> version. The engine emits a null-preserving sort script, and Elasticsearch then fails the search
-> with `null_pointer_exception` while building the comparator. Sort by the bare column, or keep the
-> field present on every document.
+> 🔴 **`ORDER BY` over a function of a column some documents do not carry LOSES ROWS SILENTLY.** The
+> engine emits a null-preserving sort script; Elasticsearch then fails the shard while building the
+> comparator (`null_pointer_exception`). What you see depends on the shard count, and the dangerous
+> case is the normal one:
+>
+> - on a **single-shard** index the whole search is rejected — you get an error;
+> - on a **multi-shard** index the search returns **HTTP 200** and the failing shard's documents are
+>   simply **absent from the result**. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with
+>   one lacking the field: `_shards.failed: 1`, `hits.total: 5` — two rows gone, no error anywhere.
+>   The engine does not surface `_shards.failures`, so nothing reaches the caller.
+>
+> Until that is fixed, sort by the bare column, or keep the field present on every document. Do not
+> rely on getting an error. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which
+> is NULL-valued for the rows no branch matches.
+>
+> ⚠️ Two limits of the rule above, stated rather than implied. `NOT <function>(x) IS NULL` is a
+> PARSE rejection — the grammar takes a bare name after `NOT` there — so the rule covers the
+> comparisons listed, not literally every clause you can write. And on a **multi-valued** field the
+> scripted and non-scripted routes differ for a reason that has nothing to do with NULL: the native
+> query matches if ANY value matches, while the script reads a single value.
 >
 > ⚠️ **When a `LIKE` over a function needs a regular expression.** The engine compiles such a
 > predicate to whitelisted string operations when the pattern contains **no `_`** and uses `%`

@@ -318,7 +318,7 @@ case class Predicate(
     * `PainlessNullSurvivalSpec`'s source scan fails if a consumer appears that states NEITHER —
     * silence is the failure mode both round-10 defects had in common.
     */
-  private[sql] lazy val (emittedRight: Criteria, notConsumed: Boolean) =
+  private[query] lazy val (emittedRight: Criteria, notConsumed: Boolean) =
     not match {
       case Some(_) => rightCriteria.negated.map(_ -> true).getOrElse(rightCriteria -> false)
       case None    => rightCriteria -> false
@@ -575,9 +575,12 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * So the common patterns -- which is what a BI tool emits -- decompose into whitelisted `String`
     * methods, and only a pattern that genuinely needs a regex falls back to the literal. The regex
     * itself comes from the SHARED `toRegex`, the same translation the query-DSL path feeds to
-    * `regexQuery` (`bridge/package.scala:805-814`), so the scripted and non-scripted spellings of
-    * one SQL pattern cannot diverge -- a claim that was FALSE until round 10 escaped the regex
-    * metacharacters there.
+    * `regexQuery` (`bridge/package.scala:825-827`), so the scripted and non-scripted spellings of
+    * one SQL pattern read the same PATTERN -- a claim that was false until round 10 escaped the
+    * regex metacharacters there. ⚠️ It is a claim about the pattern, not about the whole predicate:
+    * on a MULTI-VALUED field the two routes still differ, because the native query matches if ANY
+    * value matches while the script reads `doc['x'].value`. That is orthogonal to this method and
+    * is recorded, not fixed.
     *
     * 🔴 THE EXACT RULE, because "only `%` patterns are safe" was MEASURED WRONG (round 10, HIGH-1):
     * the string-method fast path is taken when the pattern has NO `_` and `%` appears ONLY at the
@@ -588,8 +591,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     *
     * 📌 FUTURE IMPROVEMENT (recorded, not a defect; no issue filed). This decomposition is reached
     * ONLY for a function-wrapped identifier. A plain `LIKE` / `RLIKE` / `NOT LIKE` never enters
-    * Painless at all -- it becomes a native `regexp` query (`bridge/package.scala:805-814`) -- and
-    * the script path is chosen at `bridge/package.scala:668-679` (the identifier carries functions,
+    * Painless at all -- it becomes a native `regexp` query (`bridge/package.scala:825-827`) -- and
+    * the script path is chosen at `bridge/package.scala:657-697` (the identifier carries functions,
     * the single geo-`Distance` case excepted). For the case-folding functions, `UPPER(x)` /
     * `LOWER(x)` over a PLAIN column, the predicate is really a case-insensitive match, and
     * Elasticsearch has supported `case_insensitive: true` on `regexp` and `wildcard` queries since
@@ -600,8 +603,16 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * path and this decomposition are required for the general case. The improvement is an
     * optimisation for a recognisable subset.
     */
-  private def likePainless(param: String, pattern: String, sqlWildcards: Boolean): String = {
+  private def likePainless(param: String, rawPattern: String, sqlWildcards: Boolean): String = {
     def lit(value: String): String = s""""${escapePainlessString(value)}""""
+    // 🔴 Round 11 (M-2). `%%` means exactly what `%` means, but the fast-path test strips only ONE
+    // leading and ONE trailing `%`, so `'%%A'` fell through to a regex — and the rule this method
+    // documents ("no `_`, `%` only at the ends") was then false as written. MEASURED on live ES
+    // 8.18.3, `UPPER(status) LIKE '%%A'` answered
+    // `circuit_breaking_exception: Regular expression considered too many characters`, and on 6.8 it
+    // is `Regexes are disabled`. Collapsing the runs first makes the documented rule TRUE and keeps
+    // more patterns off the regex path on every version. The collapse is identity for LIKE.
+    val pattern = if (sqlWildcards) rawPattern.replaceAll("%+", "%") else rawPattern
     if (sqlWildcards && !pattern.contains("_")) {
       val core = pattern.stripPrefix("%").stripSuffix("%")
       // 🔴 Round 10 (MEDIUM-1): NO `core.nonEmpty` precondition. `LIKE ''` fell through to the
@@ -853,8 +864,19 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       * `BooleanCastSpec`'s 21.8 restoration pin.
       */
     def readsDocumentField(token: Option[Token]): Boolean = token match {
-      case Some(id: Identifier) => id.nullable || id.dependencies.nonEmpty
-      case _                    => false
+      case Some(id: Identifier) =>
+        // 🔴 Round 11 (M-1) — `id.functions.exists(_.nullable)` is the third disjunct, and it is
+        // what makes a `CASE … END` with no `ELSE` guardable. SQL says the missing branch is NULL,
+        // `Case.nullable` reports that faithfully, but the wrapping identifier reports neither
+        // `nullable` nor dependencies for it, so the operand reached the comparison unguarded.
+        // MEASURED on live ES 8.18.3: `= 1` survived only because Painless tolerates `null == 1`,
+        // while `> 0` gave `Cannot invoke "Object.getClass()" because "leftObject" is null` and a
+        // string `=` gave `cannot access method/field [compareTo] from a null def reference`.
+        // This does NOT re-open the `functions.nonEmpty` trap round 9 measured: a `CASE` WITH an
+        // `ELSE` reports `nullable = false`, so the literal shapes `BooleanCastSpec` pins stay
+        // unguarded and byte-identical.
+        id.nullable || id.dependencies.nonEmpty || id.functions.exists(_.nullable)
+      case _ => false
     }
 
     val leftNullable = readsDocumentField(Some(identifier))
@@ -1234,8 +1256,8 @@ case class BetweenExpr(
   maybeNot: Option[NOT.type]
 ) extends Expression {
 
-  /** \U0001f534 Story BIDC-8 (round 10, BLOCKING-1). Without this override `Predicate.emittedRight`
-    * fell back to wrapping the UN-negated criterion in an Elasticsearch `must_not`, whose semantics
+  /** 🔴 Story BIDC-8 (round 10, BLOCKING-1). Without this override `Predicate.emittedRight` fell
+    * back to wrapping the UN-negated criterion in an Elasticsearch `must_not`, whose semantics
     * INCLUDE a document lacking the field — so the guarded script's `false` was inverted into a
     * match. MEASURED on live ES 8.18.3 over a document carrying `status` but NO `amount`: `WHERE
     * status = 'A' AND NOT ABS(amount) BETWEEN 1 AND 10` returned `[8]` while the mirror `WHERE

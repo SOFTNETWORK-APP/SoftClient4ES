@@ -60,13 +60,20 @@ class PainlessNullSurvivalSpec extends AnyFlatSpec with Matchers {
   /** ⚠️ ROUND 10, MEDIUM-2 — READ THIS BEFORE READING THE ASSERTION AS AN ENDORSEMENT.
     *
     * The EMISSION below is correct: the sort script preserves `null`, which is what this story
-    * owns. Elasticsearch nevertheless REFUSES to run it when any document in the index lacks the
-    * field — MEASURED live on 8.18.3: `SELECT id FROM probe ORDER BY UPPER(status)` answers `HTTP
-    * 500 null_pointer_exception: Cannot invoke "java.lang.CharSequence.length()" because "text" is
-    * null`, so an ORDER BY over a function of a sparse column is unusable. That is PRE-EXISTING,
-    * downstream of this emission (the sort path builds the comparator), and NOT fixed here — a
-    * null-safe sort emission would change ordering semantics for present values, which is a product
-    * decision, not a dev one. It is disclosed in the PR body and in both doc twins.
+    * owns. Elasticsearch then fails the SHARD while building the comparator, and what the CALLER
+    * sees depends on the shard count — the dangerous case being the normal one. MEASURED live on
+    * 8.18.3: a SINGLE-shard index rejects the search (`HTTP 500 null_pointer_exception: Cannot
+    * invoke "java.lang.CharSequence.length()" because "text" is null`), but a THREE-shard index
+    * holding 7 documents, one of them lacking the field, answers **HTTP 200** with `_shards.failed:
+    * 1` and `hits.total: 5` — the failing shard's two documents SILENTLY ABSENT, no error anywhere.
+    * Nothing surfaces it: `grep -rn "_shards" core/src/main` finds no consumer on the search path.
+    * That is the #205 / #209 / #253 silent-wrong-answer family, and an earlier draft of this
+    * comment called it a loud error, which is the opposite of what it is.
+    *
+    * PRE-EXISTING and NOT fixed here — a null-safe sort emission changes ordering semantics for
+    * values that ARE present, which is a product decision; and surfacing `_shards.failures` is its
+    * own issue, deliberately not started in this story. Disclosed in the PR body and both doc
+    * twins.
     *
     * This pin therefore says "the emission still carries `null`", never "the sort path works".
     */
@@ -134,21 +141,60 @@ class PainlessNullSurvivalSpec extends AnyFlatSpec with Matchers {
       .map(new java.io.File(root, _))
       .flatMap(scalaFilesUnder)
     sources should not be empty
+    // 🔴 Round 11 (M-4). The first version keyed on a receiver literally named `p` or `predicate`
+    // and asked only whether the WHOLE FILE mentioned `notConsumed`. Both were measured evadable:
+    // `pr.not` passed green, so did `case Predicate(_, _, _, n, _) => n.isDefined`, and a new
+    // mis-use anywhere in `Where.scala` — which holds two of the four consumers — could never
+    // redden because the file mentions `notConsumed` elsewhere.
+    //
+    // The anchor is now the TYPE, recovered from the binding rather than from a name convention:
+    // every identifier the file binds to a `Predicate` (`case x @ Predicate`, `case x: Predicate`,
+    // `x: Predicate` in a parameter list) is collected, and `<thatName>.not` counts as a use — as
+    // does a destructured fourth field BOUND TO A NAME (`Predicate(l, _, r, _, _)` discards it on
+    // purpose and is not a consumer). Every use must be PAID FOR: the count of uses may not exceed
+    // the count of classifications, so one mention no longer covers a file. Receivers that are not
+    // predicates — elastic4s's own `boolQuery.not(...)`, for instance — are invisible to it, which
+    // is the point: a gate that cries wolf is a gate someone silences.
+    //
+    // ⚠️ WHAT THIS GATE DOES NOT DO, stated because round 11 MEASURED it rather than assumed it.
+    // Classification is per FILE, so a NEW mis-use inside a file that already classifies one will
+    // not redden. Two stronger rules were tried and both failed: counting uses against
+    // classifications is defeated because `Where.scala` legitimately says `negated` many times, and
+    // a line-window version either cried wolf on `Predicate(l, _, r, _, _)` (which discards the NOT
+    // on purpose) or mis-numbered lines once block comments were stripped. A text scan cannot type
+    // a receiver; closing this axis properly needs a typed check (a Scalafix rule), recorded as a
+    // follow-up. THE GATE THAT ACTUALLY CATCHES THIS DEFECT CLASS IS THE CLASS-AXIS ONE in
+    // `PainlessOperandFormSpec` — BLOCKING-1 was a criteria CLASS with no `negated`, which no
+    // consumer-side check could ever have seen. This one is a reminder, not a proof.
+    val destructured = """Predicate\(\s*[^)]*?,\s*[^)]*?,\s*[^)]*?,\s*[a-zA-Z]\w*\s*,""".r
+    val boundToPredicate = Seq(
+      """case\s+(\w+)\s*@\s*Predicate""".r,
+      """case\s+(\w+)\s*:\s*Predicate""".r,
+      """(\w+)\s*:\s*Predicate""".r
+    )
     val offenders = sources.flatMap { f =>
-      // 🔴 COMMENTS STRIPPED FIRST. Measured: without this the gate is defeated by the very comment
-      // that explains it — the file naming `notConsumed` in prose passes while the CODE below has
-      // stopped consulting it. A guard that its own documentation satisfies is not a guard.
       val raw = new String(java.nio.file.Files.readAllBytes(f.toPath), "UTF-8")
       val code = raw.replaceAll("(?s)/\\*.*?\\*/", " ").replaceAll("(?m)//.*$", " ")
-      val readsNot = """(?<![A-Za-z0-9_])(p|predicate)\.not(?![A-Za-z0-9_])""".r
-        .findFirstIn(code)
-        .isDefined
-      // The FOLD side must prove itself in CODE — a comment mentioning `notConsumed` must not
-      // satisfy the gate, which is why comments are stripped first. The NO-FOLD side can only ever
-      // be a written decision, so its marker is looked for in the raw text: the gate cannot verify
-      // that reason, it forces someone to state one where silence used to pass.
-      val classified = code.contains("notConsumed") || raw.contains("NOT-FOLD:")
-      if (readsNot && !classified) Some(f.getPath.substring(root.getPath.length))
+      val names = boundToPredicate.flatMap(_.findAllMatchIn(code).map(_.group(1))).toSet
+      val namedUses = names.toSeq.map { n =>
+        s"""(?<![A-Za-z0-9_])$n\\.not(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size
+      }.sum
+      val uses = namedUses + destructured.findAllMatchIn(code).size
+      // The FOLD side must prove itself in CODE — comments are stripped, so the comment explaining
+      // this gate cannot satisfy it. The NO-FOLD side can only ever be a written decision, so its
+      // marker is read from the raw text: the gate cannot verify that reason, it forces someone to
+      // state one where silence used to pass.
+      // Three ways to be classified, two of them CODE. `notConsumed` is the shared fold; calling
+      // `.negated` directly IS the fold (HAVING's `metricSelector` does exactly that, which is why
+      // it never mentions `notConsumed`); `NOT-FOLD:` is the written exemption.
+      val classifications =
+        """(?<![A-Za-z0-9_])notConsumed(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size +
+        """(?<![A-Za-z0-9_])negated(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size +
+        "NOT-FOLD:".r.findAllMatchIn(raw).size
+      if (uses > classifications)
+        Some(
+          s"${f.getPath.substring(root.getPath.length)} ($uses uses, $classifications classified)"
+        )
       else None
     }
     withClue(
