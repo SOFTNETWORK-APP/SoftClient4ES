@@ -489,4 +489,104 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         fail(s"Query failed: ${error.message}")
     }
   }
+
+  // ------------------------------------------------------------------
+  // Story 21.6 AC-6 -- the CORPUS shapes, proven end to end on a real 3-shard cluster.
+  //
+  // Not extra GROUP BY coverage. These are the shapes that, WITHOUT story 21.3, flip from a LOUD
+  // parse error to a SILENT wrong answer the moment 21.1/21.2's quoting lands:
+  //   21 of the 99 captured BI statements are aggregate-free GROUP BY with NO LIMIT (#253), and
+  //   tableau.sql92.w5.028 carries ORDER BY 1, which parses TODAY and is discarded silently.
+  //
+  // The tests above already cover the BARE spellings. What is new here is that the statements are
+  // written the way Tableau actually writes them -- quoted, qualified, aliased -- which is the only
+  // spelling the corpus contains and therefore the only one the scoreboard's `scored = fixed` claim
+  // can rest on. The corpus witnesses, verbatim:
+  //
+  //   tableau.mysql.w2.028   SELECT `bi_events`.`category` AS `category`
+  //                          FROM `elastic`.`bi_events` `bi_events` GROUP BY `bi_events`.`category`
+  //   tableau.sql92.w5.026   the ANSI double-quoted spelling of the same shape
+  //   tableau.sql92.w5.028   ... the same, plus ORDER BY 1 ASC
+  //
+  // superset.flightsql.w1.001 is deliberately NOT the oracle: it carries LIMIT 100 and `id` in the
+  // grouping key, so it is a weak witness for both defects.
+  //
+  // NOTE the deliberate asymmetry with the tests above: these assert the GROUP KEYS and (for the
+  // ORDER BY case) their ORDER, and nothing about doc counts. An aggregate-free projection HAS no
+  // count column -- that is the shape #253 is about -- and adding COUNT(*) to obtain one would
+  // destroy the thing under test. Doc coverage is already pinned by "GROUP BY without LIMIT" above.
+  //
+  // `CategoryOnly` is the file-top-level case class story 21.3 already added; `searchAs` is a macro
+  // and binds a top-level case class, so it is reused rather than duplicated.
+  // ------------------------------------------------------------------
+
+  private val expectedCategories: Set[String] = (1 to categories).map(c => f"cat_$c%02d").toSet
+
+  "corpus shape: aggregate-free GROUP BY, qualified backtick name, NO LIMIT" should
+  "return one row per group" in {
+    client.searchAs[CategoryOnly](
+      "SELECT `g`.`category` AS `category` FROM `group_by_completeness` `g` GROUP BY `g`.`category`"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size categories.toLong // 37 groups, not 703 documents and not ES's 10
+        rows.map(_.category).distinct should have size categories.toLong
+        rows.map(_.category).toSet shouldBe expectedCategories
+      case ElasticFailure(error) =>
+        fail(s"aggregate-free GROUP BY over a backticked qualified name failed: ${error.message}")
+    }
+  }
+
+  it should "do the same with the ANSI double-quoted spelling" in {
+    client.searchAs[CategoryOnly](
+      "SELECT \"g\".\"category\" AS \"category\" FROM \"group_by_completeness\" \"g\" " +
+      "GROUP BY \"g\".\"category\""
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size categories.toLong
+        rows.map(_.category).distinct should have size categories.toLong
+        rows.map(_.category).toSet shouldBe expectedCategories
+      case ElasticFailure(error) =>
+        fail(s"aggregate-free GROUP BY over a quoted qualified name failed: ${error.message}")
+    }
+  }
+
+  "corpus shape: a catalog prefix is captured and IGNORED" should
+  "read the bare index, not a catalog-qualified one" in {
+    // The corpus's real FROM is `elastic`.`bi_events` -- `elastic` is the schema OUR OWN driver
+    // advertised, never part of the index name (21.2 finding 1; story 21.2 preserves the qualifier
+    // in `Table.parts` and does NOT interpret it). This is the only end-to-end proof, against a real
+    // cluster, that the prefix does not move the read: an index named `elastic.group_by_completeness`
+    // does not exist, so if the qualifier reached the request this would fail or return nothing.
+    client.searchAs[CategoryOnly](
+      "SELECT `g`.`category` AS `category` " +
+      "FROM `elastic`.`group_by_completeness` `g` GROUP BY `g`.`category`"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows should have size categories.toLong
+        rows.map(_.category).toSet shouldBe expectedCategories
+      case ElasticFailure(error) =>
+        fail(s"catalog-prefixed read failed: ${error.message}")
+    }
+  }
+
+  "corpus shape: GROUP BY <qualified quoted name> ORDER BY 1 ASC" should
+  "return the groups in ascending order, not merely be accepted" in {
+    client.searchAs[CategoryOnly](
+      "SELECT \"g\".\"category\" AS \"category\" FROM \"group_by_completeness\" \"g\" " +
+      "GROUP BY \"g\".\"category\" ORDER BY 1 ASC"
+    ) match {
+      case ElasticSuccess(rows) =>
+        // 🔴 ORDER, not acceptance. `ORDER BY 1` parses TODAY and was silently discarded, so without
+        // story 21.3's ordinal resolution this statement flips from parse_error straight to
+        // parses-and-answers-in-arbitrary-order -- which PD-3 forbids scoring as a fix. The
+        // assertion is the EXACT ascending sequence rather than `values == values.sorted`, and it is
+        // falsifiable: with the ORDER BY dropped the terms aggregation falls back to its default
+        // doc_count-DESCENDING order, and `cat_i` holds exactly `i` docs, so the fallback order is
+        // the exact REVERSE of this. Key order is exact on a multi-shard index; a doc_count-ordered
+        // assertion would be shard-approximate.
+        rows.map(_.category) shouldBe (1 to categories).map(c => f"cat_$c%02d")
+      case ElasticFailure(error) =>
+        fail(s"ORDER BY 1 over a quoted qualified GROUP BY failed: ${error.message}")
+    }
+  }
 }

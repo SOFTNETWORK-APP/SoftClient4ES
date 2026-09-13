@@ -7,3 +7,14 @@
 # a known source of failures around labels and multi-line blocks.)
 *.cmd -text
 *.bat -text
+
+# The Epic 19 BI corpus is RFC-4180 with newlines INSIDE quoted fields: 7 of its 99
+# captured statements span several physical lines, which is why the file is 126 lines
+# for 99 records. Checkout-time eol conversion rewrites the byte stream wholesale, so
+# on a clone with `core.autocrlf=true` it would insert CR into the STATEMENTS
+# themselves — feeding the parser a shape no BI tool ever emitted, breaking the
+# byte-for-byte equality with the capture artefact that story 21.6 asserts, and doing
+# it invisibly because macOS/Linux CI never reproduces it. `-text` keeps the stored
+# bytes byte for byte on every platform. Applies to the replay's baseline and
+# attribution tables too: they are the same gate's tracked inputs.
+sql/src/test/resources/corpus/*.csv -text
