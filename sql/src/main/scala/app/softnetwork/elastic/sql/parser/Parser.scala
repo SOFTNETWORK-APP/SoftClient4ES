@@ -471,6 +471,60 @@ object Parser
       }
     }
 
+  /** SQL-92 `CREATE [LOCAL | GLOBAL] TEMPORARY TABLE`, with or without its `ON COMMIT { PRESERVE |
+    * DELETE } ROWS` clause, and MySQL's `CREATE TEMPORARY TABLE`.
+    *
+    * RECOGNISE-TO-REJECT. The shape is matched only so the refusal can NAME the construct; the
+    * statement is then refused with [[temporaryTableRefusal]]. Before this production the SQL-92
+    * spelling surfaced `string matching regex '(?i)OR\b' expected but 'L' found` — the failure of
+    * the sibling `createOrReplaceTable` alternative, which names neither temporary tables nor
+    * anything a user wrote.
+    *
+    * 🔴 Three properties of this design are load-bearing; do not "simplify" any of them.
+    *
+    * ONE — **`err`, never `failure`, and never accept-and-ignore.** A `failure` would fall through
+    * an enclosing alternative and let some other production answer; accepting the statement and
+    * refusing it downstream would make `Parser.apply` return a `Right`, i.e. report the capability
+    * as PRESENT to every consumer that only looks at the parse — including the Epic 21 corpus
+    * replay, whose three `rejected_pending_policy` rows must stay rejected. `DropTable.cascade` is
+    * the standing proof that a parsed-and-ignored clause survives for years; for a clause that
+    * governs data LIFETIME that would be a silent wrong answer.
+    *
+    * TWO — **it refuses at the HEADER, before the column list or the `AS <select>` body.** The
+    * refusal is then independent of whether the body parses, so the message is deterministic: an
+    * unparseable body (or an `err` raised inside an embedded SELECT) can never substitute its own
+    * reason for this one. `ON COMMIT ... ROWS` is consequently refused as part of the statement it
+    * can only legally appear on, rather than accepted and dropped.
+    *
+    * THREE — **it is the FIRST alternative of `ddlStatement`, and `private`.** First, for the
+    * reason spelled out at that call site: it cannot commit to a prefix (`TEMPORARY` is mandatory
+    * and no sibling accepts it there), and from the front its `Error` short-circuits the rest
+    * unconditionally while its `Failure` yields every tie, so a plain `CREATE TABEL` typo is never
+    * told about temporary tables. `private`, because this is a refusal and not a statement
+    * production: it yields `Nothing`, has no AST node and no help document, and `HelpCorpusSpec`
+    * enumerates the PUBLIC productions by result type to prove every statement a user CAN type is
+    * documented.
+    *
+    * `TEMPORARY` / `LOCAL` / `GLOBAL` are deliberately NOT added to `reservedKeywords`: a column or
+    * table called `temporary` keeps working, and `CREATE TABLE temporary (...)` still parses (the
+    * discriminating token is consumed BEFORE the name).
+    */
+  private def temporaryTable: Parser[Nothing] =
+    keyword("CREATE") ~> opt(keyword("LOCAL") | keyword("GLOBAL")) <~ keyword(
+      "TEMPORARY"
+    ) <~ keyword("TABLE") >> { scope => err(temporaryTableRefusal(scope)) }
+
+  /** The refusal [[temporaryTable]] raises. It names the construct as the caller spelled it, says
+    * why Elasticsearch cannot honour it, and gives the remedy — the three things the previous
+    * combinator message gave none of.
+    */
+  private def temporaryTableRefusal(scope: Option[String]): String =
+    s"CREATE ${scope.map(_ + " ").getOrElse("")}TEMPORARY TABLE is not supported: an " +
+    "Elasticsearch index is cluster-global, is visible to every client that can read the cluster " +
+    "and has no session scope, and ON COMMIT { PRESERVE | DELETE } ROWS is transaction semantics " +
+    "that Elasticsearch does not have. Use CREATE TABLE for a regular index and DROP TABLE it " +
+    "when you are done."
+
   def patterns: PackratParser[List[String]] = keyword("LIKE") ~> repsep(literal, comma) ^^ {
     patterns =>
       patterns.map(_.value)
@@ -1253,6 +1307,16 @@ object Parser
   }
 
   def ddlStatement: PackratParser[DdlStatement] =
+    // Recognise-to-reject, FIRST on purpose — measured, not assumed. `TEMPORARY` is mandatory and
+    // no other alternative accepts it in that position, so this can never commit to a prefix of a
+    // statement another alternative handles (proved by a 994-statement differential probe: zero
+    // verdict changes against the previous tree). Placing it first also makes the diagnosis
+    // strictly better in BOTH directions: its `Error` short-circuits everything to its right with
+    // no position arithmetic at all, while for a non-temporary typo (`CREATE TABEL t (…)`) its own
+    // `Failure` lands at the same offset as `createTable`'s and `Failure.append` keeps the LATER
+    // result on a tie (scala-parser-combinators 1.1.2, `Parsers.scala:195-198`) — so from here it
+    // yields the tie instead of winning it, and `CREATE TABEL` is not told about TEMPORARY.
+    temporaryTable |
     createTable |
     createPipeline |
     createOrReplaceTable |

@@ -1,0 +1,67 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<!--
+  SoftClient4ES :: Tableau Datasource Customization (TDC)
+
+  PURPOSE
+  Tell Tableau, up front, that this data source has no temporary tables, so that it goes straight
+  to its documented fallback instead of discovering the answer by issuing a CREATE TABLE / DROP
+  TABLE probe that SoftClient4ES refuses with an HTTP 400 on every connection.
+
+  WHY SOFTCLIENT4ES HAS NO TEMPORARY TABLES
+  An Elasticsearch index is cluster-global, is visible to every client that can read the cluster,
+  and has no session scope; ON COMMIT { PRESERVE | DELETE } ROWS is transaction semantics, which
+  Elasticsearch does not have. The engine refuses CREATE [LOCAL | GLOBAL] TEMPORARY TABLE by
+  intent, naming the construct. See documentation/sql/known_limitations.md.
+
+  THE TRADE-OFF, STATED
+  Tableau's fallback for a source without temporary tables uses subqueries, and Tableau's own
+  documentation says performance can be poor on large data sets. SoftClient4ES does not accept
+  subqueries yet either; relational closure is the next release's work. This file therefore buys a
+  clean, immediate "no" instead of a failed probe; it does not make Tableau faster.
+
+  VERIFICATION STATUS, PER CAPABILITY
+  read this before you rely on any of it.
+
+    CAP_CREATE_TEMP_TABLES          documented for JDBC connections in Tableau's own JDBC
+                                    Capability Customizations Reference.
+    CAP_SELECT_INTO                 documented in the same reference.
+    CAP_SUPPRESS_TEMP_TABLE_CHECKS  NOT documented for JDBC or ODBC connections. It appears only
+                                    in the Tableau Connector SDK capability list, whose
+                                    capabilities are declared by a packaged .taco connector, and
+                                    SoftClient4ES ships no .taco. Whether a plain TDC on a generic
+                                    JDBC connection honours it is UNKNOWN to us. It is included
+                                    because it is harmless if ignored, not because it is known to
+                                    work.
+
+  NONE OF THIS HAS BEEN EXERCISED AGAINST A LIVE TABLEAU DESKTOP. See the "unverified" subsection
+  of documentation/client/bi_tools.md for exactly what would settle it.
+
+  INSTALL
+  Copy this file into Tableau's Datasources directory and restart Tableau. The extension must be
+  .tdc; the file name itself does not matter.
+
+    Tableau Desktop (Windows)  Documents\My Tableau Repository\Datasources
+    Tableau Desktop (macOS)    ~/Documents/My Tableau Repository/Datasources
+    Tableau Server (Windows)   ProgramData\Tableau\Tableau Server\data\tabsvc\vizqlserver\Datasources
+    Tableau Server (Linux)     /var/opt/tableau/tableau_server/data/tabsvc/vizqlserver/Datasources
+
+  SCOPE
+  class and vendor are "genericjdbc", the Other Databases (JDBC) connector. driver is the JDBC
+  subprotocol of the connection URL jdbc:elastic://host:port, matching how Tableau's own generic
+  JDBC example names the driver. A TDC applies to every connection matching class + vendor +
+  driver, so this file affects only Other Databases (JDBC) connections made with the SoftClient4ES
+  driver (app.softnetwork.elastic.jdbc.ElasticDriver).
+-->
+<connection-customization class='genericjdbc' enabled='true' version='10'>
+  <vendor name='genericjdbc' />
+  <driver name='elastic' />
+  <customizations>
+    <!-- Tableau must not try to create a temporary table, and must not probe for one at connect. -->
+    <customization name='CAP_CREATE_TEMP_TABLES' value='no' />
+    <!-- No CREATE TABLE AS from a result set either; same reason. -->
+    <customization name='CAP_SELECT_INTO' value='no' />
+    <!-- Skip the connection-time capability check outright. UNVERIFIED for a plain TDC: see the
+         per-capability note above. -->
+    <customization name='CAP_SUPPRESS_TEMP_TABLE_CHECKS' value='yes' />
+  </customizations>
+</connection-customization>
