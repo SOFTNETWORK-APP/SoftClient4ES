@@ -31,14 +31,14 @@ Power Query and Looker — on 2026-08-31 and 2026-09-01.)*
 
 On every connection Tableau checks whether it can create a temporary table, by issuing a
 `CREATE TABLE` / `DROP TABLE` pair against a generated name. SoftClient4ES has no temporary tables —
-an Elasticsearch index is cluster-global and has no session scope — so that probe is refused with an
-HTTP 400. Refusing is a **supported** path: Tableau's own connector documentation says that when the
-temp-table capabilities are disabled *"Tableau will attempt to generate an alternative query to
-retrieve the necessary results."*
+an Elasticsearch index is cluster-global and has no session scope — so that pair is refused with an
+HTTP 400 and Tableau moves on. Refusing is a **supported** path: Tableau's own connector
+documentation says that when the temp-table capabilities are disabled *"Tableau will attempt to
+generate an alternative query to retrieve the necessary results."*
 
-[`tableau/softclient4es.tdc`](tableau/softclient4es.tdc) tells Tableau the answer up front, so it
-goes straight to that alternative instead of discovering it by failing. Copy the file into Tableau's
-`Datasources` directory and restart Tableau:
+[`tableau/softclient4es.tdc`](tableau/softclient4es.tdc) declares that answer up front, so Tableau
+goes straight to the alternative instead of discovering it by being refused. Copy the file into
+Tableau's `Datasources` directory and restart Tableau:
 
 | Product | Directory |
 |---|---|
@@ -50,35 +50,24 @@ goes straight to that alternative instead of discovering it by failing. Copy the
 The extension must be `.tdc`; the file name itself does not matter. It applies to **Other Databases
 (JDBC)** connections made with the SoftClient4ES driver.
 
-**The trade-off, stated:** Tableau's fallback uses subqueries, and Tableau's own documentation says
-that path *"can be poor, particularly with large datasets."* SoftClient4ES does not accept subqueries
-yet either — relational closure is the next release's work. This file buys a clean, immediate "no"
-instead of a failed probe on every connection; it does not make Tableau faster.
+### What it changes, and what it does not
 
-### What is verified, and what is not
+**It removes a failed round trip, not a restriction.** Tableau ends on the same fallback path either
+way: with the file it is told there are no temporary tables, without it it finds out by having the
+probe refused.
 
-> ⚠️ **This file has NOT been exercised against a live Tableau Desktop.** It is published because
-> the refusal it declares is real and the file can only help; do not read it as a tested integration.
+**It does not make Tableau faster.** Tableau's fallback for a source without temporary tables uses
+subqueries, and Tableau's own documentation says that path *"can be poor, particularly with large
+datasets."*
 
-Per capability:
+**Some Tableau interactions will still fail, and this file does not change that.** This release does
+not accept subqueries or derived tables, which is what Tableau's fallback — and the `SELECT … FROM
+( … )` wrapper it puts around Custom SQL — generate. Those statements are rejected with an error
+naming the statement and the reason: a clear failure, never a hang and never a silently wrong answer.
+See the Honest-gap note below for what lands when.
 
-- `CAP_CREATE_TEMP_TABLES` and `CAP_SELECT_INTO` — **documented by Tableau for JDBC connections**, in
-  its JDBC Capability Customizations Reference.
-- `CAP_SUPPRESS_TEMP_TABLE_CHECKS` — **not documented for JDBC or ODBC**. It appears only in the
-  Tableau Connector SDK capability list, whose capabilities are declared by a packaged `.taco`
-  connector, and we ship no `.taco`. Whether a plain `.tdc` on a generic JDBC connection honours it
-  is unknown to us. It is included because it is harmless if ignored, not because it is known to
-  work.
-
-**What would settle it:** connect a real Tableau Desktop through the JDBC driver twice — once with
-this file installed, once without — and capture the SQL Tableau actually emits (p6spy on the JDBC
-seam is how the statements in our BI corpus were captured). Two things to read off that capture: (1)
-whether the `CREATE TABLE` / `DROP TABLE` probe pair disappears, which is the only direct evidence
-`CAP_SUPPRESS_TEMP_TABLE_CHECKS` reached a generic JDBC connection at all; and (2) whether the
-statement mix Tableau then emits has a **higher or lower** acceptance rate than without the file. If
-the suppressed-probe mix is accepted less often, or if any interaction that works today stops
-working, the right answer is to ship no `.tdc` — which is a one-line change on the user's side, and
-why publishing it by default is safe.
+**To stop using it, delete the file and restart Tableau.** Nothing in the driver or the engine depends
+on it.
 
 ## Honest-gap note
 

@@ -160,8 +160,10 @@ Tableau's connection-capability probe issues a `CREATE TABLE` / `DROP TABLE` pai
 statements is refused. To make Tableau skip the probe and go straight to its documented fallback, see
 [Tableau: skipping the temp-table probe](../client/bi_tools.md#tableau-skipping-the-temp-table-probe-tdc).
 
-Whether a plain `CREATE TABLE` against a probe-shaped name should be honoured is a separate open
-question about `CREATE TABLE` semantics, not a quoting one.
+A plain `CREATE TABLE` against a probe-shaped name is refused too, but on Elasticsearch's index
+naming rules rather than on the temporary-table grammar: an index name must be lowercase and cannot
+contain `\`, `/`, `*`, `?`, `"`, `<`, `>`, `|`, a space, a comma or `#`. The error names every rule
+the name breaks.
 
 > **Note on what "not session-scoped" does and does not imply.** It is not that Tableau requires
 > session scope — Tableau's own capability `CAP_TEMP_TABLES_NOT_SESSION_SCOPED` exists precisely for
