@@ -41,6 +41,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   bucketSelectorAggregation,
   cardinalityAgg,
   extendedStatsAgg,
+  matchAllQuery,
   maxAgg,
   minAgg,
   nestedAggregation,
@@ -60,6 +61,7 @@ import com.sksamuel.elastic4s.searches.aggs.{
   ExtendedStatsAggregation,
   FilterAggregation,
   HistogramOrder,
+  KeyedFiltersAggregation,
   NestedAggregation,
   StatsAggregation,
   TermsAggregation,
@@ -651,6 +653,62 @@ object ElasticAggregation {
 
     }
   }.flatten
+
+  /** The synthetic whole-table bucket for a `HAVING` with NO `GROUP BY`
+    * ([[app.softnetwork.elastic.sql.query.SingleSearch.wholeTableHaving]]).
+    *
+    * Standard SQL treats the whole table as ONE implicit group, but a whole-table aggregation has
+    * no buckets, so the `having_filter` `bucket_selector` the GROUP BY path attaches to each bucket
+    * had nothing to attach to and the predicate was SILENTLY DROPPED -- HTTP 200 carrying the
+    * unfiltered aggregate.
+    *
+    * The fix gives the selector a parent instead of giving `HAVING` a second implementation: the
+    * root metric aggregations move inside a keyed `filters` aggregation holding one `match_all`
+    * bucket, and the very same `metricSelectorForBucket` / `extractMetricsPathForBucket` pair
+    * builds the selector. A false predicate therefore removes the only bucket, Elasticsearch
+    * answers `"buckets": {}`, and `parseAggregations` yields NO row -- which is what standard SQL
+    * says.
+    *
+    * 🔴 It must be a `filters` aggregation, not a `filter` one. MEASURED on Elasticsearch 8.18.3: a
+    * `bucket_selector` inside a single-bucket `filter` fails the search with `class_cast_exception:
+    * InternalFilter cannot be cast to InternalMultiBucketAggregation`; a `bucket_selector` inside a
+    * keyed `filters` works and drops the bucket exactly as required.
+    *
+    * Returns `None` -- leaving the emission untouched -- when the statement is not this shape, or
+    * when the selector script comes back empty (no condition of the predicate resolves against this
+    * level's metrics, the same guard the bucket path applies).
+    */
+  def wholeTableHavingAggregation(
+    request: app.softnetwork.elastic.sql.query.SingleSearch,
+    aggs: Seq[ElasticAggregation]
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType
+  ): Option[Aggregation] =
+    request.having.flatMap(_.criteria) match {
+      case Some(criteria) if request.wholeTableHaving && aggs.nonEmpty =>
+        val script = metricSelectorForBucket(criteria, None, aggs)
+        if (script.isEmpty) None
+        else {
+          val bucketSelector =
+            bucketSelectorAggregation(
+              "having_filter",
+              now(Script(script)),
+              extractMetricsPathForBucket(criteria, None, aggs)
+            )
+          Some(
+            KeyedFiltersAggregation(
+              app.softnetwork.elastic.sql.query.SingleSearch.WholeTableHavingAgg,
+              Seq(
+                app.softnetwork.elastic.sql.query.SingleSearch.WholeTableHavingBucket ->
+                matchAllQuery()
+              ),
+              subaggs = aggs.map(_.agg) :+ bucketSelector
+            )
+          )
+        }
+      case _ => None
+    }
 
   /** Generates the bucket_selector script for a given bucket
     */

@@ -23,7 +23,47 @@ import scala.language.reflectiveCalls
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
+/** The index-name rules `ElasticClientHelpers.validateIndexName` enforces.
+  *
+  * They live in a companion OBJECT, not on the trait, for the reason `unwrapThrowable` spells out
+  * below: a `val` in a Scala 2 trait is emitted as a field plus an initializer on the interface,
+  * which every already-compiled implementor would have to provide. Nothing about a table of
+  * forbidden characters needs to cost a binary incompatibility.
+  */
+object ElasticClientHelpers {
+
+  /** Characters Elasticsearch forbids in an index name. This order is the one the message uses when
+    * it lists what is NOT allowed; the characters it found in the offending name are listed in the
+    * order they occur there.
+    *
+    * The backslash is FIRST and is not an afterthought: the pre-0.23.0 message enumerated `/, *, ?,
+    * ", <, >, |, space, comma, #` while the regex it guarded also rejected `\`, so a Windows-style
+    * path used as an index name was refused by a message that did not name the character
+    * responsible.
+    */
+  val forbiddenIndexNameChars: Seq[Char] =
+    Seq('\\', '/', '*', '?', '"', '<', '>', '|', ' ', ',', '#')
+
+  /** `*` is a wildcard in an index PATTERN, so a pattern may legitimately carry it. `?` stays
+    * forbidden, exactly as the two pre-0.23.0 regexes had it — this pair reproduces their
+    * difference and nothing more. Allowing `?` would be a widening with its own blast radius,
+    * decided on its own evidence.
+    */
+  val forbiddenIndexPatternChars: Seq[Char] = forbiddenIndexNameChars.filterNot(_ == '*')
+
+  /** Spells a character the way the message lists it — the two whose glyph is unreadable in prose
+    * get their names.
+    */
+  private[client] def renderChar(c: Char): String = c match {
+    case ' '   => "space"
+    case ','   => "comma"
+    case other => other.toString
+  }
+}
+
 trait ElasticClientHelpers {
+
+  import ElasticClientHelpers._
 
   protected def logger: Logger
 
@@ -35,83 +75,83 @@ trait ElasticClientHelpers {
     *   - Does not start with -, _, +
     *   - Is not . or ..
     *   - Max length 255 characters
+    *
+    * 🔴 **Every violated rule is reported, in one message, and the forbidden-character rule is
+    * reported FIRST.** Until 0.23.0 each rule returned early, in an order that put the lowercase
+    * test ahead of the character test — so a name carrying BOTH an uppercase letter and a forbidden
+    * character was refused as *"Index name must be lowercase"* and the character was never named.
+    * Tableau's MySQL connection-capability probe issues exactly that shape, a backtick-quoted name
+    * beginning `#Tableau_`, which made the engine's own answer to the probe read as a complaint
+    * about casing for a name whose `#` keeps it illegal however it is cased.
+    *
+    * Reporting ALL of them rather than reordering is deliberate: a reorder only swaps which single
+    * reason wins, so the next name carrying a space AND an uppercase letter reproduces the defect
+    * with different characters. Of the rules that CAN co-occur, the character rule is listed first
+    * because it is the specific one — it names a character — and the generic shape rules follow;
+    * but no rule can hide another. (The `.` / `..` rule is tested first only because it can never
+    * co-occur: neither spelling carries a forbidden character, a leading `-`/`_`/`+`, an uppercase
+    * letter, or 256 characters.)
+    *
+    * A name violating exactly one rule keeps its pre-0.23.0 message verbatim, except that the
+    * character rule now names the characters actually found.
+    *
     * @param index
     *   name of the index to validate
+    * @param pattern
+    *   true when the name is an index PATTERN, where `*` is a legal wildcard
     * @return
     *   Some(ElasticError) if invalid, None if valid
     */
   protected def validateIndexName(index: String, pattern: Boolean = false): Option[ElasticError] = {
-    if (index == null || index.trim.isEmpty) {
-      return Some(
+    def invalid(message: String): Option[ElasticError] =
+      Some(
         ElasticError(
-          message = "Index name cannot be empty",
+          message = message,
           cause = None,
           statusCode = Some(400),
           operation = Some("validateIndexName")
         )
       )
+
+    // Kept as a standalone early return: with no name there is nothing for the other rules to
+    // report on, and listing them would only bury the one fact that matters.
+    if (index == null || index.trim.isEmpty) {
+      return invalid("Index name cannot be empty")
     }
 
     val trimmed = index.trim
 
     // ✅ Elasticsearch rules
+    val violations = List.newBuilder[String]
+
     if (trimmed == "." || trimmed == "..") {
-      return Some(
-        ElasticError(
-          message = s"Index name cannot be '.' or '..'",
-          cause = None,
-          statusCode = Some(400),
-          operation = Some("validateIndexName")
-        )
-      )
+      violations += "Index name cannot be '.' or '..'"
+    }
+
+    val forbidden = if (pattern) forbiddenIndexPatternChars else forbiddenIndexNameChars
+    val offending = trimmed.distinct.filter(forbidden.contains)
+    if (offending.nonEmpty) {
+      violations += s"Index name contains invalid characters: ${offending
+        .map(renderChar)
+        .mkString(", ")} (not allowed: ${forbidden.map(renderChar).mkString(", ")})"
     }
 
     if (trimmed.startsWith("-") || trimmed.startsWith("_") || trimmed.startsWith("+")) {
-      return Some(
-        ElasticError(
-          message = s"Index name cannot start with '-', '_', or '+'",
-          cause = None,
-          statusCode = Some(400),
-          operation = Some("validateIndexName")
-        )
-      )
+      violations += "Index name cannot start with '-', '_', or '+'"
     }
 
     if (trimmed != trimmed.toLowerCase) {
-      return Some(
-        ElasticError(
-          message = s"Index name must be lowercase",
-          cause = None,
-          statusCode = Some(400),
-          operation = Some("validateIndexName")
-        )
-      )
-    }
-
-    val invalidChars = if (pattern) """[\\/?"<>| ,#]""".r else """[\\/*?"<>| ,#]""".r
-    if (invalidChars.findFirstIn(trimmed).isDefined) {
-      return Some(
-        ElasticError(
-          message = "Index name contains invalid characters: /, *, ?, \", <, >, |, space, comma, #",
-          cause = None,
-          statusCode = Some(400),
-          operation = Some("validateIndexName")
-        )
-      )
+      violations += "Index name must be lowercase"
     }
 
     if (trimmed.length > 255) {
-      return Some(
-        ElasticError(
-          message = s"Index name is too long (max 255 characters): ${trimmed.length}",
-          cause = None,
-          statusCode = Some(400),
-          operation = Some("validateIndexName")
-        )
-      )
+      violations += s"Index name is too long (max 255 characters): ${trimmed.length}"
     }
 
-    None // Valid
+    violations.result() match {
+      case Nil     => None // Valid
+      case reasons => invalid(reasons.mkString("; "))
+    }
   }
 
   /** Validate the JSON.

@@ -1795,6 +1795,20 @@ package object schema {
 
     lazy val isPartitioned: Boolean = partitionBy.isDefined
 
+    /** ⚠️ **Never put this on the DDL routing path.** It exists for ONE caller — the materialized
+      * view generator, which needs a source index name to interpolate into a generated `INSERT INTO
+      * … FROM <index>` — and there the table it is asked about already exists, so the lowercasing
+      * is a no-op.
+      *
+      * Used anywhere that decides WHICH index a `CREATE TABLE` / `DROP TABLE` addresses, it is a
+      * defect, because it silently repairs a name Elasticsearch would have refused. Tableau's
+      * SQL-92 connection-capability probe is the live case: it issues `CREATE LOCAL TEMPORARY TABLE
+      * "XT__…_Connect_CheckCreateTempTableCap"`, a name whose ONLY disqualifier is its uppercase
+      * letters, so lowercasing it turns a deliberate `400` into a real index created in the
+      * customer's cluster on every connect — with nobody deciding that it should be.
+      * `ElasticClientHelpers.validateIndexName` is the layer that owns that decision and
+      * `IndexNameProbeRefusalSpec` pins the outcome; this member must not pre-empt either.
+      */
     lazy val indexName: String = name.toLowerCase
     private[schema] lazy val cols: ListMap[String, Column] = ListMap(
       columns.map(c => c.name -> c): _*

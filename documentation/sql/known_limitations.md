@@ -141,12 +141,39 @@ they do **not** cover yet:
 
 ## Temporary tables are not supported
 
+`CREATE TEMPORARY TABLE` and `CREATE [LOCAL | GLOBAL] TEMPORARY TABLE`, with or without
+`ON COMMIT { PRESERVE | DELETE } ROWS`, are **refused by intent**, and the error names the
+construct. Two reasons, both structural:
+
+- **An Elasticsearch index is cluster-global and has no session scope.** It is visible to every
+  client that can read the cluster, and there is no session for it to belong to or be cleaned up
+  with — the JDBC and ADBC drivers have no server process at all, so nothing can be told that a
+  connection ended.
+- **`ON COMMIT … ROWS` is transaction semantics, and Elasticsearch has no transactions.** There is
+  nothing to honour, and accepting the clause to ignore it would silently change how long your data
+  lives.
+
+Use `CREATE TABLE` for a regular index and `DROP TABLE` it when you are done.
+
 Tableau's connection-capability probe issues a `CREATE TABLE` / `DROP TABLE` pair against a
-`#`-prefixed name, and its SQL-92 dialect issues `CREATE LOCAL TEMPORARY TABLE`. The
-`LOCAL TEMPORARY` form is rejected: an Elasticsearch index is global, permanent and not
-session-scoped, so there is nothing for the engine to honestly answer "yes" to. Whether a plain
-`CREATE TABLE` against a probe-shaped name should be honoured is a separate open question about
-`CREATE TABLE` semantics, not a quoting one.
+`#`-prefixed name, and its SQL-92 dialect issues `CREATE LOCAL TEMPORARY TABLE`. Every one of those
+statements is refused, and Tableau then takes its documented fallback. For what that fallback costs —
+and why a `.tdc` customization file cannot skip the probe — see
+[Tableau: the temp-table probe](../client/bi_tools.md#tableau-the-temp-table-probe).
+
+A plain `CREATE TABLE` against a probe-shaped name is refused too, but on Elasticsearch's index
+naming rules rather than on the temporary-table grammar: an index name must be lowercase and cannot
+contain `\`, `/`, `*`, `?`, `"`, `<`, `>`, `|`, a space, a comma or `#`. The error names every rule
+the name breaks.
+
+> **Note on what "not session-scoped" does and does not imply.** It is not that Tableau requires
+> session scope — Tableau's own capability `CAP_TEMP_TABLES_NOT_SESSION_SCOPED` exists precisely for
+> sources that *"use regular tables to simulate temp tables"*. So a future release could choose to
+> serve temporary tables with something other than a session. The reason we do not is a cost and a
+> safety argument, not an impossibility: every temporary table would be a cluster-state update
+> serialised through the elected master, and anything that failed to clean them up would accumulate
+> indices in your production cluster until the per-node shard limit refused **all** index creation,
+> yours included.
 
 ## `STDDEV` / `VARIANCE` over a transformed expression — Elasticsearch 6 refuses it
 

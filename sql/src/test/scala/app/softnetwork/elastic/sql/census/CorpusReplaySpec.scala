@@ -403,9 +403,12 @@ object CorpusReplay {
     * never kept as parse errors, and never executed against a cluster (the replay is parse-only by
     * construction - the `sql` module's test classpath carries no Elasticsearch client).
     *
-    * The 3 `RejectedPendingPolicyIds` still fail on the absent LOCAL TEMPORARY grammar and must
-    * STAY rejected. If you are editing these sets to make a build go green, stop: the build is
-    * telling you a probe is being scored as a win, or that a fix went too far.
+    * The 3 `RejectedPendingPolicyIds` must STAY rejected. They are refused by INTENT since 0.23.0:
+    * the grammar now RECOGNISES `CREATE [LOCAL | GLOBAL] TEMPORARY TABLE` and raises an `err`
+    * naming the construct, rather than falling through to an unrelated combinator's failure. The
+    * verdict is unchanged and so is the obligation. If you are editing these sets to make a build
+    * go green, stop: the build is telling you a probe is being scored as a win, or that a fix went
+    * too far.
     */
   val CapabilityOpenIds: Set[String] = Set(
     // CREATE TABLE `#Tableau..._Connect_Chec` (`COL` INTEGER) -- MySQL dialect, backticked; the
@@ -468,7 +471,11 @@ object CorpusReplay {
     "tableau.sql92.w4.024"
   )
 
-  /** Still rejected on grammar after Epic 21: `LOCAL TEMPORARY` is added by no story. */
+  /** Rejected on grammar, BY INTENT since 0.23.0: `CREATE [LOCAL | GLOBAL] TEMPORARY TABLE` is
+    * recognised so the refusal can name the construct, and refused with an `err`. Whether the
+    * engine should ever honour a temporary table stays an open product decision; the parse verdict
+    * does not.
+    */
   val RejectedPendingPolicyIds: Set[String] = Set(
     // CREATE LOCAL TEMPORARY TABLE "XT__..._CheckCreateTempTableCap" (...) ON COMMIT PRESERVE ROWS
     "tableau.sql92.wx.001",

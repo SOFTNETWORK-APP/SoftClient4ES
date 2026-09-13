@@ -27,6 +27,30 @@ Four tiers, each a different claim:
 *(Each blocker was checked against the vendor's own connection documentation — Metabase, Microsoft
 Power Query and Looker — on 2026-08-31 and 2026-09-01.)*
 
+## Tableau: the temp-table probe
+
+On every connection Tableau checks whether it can create a temporary table, by issuing a
+`CREATE TABLE` / `DROP TABLE` pair against a generated name. SoftClient4ES has no temporary tables —
+an Elasticsearch index is cluster-global and has no session scope — so that pair is refused with an
+HTTP 400 naming the statement and the reason, and Tableau moves on. Refusing is a **supported** path:
+Tableau's own connector documentation says that when the temp-table capabilities are disabled
+*"Tableau will attempt to generate an alternative query to retrieve the necessary results."*
+
+The probe therefore costs one failed round trip per connection and is not itself a problem. What
+follows it can be: Tableau's alternative for a source without temporary tables uses **subqueries**,
+which this release does not accept, so some interactions fail — with the same kind of clear error
+naming the statement, never a hang and never a silently wrong answer. Tableau's own documentation
+also warns that the subquery path *"can be poor, particularly with large datasets."* See the
+Honest-gap note below for what lands when.
+
+**A Tableau datasource customization file (`.tdc`) cannot suppress the probe.** The capability that
+would do it, `CAP_SUPPRESS_TEMP_TABLE_CHECKS`, is not among the capabilities Tableau documents for
+JDBC connections — [JDBC Capability Customizations
+Reference](https://help.tableau.com/current/pro/desktop/en-us/jdbc_capabilities.htm) lists
+`CAP_CREATE_TEMP_TABLES` and around sixty others, but not that one; it belongs to the Connector SDK
+capability set, which a packaged `.taco` connector declares. We ship no `.tdc`, and writing one is a
+dead end worth not walking down.
+
 ## Honest-gap note
 
 The superpower of this release is a **cross-index JOIN** that Elasticsearch can't do, and it runs best

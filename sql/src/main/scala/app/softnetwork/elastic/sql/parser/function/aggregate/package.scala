@@ -112,9 +112,14 @@ package object aggregate {
         )
       }
 
+    /** The operand is normalised by [[CountAgg.rowCountingOperand]]: `COUNT(<non-null literal>)` is
+      * `COUNT(*)` (ANSI), so it is rewritten here -- before the operand becomes BOTH the
+      * `CountAgg`'s identifier and, via `identifierWithWindowFunction`, the outer identifier -- and
+      * from then on it is indistinguishable from a `COUNT(*)` the user typed.
+      */
     def count_agg: PackratParser[WindowFunction] =
       count ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
-        CountAgg(top._1, top._2)
+        CountAgg(CountAgg.rowCountingOperand(top._1), top._2)
       }
 
     def min_agg: PackratParser[WindowFunction] =
