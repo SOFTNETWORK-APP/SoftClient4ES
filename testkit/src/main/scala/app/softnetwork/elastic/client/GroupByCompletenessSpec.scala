@@ -626,9 +626,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   // with neither `field` nor `script`, which Elasticsearch rejects outright
   // (illegal_argument_exception, "Required one of fields [field, script]"). Measured independent of
   // the SELECT list: `SELECT SUM(amount) ... HAVING COUNT(1) > 0` fails identically, so the blocker is
-  // `COUNT(1)` itself. Pre-existing and already recorded by story 21.3
-  // (docs/issues/local-21.3-count-over-a-literal-emits-a-fieldless-value-count.md); Epic 21 only made
-  // the statements that carry it reach execution.
+  // `COUNT(1)` itself. Pre-existing, and already recorded by story 21.3 as a known defect; Epic 21
+  // only made the statements that carry it reach execution.
   //
   // 🔴 DEFECT 2 -- and this is the dangerous one, found only because the lead mandated a FALSIFIABLE
   // PAIR rather than a happy path: with a field-bearing aggregate the statement succeeds and the

@@ -113,7 +113,7 @@ we are not calling that a fix" unrepresentable.
 | `epic22a_derived_table` | needs derived tables | `rejected` | `residual` |
 | `epic22b_cte` | needs CTEs | `rejected` | `residual` |
 | `issue:<N>` | a remotely filed issue; still rejected, **or** parsing and answering wrong | either | `residual` |
-| `local:<slug>` | a locally recorded defect (`docs/issues/local-<story>-<slug>.md`, untracked) | either | `residual` |
+| `local:<slug>` | a defect recorded in the team's own issue notes, which live outside this repository; the slug IS the record's identity, and it becomes `issue:<N>` when a fixing story files it remotely | either | `residual` |
 
 Three owners leave `expected` free, and that is the point: it is how "it parses; we are not calling
 that a fix" and "it parses; the capability question is not ours to answer" are recorded honestly.
