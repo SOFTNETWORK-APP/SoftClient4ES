@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.sql.query.SingleSearch
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.json4s.{Extraction, Formats}
@@ -743,9 +744,17 @@ trait ElasticConversion {
 
           val bucketKey = extractBucketKey(bucket)
 
-          val currentContext = parentContext ++ ListMap(
-            aggName -> bucketKey
-          ) ++ metrics ++ allTopHits
+          // The synthetic whole-table bucket a `HAVING` with no `GROUP BY` is wrapped in is
+          // TRANSPARENT: it exists only to give the `having_filter` bucket_selector a multi-bucket
+          // parent, and its key names nothing the user selected. Contributing it would surface as
+          // an extra result column -- `rowNormalizer` APPENDS keys it was not asked for rather than
+          // dropping them. Its bucket disappearing (a false predicate) still yields no row, which
+          // is the whole point.
+          val bucketEntry =
+            if (aggName == SingleSearch.WholeTableHavingAgg) ListMap.empty[String, Any]
+            else ListMap[String, Any](aggName -> bucketKey)
+
+          val currentContext = parentContext ++ bucketEntry ++ metrics ++ allTopHits
 
           // Check for sub-aggregations
           val subAggFields = bucket

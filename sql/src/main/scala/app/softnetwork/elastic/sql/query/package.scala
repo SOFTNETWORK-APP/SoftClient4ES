@@ -404,6 +404,32 @@ package object query {
       */
     lazy val returnsRows: Boolean = windowRowQuery || (sqlAggregations.isEmpty && groupBy.isEmpty)
 
+    /** `HAVING` with NO `GROUP BY`: standard SQL says the whole table is ONE implicit group, so the
+      * predicate is evaluated once, over that group, and the statement returns either the single
+      * aggregate row or NO row at all.
+      *
+      * 🔴 Before this discriminator existed the predicate EVAPORATED. A whole-table aggregation has
+      * no buckets, so the `bucket_selector` the GROUP BY path attaches to each bucket had nothing
+      * to attach to, and `buildBuckets` returned `Nil` with the criteria silently unused: MEASURED
+      * on real Elasticsearch 8.18 over a 703-document index, `... HAVING COUNT(*) > 10000` returned
+      * 703 and `... HAVING SUM(amount) > 99999` returned the unfiltered sum -- HTTP 200, wrong
+      * answer, the #205/#209/#224/#253 family. Four of the 99 captured BI statements are this
+      * shape: it is Tableau's data-source row-existence probe.
+      *
+      * When this is true the bridge wraps the root metric aggregations in a single-bucket keyed
+      * `filters` aggregation named [[SingleSearch.WholeTableHavingAgg]] and hangs the SAME
+      * `having_filter` `bucket_selector` off it. That is deliberately the one existing mechanism
+      * rather than a second, engine-side evaluation of `HAVING`: the predicate then means exactly
+      * what it means under a `GROUP BY` -- same script, same `buckets_path`, same null-guard
+      * contract -- by construction rather than by agreement between two implementations.
+      *
+      * Shapes this does NOT cover are REFUSED by `validate()`, never silently dropped: a `HAVING`
+      * naming a non-aggregated column, a SELECT list carrying one, and (the catch-all) any
+      * remaining row-shaped statement.
+      */
+    lazy val wholeTableHaving: Boolean =
+      groupBy.isEmpty && having.flatMap(_.criteria).isDefined && !returnsRows
+
     private lazy val selectAggs: Seq[Field] =
       select.fieldsWithComputedAliases
         .filter(f => f.isAggregation || f.isBucketScript)
@@ -545,6 +571,54 @@ package object query {
           }
         }
         _ <- {
+          // HAVING with NO GROUP BY -- standard SQL's implicit whole-table group. It is HONOURED
+          // (see `wholeTableHaving`), and every shape that cannot be honoured is REFUSED here.
+          // Nothing may fall through silently: a dropped predicate returns the UNFILTERED
+          // aggregate with HTTP 200, which is the failure mode this whole family exists to close.
+          having.flatMap(_.criteria) match {
+            // A HAVING that reaches into a NESTED relation is out of scope, and deliberately so:
+            // it has its OWN long-standing mechanism (`requestToNestedFilterAggregation` turns it
+            // into a `filter` aggregation scoped to the inner-hits path), it is exercised by the
+            // bridge fixtures, and it is not discarded. The rules below are about the FLAT
+            // whole-table group.
+            case Some(criteria) if groupBy.isEmpty && criteria.nestedElements.isEmpty =>
+              // (a) With no GROUP BY there are no grouping keys, so every column the predicate
+              //     names must be aggregated -- `HAVING category = 'x'` is not a filter over a
+              //     group, it is a WHERE written in the wrong clause.
+              val nonAggregated = criteria.referencedIdentifiers
+                .filterNot(_.hasAggregation)
+                .filter(_.name.nonEmpty)
+                .map(_.identifierName)
+                .distinct
+              // (b) ... and so must every SELECT item, for the same reason the GROUP BY branch
+              //     above rejects one: there is no key it could be grouped by. A row-invariant
+              //     literal is excused there and is excused here, identically.
+              val invalidFields = select.fields
+                .filterNot(_.hasAggregation)
+                .filterNot(f => SingleSearch.isRowInvariantLiteral(f.identifier))
+              if (nonAggregated.nonEmpty)
+                Left(
+                  s"Non-aggregated fields ${nonAggregated.mkString(", ")} cannot be used in " +
+                  "HAVING when GROUP BY is absent; use WHERE, or add a GROUP BY"
+                )
+              else if (invalidFields.nonEmpty)
+                Left(
+                  s"Non-aggregated fields ${invalidFields.map(_.sql).mkString(", ")} cannot be " +
+                  "selected when HAVING is present without a GROUP BY"
+                )
+              else if (!wholeTableHaving)
+                // (c) The catch-all. `wholeTableHaving` is what makes the bridge emit the
+                //     predicate; anything reaching here is row-shaped (a windowed projection, say)
+                //     and would have had its HAVING discarded. Refusing is the contract.
+                Left(
+                  "HAVING without GROUP BY is only supported for an aggregate query over the " +
+                  "whole table; this statement returns document rows"
+                )
+              else Right(())
+            case _ => Right(())
+          }
+        }
+        _ <- {
           // NULLS FIRST / NULLS LAST cannot be honored when the query is an
           // aggregation / GROUP BY query: Elasticsearch terms aggregations have
           // no `missing` parameter, so the bridge routes these sorts through the
@@ -590,18 +664,41 @@ package object query {
 
   object SingleSearch {
 
+    /** Name of the synthetic single-bucket aggregation the bridge emits for a `HAVING` with no
+      * `GROUP BY` (see [[SingleSearch.wholeTableHaving]]). It exists only so that the
+      * `bucket_selector` has a multi-bucket parent to hang from -- Elasticsearch rejects one inside
+      * a single-bucket `filter` aggregation with a `class_cast_exception` (MEASURED on 8.18.3),
+      * while a keyed `filters` aggregation with a single `match_all` accepts it and drops the whole
+      * bucket when the predicate is false.
+      *
+      * The name is RESERVED and shared: the bridge emits it, and `ElasticConversion` treats a
+      * bucket aggregation carrying it as TRANSPARENT -- it contributes no key column to the result
+      * row (`rowNormalizer` appends unrequested keys rather than dropping them, so without this the
+      * synthetic bucket key would surface as an extra column). One constant, two readers, so the
+      * two cannot drift.
+      */
+    val WholeTableHavingAgg: String = "__whole_table_having__"
+
+    /** The key of the single bucket inside [[WholeTableHavingAgg]]. */
+    val WholeTableHavingBucket: String = "_all"
+
     /** A bare ROW-INVARIANT literal: an empty name carrying exactly one scalar constant `Value` --
       * the shape the parser builds for `2 AS COL2` (`GenericIdentifier("", List(LongValue(2)))`).
       * Such an item is the same for every document in a group.
       *
-      * TWO production consumers, and they are two halves of one feature (issue #253, FOLD-IN 1 --
-      * "a constant is legal beside a GROUP BY"):
+      * THREE production consumers. The first two are the halves of one feature (issue #253, FOLD-IN
+      * 1 -- "a constant is legal beside a GROUP BY"):
       *   - `SingleSearch.validate()` excuses such a field from the non-aggregated-field check, so
       *     `SELECT category, 2 AS flag FROM t GROUP BY category` parses;
       *   - `SingleSearch.rowInvariantProjection` carries its VALUE, which `SearchApi` merges into
       *     each aggregation row -- without that the column parses and then comes back NULL, because
       *     an aggregation response has no hits and the `script_fields` entry a constant is emitted
       *     as is never fetched under `"size": 0`.
+      *
+      * The third is [[app.softnetwork.elastic.sql.function.aggregate.CountAgg.rowCountingOperand]]:
+      * `COUNT(<non-null literal>)` is `COUNT(*)` in ANSI SQL, so the parser rewrites such an
+      * operand to `*`. That consumer carves out exactly one member of this allow-list -- `Null`,
+      * because `COUNT(NULL)` is 0, not a row count -- and it is the only carve-out anywhere.
       *
       * It does NOT decide whether a BUCKET must be scripted: that rule is `identifier.name.isEmpty`
       * (a bucket with no field name has nothing to name), which covers every nameless `Value` and

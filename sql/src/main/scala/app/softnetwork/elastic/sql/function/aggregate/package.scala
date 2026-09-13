@@ -18,7 +18,7 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.query.{Bucket, BucketPath, Field, Limit, OrderBy, SingleSearch}
-import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
+import app.softnetwork.elastic.sql.{Expr, Identifier, Null, TokenRegex, Updateable}
 
 package object aggregate {
 
@@ -288,6 +288,42 @@ package object aggregate {
       .copy(
         identifier = identifier.update(request)
       )
+  }
+
+  object CountAgg {
+
+    /** `COUNT(<non-null literal>)` IS `COUNT(*)`.
+      *
+      * ANSI SQL (ISO/IEC 9075-2, `<general set function>`) defines `COUNT(<expr>)` as the number of
+      * rows for which `<expr>` is not null, so a constant, non-null operand counts every row. Every
+      * BI tool relies on it: Tableau's data-source row-existence probe is literally `SELECT SUM(1)
+      * AS <col> FROM <table> HAVING (COUNT(1) > 0)`.
+      *
+      * The operand is REWRITTEN to `*` rather than given its own emission arm, so the statement
+      * takes exactly the path `COUNT(*)` already takes -- one mechanism, not two. Everything keyed
+      * off the operand follows for free: `metricName` is `count_all`, the bridge's `sourceField ==
+      * "*"` arm maps it to `_index`, and the render is `COUNT(*)`, which re-parses to this same AST
+      * (a fixed point). Before this rewrite `COUNT(1)` reached Elasticsearch as a `value_count`
+      * with an EMPTY field and no script, which every ES major rejects with
+      * `illegal_argument_exception: Required one of fields [field, script], but none were
+      * specified`.
+      *
+      * 🔴 `COUNT(NULL)` is deliberately NOT rewritten. It is not a row count -- ANSI gives it 0 --
+      * so folding it into `COUNT(*)` would turn a loud failure into a wrong answer. It keeps
+      * today's behaviour (an aggregation over no field, rejected by Elasticsearch), which is the
+      * safe direction; `Null` is excluded here and only here, the one carve-out from
+      * [[SingleSearch.isRowInvariantLiteral]] 's allow-list.
+      *
+      * `COUNT(DISTINCT <literal>)` does not parse at all (`DISTINCT` is followed by the identifier
+      * regex, which rejects a bare literal), so it needs no arm: it stays a parse error.
+      */
+    def rowCountingOperand(identifier: Identifier): Identifier =
+      if (
+        SingleSearch.isRowInvariantLiteral(identifier) &&
+        !identifier.functions.headOption.contains(Null)
+      )
+        Identifier("*")
+      else identifier
   }
 
   case class MinAgg(

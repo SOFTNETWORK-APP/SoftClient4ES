@@ -157,8 +157,9 @@ Use `CREATE TABLE` for a regular index and `DROP TABLE` it when you are done.
 
 Tableau's connection-capability probe issues a `CREATE TABLE` / `DROP TABLE` pair against a
 `#`-prefixed name, and its SQL-92 dialect issues `CREATE LOCAL TEMPORARY TABLE`. Every one of those
-statements is refused. To make Tableau skip the probe and go straight to its documented fallback, see
-[Tableau: skipping the temp-table probe](../client/bi_tools.md#tableau-skipping-the-temp-table-probe-tdc).
+statements is refused, and Tableau then takes its documented fallback. For what that fallback costs —
+and why a `.tdc` customization file cannot skip the probe — see
+[Tableau: the temp-table probe](../client/bi_tools.md#tableau-the-temp-table-probe).
 
 A plain `CREATE TABLE` against a probe-shaped name is refused too, but on Elasticsearch's index
 naming rules rather than on the temporary-table grammar: an index name must be lowercase and cannot
