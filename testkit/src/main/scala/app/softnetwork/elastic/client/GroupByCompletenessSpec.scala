@@ -589,4 +589,130 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         fail(s"ORDER BY 1 over a quoted qualified GROUP BY failed: ${error.message}")
     }
   }
+
+  /** Story 21.6, lead ruling 1 -- `HAVING` with NO `GROUP BY`: the whole table is one implicit
+    * group.
+    *
+    * Four of the 99 captured BI statements are this shape, verbatim `SELECT SUM(1) AS `COL` FROM
+    * `elastic`.`bi_events` `bi_events` HAVING COUNT(1)>0` (`tableau.mysql.w1.023`, `w7.048`,
+    * `w7.051`, `tableau.sql92.wx.015`). They are scored as Epic 21 fixes, and the lead ruled that
+    * the score must be EARNED by a correctness test rather than taken on the parse verdict: before
+    * this test, a repo-wide search found `HAVING` covered only in combination with a `GROUP BY`, so
+    * nothing anywhere answered what this shape returns.
+    *
+    * 🔴 THE SECOND HALF IS THE WHOLE POINT. A `HAVING` that is silently DISCARDED still satisfies
+    * the true-predicate case -- the aggregate is correct either way -- so asserting only `COUNT(1)
+    * > 0` would be a test that cannot fail for the reason it exists. The false-predicate case is
+    * what distinguishes "the filter was applied" from "the filter was dropped", which is the
+    * #205/#209/#224/#253 silent-wrong-answer family this whole story is built to catch. The two
+    * halves are asserted as a PAIR and neither is meaningful alone.
+    *
+    * Asserted on the RAW row via `client.search`, not through `searchAs`, for the reason the four
+    * constant-projection tests above already give: the macro types a bare integer literal as BIGINT
+    * while the value arrives as Jackson's smallest type, so `SUM(1)` over a literal cannot be bound
+    * to a case-class field in either spelling. That mismatch is pre-existing and recorded
+    * separately; it must not be allowed to decide whether the HAVING works.
+    */
+  // 🔴 PINS TWO KNOWN DEFECTS, not a contract -- delete this test when they are fixed.
+  //
+  // Story 21.6, lead ruling 1. Four of the 99 captured BI statements are `HAVING` with NO `GROUP BY`,
+  // verbatim `SELECT SUM(1) AS `COL` FROM `elastic`.`bi_events` `bi_events` HAVING COUNT(1)>0`
+  // (tableau.mysql.w1.023, w7.048, w7.051, tableau.sql92.wx.015). They PARSE after Epic 21, and the
+  // lead required the `scored = fixed` claim to be EARNED by a correctness test rather than taken on
+  // the parse verdict. It was not earned: the test MEASURED two defects, so the four rows are scored
+  // `residual` and the published headline is 56/99, not 60/99.
+  //
+  // 🔴 DEFECT 1 -- the corpus shape ERRORS on every client. `COUNT(<literal>)` emits an aggregation
+  // with neither `field` nor `script`, which Elasticsearch rejects outright
+  // (illegal_argument_exception, "Required one of fields [field, script]"). Measured independent of
+  // the SELECT list: `SELECT SUM(amount) ... HAVING COUNT(1) > 0` fails identically, so the blocker is
+  // `COUNT(1)` itself. Pre-existing and already recorded by story 21.3
+  // (docs/issues/local-21.3-count-over-a-literal-emits-a-fieldless-value-count.md); Epic 21 only made
+  // the statements that carry it reach execution.
+  //
+  // 🔴 DEFECT 2 -- and this is the dangerous one, found only because the lead mandated a FALSIFIABLE
+  // PAIR rather than a happy path: with a field-bearing aggregate the statement succeeds and the
+  // `HAVING` is SILENTLY DISCARDED. A whole-table aggregate has no buckets, so there is nothing for a
+  // `bucket_selector` to select, and the predicate evaporates with HTTP 200. Measured on ES 8.18:
+  //   SELECT COUNT(*) AS COL ... HAVING COUNT(*)  > 10000  => 703   (expected: NO rows)
+  //   SELECT SUM(amount) AS COL ... HAVING SUM(amount) > 99999  => 9139  (expected: NO rows)
+  // Both predicates are FALSE and both returned the unfiltered aggregate. That is the
+  // #205/#209/#224/#253 silent-wrong-answer family, on a shape the corpus samples four times.
+  //
+  // The assertions below pin what the engine DOES, with the correct answer named beside each. The
+  // true-predicate halves are deliberately kept: they are what makes the pair evidence rather than a
+  // single observation -- on their own they pass whether or not the predicate is honoured, which is
+  // exactly why a happy-path-only test would have certified this shape as working.
+  "corpus shape: HAVING with no GROUP BY" should
+  "fail on COUNT(<literal>) -- defect 1, the corpus spelling" in {
+    implicit val havingCtx: ConversionContext = NativeContext
+    // The corpus spelling, quoted and qualified as Tableau emits it. Asserted as a FAILURE, without
+    // pinning the message text (a rejection message is never a contract): only that it does not
+    // succeed, plus the message in the clue for the next reader.
+    val result = client.search(
+      SelectStatement(
+        "SELECT SUM(1) AS \"COL\" FROM \"group_by_completeness\" \"g\" HAVING COUNT(1) > 0"
+      )
+    )
+    withClue(
+      s"the corpus HAVING shape now SUCCEEDS -- defect 1 is fixed, delete this pin: $result: "
+    ) {
+      result.isSuccess shouldBe false
+    }
+  }
+
+  it should "silently DISCARD the predicate when the aggregate is field-bearing -- defect 2" in {
+    implicit val havingCtx: ConversionContext = NativeContext
+
+    // (a) TRUE predicate: one row, the known fixture total. Correct -- and note it would be correct
+    // even with the predicate dropped, which is the point of pairing it with (b).
+    client.search(
+      SelectStatement(
+        "SELECT COUNT(*) AS \"COL\" FROM \"group_by_completeness\" \"g\" HAVING COUNT(*) > 0"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        withClue(s"true predicate, rows=${response.results}: ") {
+          response.results should have size 1L
+          response.results.head("COL").toString.toDouble shouldBe totalDocs.toDouble
+        }
+      case ElasticFailure(error) => fail(s"true predicate failed: ${error.message}")
+    }
+
+    // (b) FALSE predicate: the whole table holds exactly `totalDocs` (703) documents, so `> 10000` is
+    // unsatisfiable BY CONSTRUCTION and standard SQL returns NO row. The engine returns the
+    // unfiltered aggregate instead. `shouldBe` the WRONG value, because that is what is true today.
+    client.search(
+      SelectStatement(
+        "SELECT COUNT(*) AS \"COL\" FROM \"group_by_completeness\" \"g\" HAVING COUNT(*) > 10000"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        withClue(
+          "the FALSE predicate is now honoured -- defect 2 is fixed and this pin must be replaced by " +
+          s"`response.results shouldBe empty`: rows=${response.results}: "
+        ) {
+          response.results should have size 1L
+          response.results.head("COL").toString.toDouble shouldBe totalDocs.toDouble
+        }
+      case ElasticFailure(error) => fail(s"false predicate failed: ${error.message}")
+    }
+
+    // (c) the same, over a metric rather than a count, so the pin is not an artefact of COUNT(*):
+    // SUM(amount) is 9139 and `> 99999` is unsatisfiable.
+    client.search(
+      SelectStatement(
+        "SELECT SUM(amount) AS \"COL\" FROM \"group_by_completeness\" \"g\" HAVING SUM(amount) > 99999"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        withClue(
+          "the FALSE metric predicate is now honoured -- defect 2 is fixed, replace this pin with " +
+          s"`response.results shouldBe empty`: rows=${response.results}: "
+        ) {
+          response.results should have size 1L
+        }
+      case ElasticFailure(error) => fail(s"false metric predicate failed: ${error.message}")
+    }
+  }
 }

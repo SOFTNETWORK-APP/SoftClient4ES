@@ -144,3 +144,10 @@ The suite writes `sql/target/epic-21/corpus-replay.csv` and `corpus-replay.md` (
 per-dialect, per-workload and per-authorship tallies, the residuals by owner, and the informational
 message families) and prints a one-line summary. The artefacts are emitted BEFORE any assertion, so a
 failing gate never leaves the operator blind.
+
+🔴 **The published verb is "SCORES", never "parses"** (lead ruling, 2026-09-13). `N` counts `scored`,
+so a sentence saying the engine *parses* `N` is false on its face whenever any statement parses without
+being counted — and 25 of them do. The summary line therefore reads *"SCORES 56/99 … 81 PARSE — the
+25-row difference is never counted"*, and the raw parse count is stated in the same breath so neither
+number can be quoted alone. The spec's PD-1 writes the verb as "parses"; that wording is superseded and
+must not be "corrected" back.

@@ -697,16 +697,25 @@ object CorpusReplay {
       val s = attributionOf(attribution, o.row.captureId).scored
       o.verdict == "parses" && (s == "fixed" || s == "pre_epic21")
     }
+    val probesParsing = outcomes.count { o =>
+      o.verdict == "parses" && TempTableProbeIds.contains(o.row.captureId)
+    }
     val scoredOfIntended = outcomes.count { o =>
       val a = attributionOf(attribution, o.row.captureId)
       o.verdict == "parses" && (a.scored == "fixed" || a.scored == "pre_epic21") &&
       !TempTableProbeIds.contains(o.row.captureId)
     }
+    // Lead ruling 2 (2026-09-13): the verb is SCORES, not "parses". PD-1 mandates that `N` counts
+    // `scored` and then writes "parses"; the lead ruled the verb is the side that is wrong, because a
+    // statement that parses and is not counted makes "parses N" false on its face. The raw parse count
+    // and the difference follow immediately, so neither number can be quoted without the other.
     val gap =
       if (parses == scoredOk) ""
       else
-        s" [${parses - scoredOk} parse but are NOT scored as a fix (PD-3/G4) -- see the artefact]"
-    s"[21.6] corpus replay: $scoredOk/${outcomes.size} (was $before before Epic 21); " +
+        s" $parses PARSE -- the ${parses - scoredOk}-row difference is never counted " +
+        s"($probesParsing capability probes + ${parses - scoredOk - probesParsing} that parse but " +
+        "answer wrongly or incompletely, PD-3/G4); see the artefact."
+    s"[21.6] corpus replay: SCORES $scoredOk/${outcomes.size} (was $before before Epic 21); " +
     s"$scoredOfIntended/$intended of the statements we intend to answer; " +
     s"$probes capability probes excluded from scoring.$gap"
   }
@@ -788,6 +797,9 @@ object CorpusReplay {
     // letting a reader assume.
     md ++= s"Produced by `CorpusReplaySpec` on Scala ${scala.util.Properties.versionNumberString}, " +
     s"JVM ${System.getProperty("java.version")}, at ${java.time.Instant.now()}.\n\n"
+    md ++= "The verb is **SCORES**, not \"parses\" (lead ruling 2, 2026-09-13): `N` counts what is\n"
+    md ++= "SCORED, and a statement that parses without being counted would make \"parses N\" false on\n"
+    md ++= "its face. The raw parse count and the difference are stated in the same breath above.\n\n"
     md ++= "Denominators are published in PAIRS. `scored/99` is everything captured; the other is\n"
     md ++= "`99 - 24 temp-table capability probes` (excluded from scoring pending the product\n"
     md ++= "decision), the statements we intend to answer. Neither is quoted alone. Story\n"
