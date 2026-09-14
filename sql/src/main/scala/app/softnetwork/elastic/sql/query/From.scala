@@ -257,9 +257,15 @@ case class StandardJoin(
     * dot-separated part (story 21.2 AD-5). A JOIN source is a TABLE name, whose dots are literal,
     * so it takes `Table.render` — the same whole-lexeme rule the FROM side uses.
     */
-  override def sql: String =
-    s" ${asString(joinType)} $Join ${Table.render(parts, source.name)}" +
-    s"${asString(alias)}${asString(on)}"
+  override def sql: String = {
+    // Story 22.1 — a DERIVED source carries its OWN alias and its own parenthesised render
+    // (`Table.render` would emit the bare correlation name and drop the whole subquery).
+    val ref = source match {
+      case d: DerivedTable => d.sql
+      case _               => s"${Table.render(parts, source.name)}${asString(alias)}"
+    }
+    s" ${asString(joinType)} $Join $ref${asString(on)}"
+  }
 
   override def update(request: SingleSearch): StandardJoin = {
     // The source of a JOIN is a TABLE name, not a column expression — `Identifier.update`
@@ -280,6 +286,17 @@ case class StandardJoin(
     */
   override def validate(): Either[String, Unit] = {
     for {
+      // Story 22.1 AD-1, ENFORCED rather than narrated: a derived JOIN source OWNS its alias, so a
+      // programmatic `StandardJoin(derived, …, alias = Some(y))` would bind `y` in `joinReferences`
+      // while `sql` renders the derived table's own alias — one reference, two names.
+      _ <- source match {
+        case d: DerivedTable if alias.nonEmpty || parts.nonEmpty =>
+          Left(
+            s"A derived table owns its alias: the JOIN of '${d.name}' must carry no separate " +
+            "alias and no qualifier parts"
+          )
+        case _ => Right(())
+      }
       _ <- on match {
         case Some(o)                              => o.validate()
         case None if joinType.contains(CrossJoin) => Right(()) // CROSS JOIN needs no ON clause
@@ -288,6 +305,90 @@ case class StandardJoin(
       _ <- super.validate()
     } yield ()
   }
+}
+
+/** A derived table — a parenthesised query used as a table reference (SQL-92 §7.6, `<derived table>
+  * ::= <table subquery>`, always followed by a `<correlation name>`). Story 22.1.
+  *
+  * `name` IS the correlation name. That is not a shortcut: in the OUTER scope a derived table is
+  * known ONLY by its alias, so `From.tableAliases`' `table -> alias` binding collapses to `alias ->
+  * alias`, `Identifier.table` becomes the alias, and every consumer that keys on a source name
+  * (`aliasKey`, `joinSourceKeys`, `aliasesToTable`, `Identifier.update`'s resolution,
+  * `TemporalLiterals`' join-leg guard) works with no new arm. A synthetic or empty name was
+  * rejected: an empty `Identifier.name` already means "a literal" in this AST, and a synthesised
+  * alias would make the rendered text differ from the input.
+  *
+  * `query` is a `DqlStatement` rather than a `SearchStatement` because the body may be a FROM-less
+  * SELECT (`FromlessSelect` is a `DqlStatement`, #251) — Tableau's connection probe is exactly
+  * `FROM (SELECT 1 AS COL) AS SUBQUERY`. The grammar produces only `SearchStatement |
+  * FromlessSelect`; `validate()` rejects any other kind a programmatic construction could inject.
+  *
+  * 🔴 `SingleSearch.sources` yields this ALIAS for a derived table. It is NOT an index name, and
+  * nothing in core may hand it to Elasticsearch: `SearchApi.resolveWithSchema` refuses a
+  * closure-shaped statement before any router sees it, and `CoreDqlExtension` refuses it at the
+  * gateway. A consumer OUTSIDE core that reads `sources` / `from.tables.head.name` as an index —
+  * arrow's `JoinPlanner` does today — is the story-22.4 hand-off, guarded meanwhile by the loud arm
+  * this story adds there.
+  */
+case class DerivedTable(query: DqlStatement, alias: Alias) extends Source {
+
+  override val name: String = alias.alias
+
+  /** `(<body>) AS <alias>` — the body through its OWN `.sql`, so nesting, `UNION ALL` and the
+    * FROM-less form all round-trip by construction. `Alias.sql` already carries the leading ` AS `
+    * and re-quotes a quoted alias with the canonical double quote (story 21.1 AD-1).
+    */
+  override def sql: String = s"(${query.sql})$alias"
+
+  /** The body is its OWN scope. Nothing in it is resolved against the enclosing statement here:
+    * that would be SQL:1999 `LATERAL`, which `SingleSearch.validate()` rejects by name. The inner
+    * statement was already `.update()`-d by `Parser.single` when it was parsed.
+    */
+  def update(request: SingleSearch): DerivedTable = this
+
+  /** The output column names an OUTER reference may name — `Field.outputName` per SELECT item (the
+    * alias when there is one, else the source field), i.e. the SAME derivation `SearchApi` uses for
+    * a result row.
+    *
+    * `None` means the projection cannot be enumerated and the derived table is OPAQUE: a bare
+    * `SELECT *` (no schema is attached at parse time and this story never guesses a field), or a
+    * body kind the grammar cannot build. A `UNION ALL` body takes the FIRST branch's names, which
+    * is what SQL specifies for a set operation's column names.
+    */
+  lazy val outputNames: Option[Seq[String]] = query match {
+    case s: SingleSearch   => DerivedTable.projected(s)
+    case m: MultiSearch    => m.requests.headOption.flatMap(DerivedTable.projected)
+    case f: FromlessSelect => Some(f.columnNames)
+    case _                 => None
+  }
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <-
+        if (alias.alias.isEmpty) Left("A derived table requires a non-empty alias")
+        else Right(())
+      // `Parser.single` runs `.update()` inside its action but `Parser.apply` validates the
+      // TOP-LEVEL statement only, so an inner GROUP BY / HAVING / ORDER BY rule would be silently
+      // skipped one nesting level down — the #253 family, one level in.
+      _ <- query match {
+        case s: SearchStatement => s.validate()
+        case f: FromlessSelect  => f.validate()
+        case other =>
+          Left(s"A derived table body must be a SELECT, got ${other.getClass.getSimpleName}")
+      }
+    } yield ()
+}
+
+object DerivedTable {
+
+  /** A bare `SELECT *` projects an un-enumerable list; anything else projects its items' output
+    * names. The `*` test is `identifierName` with no functions — the same spelling
+    * `SearchApi.extractOutputFieldNames` uses.
+    */
+  private[query] def projected(s: SingleSearch): Option[Seq[String]] =
+    if (s.select.fields.exists(f => f.identifier.name == "*" && f.identifier.functions.isEmpty))
+      None
+    else Some(s.select.fields.map(_.outputName))
 }
 
 object Table {
@@ -328,7 +429,12 @@ case class Table(
     * an error: after story 20.3 the JDBC driver advertises the cluster name as the schema, so a BI
     * tool's qualifier is routinely a name no registry knows.
     */
-  parts: Seq[NamePart] = Nil
+  parts: Seq[NamePart] = Nil,
+  /** Story 22.1 — set when this FROM item is `(SELECT …) [AS] alias`. Then `name == derived.name`
+    * (the alias), `tableAlias` is `None` and `parts` is `Nil`: the alias has ONE owner, not two
+    * (story 21.3's one-key-two-derivations lesson). The invariant is ENFORCED in `validate()`.
+    */
+  derived: Option[DerivedTable] = None
 ) extends Source {
 
   /** The full dotted reference (qualifier parts included), un-quoted — the alias-map key when a
@@ -336,13 +442,30 @@ case class Table(
     */
   lazy val qualifiedName: String = Table.qualifiedName(parts, name)
 
-  override def sql: String =
-    s"${Table.render(parts, name)}${asString(tableAlias)} ${joins.map(_.sql).mkString(" ")}".trim
+  override def sql: String = {
+    val ref = derived match {
+      case Some(d) => d.sql // carries its own parentheses and its own alias
+      case None    => s"${Table.render(parts, name)}${asString(tableAlias)}"
+    }
+    s"$ref ${joins.map(_.sql).mkString(" ")}".trim
+  }
   def update(request: SingleSearch): Table =
     this.copy(joins = joins.map(_.update(request)))
 
   override def validate(): Either[String, Unit] =
     for {
+      // Story 22.1 AD-1, ENFORCED rather than narrated: a programmatic
+      // `Table("x", Some(y), derived = Some(dt))` would bind `x -> y` in `tableAliases` while the
+      // render drops `y` entirely.
+      _ <- derived match {
+        case Some(d) if tableAlias.nonEmpty || parts.nonEmpty || name != d.name =>
+          Left(
+            s"A derived table owns its alias: Table.name must be '${d.name}', tableAlias None, " +
+            "parts Nil"
+          )
+        case Some(d) => d.validate()
+        case None    => Right(())
+      }
       _ <- tableAlias match {
         case Some(a) if a.alias.isEmpty => Left(s"Table $name alias cannot be empty")
         case _                          => Right(())
@@ -532,11 +655,73 @@ case class From(tables: Seq[Table]) extends Updateable {
   def update(request: SingleSearch): From =
     this.copy(tables = tables.map(_.update(request)))
 
+  /** Story 22.1 — a DERIVED table's correlation name must name nothing else in the same FROM.
+    *
+    * 🔴 Built over the SEQUENCE of addressable names, never over `tableAliases`: that `ListMap` is
+    * keyed by TABLE and has ALREADY collapsed a colliding key by the time anyone reads it (story
+    * 21.2 AD-6), so a check written over the map is blind to the very case it exists to catch.
+    * MEASURED: `FROM bi_events b JOIN (SELECT category FROM bi_events) bi_events` binds `bi_events
+    * -> b` from the table and `bi_events -> bi_events` from the join, the `++` overwrites, alias
+    * `b` is silently GONE, and `b.amount` then resolves against the DERIVED table. Tableau aliases
+    * a derived table with the inner table's OWN name, so this is the default spelling, not a corner
+    * case.
+    *
+    * A plain source contributes BOTH the KEY its index is filed under (`aliasKey`) and the alias
+    * somebody wrote, because `Identifier.update` resolves a qualifier through `aliasesToTable` and
+    * lands on the key: two sources sharing a key are indistinguishable downstream whatever they are
+    * called. That is why this is not simply folded into the explicit-alias check above, which
+    * compares written aliases only.
+    *
+    * SCOPE, deliberately narrow (epic 22 OQ-4, lead ruling NARROW): only a collision INVOLVING a
+    * derived table is rejected. `FROM orders JOIN orders` collapses today and PARSES; making the
+    * rule uniform is a breaking change on existing input that belongs to whoever schedules one.
+    */
+  private lazy val derivedNameCollision: Either[String, Unit] = {
+    val derivedSeq: Seq[String] =
+      tables.flatMap(_.derived.map(_.name)) ++ joins.collect {
+        case sj: StandardJoin if sj.source.isInstanceOf[DerivedTable] => sj.source.name
+      }
+    if (derivedSeq.isEmpty) Right(())
+    else {
+      val plainNames: Seq[String] =
+        tables
+          .filter(_.derived.isEmpty)
+          .flatMap(t =>
+            Seq(aliasKey(t.name, t.qualifiedName)) ++ t.tableAlias.map(_.alias).filter(_.nonEmpty)
+          ) ++
+        joins
+          .collect { case sj: StandardJoin if !sj.source.isInstanceOf[DerivedTable] => sj }
+          .flatMap(sj =>
+            Seq(aliasKey(sj.source.name, sj.qualifiedName)) ++
+            sj.alias.map(_.alias).filter(_.nonEmpty)
+          ) ++
+        unnestAliases.keys
+      derivedSeq
+        .diff(derivedSeq.distinct)
+        .headOption
+        .orElse(derivedSeq.find(plainNames.contains)) match {
+        case Some(n) =>
+          Left(
+            s"Alias '$n' is used by more than one source in FROM: a derived table's correlation " +
+            "name must name nothing else in the same FROM. Rename the subquery's alias."
+          )
+        case None => Right(())
+      }
+    }
+  }
+
   override def validate(): Either[String, Unit] = {
     if (tables.isEmpty) {
       Left("At least one table is required in FROM clause")
     } else if (tables.count(_.joins.nonEmpty) > 1) {
       Left("Only one table with joins is supported in FROM clause")
+    } else if (derivedNameCollision.isLeft) {
+      // Story 22.1 — FIRST, ahead of the BIDC-8 self-join arm below. `FROM t x, (SELECT a FROM u) t`
+      // has two `Table`s whose `qualifiedName` is `t` under DIFFERENT effective aliases (`x`, `t`),
+      // so that arm would fire and advise *"Write a self-join as FROM t x JOIN t t ON …"* — advice
+      // that makes no sense for a subquery, and a DIFFERENT message from the one the alias-less
+      // spelling of the same mistake gets.
+      derivedNameCollision
     } else {
       // 🔴 Story BIDC-8, tripwire 2 (lead ruling: keep the behaviour or reject LOUDLY, never
       // change it silently). A comma-separated FROM is a MULTI-INDEX SEARCH — one query over every
@@ -575,6 +760,7 @@ case class From(tables: Seq[Table]) extends Updateable {
           // keep their multi-index-search acceptance (21.2 preserves, it does not interpret), and
           // the alias-less `FROM t JOIN t` is left to the join planner's own guard. The comparison
           // is case-INSENSITIVE (review NEW-3): DuckDB's catalog folds `sq_A` and `sq_a`.
+          //
           val explicitAliases: Seq[(String, String)] =
             tables.flatMap(t =>
               t.tableAlias.map(_.alias).filter(_.nonEmpty).map(_ -> t.qualifiedName)
@@ -609,6 +795,32 @@ case class From(tables: Seq[Table]) extends Updateable {
   lazy val joinedTables: Seq[String] = tables.flatMap(_.joinedTables)
 
   lazy val enrichmentRequired: Boolean = joinedTables.nonEmpty
+
+  /** correlation name -> derived table, for every FROM item and every standard JOIN leg that is a
+    * subquery (story 22.1). The key IS `Source.name` for a `DerivedTable`, so it is the same
+    * language as `tableAliases`' keys and as `Identifier.table`.
+    */
+  lazy val derivedTables: ListMap[String, DerivedTable] = ListMap(
+    (tables.flatMap(t => t.derived.map(d => d.name -> d)) ++
+    joins
+      .collect { case sj: StandardJoin =>
+        sj.source
+      }
+      .collect { case d: DerivedTable => d.name -> d }): _*
+  )
+
+  lazy val hasDerivedTables: Boolean = derivedTables.nonEmpty
+
+  /** Epic 22 AD-4 — THE predicate every venue routes on: this FROM needs the relational engine
+    * (DuckDB, shipped in `softclient4es-arrow-extensions`) because it carries a cross-index JOIN
+    * leg (`enrichmentRequired`, meaning UNCHANGED) or a derived table.
+    *
+    * Read it through `SingleSearch.relationalClosureRequired` or the package-level
+    * `relationalClosureRequired(statement)` rather than directly: later stories widen the
+    * STATEMENT-level value with constructs a `From` cannot see (22.3's correlated subqueries,
+    * 22.5's CTEs), and a consumer reading `from.` would silently miss them.
+    */
+  lazy val relationalClosureRequired: Boolean = enrichmentRequired || hasDerivedTables
 }
 
 case class NestedElement(

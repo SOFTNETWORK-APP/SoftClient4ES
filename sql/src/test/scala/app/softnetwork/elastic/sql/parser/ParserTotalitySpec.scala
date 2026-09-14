@@ -127,8 +127,10 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   // `Where(None)` renders as no clause at all, so `DELETE FROM orders WHERE id = 1 AND` parsed as
   // `DELETE FROM orders` and emptied the index. Same #213 data-loss family as the `phrase` change.
   // Lead ruling 2026-09-05: fold the fix into this story. `where` runs only after the literal
-  // WHERE matched and `whereCriteria` is `rep1`, so `None` always means "a WHERE was written and
-  // nothing usable came of it" - no valid statement can be lost.
+  // WHERE matched, and `whereCriteria` yields at least one token or FAILS (story 22.1's depth-aware
+  // scanner keeps that contract - it returns the item's own Failure on an empty accumulator), so
+  // `None` always means "a WHERE was written and nothing usable came of it" - no valid statement
+  // can be lost.
   it should "reject a dangling AND in a SELECT instead of dropping the WHERE" in {
     rejects("SELECT a FROM t WHERE a = 1 AND", "WHERE clause requires criteria")
     rejects("SELECT a FROM t WHERE a = 1 OR", "WHERE clause requires criteria")
@@ -155,10 +157,27 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   // the `)` consumed by `whereCriteria` and then ignored by processTokensHelper's EndDelimiter
   // arm. A closing delimiter reaching that scan is unmatched by construction - a balanced group is
   // consumed whole by `extractSubTokens` - so rejecting it cannot lose a valid statement.
+  //
+  // 🔴 RETARGETED by story 22.1 (AD-2b), never deleted: these are CONTRACT pins ("a stray `)` is
+  // rejected, totally") and the contract is unchanged. What moved is the REASON. `whereCriteria`
+  // is now a depth-aware scanner that leaves a depth-0 `)` to whoever opened it - that is what
+  // lets `FROM (SELECT a FROM t WHERE x = 1) d` parse at all - so a stray `)` is no longer eaten
+  // by the clause and reaches `phrase` as trailing input instead of `processTokens` as an
+  // unbalanced delimiter. The reason text is dropped rather than re-pinned because it is now a
+  // grammar-internal message, which this project never pins. The unmatched OPENING-paren pins
+  // below keep `"Unbalanced parentheses"` byte-for-byte.
   it should "reject a stray closing parenthesis instead of swallowing it" in {
-    rejects("SELECT a FROM t WHERE a = 1)", "Unbalanced parentheses")
-    rejects("SELECT a FROM t WHERE a = 1))", "Unbalanced parentheses")
-    rejects("SELECT a FROM t HAVING COUNT(a) > 1)", "Unbalanced parentheses")
+    rejects("SELECT a FROM t WHERE a = 1)")
+    rejects("SELECT a FROM t WHERE a = 1))")
+    rejects("SELECT a FROM t HAVING COUNT(a) > 1)")
+  }
+
+  // The OTHER branch of story 22.1's `if (acc.isEmpty)`: a depth-0 `)` as the clause's FIRST token
+  // makes the scanner fail rather than return an empty token list. Both branches are pinned, or a
+  // regression in one of them would be invisible.
+  it should "reject a clause that is nothing but a closing parenthesis" in {
+    rejects("SELECT a FROM t WHERE )")
+    rejects("SELECT a, COUNT(a) c FROM t GROUP BY a HAVING )")
   }
 
   // --- an `err` competing with a sibling alternative that consumed FURTHER --------------------

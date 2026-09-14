@@ -405,6 +405,68 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     ext.canHandle(parsed("CREATE TABLE target AS SELECT id, name FROM old_users")) shouldBe false
   }
 
+  // ---- Story 22.1: the guard widens from "cross-index JOIN" to "relational closure" ----
+
+  behavior of "CoreDqlExtension relational-closure guard (story 22.1)"
+
+  /** AC 6's proof, and the reason `returnsRows` needed no change: a derived-table statement reports
+    * `returnsRows == true` (it has no aggregate and no GROUP BY), yet NOTHING routes on that,
+    * because the closure arm runs before `checkQuotasAndExecute`. Asserted through the
+    * RecordingClient seam rather than argued.
+    */
+  it should "never reach scroll or searchAsync for a FROM-derived statement" in {
+    val (client, res) = run("SELECT COL FROM (SELECT 1 AS COL) AS d", Quota.Community)
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("join")
+    err.message should include("softclient4es-arrow-extensions")
+    err.message should include("derived table")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "reject a JOIN-derived statement the same way" in {
+    val (client, res) = run(
+      "SELECT o.id, d.cid FROM orders o JOIN (SELECT cid FROM orders) AS d ON o.id = d.cid",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    res.asInstanceOf[ElasticFailure].elasticError.message should include("derived table")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "reject INSERT ... SELECT and CTAS carrying a derived table, and claim them" in {
+    Seq(
+      "INSERT INTO target SELECT COL FROM (SELECT 1 AS COL) AS d",
+      "CREATE TABLE target AS SELECT COL FROM (SELECT 1 AS COL) AS d"
+    ).foreach { sql =>
+      val (client, res) = run(sql, Quota.Community)
+      withClue(s"[$sql] ") {
+        res shouldBe a[ElasticFailure]
+        res.asInstanceOf[ElasticFailure].elasticError.statusCode shouldBe Some(400)
+        client.scrolledStatement.get() shouldBe null
+        client.searchedStatement.get() shouldBe null
+      }
+    }
+    val ext = new CoreDqlExtension()
+    def parsed(sql: String) = Parser(sql) match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    ext.canHandle(parsed("INSERT INTO target SELECT COL FROM (SELECT 1 AS COL) AS d")) shouldBe true
+    ext.canHandle(
+      parsed("CREATE TABLE target AS SELECT COL FROM (SELECT 1 AS COL) AS d")
+    ) shouldBe true
+  }
+
+  it should "still execute a plain statement — the guard did not widen past closure shapes" in {
+    val (client, res) = run("SELECT a FROM t LIMIT 5", Quota.Community)
+    res shouldBe a[ElasticSuccess[_]]
+    client.searchedStatement.get() should not be null
+  }
+
   // ---- Story P0.6: QueryResults cap-hit recorded on BOTH reject branches ----
 
   behavior of "CoreDqlExtension cap-hit instrumentation (P0.6)"

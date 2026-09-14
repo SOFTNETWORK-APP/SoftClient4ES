@@ -55,6 +55,37 @@ import java.time.{Duration, Instant}
 import scala.collection.immutable.ListMap
 
 package object query {
+
+  /** The `SingleSearch`es a statement EMBEDS — the ONE place these arms are spelled.
+    *
+    * Every closure-shaped question ("does this statement need the relational engine?", "does it
+    * carry a derived table?") is a fold over this, never a second `match`: a second list of arms is
+    * the desync class story 21.3 paid for. `Delete`, `CreateMaterializedView` and the watcher are
+    * deliberately NOT arms — they reject closure shapes in the grammar or in `validate()`, so they
+    * never reach a router carrying one.
+    */
+  def closureSearches(statement: Statement): Seq[SingleSearch] = statement match {
+    case s: SingleSearch      => Seq(s)
+    case m: MultiSearch       => m.requests
+    case sel: SelectStatement => sel.statement.toSeq.flatMap(closureSearches)
+    case ins: Insert          => ins.values.left.toOption.toSeq.flatMap(closureSearches)
+    case ct: CreateTable      => ct.ddl.left.toOption.toSeq.flatMap(closureSearches)
+    case _                    => Nil
+  }
+
+  /** Epic 22 AD-4 — the statement needs the relational engine (a cross-index JOIN or a derived
+    * table today; stories 22.3/22.5/22.6 widen the per-statement value this reads).
+    */
+  def relationalClosureRequired(statement: Statement): Boolean =
+    closureSearches(statement).exists(_.relationalClosureRequired)
+
+  /** Narrower than [[relationalClosureRequired]]: a derived table specifically. Read by the
+    * rejection message (the remedy differs — a JOIN can be rewritten by hand, a derived table is
+    * usually emitted by a BI tool the user does not control) and by the MATERIALIZED VIEW guard.
+    */
+  def derivedTablesPresent(statement: Statement): Boolean =
+    closureSearches(statement).exists(_.hasDerivedTables)
+
   sealed trait Statement extends Token
 
   sealed trait DqlStatement extends Statement
@@ -118,6 +149,40 @@ package object query {
 
     lazy val fieldAliases: ListMap[String, String] = select.fieldAliases
     lazy val tableAliases: ListMap[String, String] = from.tableAliases
+
+    /** correlation name -> derived table (story 22.1). */
+    lazy val derivedTables: ListMap[String, DerivedTable] = from.derivedTables
+
+    /** Read THIS, not `from.hasDerivedTables`, for the same reason as
+      * [[relationalClosureRequired]]: story 22.5 makes a CTE reference a derived table that a
+      * `From` alone cannot see.
+      */
+    lazy val hasDerivedTables: Boolean = derivedTables.nonEmpty
+
+    /** Epic 22 AD-4 — THE predicate every venue routes on. Read THIS, never `from.` directly: later
+      * stories widen it with constructs a `From` cannot see (22.3's correlated subqueries, 22.5's
+      * CTEs) and a consumer reading the FROM member would silently miss them.
+      */
+    lazy val relationalClosureRequired: Boolean = from.relationalClosureRequired
+
+    /** Every identifier this statement NAMES, across every clause that can carry one — the SELECT
+      * list (through each item's function chain), WHERE, HAVING, GROUP BY, ORDER BY and each
+      * standard JOIN's ON.
+      *
+      * ONE list, several consumers (`derivedScopeCheck` here, `SubqueryScope`'s correlation walk,
+      * story 22.2's subquery detector): a second enumeration of the clauses is the
+      * one-key-two-derivations drift story 21.3 paid for four times.
+      */
+    lazy val referencedIdentifiers: Seq[Identifier] =
+      select.fields.flatMap(f => FunctionUtils.funIdentifiers(f.identifier)) ++
+      where.flatMap(_.criteria).map(_.referencedIdentifiers).getOrElse(Nil) ++
+      having.flatMap(_.criteria).map(_.referencedIdentifiers).getOrElse(Nil) ++
+      groupBy.map(_.buckets.map(_.identifier)).getOrElse(Nil) ++
+      orderBy.map(_.sorts.map(_.field)).getOrElse(Nil) ++
+      from.joins
+        .collect { case sj: StandardJoin => sj }
+        .flatMap(_.on.toSeq)
+        .flatMap(_.criteria.referencedIdentifiers)
 
     /** alias -> table KEY, lossless (story BIDC-8): the map to consult when resolving a qualifier.
       * `tableAliases` (table -> alias) cannot hold two aliases of one table.
@@ -401,6 +466,15 @@ package object query {
       * The guard sits on the aggregation arm ONLY because `windowRowQuery` already carries
       * `groupBy.isEmpty`, so hoisting it out would be equivalent today and would make correctness
       * depend on that internal. Do not "simplify" it.
+      *
+      * 🔴 Story 22.1 — for a statement whose FROM is [[relationalClosureRequired]] (a cross-index
+      * JOIN or a derived table) this value describes the OUTER shape only: what the relational
+      * engine's result will look like once story 22.4 executes it. It is NOT a routing licence. No
+      * core router may act on it for such a statement, because every one of them runs BEHIND a
+      * guard that fires first — `SearchApi.resolveWithSchema` precedes the `this match` on both the
+      * sync and async search paths, and `CoreDqlExtension`'s closure arm precedes
+      * `checkQuotasAndExecute`. `RelationalClosureGuardSpec` proves it rather than asserting it.
+      * The EXPRESSION is deliberately untouched.
       */
     lazy val returnsRows: Boolean = windowRowQuery || (sqlAggregations.isEmpty && groupBy.isEmpty)
 
@@ -498,9 +572,101 @@ package object query {
 
     lazy val buckets: Seq[Bucket] = bucketTree.allBuckets.flatten
 
+    /** Story 22.1 AD-4 — an OUTER reference into a derived table must name a column the derived
+      * table PROJECTS (its `outputNames`: the SELECT alias when there is one, else the bare column,
+      * so `SELECT amount AS total` exposes `total`, NOT `amount`).
+      *
+      * Checked HERE, not in `Identifier.update`: `update` runs inside `Parser.single`'s combinator
+      * action and cannot report. That is the house pattern — record in `update`, format in
+      * `validate` — and this arm needs no recording, because everything it reads survives on the
+      * AST.
+      *
+      * Scope rules, deliberately narrow (epic 22: never guess a field):
+      *   - a QUALIFIED reference (`d.x`) is checked against the derived table `d` names —
+      *     `Identifier.table` is the alias-map key and for a derived table that key IS the alias;
+      *   - an UN-QUALIFIED reference is checked ONLY when the FROM has exactly ONE source and it is
+      *     a derived table (Tableau's `SELECT COL FROM (SELECT 1 AS COL) AS SUBQUERY`). With
+      *     several sources a bare name is ambiguous today for plain tables too, and resolving it is
+      *     story 22.3's scope model, not this story's;
+      *   - an outer SELECT alias (`SELECT COL AS c … ORDER BY c`), an ordinal or literal (empty
+      *     `name`), `*` and `COUNT(*)` are never derived-table references;
+      *   - a derived table whose projection is OPAQUE (`outputNames == None`, i.e. a bare `SELECT
+      *     *`) accepts EVERY reference: rejecting one would mean inventing the schema, and DuckDB's
+      *     binder rejects a wrong one loudly once story 22.4 executes it.
+      *
+      * A dotted remainder (`d.items.name`) is struct/nested access INTO a projected column, so the
+      * HEAD segment is what is compared, never the whole path.
+      */
+    private lazy val derivedScopeCheck: Either[String, Unit] = {
+      val scopes = from.derivedTables
+      if (scopes.isEmpty) Right(())
+      else {
+        val sole: Option[DerivedTable] = from.tables match {
+          case Seq(t) if t.joins.isEmpty => t.derived
+          case _                         => None
+        }
+        // `fieldAliases` is built over `fieldsWithComputedAliases`, so it also holds the synthetic
+        // `__cN` names — harmless here, since no real column is spelled that way.
+        val outerAliases: Set[String] = select.fieldAliases.values.toSet
+        referencedIdentifiers.iterator
+          .filter(id => id.name.nonEmpty && id.name != "*")
+          .flatMap { id =>
+            val scope: Option[DerivedTable] =
+              id.table
+                .flatMap(scopes.get)
+                // A WIDENING over the specced `id.table` alone: `Identifier.update` derives `table`
+                // only when `parts.size > 1`, so a node re-`update()`-d after its name was already
+                // normalised (which `SearchApi.resolveWithSchema` does to EVERY executed statement)
+                // keeps `tableAlias` right while `table` may be stale or absent. Checking both is
+                // what keeps the scope rule stable across the second pass.
+                .orElse(id.tableAlias.flatMap(scopes.get))
+                .orElse {
+                  if (
+                    id.tableAlias.isEmpty && id.table.isEmpty && !id.name.contains(".") &&
+                    !outerAliases.contains(id.name)
+                  ) sole
+                  else None
+                }
+            val head = id.name.split("\\.", 2)(0)
+            scope.flatMap(d =>
+              d.outputNames.filterNot(_.contains(head)).map(names => (id, d, names))
+            )
+          }
+          .toSeq
+          .headOption match {
+          case Some((id, d, names)) =>
+            Left(
+              s"Column '${id.name}' is not projected by derived table '${d.name}' " +
+              s"(it projects: ${names.mkString(", ")})"
+            )
+          case None => Right(())
+        }
+      }
+    }
+
+    /** Story 22.1 (amendment from story 22.3's review) — a derived body that reads an ENCLOSING
+      * correlation name is SQL:1999 `LATERAL`, which this dialect does not support. Without this
+      * arm the shape parses `Right` and story 22.4 would execute the body as written: the outer
+      * qualifier reaches Elasticsearch as an object path and the statement answers ZERO rows with
+      * HTTP 200. The detector is `SubqueryScope`, shared with stories 22.2 / 22.3.
+      */
+    private lazy val lateralCheck: Either[String, Unit] =
+      if (!from.hasDerivedTables) Right(())
+      else
+        SubqueryScope.lateralOffenders(this).headOption match {
+          // The offender is carried WITH the derived table whose body names it, so the message can
+          // never name the wrong alias (or, worse, an empty one) for a reference two levels in.
+          case Some((alias, id)) => Left(SubqueryScope.lateralMessage(id, alias))
+          case None              => Right(())
+        }
+
     override def validate(): Either[String, Unit] = {
       for {
         _ <- from.validate()
+        // AFTER `from.validate()` so a derived table's OWN body is validated first, and BEFORE
+        // every clause rule so the scope message wins over a downstream symptom.
+        _ <- derivedScopeCheck
+        _ <- lateralCheck
         _ <- select.validate()
         _ <- where.map(_.validate()).getOrElse(Right(()))
         _ <- groupBy.map(_.validate()).getOrElse(Right(()))
@@ -1120,7 +1286,19 @@ package object query {
       s"DELETE FROM ${Table.render(table.parts, table.name)}${asString(where)}"
 
     // `DELETE FROM t WHERE COUNT(x) > 5` used to become `match_all` and WIPE the index (S2-2).
-    override def validate(): Either[String, Unit] = where.map(_.validate()).getOrElse(Right(()))
+    override def validate(): Either[String, Unit] =
+      // Story 22.1 — the grammar already rejects `DELETE FROM (SELECT …) d`, but that is a PARSER
+      // guard: `GatewayApi.run(statement: Statement)` accepts a programmatically built `Delete`,
+      // and `Table.validate()`'s AD-1 arm is SATISFIED by a well-formed derived table. Without
+      // this the delete-by-query would target an index named after the subquery's alias — or, if
+      // one of that name happens to exist, the wrong index entirely. Every other AD-1 invariant in
+      // this story is enforced in `validate()`; this is the same belt for the DML side.
+      if (table.derived.isDefined)
+        Left(
+          "DELETE cannot target a derived table (subquery in FROM): Elasticsearch deletes by " +
+          "query over an index."
+        )
+      else where.map(_.validate()).getOrElse(Right(()))
   }
 
   sealed trait FileFormat extends Token {
@@ -1312,8 +1490,23 @@ package object query {
 
     /** Same reasoning as `CreateTable.validate()` (story BIDC-8): the view's query is validated by
       * the rules that govern any SELECT — this statement used to inherit the no-op default.
+      *
+      * Story 22.1 adds the derived-table refusal, and it is ordered FIRST so the DERIVED message
+      * wins whenever both apply. A materialized view is an Elasticsearch TRANSFORM, and the
+      * extension that plans it (`MaterializedViewExtension`, softclient4es-extensions) keys on
+      * `from.tables` by INDEX NAME: a derived table's name is its ALIAS, so the transform would be
+      * planned over an index that does not exist — silently (the extensions#45/#46 class). A
+      * cross-index JOIN in a materialized view IS supported by that extension, so the guard is on
+      * the derived half only.
       */
-    override def validate(): Either[String, Unit] = dql.validate()
+    override def validate(): Either[String, Unit] =
+      if (derivedTablesPresent(dql))
+        Left(
+          "MATERIALIZED VIEW over a derived table (subquery in FROM/JOIN) is not supported: an " +
+          "Elasticsearch transform reads indices. Materialize the subquery as its own view and " +
+          "reference it."
+        )
+      else dql.validate()
 
     override def sql: String = {
       // The leading space belongs HERE, not to `Frequency.sql`: `TransformConfig` renders the same

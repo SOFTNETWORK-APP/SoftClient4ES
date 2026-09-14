@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.parser
 import app.softnetwork.elastic.sql.GenericIdentifier
 import app.softnetwork.elastic.sql.query.{
   CrossJoin,
+  DerivedTable,
   From,
   FullJoin,
   InnerJoin,
@@ -79,6 +80,11 @@ trait FromParser {
     * `StandardJoin.sql` renders each `NamePart` as ONE lexeme instead (21.2 AD-5).
     */
   def source: PackratParser[StandardJoin] =
+    derivedTable ^^ { dt =>
+      // A derived JOIN leg owns its alias and its parts are empty — the AD-1 invariant that
+      // `StandardJoin.validate()` ENFORCES.
+      StandardJoin(source = dt, joinType = None, on = None, alias = None, parts = Nil)
+    } |
     tableParts ~ alias.? ^^ { case ps ~ a =>
       StandardJoin(
         source = GenericIdentifier(ps.last.value),
@@ -104,8 +110,48 @@ trait FromParser {
     * no longer deletes a clause the statement carried.
     */
   def table: PackratParser[Table] =
-    tableParts ~ alias.? ~ rep(join) ^^ { case ps ~ a ~ js =>
-      Table(ps.last.value, a, js, parts = ps)
+    (derivedTable ^^ { dt => Table(dt.name, None, Nil, Nil, derived = Some(dt)) } |
+    tableParts ~ alias.? ^^ { case ps ~ a => Table(ps.last.value, a, Nil, parts = ps) }) ~
+    rep(join) ^^ { case t ~ js => t.copy(joins = js) }
+
+  /** `(SELECT …) [AS] alias` — a derived table (SQL-92 §7.6 `<derived table>`).
+    *
+    * DISJOINT from `tableParts` at the FIRST character: this production begins with the literal
+    * `(`, while `tableParts` begins with a name character or a quote (`qualifiedName` =
+    * `(quotedPart | bareFirstPart) ~ nameTail`). Neither can match a prefix of an input the other
+    * accepts whole, so the alternation order narrows nothing either way — `derivedTable` is listed
+    * first only because a literal test fails faster than a 131-alternative reserved-word regex.
+    *
+    * The ALIAS is mandatory (SQL-92 requires a `<correlation name>`; MySQL 8.4 raises error 1248;
+    * 10 of the 11 captured BI statements carry one) and its absence is an `err`, never a `failure`:
+    * a `failure` would fall through `rep1sep(table, separator)` / `rep(join)` and report a position
+    * error naming neither the derived table nor the alias (the #213 mode). The emptiness test is on
+    * `alias.alias`, not on the `Option`: `regexAlias`'s character class is `*`, so `alias` can
+    * succeed with an EMPTY name and `alias.?` is not a reliable absence test.
+    *
+    * The body alternative carries its own `err` for a parenthesised non-SELECT (`FROM (t) x`, `FROM
+    * (SHOW TABLES) x`): without it the rejection is `tableParts`' identifier-regex failure, a
+    * grammar-internal message this project never pins. Raising an `err` this early in the input is
+    * safe: an `err` is discarded only by a SIBLING `Failure` that got FURTHER (story 21.4), and the
+    * only sibling here — `tableParts` — fails at the very same `(`.
+    *
+    * `alias.?` declines a following keyword by construction: `regexAliasRegex` carries the
+    * reserved-word negative lookahead, so `… ) WHERE ROWNUM …` yields `None` here and the alias
+    * `err` fires — which is how the Oracle corpus row gets OUR message rather than a lexer's.
+    *
+    * Recursion (`table -> derivedTable -> searchStatement -> single -> from -> table`) runs through
+    * a CONSUMED `(`, so it is not left recursion; Packrat memoises it and nesting is unbounded.
+    */
+  override def derivedTable: PackratParser[DerivedTable] =
+    (start ~> (derivedTableBodyInner | err(
+      "A derived table body must be a SELECT: write FROM (SELECT ...) AS <name>"
+    )) <~ end) ~ alias.? >> {
+      case body ~ Some(a) if a.alias.nonEmpty => success(DerivedTable(body, a))
+      case _ =>
+        err(
+          "A derived table requires an alias (SQL-92 correlation name): " +
+          "write FROM (SELECT ...) AS <name> or JOIN (SELECT ...) AS <name> ON ..."
+        )
     }
 
   def from: PackratParser[From] = From.regex ~ rep1sep(table, separator) ^^ { case _ ~ tables =>

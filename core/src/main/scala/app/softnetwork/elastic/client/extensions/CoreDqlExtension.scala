@@ -94,7 +94,12 @@ class CoreDqlExtension extends ExtensionSpi {
     // SELECT with a cross-index JOIN, mirroring the arrow JoinExtension's canHandle) so they
     // fail loudly in execute instead of falling through to the core DML/DDL executors, which
     // would silently run the inner SELECT as a single-index search and write wrong data.
-    case other => joinRequired(other)
+    // Issue #157 / story 22.1 — also claim write-with-CLOSURE statements (INSERT … SELECT /
+    // CREATE TABLE … AS SELECT carrying a cross-index JOIN or a derived table, mirroring the arrow
+    // JoinExtension's canHandle) so they fail loudly in execute instead of falling through to the
+    // core DML/DDL executors, which would silently run the inner SELECT as a single-index search
+    // and write wrong data.
+    case other => relationalClosureRequired(other)
   }
 
   override def execute(
@@ -110,19 +115,8 @@ class CoreDqlExtension extends ExtensionSpi {
       // INSERT … SELECT / CTAS, write that wrong data. With a join-capable extension
       // registered ahead (priority < 100) join statements never get here; without one, fail
       // loudly instead of returning wrong data.
-      case s if joinRequired(s) =>
-        Future.successful(
-          ElasticFailure(
-            ElasticError(
-              message =
-                "Cross-index JOIN requires the softclient4es-arrow-extensions jar (Java 11+). " +
-                "Re-run the installer, or run with --no-extensions removed. " +
-                "See documentation/client/repl.md#extensions.",
-              statusCode = Some(400),
-              operation = Some("join")
-            )
-          )
-        )
+      case s if relationalClosureRequired(s) =>
+        Future.successful(ElasticFailure(RelationalClosureGuard.rejection(s)))
 
       case dql: DqlStatement =>
         licenseManager match {
@@ -150,18 +144,11 @@ class CoreDqlExtension extends ExtensionSpi {
     "SELECT ... FROM ... WHERE ... GROUP BY ... HAVING ... LIMIT ..."
   )
 
-  /** True when the statement carries a cross-index JOIN (`from.enrichmentRequired`), including
-    * embedded in INSERT … SELECT / CREATE TABLE … AS SELECT. UNNEST joins are excluded by
-    * construction — `joinedTables` collects `StandardJoin` sources only.
-    */
-  private[this] def joinRequired(statement: Statement): Boolean = statement match {
-    case single: SingleSearch    => single.from.enrichmentRequired
-    case multi: MultiSearch      => multi.requests.exists(_.from.enrichmentRequired)
-    case select: SelectStatement => select.statement.exists(joinRequired)
-    case insert: Insert          => insert.values.left.exists(joinRequired)
-    case create: CreateTable     => create.ddl.left.exists(joinRequired)
-    case _                       => false
-  }
+  // Story 22.1 — `joinRequired` DELETED. The predicate now lives in the `sql` module
+  // (`app.softnetwork.elastic.sql.query.relationalClosureRequired`, folded over `closureSearches`)
+  // so core, the `searchAs` macro and the arrow venue read ONE definition with ONE list of
+  // statement arms. It covers the same shapes it always did — a cross-index JOIN, embedded in
+  // INSERT … SELECT / CTAS, with UNNEST excluded by construction — plus derived tables.
 
   // ════════════════════════════════════════════════════════════════════
   // ✅ QUOTA CHECK LOGIC (in extension, not in core)

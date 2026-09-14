@@ -796,8 +796,21 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
     // concrete leaves from a result-type scan, which is precisely how `MultiSearch` (`UNION ALL`)
     // slipped past `searchStatement`. A new entry here must be accompanied by a check that the
     // package walk below still reaches its leaves.
+    // Story 22.1 adds `derivedTableBodyInner`: the BODY of a derived table (`FROM (SELECT …) AS
+    // d`), typed `DqlStatement` because the body may be a FROM-less SELECT. It names no NEW
+    // statement leaf — the body is `searchStatement | fromlessSelect`, both already enumerated —
+    // and no user can type one as a statement of its own, so the package walk's coverage is
+    // unchanged. Verified by the superset assertion below and by this file's parser -> doc gate
+    // staying green with no new help document.
     val expectedAbstract =
-      Set("statement", "dqlStatement", "ddlStatement", "dmlStatement", "searchStatement")
+      Set(
+        "statement",
+        "dqlStatement",
+        "ddlStatement",
+        "dmlStatement",
+        "searchStatement",
+        "derivedTableBodyInner"
+      )
     withClue(
       "the set of productions returning a SEALED TRAIT has changed. Every one of them hides its " +
       "concrete leaves from a result-type scan; confirm the package walk reaches them, then " +
