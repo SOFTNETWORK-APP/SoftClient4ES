@@ -2345,6 +2345,35 @@ trait Parser
   def quotedIdentifierUnlessArithmetic: PackratParser[Identifier] =
     quotedIdentifier <~ not(add | subtract | multiply | divide | modulo)
 
+  /** A quoted lexeme that can ONLY be an identifier: its first part is quoted AND at least one
+    * dot-separated part follows it (issue #332).
+    *
+    * Story 21.1 AD-13 deliberately lists `literal` BEFORE any identifier alternative in a VALUE
+    * position, so `WHERE a = "x"` is the string `x`. That is correct and is not touched here. But
+    * it also swallowed the QUALIFIED form: on the right of `=`, `"t0"."k"` consumed `"t0"` as a
+    * string literal and left `."k"` as trailing input, so `ON b.k = "t0"."k"` -- the exact JOIN
+    * predicate Tableau's SQL-92 dialect emits -- failed with `end of input expected`, while its
+    * backtick twin parsed (a backtick is never a string literal) and the mirrored `ON "b"."k" =
+    * t0.k` parsed too.
+    *
+    * The discriminator is STRUCTURAL, not a property of the parsed name: `rep1(nameTailPart)`
+    * demands a dot BETWEEN parts in the input. A filter such as `name.contains(".")` would be
+    * wrong, because `"a.b"` is ONE quoted part whose CONTENT holds a dot and must keep reading as
+    * the string `a.b`. Nothing else changes: a lone `"x"` has an empty tail, fails this production,
+    * and reaches `literal` exactly as before -- so every AD-13 pin holds by construction rather
+    * than by case analysis.
+    *
+    * Used ONLY by the two `WhereParser` alternations that ALREADY accept an identifier on the right
+    * (`equality`, `comparison`). `IN` / `BETWEEN` / `LIKE` take literals only; giving them an
+    * identifier operand would be a new feature, not this fix.
+    */
+  def quotedQualifiedIdentifier: PackratParser[Identifier] =
+    (Distinct.regex.? ~ (quotedPart ~ rep1(nameTailPart) ^^ { case h ~ t =>
+      joinNameParts(h :: t)
+    }) ^^ { case d ~ nq =>
+      GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
+    }) >> cast
+
   /** THE identifier production. Quoting is folded in here rather than sprinkled over the ~35 sites
     * that end in `| identifier` -- the four-alternative operand idiom alone occurs 21 times -- so a
     * production added later inherits it instead of having to remember it.
