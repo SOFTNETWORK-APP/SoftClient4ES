@@ -137,6 +137,24 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * i.e. `shouldBeScripted` across the clauses.
     */
   private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] = {
+    // Story 22.1 (epic 22 AD-5) — THE seam. Every direct-API path crosses it BEFORE routing
+    // (`search`, `searchAsync`, `searchWithInnerHits`, `ScrollApi.scroll`, and `IndicesApi`'s
+    // by-query DELETE/UPDATE bodies through `resolveDmlWithSchema`), and none of them passes
+    // through `CoreDqlExtension` — so a guard placed here cannot be bypassed by a routing
+    // decision, and two guards would be two places for it to go missing.
+    //
+    // A derived table has no index to resolve a schema against and `single.sources` yields its
+    // ALIAS; a cross-index JOIN resolves only its FIRST table. MEASURED on `origin/main` before
+    // this story: `client.search("SELECT o.id, c.name FROM orders o JOIN customers c ON …")`
+    // returned `ElasticSuccess` over index list `[orders]` with a `match_all` body — the JOIN leg
+    // silently dropped, HTTP 200, wrong answer. That is the #157 residual on the raw client API
+    // (no sibling production code calls this API — every one goes through `gateway.run` — which is
+    // why it survived), and the lead's ruling for this story is to close it here rather than file
+    // it.
+    if (single.relationalClosureRequired)
+      return ElasticResult.failure(
+        RelationalClosureGuard.rejection(single, operation = "search")
+      )
     // #306 -- this used to return early for a statement whose WHERE carried no temporal literal.
     // That was correct while the only job was rewriting those literals, and is WRONG now that the
     // schema is also attached to the AST: almost no statement carries a temporal WHERE literal,

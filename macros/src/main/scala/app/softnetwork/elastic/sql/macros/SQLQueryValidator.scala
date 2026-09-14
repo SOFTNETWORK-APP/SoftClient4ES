@@ -19,7 +19,13 @@ package app.softnetwork.elastic.sql.macros
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes, SQLVarchar}
 import app.softnetwork.elastic.sql.function.aggregate.{COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{MultiSearch, SingleSearch}
+import app.softnetwork.elastic.sql.query.{
+  derivedTablesPresent,
+  relationalClosureRequired,
+  MultiSearch,
+  SingleSearch,
+  Statement
+}
 
 import scala.language.experimental.macros
 import scala.reflect.macros.blackbox
@@ -172,8 +178,19 @@ trait SQLQueryValidator {
   // ============================================================
   private def parseSQLQuery(c: blackbox.Context)(sqlQuery: String): SingleSearch = {
     Parser(sqlQuery) match {
+      // Story 22.1 — a derived table is a `SingleSearch`, NOT a new statement KIND, so the
+      // `case Right(other)` arm below (story 20.9's) does NOT catch it: without this guard the
+      // macro would ACCEPT the statement and type the OUTER select against nothing.
+      // `searchAs` / `scrollAs` bind ONE index mapping and can type neither a derived table's
+      // projection nor a JOIN's merged row.
+      case Right(request: SingleSearch) if relationalClosureRequired(request) =>
+        c.abort(c.enclosingPosition, closureAbortMessage(request, sqlQuery))
+
       case Right(request: SingleSearch) =>
         request
+
+      case Right(multi: MultiSearch) if relationalClosureRequired(multi) =>
+        c.abort(c.enclosingPosition, closureAbortMessage(multi, sqlQuery))
 
       case Right(multi: MultiSearch) =>
         multi.requests.headOption.getOrElse {
@@ -199,6 +216,18 @@ trait SQLQueryValidator {
           s"Query: $sqlQuery"
         )
     }
+  }
+
+  /** ⚠️ Behaviour change (story 22.1, release note): a `searchAs[T]("… JOIN …")` that COMPILED
+    * before — and then ran the FIRST index alone — is a compile error now. That is the #157
+    * silent-wrong-answer mode, moved from run time to compile time.
+    */
+  private def closureAbortMessage(statement: Statement, sqlQuery: String): String = {
+    val shape =
+      if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
+      else "Cross-index JOINs"
+    s"❌ $shape cannot be typed at compile time: searchAs/scrollAs bind one index mapping. " +
+    s"Run this statement through GatewayApi.run with the relational engine.\nQuery: $sqlQuery"
   }
 
   // ============================================================

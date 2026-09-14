@@ -266,13 +266,17 @@ trait WhereParser {
 
   /** The token stream inside a relation predicate's parentheses.
     *
-    * `whereCriteria` is `rep1(allPredicate | allCriteria | start | or | and | end | then_case)`.
-    * This is that alternation minus THREE of those, and the differences are ENUMERATED rather than
+    * `whereCriteria` scans the alternation `allPredicate | allCriteria | start | or | and | end |
+    * then_case` (since story 22.1 with a depth rule, but the ITEM alternation is unchanged). This
+    * is that alternation minus THREE of those, and the differences are ENUMERATED rather than
     * summarised, because the correctness claim rests on exactly which ones are missing:
     *
     *   - a bare `end` is omitted - the closing parenthesis belongs to the relation predicate, and
-    *     `rep1` does NOT backtrack, so leaving it in would let the repetition swallow that `)` and
-    *     everything after it, after which the enclosing end could never match;
+    *     the scan does NOT backtrack, so leaving it in would let the repetition swallow that `)`
+    *     and everything after it, after which the enclosing end could never match. (Story 22.1's
+    *     depth rule solves the SAME problem one construct up, for a parenthesised derived-table
+    *     body; it is not a substitute here, because a relation predicate's `)` is at depth 0 of a
+    *     group this production opened itself through `relationGroup`.);
     *   - a bare `start` is omitted for the mirror reason: an opening parenthesis must only ever be
     *     consumed by `relationGroup`, together with its OWN closing one, which is what keeps the
     *     two balanced and lets sub-groups nest;
@@ -369,9 +373,59 @@ trait WhereParser {
   private def allCriteria: PackratParser[Token] =
     nestedCriteria | childCriteria | parentCriteria | criteria
 
-  def whereCriteria: PackratParser[List[Token]] = rep1(
-    allPredicate | allCriteria | start | or | and | end | then_case
-  )
+  /** The token stream of a WHERE / HAVING / CASE-WHEN / JOIN-ON condition.
+    *
+    * Story 22.1 (AD-2b, specified with story 22.2): same alternatives as the `rep1` this replaces,
+    * ONE rule added — a `)` is consumed only while an unmatched `(` is open in THIS clause. At
+    * depth 0 the scan stops and leaves the `)` to whoever opened it.
+    *
+    * 🔴 Why it had to change. `rep1` offers a bare `end` and never backtracks, so for every
+    * PARENTHESISED body whose last clause is a WHERE or a HAVING — story 22.1's `FROM (SELECT a
+    * FROM t WHERE x = 1) d`, story 22.2's `IN (SELECT id FROM c WHERE r = 'EU')` — the inner clause
+    * swallowed the subquery's own `)`, `processTokensHelper`'s top-level `EndDelimiter` arm
+    * answered `Left("Unbalanced parentheses")` and `where` raised it as a NON-backtracking `err`
+    * that killed the whole statement. It is the mechanism story 21.4 met inside relation predicates
+    * and fixed by giving them `relationTokens`, which omits `end` (`:264-293`) — the same defect,
+    * one construct up.
+    *
+    * Depth is counted on `StartPredicate` / `EndPredicate` ONLY, because those are the only
+    * delimiters this alternation can emit: `start` produces `StartPredicate`, `end` produces
+    * `EndPredicate`, and `then_case` produces `ThenCase` — which IS an `EndDelimiter` but must keep
+    * being consumed, since `processTokensHelper` reads it as end-of-tokens for a CASE-WHEN
+    * condition. A parenthesis that an ITEM consumes (a function call, a relation predicate's own
+    * group, `IN (1, 2)`) never reaches this counter: items are consumed atomically.
+    *
+    * What moves, and it is pinned: an unmatched OPENING paren is still consumed and still reaches
+    * `processTokens`, so `WHERE (b = 1` keeps its `"Unbalanced parentheses"` rejection. A STRAY `)`
+    * at depth 0 is no longer eaten — the clause ends before it and `phrase` rejects the statement
+    * as trailing input, so `SELECT a FROM t WHERE a = 1)` stays a rejection but changes its wording
+    * (`ParserTotalitySpec` retargets those three contract pins).
+    *
+    * Written as a plain `Parser[List[Token]]` over the existing item parser: PackratParser memoises
+    * the items exactly as before, and the depth is a local of one scan, never parser state.
+    */
+  def whereCriteria: PackratParser[List[Token]] = new self.Parser[List[Token]] {
+
+    // The SAME alternation, in the SAME order, as the `rep1` this replaces.
+    private val item: self.Parser[Token] =
+      allPredicate | allCriteria | start | or | and | end | then_case
+
+    @scala.annotation.tailrec
+    private def scan(rest: Input, depth: Int, acc: List[Token]): ParseResult[List[Token]] =
+      item(rest) match {
+        case Success(EndPredicate, _) if depth == 0 =>
+          if (acc.isEmpty) Failure("criteria expected", rest) else Success(acc.reverse, rest)
+        case Success(EndPredicate, next)   => scan(next, depth - 1, EndPredicate :: acc)
+        case Success(StartPredicate, next) => scan(next, depth + 1, StartPredicate :: acc)
+        case Success(t, next)              => scan(next, depth, t :: acc)
+        // An item's own `err` (a relation predicate's, #250 / story 21.4) propagates unchanged.
+        case e: Error => e
+        case f: Failure =>
+          if (acc.isEmpty) f else Success(acc.reverse, rest)
+      }
+
+    override def apply(in: Input): ParseResult[List[Token]] = scan(in, 0, Nil)
+  }
 
   def where: PackratParser[Where] =
     Where.regex ~ whereCriteria >> { case _ ~ rawTokens =>
@@ -386,8 +440,10 @@ trait WhereParser {
         // A dangling `AND` / `OR` used to leave `Where(None)`, which renders as NO CLAUSE AT ALL:
         // `DELETE FROM orders WHERE id = 1 AND` parsed as `DELETE FROM orders` and emptied the
         // index (the #213 data-loss family, measured 2026-09-04). `where` runs only once the
-        // literal WHERE has matched and `whereCriteria` is `rep1`, so `None` here always means
-        // "a WHERE was written and nothing usable came of it".
+        // literal WHERE has matched, and `whereCriteria` yields at least one token or FAILS (story
+        // 22.1's scanner returns the item's own `Failure` when its accumulator is empty, exactly as
+        // `rep1` did), so `None` here always means "a WHERE was written and nothing usable came of
+        // it".
         case Right(None)  => err("WHERE clause requires criteria")
         case Left(reason) => err(reason)
       }
@@ -532,9 +588,10 @@ trait WhereParser {
       case unexpected :: _ =>
         // #250 - this arm used to be `processTokensHelper(Nil, stack)`, which ABANDONED every
         // remaining token and returned whatever the stack happened to hold: a silent truncation of
-        // the clause the user wrote. It is believed unreachable - `whereCriteria` is
-        // `rep1(allPredicate | allCriteria | start | or | and | end | then_case)` and every one of
-        // those token kinds is matched by an arm above - and it was NEVER reached while
+        // the clause the user wrote. It is believed unreachable - `whereCriteria` scans
+        // `allPredicate | allCriteria | start | or | and | end | then_case` (story 22.1 added a
+        // depth rule, not a token kind) and every one of those token kinds is matched by an arm
+        // above - and it was NEVER reached while
         // instrumented across the sql, core, bridge and macros-tests suites (2026-09-05). That is
         // exactly why it must not silently truncate: an unreachable arm that loses data is one
         // grammar change away from being reachable. Same reasoning as the defensive arm in

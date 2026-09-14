@@ -5,7 +5,9 @@
   "syntax": [
     "SELECT [DISTINCT] columns",
     "FROM table [AS alias]",
+    "FROM (SELECT ...) [AS] alias",
     "[JOIN table ON condition]",
+    "[JOIN (SELECT ...) [AS] alias ON condition]",
     "[WHERE condition]",
     "[GROUP BY columns]",
     "[HAVING condition]",
@@ -96,15 +98,24 @@
       "description": "UNION ALL keeps every row of both sides; bare UNION is not accepted",
       "sql": "SELECT id, amount FROM orders UNION ALL SELECT id, amount FROM archived_orders",
       "output": null
+    },
+    {
+      "title": "Derived table",
+      "description": "Aggregate in a subquery, filter the aggregate outside",
+      "sql": "SELECT d.category, d.total FROM (SELECT category, SUM(amount) AS total FROM orders GROUP BY category) AS d WHERE d.total > 100",
+      "output": null
     }
   ],
   "notes": [
     "An alias must not be a reserved word: count, day, hour, now, today, offset, distance and every function name are rejected as aliases",
     "Result sets larger than the index max_result_window are paged automatically; the query itself needs no scroll or search_after handling",
     "Nested fields are addressed with JOIN UNNEST(<path>) AS <alias>; see the JOIN clause above",
-    "A FROM-less SELECT is evaluated against a hidden softclient4es_handshake index created on first use, so a read-only account needs it pre-created"
+    "A FROM-less SELECT is evaluated against a hidden softclient4es_handshake index created on first use, so a read-only account needs it pre-created",
+    "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection"
   ],
-  "limitations": [],
+  "limitations": [
+    "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400"
+  ],
   "seeAlso": ["INSERT", "UPDATE", "DELETE"],
   "minVersion": null,
   "aliases": []

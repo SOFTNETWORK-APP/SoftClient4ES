@@ -238,6 +238,29 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     }
     TempTableProbeIds should have size 24
     RejectedPendingPolicyIds should have size 3
+    // Story 22.1 — the derived-table partition, pinned in code and checked both ways.
+    DerivedTableParsesIds should have size 9
+    DerivedTableRejectedIds should have size 2
+    val derivedDeclared =
+      attribution.values.filter(_.owner == "epic22a_derived_table").map(_.captureId).toSet
+    withClue("rows the table owns as epic22a_derived_table that the CODE does not partition: ") {
+      (derivedDeclared -- DerivedTableParsesIds -- DerivedTableRejectedIds) shouldBe empty
+    }
+    withClue("derived-table rows the CODE pins that the table no longer owns: ") {
+      (DerivedTableParsesIds ++ DerivedTableRejectedIds -- derivedDeclared) shouldBe empty
+    }
+    checkAll(
+      (DerivedTableParsesIds ++ DerivedTableRejectedIds).toList.sorted,
+      "derived-table verdicts (pinned in code, never in the table)"
+    )(identity) { id =>
+      val want = if (DerivedTableParsesIds.contains(id)) "parses" else "rejected"
+      if (byId(id).verdict != want) {
+        sys.error(s"expected $want, measured ${byId(id).verdict}")
+      }
+      if (attributionOf(attribution, id).scored != "residual") {
+        sys.error("a derived-table row must score residual — Epic 21 did not fix it")
+      }
+    }
     CapabilityOpenIds should have size 21
     val pending = corpus.filter(r => RejectedPendingPolicyIds.contains(r.captureId))
     checkAll(pending, "policy-pending DDL probes (must STAY rejected)")(_.captureId) { row =>
@@ -391,8 +414,48 @@ object CorpusReplay {
     */
   def expectedFor(owner: String): Option[String] =
     if (owner == "epic21" || owner == "pre_epic21") Some("parses")
-    else if (isIssueOwner(owner) || isLocalOwner(owner) || owner == "capability_open") None
+    // 🔴 Story 22.1 — `epic22a_derived_table` ALONE stopped implying `rejected`, because that epic
+    // landed. It is NOT `owner.startsWith("epic22")`: `epic22b_cte` must keep implying `rejected`,
+    // or the single CTE row (`superset.flightsql.w6.006`) would be asserted by NOTHING — neither
+    // by an implication nor by a code pin — and the day a grammar change makes `WITH … AS (`
+    // parse by accident the gate would go green and the 21.6 headline would move in silence.
+    // What replaces the implication for the derived rows is the code-pinned partition below.
+    else if (
+      isIssueOwner(owner) || isLocalOwner(owner) || owner == "capability_open" ||
+      owner == "epic22a_derived_table"
+    ) None
     else Some("rejected")
+
+  /** Story 22.1 — the derived-table rows, PINNED IN CODE for the same reason the temp-table probe
+    * ids are (G4): a gate whose expectations live in the file it guards can be silenced by editing
+    * that file.
+    *
+    * An `epic22*` owner stopped implying `rejected` when story 22.1 landed — an epic in flight may
+    * have shipped, and the verdict is MEASURED, not assumed. What replaces the implication is this
+    * explicit partition of the eleven derived-table statements, asserted against the attribution
+    * table in BOTH directions. Their `scored` stays `residual`: Epic 21 did not fix them, and the
+    * 21.6 headline (56/99) must not move when a later epic lands.
+    */
+  val DerivedTableParsesIds: Set[String] = Set(
+    "tableau.mysql.wx.003",
+    "tableau.mysql.w1.018",
+    "tableau.mysql.w7.043",
+    "tableau.sql92.wx.003",
+    "tableau.mysql.w1.019",
+    "tableau.mysql.w7.044",
+    "tableau.sql92.wx.009",
+    "superset.flightsql.w5.005",
+    "superset.flightsql.w7.007"
+  )
+
+  /** The two declared residuals, with their SECOND blocker — `wx.012` has no correlation name (the
+    * alias is mandatory, SQL-92 §7.6) AND carries Oracle `ROWNUM`; `w8.054` carries the MySQL
+    * null-safe `<=>` in its ON. Both are out of epic 22's scope and must STAY rejected.
+    */
+  val DerivedTableRejectedIds: Set[String] = Set(
+    "tableau.sql92.wx.012",
+    "tableau.mysql.w8.054"
+  )
 
   /** The 24 Tableau temp-table capability probes, PINNED HERE and not in the CSV.
     *

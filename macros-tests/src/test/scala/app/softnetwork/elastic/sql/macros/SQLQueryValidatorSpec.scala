@@ -6,6 +6,41 @@ import org.scalatest.matchers.should.Matchers
 class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
 
   // ============================================================
+  // Story 22.1 — relational-closure statements cannot be typed at compile time
+  // ============================================================
+
+  // A derived table is a `SingleSearch`, NOT a new statement KIND, so story 20.9's
+  // `case Right(other)` abort does NOT catch it: without the new guarded arm the macro would
+  // ACCEPT this and type `Row` against nothing.
+  it should "REJECT a derived table at compile time (one index mapping cannot type it)" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(COL: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "SELECT COL FROM (SELECT 1 AS COL) AS d"
+      )""")
+  }
+
+  // ⚠️ BEHAVIOUR CHANGE, release-noted: this used to COMPILE and then run the FIRST index alone
+  // (the #157 silent-wrong-answer mode). It is a compile error now.
+  it should "REJECT a cross-index JOIN at compile time (this used to compile and run one table)" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(id: Int, name: String)
+
+      TestElasticClientApi.searchAs[Row](
+        "SELECT o.id, c.name FROM orders o JOIN customers c ON o.cid = c.id"
+      )""")
+  }
+
+  // ============================================================
   // Positive Tests (Should Compile)
   // ============================================================
 

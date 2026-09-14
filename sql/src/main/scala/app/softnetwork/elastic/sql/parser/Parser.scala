@@ -1029,34 +1029,44 @@ object Parser
   // error that names neither JOIN nor the watcher.
   def searchInput: PackratParser[SearchWatcherInput] =
     from ~ opt(where) ~ withinTimeout >> { case f ~ w ~ t =>
-      f.joins match {
-        case Nil =>
-          val criteria = resolveWhere(f, w).flatMap(_.criteria)
-          // `FROM a, b` stays a legitimate multi-index search; only a qualifier over it is
-          // unserviceable — see `qualifiedOverManyIndices`.
-          if (qualifiedOverManyIndices(f, criteria))
-            err(
-              s"A watcher input cannot qualify a column by table when it searches several " +
-              s"indices (${f.tables.map(_.name).mkString(", ")}): one Elasticsearch search " +
-              "applies one query to all of them, so it can neither join them nor scope a " +
-              "predicate to one. Watch a single index, drop the qualifiers, or pre-join the " +
-              "sources with a MATERIALIZED VIEW and watch the view."
-            )
-          else
-            success(
-              SearchWatcherInput(
-                f.tables.map(_.name).distinct,
-                criteria,
-                t
+      // Story 22.1 — a watcher input keeps only `tables.map(_.name)`, and a derived table's name
+      // is its ALIAS, so the watcher would silently watch an index named after the subquery. Same
+      // shape, same reason, as the JOIN refusal below (#191).
+      if (f.hasDerivedTables)
+        err(
+          "A watcher input cannot search a derived table (subquery in FROM/JOIN): a watcher " +
+          "searches indices. Watch the index directly, or pre-compute the subquery as a " +
+          "MATERIALIZED VIEW and watch the view."
+        )
+      else
+        f.joins match {
+          case Nil =>
+            val criteria = resolveWhere(f, w).flatMap(_.criteria)
+            // `FROM a, b` stays a legitimate multi-index search; only a qualifier over it is
+            // unserviceable — see `qualifiedOverManyIndices`.
+            if (qualifiedOverManyIndices(f, criteria))
+              err(
+                s"A watcher input cannot qualify a column by table when it searches several " +
+                s"indices (${f.tables.map(_.name).mkString(", ")}): one Elasticsearch search " +
+                "applies one query to all of them, so it can neither join them nor scope a " +
+                "predicate to one. Watch a single index, drop the qualifiers, or pre-join the " +
+                "sources with a MATERIALIZED VIEW and watch the view."
               )
+            else
+              success(
+                SearchWatcherInput(
+                  f.tables.map(_.name).distinct,
+                  criteria,
+                  t
+                )
+              )
+          case joins =>
+            err(
+              s"JOIN is not supported in a watcher input (${joins.map(_.sql.trim).mkString(" ")}): " +
+              "a watcher input can only search one or more indices (FROM index1, index2). " +
+              "Pre-join the sources with a MATERIALIZED VIEW and have the watcher search the view."
             )
-        case joins =>
-          err(
-            s"JOIN is not supported in a watcher input (${joins.map(_.sql.trim).mkString(" ")}): " +
-            "a watcher input can only search one or more indices (FROM index1, index2). " +
-            "Pre-join the sources with a MATERIALIZED VIEW and have the watcher search the view."
-          )
-      }
+        }
     }
 
   def httpInput: PackratParser[HttpInput] =
@@ -1277,6 +1287,20 @@ object Parser
       RefreshLicense
     }
 
+  /** The body of a derived table, WITHOUT its parentheses (story 22.1 AD-3).
+    *
+    * The SAME pair, in the SAME order, as `dqlStatement` below, for the same reason: `|` commits to
+    * the first SUCCEEDING alternative and `searchStatement` FAILS (does not partially succeed) on a
+    * FROM-less body because `single` requires `from`, so `(SELECT 1 AS COL)` falls through to
+    * `fromlessSelect` and `(SELECT a FROM t)` never does. Putting `fromlessSelect` first would
+    * commit `(SELECT a FROM t)` to the prefix `SELECT a` and then fail on `FROM`. Do not reorder.
+    *
+    * The ascription is needed because `Parser[+T].|[U >: T]` cannot unify `SearchStatement` with
+    * `FromlessSelect`; their common supertype is `DqlStatement`.
+    */
+  override def derivedTableBodyInner: PackratParser[DqlStatement] =
+    (searchStatement: PackratParser[DqlStatement]) | fromlessSelect
+
   def dqlStatement: PackratParser[DqlStatement] = {
     searchStatement |
     // Issue #251 — FROM-less SELECT. MUST stay immediately AFTER searchStatement: `|` commits
@@ -1458,6 +1482,16 @@ object Parser
     (keyword("DELETE") ~ keyword("FROM")) ~> rep1sep(table, separator) ~ where.? >> {
       case tables ~ w =>
         tables.flatMap(_.joins) match {
+          // Story 22.1 — `DELETE FROM` shares `table` with the SELECT surface, so without this arm
+          // a derived table would parse and `Delete(tables.head, …)` would carry a `Table` whose
+          // name is the subquery's ALIAS: the delete-by-query would target an index that does not
+          // exist, or worse one that happens to. Nothing downstream re-checks it (#191's class).
+          case Nil if tables.exists(_.derived.isDefined) =>
+            err(
+              "DELETE cannot target a derived table (subquery in FROM): Elasticsearch deletes by " +
+              "query over an index. Name the index and move the subquery's predicate into the " +
+              "WHERE clause."
+            )
           case Nil if tables.size > 1 =>
             err(
               s"DELETE targets a single table, got ${tables.map(_.name).mkString(", ")}: " +
@@ -1676,6 +1710,22 @@ trait Parser
     with HttpParser { _: WhereParser with OrderByParser with LimitParser =>
 
   protected def keyword(word: String): Parser[String] = s"(?i)$word\\b".r ^^ (_ => word)
+
+  /** Story 22.1 — the derived-table productions, DECLARED here because `FromParser` (which owns
+    * `derivedTable`) sees this trait through its self-type while `searchStatement` /
+    * `fromlessSelect` live on `object Parser`. Implemented there and in `FromParser` respectively.
+    *
+    * Story 22.2 reuses `derivedTableBodyInner` for `IN (SELECT …)` / `EXISTS (SELECT …)` — with its
+    * OWN `start`/`end`, and WITHOUT `derivedTable`'s `err` alternative, which would fire on `WHERE
+    * a = (b + 1)` before the alternation could fall back to `equality`. The paren-bearing
+    * `derivedTableBody = start ~> derivedTableBodyInner <~ end` the 22.1 spec named is deliberately
+    * NOT shipped here: nothing in this story calls it (`derivedTable` inlines the parentheses so
+    * that an UNTERMINATED body stays a plain `Failure` instead of taking the `err` branch), and an
+    * artifact ships no unreachable code. It is one line for 22.2 to add at its own call site.
+    */
+  def derivedTableBodyInner: PackratParser[app.softnetwork.elastic.sql.query.DqlStatement]
+
+  def derivedTable: PackratParser[app.softnetwork.elastic.sql.query.DerivedTable]
 
   /** The pre-21.7 DDL/DML name regex. It is no longer used directly by any statement: story 21.7
     * routed every one of its call sites through `identRef` (object references) or `identName`

@@ -1709,8 +1709,11 @@ package object sql {
             )
         }
       } else {
-        // maybe from the main table or a subquery, not a JOIN
-        // here we only take into account the main table, not subqueries
+        // An UN-QUALIFIED name. It resolves against the MAIN table, whatever that is — and since
+        // story 22.1 the main table may itself be a DERIVED table, in which case there is no
+        // schema to attach (a subquery has no mapping) and the name is checked against the derived
+        // table's PROJECTION instead, by `SingleSearch.derivedScopeCheck`. Nothing to do here: a
+        // derived table's `name` IS its correlation name, so every alias map already agrees.
         this
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),

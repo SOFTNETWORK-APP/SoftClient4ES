@@ -1285,6 +1285,39 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
   }
 
   // =========================================================================
+  // 6c. Derived tables — story 22.1: they PARSE, then fail LOUDLY without the relational engine
+  // =========================================================================
+
+  behavior of "REPL - derived tables without the relational engine"
+
+  it should "refuse FROM (SELECT ...) AS alias with HTTP 400 naming the extension" in {
+    val res = executeSync("SELECT COL FROM (SELECT 1 AS COL) AS SUBQUERY")
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    error.statusCode shouldBe Some(400)
+    error.message should include("softclient4es-arrow-extensions")
+    error.message should include("derived table")
+  }
+
+  it should "refuse JOIN (SELECT ...) AS alias the same way — never run the first index alone" in {
+    // `dql_orders` is created by section 5, so a 404 can never satisfy this in place of the guard.
+    val res = executeSync(
+      "SELECT o.id, d.cid FROM dql_orders o JOIN (SELECT id AS cid FROM dql_orders) AS d " +
+      "ON o.id = d.cid"
+    )
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    error.statusCode shouldBe Some(400)
+    error.message should include("softclient4es-arrow-extensions")
+  }
+
+  it should "still answer the un-nested statement — the guard did not widen" in {
+    // the 6b handshake pin, repeated as the control
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SELECT 1"))
+    rows shouldBe Seq(Map("1" -> 1))
+  }
+
+  // =========================================================================
   // 7. Error handling
   // =========================================================================
 
