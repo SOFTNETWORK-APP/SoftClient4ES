@@ -580,12 +580,24 @@ class QuotedIdentifierSpec extends AnyFlatSpec with Matchers {
     parses("SELECT id FROM t WHERE `a`.`b` = 'x'")
   }
 
-  it should "leave the comparison RHS a literal, as it is today" in {
-    // Pre-existing and unchanged: `WhereParser.equality`'s RHS lists `literal` before
-    // `any_identifier`. The qualified form on the RHS has no reading at all and stays rejected —
-    // recorded, not fixed.
+  it should "leave a LONE quoted lexeme on the comparison RHS a literal" in {
+    // Unchanged, and the half that must never move: `WhereParser.equality`'s RHS lists `literal`
+    // before `any_identifier` (story 21.1 AD-13), so a lone quoted lexeme in a value position is a
+    // STRING. `"a.b"` — one quoted part whose CONTENT holds a dot — is a string for the same reason.
     Parser("SELECT id FROM t WHERE \"a\" = \"b\"").toOption.get.sql should include("= 'b'")
-    rejected("SELECT id FROM t WHERE a = \"t\".\"c\"")
+    Parser("SELECT id FROM t WHERE a = \"a.b\"").toOption.get.sql should include("= 'a.b'")
+  }
+
+  it should "read a QUALIFIED quoted name on the comparison RHS as a column (#332)" in {
+    // 🔴 RETARGETED. This row asserted `rejected(...)` and said "recorded, not fixed": the qualified
+    // form on the RHS had no reading at all, because `"t"` was consumed as a string literal and
+    // `."c"` became trailing input. That asymmetry — the LHS twin above parses, and the backtick
+    // twin parses — is what made it a defect rather than AD-13 working as intended, and it rejected
+    // the exact JOIN predicate Tableau's SQL-92 dialect emits. Issue #332 fixes it with a
+    // STRUCTURAL discriminator (a dot BETWEEN quoted parts), which is why the two pins above still
+    // hold. Full matrix in `QuotedQualifierOperandSpec`.
+    parses("SELECT id FROM t WHERE a = \"t\".\"c\"")
+    parses("SELECT id FROM t WHERE a = \"t\".c")
   }
 
   // ---------------------------------------------------------------------------------------------

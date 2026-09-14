@@ -212,19 +212,23 @@ class TableauLiveReplaySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "the derived-table shapes" should "stay owned by Epic 22" in {
+  "the derived-table shapes" should "keep parsing now that Epic 22 story 22.1 has landed" in {
     // They are 23 of the 127 captured statements, and the connect-time one fires on every single
-    // connection. When Epic 22 lands they flip to `parses`; that must be a deliberate edit to both
-    // this set and the CSV, never a quiet one.
-    checkAll(pinned("epic22a_derived_table", Epic22DerivedTableIds, "derived tables"), "Epic 22")(
+    // connection. Until PR #331 this asserted they stay REJECTED and owned by `epic22a_derived
+    // _table`; 22.1 made them parse, so the gate flips rather than disappears.
+    Epic22DerivedTableIds should not be empty
+    checkAll(corpus.filter(r => Epic22DerivedTableIds.contains(r.captureId)), "Epic 22")(
       _.captureId
     ) { r =>
       val m = byId(r.captureId)
-      if (m.outcome.verdict != "rejected") {
+      if (m.outcome.verdict != "parses") {
         sys.error(
-          "a derived table now parses. That is Epic 22 landing, not a corpus defect: move the row " +
-          "out of `epic22a_derived_table` in BOTH the CSV and `Epic22DerivedTableIds`, and say so."
+          "a derived table stopped parsing. Story 22.1 (PR #331) made this shape parse, so this " +
+          "is a REGRESSION in relational closure, not a corpus bookkeeping problem."
         )
+      }
+      if (r.owner != "works") {
+        sys.error(s"expected `owner` = 'works' since 22.1 landed, found '${r.owner}'")
       }
     }
   }
@@ -243,7 +247,11 @@ object TableauLiveReplay {
   val CapturedStatementCount = 127
 
   /** How many of the shapes parse on this tree, PINNED so no cell edit can absorb a regression. */
-  val ParsingShapeCount = 21
+  /** 21 -> 24 on 2026-09-14: story 22.1 (PR #331) made the three `epic22a_derived_table` rows
+    * parse. This constant lives in compiled code precisely so that flip could not be absorbed by
+    * editing the CSV alone.
+    */
+  val ParsingShapeCount = 24
 
   val Verdicts: Set[String] = Set("parses", "rejected")
 
@@ -293,6 +301,20 @@ object TableauLiveReplay {
     *
     * PINNED HERE for the same reason. When Epic 22 lands these flip to `parses`, and that must be a
     * deliberate edit to this set AND to the CSV rather than a quiet one.
+    *
+    * 🔴 **FLIPPED 2026-09-14 — story 22.1 landed (PR #331).** All three rows now PARSE, which is
+    * the gate doing its job: Epic 22 succeeding, not a corpus defect. Their CSV `owner` moves to
+    * `works` (the closed vocabulary has no "used to be blocked" value) and the ids stay pinned
+    * HERE, because these are the highest-frequency statements in the whole capture — `.003` is the
+    * connect-time probe Tableau issues on EVERY connection, 17 of 127 captures — and a regression
+    * that stopped them parsing must redden by name, not merely move a total.
+    *
+    * The assertion below therefore flips with them: it no longer says "these stay rejected", it
+    * says "these keep parsing". It deliberately does NOT go through `pinned`, whose contract is
+    * set-equality against ONE owner label — these rows are now three of the fourteen `works` rows.
+    *
+    * NOTE they PARSE but do not yet EXECUTE: without the relational engine they are refused with
+    * HTTP 400 (story 22.1's loud guard); story 22.4 makes them run.
     */
   val Epic22DerivedTableIds: Set[String] = Set(
     "tableau.mysql.live.003",
