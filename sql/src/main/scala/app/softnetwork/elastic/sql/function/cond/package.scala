@@ -36,7 +36,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypes
 }
 import app.softnetwork.elastic.sql.parser.Validator
-import app.softnetwork.elastic.sql.query.{CriteriaWithConditionalFunction, Expression}
+import app.softnetwork.elastic.sql.query.{Criteria, CriteriaWithConditionalFunction, Expression}
 
 package object cond {
 
@@ -50,7 +50,6 @@ package object cond {
   case object NullIf extends Expr("NULLIF") with ConditionalOp
   case object Greatest extends Expr("GREATEST") with ConditionalOp
   case object Least extends Expr("LEAST") with ConditionalOp
-  // case object Exists extends Expr("EXISTS") with ConditionalOp
 
   case object Case extends Expr("CASE") with ConditionalOp
 
@@ -259,7 +258,22 @@ package object cond {
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
     override def validate(): Either[String, Unit] = {
-      if (conditions.isEmpty) Left("CASE WHEN requires at least one condition")
+      // Story 22.2 (AD-6) — a CASE-WHEN condition is parsed by `case_condition`, which shares
+      // `whereCriteria` with WHERE, so a subquery node is grammatically reachable here. It is
+      // reached at PARSE time (`Field.validate` -> `FunctionChain.validate` ->
+      // `Validator.validateChain` -> `functions.map(_.validate())`), and the check below passes a
+      // criteria (its `out` IS BOOLEAN), so without this arm the statement parses and dies later in
+      // the node's `painless` throw — a rendering-time internal error where the analyst wants a
+      // named rejection.
+      val subquery = conditions.collectFirst {
+        case (c: Criteria, _) if c.subqueries.nonEmpty => c
+      }
+      if (subquery.isDefined)
+        Left(
+          s"A subquery is not supported in a CASE WHEN condition: ${subquery.get.sql}. " +
+          "Filter in WHERE, or compute the flag in a separate query."
+        )
+      else if (conditions.isEmpty) Left("CASE WHEN requires at least one condition")
       else if (
         expression.isEmpty && conditions.exists { case (cond, _) => cond.out != SQLTypes.Boolean }
       )

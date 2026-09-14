@@ -245,16 +245,44 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  it should "never reject under a custom or opaque format" in {
+  /** ⚠️ RETARGETED by story 22.2, not deleted (the 21.4 rule for a contract pin whose behaviour
+    * deliberately moves).
+    *
+    * The `"2026-06-04T00:00:00" -> Verbatim` row read *"not ours to fix: no ISO alternative"*. It
+    * WAS ours: forwarding an ISO literal verbatim to a column whose format accepts no ISO
+    * alternative is a GUARANTEED Elasticsearch rejection — measured on real ES 8.18 through a
+    * story-22.2 subquery over a `date` column, and reproducible by hand with `WHERE ts =
+    * '2026-06-04T00:00:00'`. It is now re-rendered in the column's own pattern. Nothing that worked
+    * before changes: the alternative to the rewrite was a certain failure, an unreadable literal is
+    * still forwarded, and a literal a custom pattern already parses is returned before this rule is
+    * reached (the row above).
+    */
+  it should "re-render an ISO literal under a custom format, and still never reject" in {
     check(
       custom,
       Seq(
-        "not-a-date"          -> Verbatim,
-        "2026-06-04 00:00:00" -> Verbatim, // parity: the custom pattern parses it
-        "2026-06-04T00:00:00" -> Verbatim // not ours to fix: no ISO alternative
+        "not-a-date"           -> Verbatim,
+        "2026-06-04 00:00:00"  -> Verbatim, // parity: the custom pattern parses it
+        "2026-06-04T00:00:00"  -> Rewrite("2026-06-04 00:00:00"),
+        "2026-06-04T00:00:00Z" -> Rewrite("2026-06-04 00:00:00"),
+        "2026-06-04"           -> Rewrite("2026-06-04 00:00:00")
       )
     )
     check(opaque, Seq("not-a-date" -> Verbatim, "2026-06-04 00:00:00" -> Verbatim))
+  }
+
+  /** The date-only companion of the row above: the shape story 22.2's subquery over a `date` column
+    * actually produces, against the `yyyy-MM-dd` mapping the completeness fixture uses.
+    */
+  it should "re-render an ISO instant into a date-only custom format" in {
+    check(
+      FieldFormat("yyyy-MM-dd"),
+      Seq(
+        "2024-01-01T00:00:00Z" -> Rewrite("2024-01-01"),
+        "2024-01-01"           -> Verbatim, // the custom pattern parses it
+        "not-a-date"           -> Verbatim
+      )
+    )
   }
 
   it should "prefer parity with a custom alternative, and still fix the space form where ISO is accepted" in {

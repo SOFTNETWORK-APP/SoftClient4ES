@@ -1318,6 +1318,114 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
   }
 
   // =========================================================================
+  // 6d. WHERE subqueries — story 22.2: the UNCORRELATED forms EXECUTE at the plain REPL
+  // =========================================================================
+
+  behavior of "REPL - WHERE subqueries without the relational engine"
+
+  /** 🔴 Every SELECT below carries an explicit `LIMIT`, deliberately. Without one the licensed
+    * gateway routes a row query through the capped scroll and answers a `StreamResult`, which
+    * `assertSelectResult` only LOGS — an assertion on it could not fail. The LIMIT keeps the result
+    * a materialised `QueryRows` so these rows are falsifiable; the no-LIMIT scroll route is covered
+    * against a real cluster by `WhereSubqueryCompletenessSpec`.
+    */
+  it should "execute IN (SELECT ...) ES-natively through the gateway path" in {
+    // `dql_orders` (section 5) holds ids 1 and 2 with customer_id 1 and 2. The inner query selects
+    // customer_id 2, so the outer must return exactly order 2 — never both rows (which is what an
+    // unresolved predicate answering `match_all` would give) and never none.
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync(
+        "SELECT id FROM dql_orders WHERE customer_id IN " +
+        "(SELECT customer_id FROM dql_orders WHERE id = 2) ORDER BY id LIMIT 10"
+      ),
+      rows = Seq(Map("id" -> 2))
+    )
+  }
+
+  it should "execute EXISTS and a scalar subquery the same way" in {
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync(
+        "SELECT id FROM dql_orders WHERE EXISTS (SELECT 1 FROM dql_orders WHERE id = 2) " +
+        "ORDER BY id LIMIT 10"
+      ),
+      rows = Seq(Map("id" -> 1), Map("id" -> 2))
+    )
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync(
+        "SELECT id FROM dql_orders WHERE NOT EXISTS (SELECT 1 FROM dql_orders WHERE id = 99) " +
+        "ORDER BY id LIMIT 10"
+      ),
+      rows = Seq(Map("id" -> 1), Map("id" -> 2))
+    )
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync(
+        "SELECT id FROM dql_orders WHERE id = (SELECT MAX(id) AS m FROM dql_orders) LIMIT 10"
+      ),
+      rows = Seq(Map("id" -> 2))
+    )
+  }
+
+  it should "execute an ordering quantifier (lead ruling OQ-4)" in {
+    // ids are 1 and 2, so `> ANY {1, 2}` is `> 1` (one row) and `> ALL {1, 2}` is `> 2` (none):
+    // a reduction that took the wrong end of the set would answer the other way round.
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync("SELECT id FROM dql_orders WHERE id > ANY (SELECT id FROM dql_orders) LIMIT 10"),
+      rows = Seq(Map("id" -> 2))
+    )
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync("SELECT id FROM dql_orders WHERE id > ALL (SELECT id FROM dql_orders) LIMIT 10"),
+      nbResults = Some(0)
+    )
+  }
+
+  it should "delete by query through a WHERE subquery" in {
+    // on a throw-away table, so section 5's fixture is untouched
+    assertDdl(
+      System.nanoTime(),
+      executeSync("CREATE TABLE IF NOT EXISTS dql_sub_del (id INT NOT NULL, tag VARCHAR)")
+    )
+    assertDml(
+      System.nanoTime(),
+      executeSync("INSERT INTO dql_sub_del (id, tag) VALUES (1, 'keep'), (2, 'drop'), (3, 'drop')"),
+      Some(DmlResult(inserted = 3))
+    )
+    executeSync("REFRESH TABLE dql_sub_del")
+    executeSync(
+      "DELETE FROM dql_sub_del WHERE id IN (SELECT id FROM dql_sub_del WHERE tag = 'drop')"
+    )
+    executeSync("REFRESH TABLE dql_sub_del")
+    assertSelectResult(
+      System.nanoTime(),
+      executeSync("SELECT id FROM dql_sub_del ORDER BY id LIMIT 10"),
+      rows = Seq(Map("id" -> 1))
+    )
+    executeSync("DROP TABLE dql_sub_del")
+    ()
+  }
+
+  it should "refuse a CORRELATED subquery with the story-22.3 message, not the JOIN message" in {
+    val res = executeSync(
+      "SELECT o.id FROM dql_orders o WHERE EXISTS " +
+      "(SELECT 1 FROM dql_orders x WHERE x.customer_id = o.customer_id)"
+    )
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    error.statusCode shouldBe Some(400)
+    error.message should include("Correlated subquery")
+  }
+
+  it should "still answer the handshake — the subquery phase did not widen" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SELECT 1"))
+    rows shouldBe Seq(Map("1" -> 1))
+  }
+
+  // =========================================================================
   // 7. Error handling
   // =========================================================================
 

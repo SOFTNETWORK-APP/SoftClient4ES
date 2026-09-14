@@ -93,6 +93,28 @@ package object operator {
 
   case object UNION extends Expr("UNION ALL") with Operator with TokenRegex
 
+  /** Story 22.2 — the WHERE-subquery operators.
+    *
+    * `EXISTS` and the three quantifiers are plain `Operator`s, NOT `ComparisonOperator`s:
+    * `ComparisonOperator` is sealed and its `maybeNegated` match is exhaustive over that set, so
+    * adding a member there would force an arm for a token that never reaches a negation. `UNION`
+    * above is the precedent for an `Operator with TokenRegex` that carries no comparison semantics.
+    */
+  case object EXISTS extends Expr("EXISTS") with Operator with TokenRegex
+
+  /** `ANY` / `SOME` / `ALL` in `<id> <op> <quantifier> (<subquery>)`.
+    *
+    * 🔴 None of the three is ADDED to `Parser.reservedKeywords` by this story: `all` and `exists`
+    * were already reserved, and `any` / `some` are NOT — `WHERE any = 1` and `SELECT some FROM t`
+    * parse today (measured) and must keep parsing. What makes the quantified form win is the ORDER
+    * of the alternation in `WhereParser.criteria`, never a new reserved word.
+    */
+  sealed trait Quantifier extends Operator with TokenRegex
+
+  case object ANY extends Expr("ANY") with Quantifier
+  case object SOME extends Expr("SOME") with Quantifier
+  case object ALL extends Expr("ALL") with Quantifier
+
   sealed trait ElasticOperator extends Operator with TokenRegex
 
   case object Nested extends Expr("NESTED") with ElasticOperator

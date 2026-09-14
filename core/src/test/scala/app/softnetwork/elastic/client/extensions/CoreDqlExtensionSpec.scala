@@ -182,6 +182,26 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     trunc.flatMap(t => Some(t.warning)).getOrElse("") should not be empty
   }
 
+  /** Story 22.2 (AD-8 / PD-4) — ROUTING and the licensed cap do not move for a WHERE subquery.
+    *
+    * ⚠️ Scope of this row, stated so it is not read as more than it is: `RecordingClient` overrides
+    * `scroll` wholesale and therefore never crosses `resolveWithSchema`, so nothing here exercises
+    * the subquery PHASE — it asserts only that the statement is claimed by `canHandle` as an
+    * ordinary `DqlStatement`, takes the scroll arm rather than `searchAsync`, and is capped at the
+    * OUTER quota (the inner statement is not quota-checked, PD-4). The phase itself is proved
+    * Docker-free in `SubqueryResolverSpec` and `RelationalClosureGuardSpec`, and on a real cluster
+    * in `WhereSubqueryCompletenessSpec`.
+    */
+  it should "route an uncorrelated WHERE subquery exactly like a plain SELECT (story 22.2)" in {
+    val (client, res) =
+      run("SELECT a, b FROM idx WHERE a IN (SELECT a FROM other)", Quota.Community)
+    res shouldBe a[ElasticSuccess[_]]
+    client.scrolledStatement.get() shouldBe a[SingleSearch]
+    client.scrolledConfig.get().maxDocuments shouldBe Some(10000L) // the OUTER cap, unchanged
+    client.searchedStatement.get() shouldBe null
+    truncationOf(res).map(_.limit) shouldBe Some(10000L)
+  }
+
   it should "cap a no-LIMIT query at the Pro quota (1,000,000) via scroll, never searchAsync" in {
     val (client, res) = run("SELECT a, b FROM idx", Quota.Pro, LicenseType.Pro)
 

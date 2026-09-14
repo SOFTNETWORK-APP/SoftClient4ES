@@ -58,7 +58,10 @@ sealed trait Criteria extends Updateable with PainlessScript {
     case c: Expression                   => c.dependencies
     case relation: ElasticRelation       => relation.criteria.dependencies
     case m: MultiMatchCriteria           => m.dependencies
-    case _                               => Nil
+    // Story 22.2 — a subquery node's LEFT operand is an ordinary outer identifier and must not be
+    // hidden by the `case _` default below.
+    case s: SubqueryCriteria => s.outerIdentifiers.flatMap(_.dependencies)
+    case _                   => Nil
   }
 
   /** Every identifier this criteria names directly — both operands of an equality included.
@@ -75,7 +78,24 @@ sealed trait Criteria extends Updateable with PainlessScript {
       })
     case relation: ElasticRelation => relation.criteria.referencedIdentifiers
     case m: MultiMatchCriteria     => m.identifiers
-    case _                         => Nil
+    // Story 22.2 — the OUTER operand only. A subquery's own body is a separate scope; walking into
+    // it here would make `derivedScopeCheck` and `SubqueryScope` read inner columns as outer ones.
+    case s: SubqueryCriteria => s.outerIdentifiers
+    case _                   => Nil
+  }
+
+  /** Every WHERE-subquery node of this criteria tree, in statement order (story 22.2).
+    *
+    * Relation wrappers and predicates recurse; a subquery's OWN body is NOT walked here — an inner
+    * subquery is resolved when the inner statement crosses the seam itself (`api.search(inner)` ->
+    * `resolveWithSchema(inner)`), which is what makes the recursion depth-unbounded without this
+    * walker having to know about it.
+    */
+  def subqueries: Seq[SubqueryCriteria] = this match {
+    case Predicate(left, _, right, _, _) => left.subqueries ++ right.subqueries
+    case relation: ElasticRelation       => relation.criteria.subqueries
+    case s: SubqueryCriteria             => Seq(s)
+    case _                               => Nil
   }
 
   def nested: Boolean = false
@@ -130,6 +150,12 @@ sealed trait Criteria extends Updateable with PainlessScript {
           .flatMap { id =>
             id.metricName.map(name => Field(id, Some(Alias(name))))
           }
+      // Story 22.2 — so `COUNT(x) IN (SELECT …)` is rejected by `Where.validate` exactly like any
+      // other aggregate written in a WHERE clause.
+      case s: SubqueryCriteria =>
+        s.outerIdentifiers
+          .filter(_.aggregations.nonEmpty)
+          .flatMap(id => id.metricName.map(name => Field(id, Some(Alias(name)))))
       case _ => Seq.empty
     }
 
@@ -1250,6 +1276,323 @@ case class InExpr[R, +T <: Value[R]](
 
 }
 
+/** A WHERE predicate whose right-hand side is a SUBQUERY (story 22.2 — ANSI-92 `<in predicate>` /
+  * `<exists predicate>` / `<comparison predicate>` with a `<scalar subquery>` / `<quantified
+  * comparison predicate>`).
+  *
+  * It has NO Elasticsearch form of its own. The inner statement is executed FIRST, at the ONE
+  * `SingleSearch -> ElasticQuery` seam (`SearchApi.resolveWithSchema`, epic 22 AD-2), and the node
+  * is REPLACED by a literal criteria the bridges already translate — an `InExpr` over the inner
+  * column's distinct values, a `GenericExpression` over a literal, or [[MatchAllCriteria]] /
+  * [[MatchNoneCriteria]]. A node that reaches a bridge unresolved is a programming error and fails
+  * LOUDLY there (`ElasticBridge.query`), never silently.
+  *
+  * Extends `Criteria` directly rather than `Expression`: `Expression` is keyed on an `identifier`
+  * and a `maybeValue: Option[Token]` and its `validate()` compares `identifier.out` with the
+  * value's type — a subquery has no value type until it has run, and `EXISTS` has no identifier at
+  * all.
+  *
+  * `correlatedRefs` is RECORDED in `update(outer)` (the house pattern: record in update, format in
+  * validate — `FieldSort.bareTableAlias`), because `update` runs inside `Parser.single`'s action
+  * and cannot report, and because the OUTER scope is only known one level up. See
+  * [[SubqueryScope]].
+  */
+sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
+  def query: DqlStatement
+  def maybeNot: Option[NOT.type]
+  def correlatedRefs: Seq[Identifier]
+
+  /** The identifiers of the OUTER statement this node names directly (its left operand) — what
+    * `referencedIdentifiers` / `derivedScopeCheck` / the aggregate-in-WHERE rejection must see.
+    * `EXISTS` names none.
+    */
+  def outerIdentifiers: Seq[Identifier]
+
+  /** The body as a `SingleSearch` when it is one — the only body kind this story EXECUTES (PD-7).
+    */
+  final def inner: Option[SingleSearch] = query match {
+    case s: SingleSearch => Some(s)
+    case _               => None
+  }
+
+  override def group: Boolean = false
+
+  override def nestedElement: Option[NestedElement] = None
+
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+
+  /** A subquery has no Painless: it is never a script predicate (WHERE only — AD-6). Reachable only
+    * through a CASE-WHEN condition that `Case.validate()` did not catch, so it is the LAST line of
+    * defence rather than the rejection — loud and named either way.
+    */
+  override def painless(context: Option[PainlessContext]): String =
+    throw new IllegalArgumentException(
+      s"A WHERE subquery has no Painless form and cannot appear in a CASE / HAVING / script " +
+      s"context: $sql"
+    )
+
+  protected def notAsString: String = maybeNot.map(_ => "NOT ").getOrElse("")
+
+  /** Shared validation, in order: a body kind this story executes; the body's OWN rules
+    * (`Parser.apply` validates the TOP level only — story 22.1's trap, one clause over); NOT
+    * correlated (PD-2).
+    */
+  protected def commonChecks: Either[String, Unit] =
+    for {
+      _ <- query match {
+        case s: SingleSearch => s.validate()
+        case _: MultiSearch =>
+          Left(
+            s"UNION ALL inside a WHERE subquery is not supported yet: $sql. " +
+            "Write one subquery per branch, or wait for set-operator support (story 22.6)."
+          )
+        case _: FromlessSelect =>
+          Left(
+            s"A WHERE subquery must read a table: $sql. " +
+            "For constant values write the literal list (IN ('a', 'b')) or the literal itself."
+          )
+        case other =>
+          Left(s"A WHERE subquery body must be a SELECT, got ${other.getClass.getSimpleName}")
+      }
+      _ <- correlatedRefs.headOption match {
+        case Some(id) => Left(SubqueryScope.correlatedMessage(id, this))
+        case None     => Right(())
+      }
+    } yield ()
+
+  /** The projected column of the inner statement — exactly ONE, never `*` — for IN / quantified /
+    * scalar. `identifierName` is the SAME test `SearchApi.extractOutputFieldNames` makes: ONE
+    * spelling of "is this a SELECT *" (the story 21.3 two-derivations lesson).
+    */
+  protected def singleColumnCheck(position: String): Either[String, Unit] =
+    inner.map(_.select.fields) match {
+      case Some(Seq(f)) if f.identifier.identifierName == "*" =>
+        Left(s"A subquery in $position position must project exactly one column, not *: $sql")
+      case Some(Seq(_)) => Right(())
+      case Some(fs) =>
+        Left(
+          s"A subquery in $position position must project exactly one column, got ${fs.size}: $sql"
+        )
+      case None => Right(()) // the body KIND was already rejected by commonChecks
+    }
+}
+
+/** `<identifier> [NOT] IN (<subquery>)` — also what `= ANY|SOME (…)` and `<> ALL (…)` / `!= ALL
+  * (…)` reduce to AT PARSE TIME (PD-3): the SAME node, so the rewrite, the correlation rule and the
+  * render have ONE implementation. The render is the canonical `IN` spelling — `x = ANY (SELECT …)`
+  * re-parses as `x IN (SELECT …)`, an equal AST by construction (the fixed point holds on the
+  * CANONICAL text, as `LEFT OUTER JOIN` -> `LEFT JOIN` already does).
+  */
+case class InSubquery(
+  identifier: Identifier,
+  query: DqlStatement,
+  maybeNot: Option[NOT.type] = None,
+  correlatedRefs: Seq[Identifier] = Nil
+) extends SubqueryCriteria {
+  override def operator: Operator = IN
+  override def sql: String = s"$identifier $notAsString$operator (${query.sql})"
+
+  /** 🔴 Required by `PainlessOperandFormSpec`, and it is not bookkeeping: without it a `NOT`
+    * written AFTER a predicate operator (`a = 1 AND NOT <this>`) falls back to wrapping the
+    * UN-negated criterion in an Elasticsearch `must_not`, which MATCHES a document lacking the
+    * field - the story BIDC-8 defect. Folding the NOT into `maybeNot` hands the negation to the
+    * RESOLVER, which is the only place that knows the ANSI three-valued answer (an `ALL` form over
+    * a NULL-bearing set stays `MatchNone` under a NOT, an empty `ANY` flips to `MatchAll`).
+    */
+  override def negated: Option[Criteria] =
+    Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
+  override def outerIdentifiers: Seq[Identifier] = Seq(identifier)
+  override def nested: Boolean = identifier.nested
+  override def nestedElement: Option[NestedElement] = identifier.nestedElement
+  override lazy val limit: Option[Limit] = identifier.limit
+
+  override def update(request: SingleSearch): Criteria = {
+    val updated = this.copy(
+      identifier = identifier.update(request),
+      correlatedRefs = SubqueryScope.correlatedReferences(query, request)
+    )
+    // the same shape as InExpr.update: a nested (UNNEST) left operand is wrapped like any other
+    if (updated.nested) ElasticNested(updated, limit) else updated
+  }
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- identifier.validate()
+      _ <- commonChecks
+      _ <- singleColumnCheck("IN")
+    } yield ()
+}
+
+/** `[NOT] EXISTS (<subquery>)` — true iff the inner statement returns at least one row. */
+case class ExistsSubquery(
+  query: DqlStatement,
+  maybeNot: Option[NOT.type] = None,
+  correlatedRefs: Seq[Identifier] = Nil
+) extends SubqueryCriteria {
+  override def operator: Operator = EXISTS
+  override def sql: String = s"$notAsString$operator (${query.sql})"
+
+  /** 🔴 Required by `PainlessOperandFormSpec`, and it is not bookkeeping: without it a `NOT`
+    * written AFTER a predicate operator (`a = 1 AND NOT <this>`) falls back to wrapping the
+    * UN-negated criterion in an Elasticsearch `must_not`, which MATCHES a document lacking the
+    * field - the story BIDC-8 defect. Folding the NOT into `maybeNot` hands the negation to the
+    * RESOLVER, which is the only place that knows the ANSI three-valued answer (an `ALL` form over
+    * a NULL-bearing set stays `MatchNone` under a NOT, an empty `ANY` flips to `MatchAll`).
+    */
+  override def negated: Option[Criteria] =
+    Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
+  override def outerIdentifiers: Seq[Identifier] = Nil
+  override def update(request: SingleSearch): Criteria =
+    this.copy(correlatedRefs = SubqueryScope.correlatedReferences(query, request))
+  override def validate(): Either[String, Unit] = commonChecks
+}
+
+/** `<identifier> <op> (<subquery>)` where the subquery yields ONE row, ONE column (ANSI `<scalar
+  * subquery>`). Statically enforced as "an aggregate with no GROUP BY, or LIMIT 1"; the RUN-TIME
+  * row count is re-checked by the resolver (0 rows = NULL = no match; > 1 = 400, ANSI cardinality
+  * violation).
+  */
+case class ScalarSubquery(
+  identifier: Identifier,
+  operator: ComparisonOperator,
+  query: DqlStatement,
+  maybeNot: Option[NOT.type] = None,
+  correlatedRefs: Seq[Identifier] = Nil
+) extends SubqueryCriteria {
+  override def sql: String = s"$notAsString$identifier $operator (${query.sql})"
+
+  /** 🔴 Required by `PainlessOperandFormSpec`, and it is not bookkeeping: without it a `NOT`
+    * written AFTER a predicate operator (`a = 1 AND NOT <this>`) falls back to wrapping the
+    * UN-negated criterion in an Elasticsearch `must_not`, which MATCHES a document lacking the
+    * field - the story BIDC-8 defect. Folding the NOT into `maybeNot` hands the negation to the
+    * RESOLVER, which is the only place that knows the ANSI three-valued answer (an `ALL` form over
+    * a NULL-bearing set stays `MatchNone` under a NOT, an empty `ANY` flips to `MatchAll`).
+    */
+  override def negated: Option[Criteria] =
+    Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
+  override def outerIdentifiers: Seq[Identifier] = Seq(identifier)
+  override def nested: Boolean = identifier.nested
+  override def nestedElement: Option[NestedElement] = identifier.nestedElement
+  override lazy val limit: Option[Limit] = identifier.limit
+
+  override def update(request: SingleSearch): Criteria = {
+    val updated = this.copy(
+      identifier = identifier.update(request),
+      correlatedRefs = SubqueryScope.correlatedReferences(query, request)
+    )
+    if (updated.nested) ElasticNested(updated, limit) else updated
+  }
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- identifier.validate()
+      _ <- commonChecks
+      _ <- singleColumnCheck("scalar")
+      _ <- inner match {
+        case Some(s) if (!s.returnsRows && s.groupBy.isEmpty) || s.limit.exists(_.limit == 1) =>
+          Right(())
+        case Some(_) =>
+          Left(
+            s"A scalar subquery must return a single row: $sql. " +
+            "Use an aggregate with no GROUP BY (MAX, MIN, AVG, SUM, COUNT ...) or add LIMIT 1."
+          )
+        case None => Right(())
+      }
+    } yield ()
+}
+
+/** `<identifier> <op> ANY|SOME|ALL (<subquery>)` for the TEN combinations that are not already the
+  * `IN` machinery (lead ruling OQ-4, 2026-09-14 — this REVERSES the spec's PD-1, which rejected
+  * them with a MIN/MAX rewrite message).
+  *
+  * 🔴 The body resolves EXACTLY as [[InSubquery]] 's does — a bounded value LIST (mode P / mode W,
+  * the same typing, the same 65,536 bound) — and the quantifier is reduced IN THE RESOLVER from
+  * that list (`SubqueryResolver.reduceQuantified`). The rejected alternative, rewriting the body to
+  * `MIN(…)` / `MAX(…)` at parse time, cannot wrap a body that already carries `GROUP BY` / `HAVING`
+  * / `LIMIT` (that needs 22.4's derived tables), needs TWO aggregates for `= ALL` and `<> ANY`, and
+  * would have to recover the ANSI empty-set rule from a NULL aggregate result — the `rowNormalizer`
+  * null-vs-absent trap this story's own review flagged.
+  *
+  * It is a [[SubqueryCriteria]] sibling and NOT a [[ScalarSubquery]] variant precisely because its
+  * body yields a LIST where a scalar subquery's yields one cell.
+  *
+  * `SOME` is CANONICALISED to `ANY` (they are synonyms in ANSI SQL), the same canonical-render rule
+  * PD-3 applies to `= ANY` -> `IN`: `x > SOME (S)` renders `x > ANY (S)` and re-parses to an EQUAL
+  * AST.
+  */
+case class QuantifiedSubquery(
+  identifier: Identifier,
+  operator: ComparisonOperator,
+  quantifier: Quantifier,
+  query: DqlStatement,
+  maybeNot: Option[NOT.type] = None,
+  correlatedRefs: Seq[Identifier] = Nil
+) extends SubqueryCriteria {
+  override def sql: String =
+    s"$notAsString$identifier $operator $quantifier (${query.sql})"
+
+  /** 🔴 Required by `PainlessOperandFormSpec`, and it is not bookkeeping: without it a `NOT`
+    * written AFTER a predicate operator (`a = 1 AND NOT <this>`) falls back to wrapping the
+    * UN-negated criterion in an Elasticsearch `must_not`, which MATCHES a document lacking the
+    * field - the story BIDC-8 defect. Folding the NOT into `maybeNot` hands the negation to the
+    * RESOLVER, which is the only place that knows the ANSI three-valued answer (an `ALL` form over
+    * a NULL-bearing set stays `MatchNone` under a NOT, an empty `ANY` flips to `MatchAll`).
+    */
+  override def negated: Option[Criteria] =
+    Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
+  override def outerIdentifiers: Seq[Identifier] = Seq(identifier)
+  override def nested: Boolean = identifier.nested
+  override def nestedElement: Option[NestedElement] = identifier.nestedElement
+  override lazy val limit: Option[Limit] = identifier.limit
+
+  /** `true` for `ALL`, `false` for `ANY` / `SOME` — the ONE place the two families are told apart,
+    * so the resolver's opposite empty-set rules cannot be keyed off two different tests.
+    */
+  def universal: Boolean = quantifier == ALL
+
+  override def update(request: SingleSearch): Criteria = {
+    val updated = this.copy(
+      identifier = identifier.update(request),
+      correlatedRefs = SubqueryScope.correlatedReferences(query, request)
+    )
+    if (updated.nested) ElasticNested(updated, limit) else updated
+  }
+
+  override def validate(): Either[String, Unit] =
+    for {
+      _ <- identifier.validate()
+      _ <- commonChecks
+      _ <- singleColumnCheck(s"$operator $quantifier")
+    } yield ()
+}
+
+/** The two RESOLVED sentinels (story 22.2). Produced ONLY by `SubqueryResolver`, never by the
+  * parser; their `sql` renders (`1 = 1` / `1 = 0`) exist so a resolved statement still logs and
+  * re-parses as a `SingleSearch` — they are not a fixed point of THESE classes (the re-parse yields
+  * a `GenericExpression`), which is fine: nothing persists a RESOLVED statement
+  * (`MaterializedViewExtension` persists the PARSED one, and a MV carrying a WHERE subquery is
+  * refused at `validate()`).
+  */
+case class MatchAllCriteria() extends Criteria with ElasticFilter {
+  override def operator: Operator = EQ
+  override def sql: String = "1 = 1"
+  override def group: Boolean = false
+  override def nestedElement: Option[NestedElement] = None
+  override def update(request: SingleSearch): Criteria = this
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+  override def painless(context: Option[PainlessContext]): String = "true"
+}
+
+case class MatchNoneCriteria() extends Criteria with ElasticFilter {
+  override def operator: Operator = EQ
+  override def sql: String = "1 = 0"
+  override def group: Boolean = false
+  override def nestedElement: Option[NestedElement] = None
+  override def update(request: SingleSearch): Criteria = this
+  override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
+  override def painless(context: Option[PainlessContext]): String = "false"
+}
+
 case class BetweenExpr(
   identifier: Identifier,
   fromTo: FromTo,
@@ -1447,6 +1790,21 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
   override def asFilter(currentQuery: Option[ElasticBoolQuery]): ElasticFilter = this
 
   override def group: Boolean = criteria.group
+
+  /** 🔴 Story 22.2 (independent review, H2). Without this override a relation inherits
+    * `Validator`'s no-op `validate()` and NEVER recurses into the criteria it wraps — so EVERY rule
+    * that lives in a leaf's `validate()` is skipped inside `NESTED(…)` / `CHILD(…)` / `PARENT(…)`,
+    * and inside the `ElasticNested` wrapper the subquery nodes put THEMSELVES in when their left
+    * operand is nested (`InSubquery.update` and friends).
+    *
+    * Measured consequence for this story: `WHERE items.sku IN (SELECT a, b FROM u)` skipped the
+    * single-column check and silently resolved against the FIRST of two projected columns, and a
+    * CORRELATED body inside a relation ran as if it were uncorrelated. `Criteria.subqueries` DOES
+    * walk relations, so the resolver executed the node either way — validation was the only thing
+    * missing. The fix is not subquery-specific: `InExpr`'s and `Expression`'s own type checks were
+    * being skipped in the same position.
+    */
+  override def validate(): Either[String, Unit] = criteria.validate()
 
 }
 

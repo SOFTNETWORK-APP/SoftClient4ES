@@ -44,6 +44,22 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
   // Positive Tests (Should Compile)
   // ============================================================
 
+  // Story 22.2 — an uncorrelated WHERE subquery IS typeable at compile time: the statement is a
+  // `SingleSearch` over the OUTER index, which is exactly what the row type binds against, and the
+  // inner query is an execution step the macro never has to type. No new macro arm was needed; this
+  // row is the guard that none is silently added.
+  it should "ACCEPT an uncorrelated WHERE subquery at compile time (story 22.2)" in {
+    assertCompiles("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Strings
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      TestElasticClientApi.searchAs[Strings](
+        "SELECT vchar::VARCHAR, c::CHAR, text FROM strings WHERE c IN (SELECT c FROM others)"
+      )""")
+  }
+
   "SQLQueryValidator" should "VALIDATE all numeric types" in {
     assertCompiles("""
       import app.softnetwork.elastic.client.macros.TestElasticClientApi

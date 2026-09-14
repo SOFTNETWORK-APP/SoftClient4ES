@@ -1,7 +1,8 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
-import app.softnetwork.elastic.sql.query.Criteria
+import app.softnetwork.elastic.sql.operator.NOT
+import app.softnetwork.elastic.sql.query.{Criteria, InExpr, MatchAllCriteria, MatchNoneCriteria}
 import com.fasterxml.jackson.databind.JsonNode
 import com.sksamuel.elastic4s.ElasticApi.matchAllQuery
 import com.sksamuel.elastic4s.requests.searches.{SearchBodyBuilderFn, SearchRequest}
@@ -1338,6 +1339,47 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
     json should include("\"indices\":[\"orders\"]")
     json should include("\"term\":{\"status\":{\"value\":\"FAILED\"}}")
     json should not include "o.status"
+  }
+
+  /** Story 22.2 — the two RESOLVED sentinels a WHERE subquery collapses to, and the loud refusal of
+    * an UNRESOLVED node.
+    *
+    * 🔴 The `terms` row pins the EXACT AST `SubqueryResolver` produces, so the resolver spec and
+    * this one share one shape: if the resolver ever built a differently typed `Values`, the emitted
+    * query would move and this row would say so.
+    */
+  private def asQueryOf(criteria: Criteria): String = {
+    import SQLImplicits._
+    implicit def timestamp: Long =
+      ZonedDateTime.parse("2025-12-31T00:00:00Z").toInstant.toEpochMilli
+    SearchBodyBuilderFn(SearchRequest("*") query criteria.asQuery()).string
+  }
+
+  it should "emit match_all / match_none for the resolved subquery sentinels (story 22.2)" in {
+    asQueryOf(MatchAllCriteria()).replaceAll("\\s", "") should include("\"match_all\":{}")
+    asQueryOf(MatchNoneCriteria()).replaceAll("\\s", "") should include("\"match_none\":{}")
+  }
+
+  it should "emit the terms clause for the resolver's IN shape (story 22.2)" in {
+    val in: Criteria =
+      InExpr(GenericIdentifier("customer_id"), LongValues(Seq(LongValue(3), LongValue(1))), None)
+    asQueryOf(in).replaceAll("\\s", "") should include("\"terms\":{\"customer_id\":[3,1]}")
+    asQueryOf(
+      InExpr(GenericIdentifier("customer_id"), LongValues(Seq(LongValue(3))), Some(NOT))
+    ).replaceAll("\\s", "") should include("\"must_not\"")
+  }
+
+  it should "refuse an UNRESOLVED subquery node BY NAME, never silently (story 22.2)" in {
+    implicit def timestamp: Long = 0L
+    val node = parser
+      .Parser("SELECT id FROM t WHERE a IN (SELECT a FROM u)")
+      .toOption
+      .collect { case s: query.SingleSearch => s }
+      .flatMap(_.where.flatMap(_.criteria))
+      .getOrElse(fail("expected a WHERE subquery"))
+    val ex = the[IllegalArgumentException] thrownBy node.asQuery()
+    ex.getMessage should include("Unresolved WHERE subquery")
+    ex.getMessage should include("resolveWithSchema")
   }
 
 }

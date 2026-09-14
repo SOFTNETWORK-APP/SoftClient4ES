@@ -2487,7 +2487,55 @@ object DialectCensus {
       Ansi,
       "SQL:2016 Part 2 (Foundation) Feature E061-03 IN predicate with list of values",
       QueryClause,
-      "terms query; literal, long and double lists each have their own production"
+      "terms query; literal, long and double lists each have their own production, and since " +
+      "story 22.2 the operand may also be an uncorrelated subquery (SQL:2016 E061-11), executed " +
+      "first and pushed into the outer query as the same terms clause"
+    ),
+    e(
+      "op.predicate.exists",
+      Op,
+      "EXISTS",
+      "EXISTS",
+      OP,
+      """case object EXISTS extends Expr("EXISTS") with Operator with TokenRegex""",
+      "SELECT id FROM emp WHERE EXISTS (SELECT 1 FROM dept)",
+      "1",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature E061-08 EXISTS predicate",
+      QueryClause,
+      "story 22.2 - the inner statement runs FIRST at SearchApi.resolveWithSchema and the " +
+      "predicate is rewritten to match_all / match_none; correlated bodies are refused"
+    ),
+    e(
+      "op.predicate.quantified.any",
+      Op,
+      "ANY",
+      "ANY",
+      OP,
+      """case object ANY extends Expr("ANY") with Quantifier""",
+      "SELECT id FROM emp WHERE salary > ANY (SELECT salary FROM dept)",
+      "2",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature E061-07 Quantified comparison predicate",
+      QueryClause,
+      "story 22.2 - SOME is the ANSI synonym and is canonicalised to ANY; = ANY reduces to IN " +
+      "at parse time, the ordering forms reduce to a MIN/MAX comparison in the resolver",
+      Some(List("SOME"))
+    ),
+    e(
+      "op.predicate.quantified.all",
+      Op,
+      "ALL",
+      "ALL",
+      OP,
+      """case object ALL extends Expr("ALL") with Quantifier""",
+      "SELECT id FROM emp WHERE salary > ALL (SELECT salary FROM dept)",
+      "2",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature E061-07 Quantified comparison predicate",
+      QueryClause,
+      "story 22.2 - <> ALL reduces to NOT IN at parse time; the ordering forms reduce to a " +
+      "MIN/MAX comparison in the resolver, and ALL over an EMPTY set is TRUE (ANSI)"
     ),
     e(
       "op.predicate.like",

@@ -31,10 +31,13 @@ import app.softnetwork.elastic.sql.query.{
   IsNotNullExpr,
   IsNullCriteria,
   IsNullExpr,
+  MatchAllCriteria,
   MatchCriteria,
+  MatchNoneCriteria,
   NestedElement,
   NestedElements,
-  Predicate
+  Predicate,
+  SubqueryCriteria
 }
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.searches.queries.{InnerHit, Query}
@@ -186,6 +189,20 @@ case class ElasticBridge(filter: ElasticFilter) {
       case matchExpression: MatchCriteria => matchExpression
       case isNull: IsNullCriteria         => isNull
       case isNotNull: IsNotNullCriteria   => isNotNull
+      // Story 22.2 — the two RESOLVED sentinels a WHERE subquery collapses to.
+      case _: MatchAllCriteria  => matchAllQuery()
+      case _: MatchNoneCriteria => matchNoneQuery()
+      // 🔴 Story 22.2 — an UNRESOLVED subquery node must never reach a bridge. It is replaced by a
+      // literal criteria at `SearchApi.resolveWithSchema` (the ONE seam), so arriving here means a
+      // statement was handed straight to `singleSearch` / `singleSearchToJsonQuery`, which bypass
+      // it. Named rather than swallowed by the `Unsupported filter type` default below, because
+      // the alternative — emitting nothing for the predicate — is a silent wrong answer.
+      case s: SubqueryCriteria =>
+        throw new IllegalArgumentException(
+          s"Unresolved WHERE subquery reached the query builder: ${s.sql}. Subqueries are " +
+          "executed at SearchApi.resolveWithSchema before translation; a statement handed " +
+          "straight to singleSearch / singleSearchToJsonQuery bypasses it."
+        )
       case other =>
         throw new IllegalArgumentException(s"Unsupported filter type: ${other.getClass.getName}")
     }
