@@ -49,12 +49,12 @@ Available images per ES version:
 ### Pinning a release, and why there is no JAR
 
 The images above track `latest`. Pin the tag for anything you need to reproduce — the current
-release is **`0.3.2`**:
+release is **`0.3.3`**:
 
 ```bash
 docker run -p 32010:32010 \
   -e ELASTIC_HOST=elasticsearch \
-  softnetwork/softclient4es8-arrow-flight-sql:0.3.2
+  softnetwork/softclient4es8-arrow-flight-sql:0.3.3
 ```
 
 The sidecar ships **as a Docker image only**. The `softclient4es{6,7,8,9}-arrow-flight-sql`

@@ -162,7 +162,7 @@ unchanged — there is no second implementation to drift:
 
 ```bat
 install.cmd -ListVersions -EsVersion 8
-install.cmd -Target "C:\tools\softclient4es" -EsVersion 8 -Version 0.22.0
+install.cmd -Target "C:\tools\softclient4es" -EsVersion 8 -Version 0.23.0
 install.cmd -EsVersion 9 -NoExtensions
 install.cmd -Help
 ```
@@ -217,8 +217,9 @@ install.cmd -ListVersions -EsVersion 8
     • 0.20.4
     • 0.21.0
     • 0.22.0
+    • 0.23.0
 
-  Total: 6 version(s)
+  Total: 7 version(s)
 
   To install a specific version:
     ./install.sh --es-version 8 --version <version>
@@ -246,7 +247,7 @@ install.cmd -ListVersions -EsVersion 8
 ./install.sh --list-versions --es-version 8
 
 # Install specific version
-./install.sh --es-version 8 --version 0.22.0
+./install.sh --es-version 8 --version 0.23.0
 
 # Install for Elasticsearch 9 (requires Java 17+)
 ./install.sh --es-version 9
@@ -255,7 +256,7 @@ install.cmd -ListVersions -EsVersion 8
 ./install.sh --target /opt/softclient4es
 
 # Full custom installation
-./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.22.0
+./install.sh --target ~/tools/softclient4es --es-version 7 --version 0.23.0
 ```
 
 #### Windows
@@ -268,7 +269,7 @@ install.cmd -ListVersions -EsVersion 8
 .\install.ps1 -ListVersions -EsVersion 8
 
 # Install specific version
-.\install.ps1 -EsVersion 8 -Version 0.22.0
+.\install.ps1 -EsVersion 8 -Version 0.23.0
 
 # Install for Elasticsearch 9 (requires Java 17+)
 .\install.ps1 -EsVersion 9
@@ -277,7 +278,7 @@ install.cmd -ListVersions -EsVersion 8
 .\install.ps1 -Target "C:\tools\softclient4es"
 
 # Full custom installation
-.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.22.0
+.\install.ps1 -Target "C:\tools\softclient4es" -EsVersion 7 -Version 0.23.0
 ```
 
 ---

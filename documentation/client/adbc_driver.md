@@ -23,10 +23,10 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch  | Artifact                                            |
 |----------------|-----------------------------------------------------|
-| ES 6.x         | `softclient4es6-adbc-driver-0.3.2.jar` |
-| ES 7.x         | `softclient4es7-adbc-driver-0.3.2.jar` |
-| ES 8.x         | `softclient4es8-adbc-driver-0.3.2.jar` |
-| ES 9.x         | `softclient4es9-adbc-driver-0.3.2.jar` |
+| ES 6.x         | `softclient4es6-adbc-driver-0.3.3.jar` |
+| ES 7.x         | `softclient4es7-adbc-driver-0.3.3.jar` |
+| ES 8.x         | `softclient4es8-adbc-driver-0.3.3.jar` |
+| ES 9.x         | `softclient4es9-adbc-driver-0.3.3.jar` |
 
 ### Maven / Gradle / sbt
 
@@ -36,20 +36,20 @@ Download the self-contained fat JAR for your Elasticsearch version:
 <dependency>
   <groupId>app.softnetwork.elastic</groupId>
   <artifactId>softclient4es8-adbc-driver</artifactId>
-  <version>0.3.2</version>
+  <version>0.3.3</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-adbc-driver:0.3.2'
+implementation 'app.softnetwork.elastic:softclient4es8-adbc-driver:0.3.3'
 ```
 
 **sbt:**
 
 ```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-adbc-driver" % "0.3.2"
+libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-adbc-driver" % "0.3.3"
 ```
 
 ---
