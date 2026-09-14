@@ -151,3 +151,210 @@ being counted — and 25 of them do. The summary line therefore reads *"SCORES 5
 25-row difference is never counted"*, and the raw parse count is stated in the same breath so neither
 number can be quoted alone. The spec's PD-1 writes the verb as "parses"; that wording is superseded and
 must not be "corrected" back.
+
+---
+
+# `tableau-live-2026-09-13.csv` — the SECOND corpus: what a real Tableau emitted
+
+A separate corpus with its own suite,
+`sql/src/test/scala/app/softnetwork/elastic/sql/census/TableauLiveReplaySpec.scala`. It is a
+**sibling** of the Epic 19 corpus above, deliberately not merged into it: the 99-statement corpus is
+a fixed baseline that the published `N/99` and `N/75` figures and the Epic 23 series are anchored
+to, and appending to it would silently move denominators that have already been published.
+
+## Where it came from
+
+On **2026-09-13** a real **Tableau Desktop 2026 for macOS** was driven by hand against a real
+**Elasticsearch 8.18.3**, through the SoftClient4ES **JDBC driver `0.3.3-SNAPSHOT`** (core
+`0.23.0-SNAPSHOT`), with **p6spy** in the JDBC chain recording every statement the tool sent. The
+connection used Tableau's **MySQL dialect** (hence the backtick quoting throughout). The data was
+the same synthetic `bi_events` / `bi_category_dim` fixture the Epic 19 capture used; the catalog
+renders as the cluster name, `docker-cluster`.
+
+Until this file existed those statements lived only as log files on one laptop, so **nothing in the
+repository could regression-test Tableau support without Tableau**. That is the gap this corpus
+closes, and it is the whole of its purpose.
+
+**The capture held 127 statements across seven Tableau connections attempts:**
+
+| capture | statements | what it was |
+|---|---|---|
+| aborted run | 11 | Tableau pointed at a dead port; **three** connection attempts, none reached the cluster |
+| run A | 29 | **one** Tableau Desktop session: connect, browse, preview, aggregate sheet, dimension filter, sort |
+| run B | 87 | **five** Tableau Desktop sessions, the same workload repeated |
+
+Six sessions reached the cluster. The aborted run **is included**, and is marked here rather than in
+the data because it changes no row: every shape it holds (the connect handshake — `CREATE TABLE` /
+`DROP TABLE` / the derived-table probe / `SELECT 1`) also occurs in runs A and B, so it contributes
+**11 occurrences and zero distinct shapes**. Its statements are still what Tableau *emitted*; only
+the answers are missing.
+
+## The projection: one row per distinct normalised shape
+
+`capture_id,tool,dialect,occurrences,expected,owner,note,captured_statement` — **26 rows**, whose
+`occurrences` sum to the full **127** (the suite asserts that: a projection that loses or
+double-counts a statement is invisible to any per-row gate).
+
+Each row carries **one verbatim representative** — the first occurrence in file order — and the
+number of times its shape appeared. Two families of Tableau-generated names are normalised **for the
+grouping key only**; the committed statement is untouched:
+
+| regex | why |
+|---|---|
+| `#Tableau[A-Za-z0-9_]*` | the temp-table probe name, freshly generated per connection |
+| `cnt_([A-Za-z0-9_]+?)_[0-9A-Fa-f]{32}_ok` → `cnt_\1_HASH_ok` | the row-existence check's aggregate alias, freshly generated per data source |
+
+Nothing else is normalised. In particular the **FROM table is NOT normalised**, so the four shapes
+Tableau issued against both `bi_category_dim` and `bi_events` (`.005`/`.020`, `.006`/`.011`,
+`.009`/`.012`, `.010`/`.013`) keep a row each. Folding the table name as well would give **22**
+rows, of which 10 rather than 14 are absent from the Epic 19 corpus; that projection is recorded
+here so the two counts reconcile, and was not taken, because a verbatim statement against a
+different index is a different statement and the file exists to hold statements.
+
+**14 of the 26 shapes are absent from the Epic 19 corpus** (comparing after the same normalisation
+plus a catalog-qualifier fold, since the two captures ran against differently-named clusters):
+`.005`–`.010`, `.014`, `.015`, `.019`, `.022`–`.026`.
+
+## What the rows measured
+
+Measured on this tree, not predicted: **21 of the 26 shapes parse** (98 of the 127 captured
+statements); 5 are rejected. Nothing throws, and nothing comes back labelled an internal parser
+error.
+
+| `owner` | rows | meaning |
+|---|---|---|
+| `works` | 14 | parses today, no known defect behind it |
+| `issue:328` | 5 | Tableau's row-existence check — `COUNT(<literal>)` + whole-table `HAVING`, fixed by PR #327 / issue #328. **Must keep parsing**; this is the regression guard |
+| `epic22a_derived_table` | 3 | a `SELECT` in `FROM` position; Epic 22 owns relational closure |
+| `capability_open` | 2 | the temp-table probe pair; parsing it is not a feature and honouring it is an open product decision |
+| `rejected_by_design` | 2 | the rejection is the correct answer to a capability probe |
+
+Three results are worth naming because each corrects an assumption:
+
+- **The temp-table probe is NOT refused.** Tableau's MySQL dialect emits a plain
+  ``CREATE TABLE `#Tableau…` (`COL` INTEGER)`` and ``DROP TABLE IF EXISTS `#Tableau…` ``. Issue #326
+  recognises-to-reject `CREATE [LOCAL | GLOBAL] TEMPORARY TABLE`, which is the **SQL-92** dialect's
+  spelling; it never reaches these. They parse — exactly as the Epic 19 twins
+  (`tableau.mysql.wx.001` / `wx.002`, both `capability_open`) do.
+- **`GROUP BY 2` against a one-item SELECT list is a probe, and rejecting it is right.** Tableau
+  issues `GROUP BY 1` and then `GROUP BY 2` over the same single-column query; #298's bounds check
+  rejects the second with a message naming the valid range. What Tableau concludes from that answer
+  was not measured.
+- **The connect-time derived table is the most frequent shape in the whole capture** —
+  ``SELECT `COL` FROM (SELECT 1 AS `COL`) AS `SUBQUERY` ``, 17 of 127 statements, once per
+  connection. It is rejected and, measured live, it does not block browsing.
+
+## Two things recorded and deliberately not explained
+
+- 🔴 **`GROUP BY 1` vs `` GROUP BY `t`.`category` ``.** This capture has Tableau emitting the
+  **ordinal** (`.023`–`.026`) where the August Epic 19 capture recorded the qualified column name
+  (`tableau.mysql.w2.028` and friends) for the **same interaction** — and run A, in this very
+  capture, emitted the column-name spelling (`.016`–`.019`). A control run showed the difference is
+  **not** caused by a `.tdc`. Both shapes are recorded; the cause is unestablished and no
+  explanation is offered here.
+- **Correctness is out of scope for this file.** Every gate in `TableauLiveReplaySpec` is a PARSE
+  verdict. The `sql` module has no Elasticsearch client, so it cannot ask whether a statement
+  *answers* correctly — and parsing is not answering (#205/#209/#224/#253).
+
+### Which rows already have a correctness oracle, and which do not
+
+Oracles live in `testkit/src/main/scala/app/softnetwork/elastic/client/GroupByCompletenessSpec.scala`
+(3 shards, 37 categories, 703 documents, run against real ES on all five client subclasses).
+
+| live rows | oracle today |
+|---|---|
+| `.016`, `.018` | yes — *"aggregate-free GROUP BY, qualified backtick name, NO LIMIT"* and the ORDER-BY-alias test |
+| `.007`, `.021`, `.023`, `.025` | yes — *"resolve an ordinal GROUP BY / ORDER BY to the n-th SELECT item"* |
+| `.009`, `.012`, `.015` | yes — *"corpus shape: HAVING with no GROUP BY"*, asserted as a TRUE/FALSE predicate pair |
+| every row with a `docker-cluster` prefix | yes — *"a catalog prefix is captured and IGNORED"* |
+| `.010`, `.013` | partial — grouping by a row-invariant constant is covered; the same statement's `SUM`+`HAVING` combination is not |
+| `.017`, `.019`, `.024`, `.026` | **no** — a per-group `SUM` (and, for `.019`/`.026`, a `WHERE … IN (…)` pushed down beside a `GROUP BY`) has no oracle |
+| `.014` | **no** — the eight-column aliased preview projection with `LIMIT 100` |
+| `.006`, `.011` | **no** — `SELECT * FROM t LIMIT 1`, the shape probe |
+| `.004` | covered elsewhere — the FROM-less `SELECT 1` has its own integration coverage from story 20.9 |
+| `.001`, `.002` | n/a — DDL, and the execution policy is an open product decision |
+| `.003`, `.005`, `.008`, `.020`, `.022` | n/a — rejected, nothing executes |
+
+A later story can pick the **no** rows up; this one deliberately does not invent oracles for shapes
+nobody owns.
+
+## What this corpus is NOT
+
+- **Not a baseline.** It carries no `verdict` column measured at a named commit, and nothing diffs
+  against it. The Epic 19 `baseline-pre-epic21.csv` is the only baseline in this directory.
+- **Not part of any `N/99` or `N/75` denominator.** It scores nothing, publishes no headline, and
+  contributes to no epic's arithmetic. Its summary line prints a raw parse count and says so.
+- **Not a substitute for running Tableau.** It records what **one** version of Tableau emitted for
+  **those** interactions against **that** fixture. A different Tableau build, a different dialect, a
+  `.taco` connector, or simply a different click path emits different SQL — `.023`–`.026` above are
+  the proof, from two runs a few minutes apart.
+- **Not a capability claim.** `parses` is not `works`.
+
+## Format traps
+
+⚠️ **The statements contain literal TAB characters** (`0x09`), inside the `CREATE TABLE` probe —
+Tableau emits them and p6spy's single-line rendering preserves them while replacing newlines with
+spaces. That is also why the p6spy format below must be split with a **maxsplit**: the log is
+TAB-delimited and the SQL, which holds tabs of its own, is **last**.
+
+⚠️ The file is RFC-4180 with **every** cell quoted and `"` escaped by doubling, read by
+`CapturedSqlProbe.parseCsv` like the other three. It happens to hold no newline inside a cell today,
+but it is covered by the same `sql/src/test/resources/corpus/*.csv -text` rule in `.gitattributes`,
+and that is not optional: a checkout-time eol conversion would rewrite the byte stream and reach the
+statements themselves.
+
+## Regenerating it
+
+The capture logs live outside this repository. Point `LOGDIR` at them; declared cells
+(`expected`, `owner`, `note`) are read back from the existing file and preserved, so a regeneration
+refreshes the capture columns without discarding the attribution.
+
+```bash
+python3.12 - <<'PY'
+import csv, os, re, collections
+LOGDIR = "<the directory holding the three p6spy logs>"
+FILES  = ["aborted-wrong-port.p6spy.log", "runA-no-tdc.p6spy.log", "runB-with-tdc.p6spy.log"]
+DST    = "sql/src/test/resources/corpus/tableau-live-2026-09-13.csv"
+
+TEMP = re.compile(r"#Tableau[A-Za-z0-9_]*")
+CNT  = re.compile(r"cnt_([A-Za-z0-9_]+?)_[0-9A-Fa-f]{32}_ok")
+norm = lambda s: CNT.sub(r"cnt_\1_HASH_ok", TEMP.sub("#Tableau_PROBE", s))
+
+groups = collections.OrderedDict()
+for fn in FILES:
+    with open(os.path.join(LOGDIR, fn), newline='', encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            # p6spy CustomLineFormat: currentTime executionTime category connectionId sql,
+            # TAB-delimited with the SQL LAST -- and the SQL contains tabs, hence the maxsplit.
+            _ts, _ms, category, _conn, sql = line.rstrip("\n").split("\t", 4)
+            if category == "statement":
+                groups.setdefault(norm(sql), []).append(sql)
+assert sum(len(v) for v in groups.values()) == 127
+
+declared = {}
+if os.path.exists(DST):
+    with open(DST, newline='', encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            declared[norm(r["captured_statement"])] = (r["expected"], r["owner"], r["note"])
+
+cols = ["capture_id","tool","dialect","occurrences","expected","owner","note","captured_statement"]
+with open(DST, "w", newline='', encoding='utf-8') as g:
+    w = csv.DictWriter(g, fieldnames=cols, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    w.writeheader()
+    for i, (k, seen) in enumerate(groups.items(), 1):
+        e, o, n = declared.get(k, ("", "", ""))
+        w.writerow({"capture_id": "tableau.mysql.live.%03d" % i, "tool": "tableau",
+                    "dialect": "mysql", "occurrences": str(len(seen)), "expected": e,
+                    "owner": o, "note": n, "captured_statement": seen[0]})
+assert len(groups) == 26
+PY
+```
+
+**Every statement was read before it was committed.** A scan for host-, user- and secret-shaped
+content (`http`, `localhost`, `127.0`, `:9200`, `password`, `token`, `secret`, `@`, `/Users/`,
+`/home/`, `apikey`) returns **0 hits**; the only identifiers present are the synthetic fixture's
+tables and columns, Tableau's own generated `#Tableau…` / `cnt_…_ok` names, the literals `'DE'`,
+`'ES'`, `'FR'`, and the cluster name `docker-cluster`. There are no non-ASCII characters and the
+only control character is the TAB described above.
