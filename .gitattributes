@@ -16,5 +16,7 @@
 # byte-for-byte equality with the capture artefact that story 21.6 asserts, and doing
 # it invisibly because macOS/Linux CI never reproduces it. `-text` keeps the stored
 # bytes byte for byte on every platform. Applies to the replay's baseline and
-# attribution tables too: they are the same gate's tracked inputs.
+# attribution tables too: they are the same gate's tracked inputs — and to the live
+# Tableau corpus beside them, whose statements carry literal TAB characters and are
+# replayed through the same parser by the same kind of gate.
 sql/src/test/resources/corpus/*.csv -text
