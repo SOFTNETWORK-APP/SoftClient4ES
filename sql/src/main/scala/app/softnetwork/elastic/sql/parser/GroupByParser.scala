@@ -22,7 +22,7 @@ import app.softnetwork.elastic.sql.query.{Bucket, GroupBy}
 trait GroupByParser {
   self: Parser with WhereParser =>
 
-  def bucketWithFunction: PackratParser[Identifier] =
+  lazy val bucketWithFunction: PackratParser[Identifier] =
     // #284 - see quotedIdentifierUnlessArithmetic.
     quotedIdentifierUnlessArithmetic |
     identifierWithArithmeticExpression |
@@ -33,11 +33,11 @@ trait GroupByParser {
     identifierWithFunction |
     identifier
 
-  def bucket: PackratParser[Bucket] = (long | bucketWithFunction) ^^ { i =>
+  lazy val bucket: PackratParser[Bucket] = (long | bucketWithFunction) ^^ { i =>
     Bucket(i)
   }
 
-  def groupBy: PackratParser[GroupBy] =
+  lazy val groupBy: PackratParser[GroupBy] =
     GroupBy.regex ~ rep1sep(bucket, separator) ^^ { case _ ~ buckets =>
       GroupBy(buckets)
     }

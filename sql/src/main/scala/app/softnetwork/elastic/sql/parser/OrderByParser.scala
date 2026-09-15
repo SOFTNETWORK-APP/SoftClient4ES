@@ -31,20 +31,20 @@ import app.softnetwork.elastic.sql.query.{
 trait OrderByParser {
   self: Parser =>
 
-  def asc: PackratParser[Asc.type] = Asc.regex ^^ (_ => Asc)
+  lazy val asc: PackratParser[Asc.type] = Asc.regex ^^ (_ => Asc)
 
-  def desc: PackratParser[Desc.type] = Desc.regex ^^ (_ => Desc)
+  lazy val desc: PackratParser[Desc.type] = Desc.regex ^^ (_ => Desc)
 
-  def nullsFirst: PackratParser[NullsFirst.type] = NullsFirst.regex ^^ (_ => NullsFirst)
+  lazy val nullsFirst: PackratParser[NullsFirst.type] = NullsFirst.regex ^^ (_ => NullsFirst)
 
-  def nullsLast: PackratParser[NullsLast.type] = NullsLast.regex ^^ (_ => NullsLast)
+  lazy val nullsLast: PackratParser[NullsLast.type] = NullsLast.regex ^^ (_ => NullsLast)
 
-  def nullOrdering: PackratParser[NullOrdering] = nullsFirst | nullsLast
+  lazy val nullOrdering: PackratParser[NullOrdering] = nullsFirst | nullsLast
 
-  private def fieldName: PackratParser[String] =
+  private lazy val fieldName: PackratParser[String] =
     """\b(?!(?i)limit\b)[a-zA-Z_][a-zA-Z0-9_]*""".r ^^ (f => f)
 
-  def fieldWithFunction: PackratParser[Identifier] =
+  lazy val fieldWithFunction: PackratParser[Identifier] =
     // #284 - see quotedIdentifierUnlessArithmetic.
     quotedIdentifierUnlessArithmetic |
     identifierWithArithmeticExpression |
@@ -55,13 +55,14 @@ trait OrderByParser {
     identifierWithFunction |
     identifier
 
-  def sort: PackratParser[FieldSort] =
+  lazy val sort: PackratParser[FieldSort] =
     fieldWithFunction ~ (asc | desc).? ~ nullOrdering.? ^^ { case f ~ o ~ n =>
       FieldSort(f, o, n)
     }
 
-  def orderBy: PackratParser[OrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ { case _ ~ s =>
-    OrderBy(s)
+  lazy val orderBy: PackratParser[OrderBy] = OrderBy.regex ~ rep1sep(sort, separator) ^^ {
+    case _ ~ s =>
+      OrderBy(s)
   }
 
 }

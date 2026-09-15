@@ -24,40 +24,41 @@ package object geo {
 
   trait GeoParser { self: Parser =>
 
-    def point: PackratParser[Point] =
+    lazy val point: PackratParser[Point] =
       Point.regex ~> start ~> double ~ separator ~ double <~ end ^^ { case lat ~ _ ~ lon =>
         Point(lat, lon)
       }
 
-    def pointOrIdentifier: PackratParser[Either[Identifier, Point]] =
+    lazy val pointOrIdentifier: PackratParser[Either[Identifier, Point]] =
       (point | identifier) ^^ {
         case id: Identifier => Left(id)
         case p: Point       => Right(p)
       }
 
-    def distance: PackratParser[Distance] =
+    lazy val distance: PackratParser[Distance] =
       Distance.regex ~> start ~> pointOrIdentifier ~ separator ~ pointOrIdentifier <~ end ^^ {
         case from ~ _ ~ to => Distance(from, to)
       }
 
-    def kilometers: PackratParser[DistanceUnit] = Kilometers.regex ^^ (_ => Kilometers)
-    def meters: PackratParser[DistanceUnit] = Meters.regex ^^ (_ => Meters)
-    def centimeters: PackratParser[DistanceUnit] = Centimeters.regex ^^ (_ => Centimeters)
-    def millimeters: PackratParser[DistanceUnit] = Millimeters.regex ^^ (_ => Millimeters)
-    def miles: PackratParser[DistanceUnit] = Miles.regex ^^ (_ => Miles)
-    def yards: PackratParser[DistanceUnit] = Yards.regex ^^ (_ => Yards)
-    def feet: PackratParser[DistanceUnit] = Feet.regex ^^ (_ => Feet)
-    def inches: PackratParser[DistanceUnit] = Inches.regex ^^ (_ => Inches)
-    def nauticalMiles: PackratParser[DistanceUnit] = NauticalMiles.regex ^^ (_ => NauticalMiles)
+    lazy val kilometers: PackratParser[DistanceUnit] = Kilometers.regex ^^ (_ => Kilometers)
+    lazy val meters: PackratParser[DistanceUnit] = Meters.regex ^^ (_ => Meters)
+    lazy val centimeters: PackratParser[DistanceUnit] = Centimeters.regex ^^ (_ => Centimeters)
+    lazy val millimeters: PackratParser[DistanceUnit] = Millimeters.regex ^^ (_ => Millimeters)
+    lazy val miles: PackratParser[DistanceUnit] = Miles.regex ^^ (_ => Miles)
+    lazy val yards: PackratParser[DistanceUnit] = Yards.regex ^^ (_ => Yards)
+    lazy val feet: PackratParser[DistanceUnit] = Feet.regex ^^ (_ => Feet)
+    lazy val inches: PackratParser[DistanceUnit] = Inches.regex ^^ (_ => Inches)
+    lazy val nauticalMiles: PackratParser[DistanceUnit] =
+      NauticalMiles.regex ^^ (_ => NauticalMiles)
 
-    def distance_unit: PackratParser[DistanceUnit] =
+    lazy val distance_unit: PackratParser[DistanceUnit] =
       kilometers | meters | centimeters | millimeters | miles | yards | feet | inches | nauticalMiles
 
-    def geo_distance: PackratParser[GeoDistance] =
+    lazy val geo_distance: PackratParser[GeoDistance] =
       long ~ distance_unit ^^ { case value ~ unit => GeoDistance(value, unit) }
 
-    def distance_identifier: PackratParser[Identifier] = distance ^^ functionAsIdentifier
+    lazy val distance_identifier: PackratParser[Identifier] = distance ^^ functionAsIdentifier
 
-    def geoFunctionWithIdentifier: PackratParser[Identifier] = distance_identifier
+    lazy val geoFunctionWithIdentifier: PackratParser[Identifier] = distance_identifier
   }
 }

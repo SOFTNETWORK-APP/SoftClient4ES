@@ -27,47 +27,47 @@ package object string {
 
   trait StringParser { self: Parser =>
 
-    def concat: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val concat: PackratParser[StringFunction[SQLVarchar]] =
       Concat.regex ~ start ~ rep1sep(valueExpr, separator) ~ end ^^ { case _ ~ _ ~ vs ~ _ =>
         Concat(vs)
       }
 
-    def substr: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val substr: PackratParser[StringFunction[SQLVarchar]] =
       Substring.regex ~ start ~ valueExpr ~ (From.regex | separator) ~ long ~ ((For.regex | separator) ~ long).? ~ end ^^ {
         case _ ~ _ ~ v ~ _ ~ s ~ eOpt ~ _ =>
           Substring(v, s.value.toInt, eOpt.map { case _ ~ e => e.value.toInt })
       }
 
-    def left: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val left: PackratParser[StringFunction[SQLVarchar]] =
       LeftOp.regex ~ start ~ valueExpr ~ (For.regex | separator) ~ long ~ end ^^ {
         case _ ~ _ ~ v ~ _ ~ l ~ _ =>
           LeftFunction(v, l.value.toInt)
       }
 
-    def right: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val right: PackratParser[StringFunction[SQLVarchar]] =
       RightOp.regex ~ start ~ valueExpr ~ (For.regex | separator) ~ long ~ end ^^ {
         case _ ~ _ ~ v ~ _ ~ l ~ _ =>
           RightFunction(v, l.value.toInt)
       }
 
-    def replace: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val replace: PackratParser[StringFunction[SQLVarchar]] =
       Replace.regex ~ start ~ valueExpr ~ separator ~ valueExpr ~ separator ~ valueExpr ~ end ^^ {
         case _ ~ _ ~ v ~ _ ~ f ~ _ ~ r ~ _ =>
           Replace(v, f, r)
       }
 
-    def reverse: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val reverse: PackratParser[StringFunction[SQLVarchar]] =
       Reverse.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         Reverse(v)
       }
 
-    def position: PackratParser[StringFunction[SQLBigInt]] =
+    lazy val position: PackratParser[StringFunction[SQLBigInt]] =
       Position.regex ~ start ~ valueExpr ~ (separator | IN.regex) ~ valueExpr ~ ((separator | From.regex) ~ long).? ~ end ^^ {
         case _ ~ _ ~ sub ~ _ ~ str ~ from ~ _ =>
           Position(sub, str, from.map { case _ ~ f => f.value.toInt }.getOrElse(1))
       }
 
-    def regexp: PackratParser[StringFunction[SQLBool]] =
+    lazy val regexp: PackratParser[StringFunction[SQLBool]] =
       RegexpLike.regex ~ start ~ valueExpr ~ separator ~ valueExpr ~ (separator ~ literal).? ~ end ^^ {
         case _ ~ _ ~ str ~ _ ~ pattern ~ flags ~ _ =>
           RegexpLike(
@@ -80,37 +80,37 @@ package object string {
           )
       }
 
-    def length: PackratParser[StringFunction[SQLBigInt]] =
+    lazy val length: PackratParser[StringFunction[SQLBigInt]] =
       Length.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         Length(v)
       }
 
-    def lower: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val lower: PackratParser[StringFunction[SQLVarchar]] =
       Lower.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         StringFunctionWithOp(v, Lower)
       }
 
-    def upper: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val upper: PackratParser[StringFunction[SQLVarchar]] =
       Upper.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         StringFunctionWithOp(v, Upper)
       }
 
-    def trim: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val trim: PackratParser[StringFunction[SQLVarchar]] =
       Trim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         StringFunctionWithOp(v, Trim)
       }
 
-    def ltrim: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val ltrim: PackratParser[StringFunction[SQLVarchar]] =
       Ltrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         StringFunctionWithOp(v, Ltrim)
       }
 
-    def rtrim: PackratParser[StringFunction[SQLVarchar]] =
+    lazy val rtrim: PackratParser[StringFunction[SQLVarchar]] =
       Rtrim.regex ~ start ~ valueExpr ~ end ^^ { case _ ~ _ ~ v ~ _ =>
         StringFunctionWithOp(v, Rtrim)
       }
 
-    def stringFunctionWithIdentifier: PackratParser[Identifier] =
+    lazy val stringFunctionWithIdentifier: PackratParser[Identifier] =
       (concat |
       substr |
       left |

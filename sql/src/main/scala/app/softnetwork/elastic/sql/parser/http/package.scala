@@ -39,82 +39,83 @@ package object http {
   trait HttpParser { self: Parser =>
 
     // URL parser
-    def url: PackratParser[Url] = literal ^^ { urlStr =>
+    lazy val url: PackratParser[Url] = literal ^^ { urlStr =>
       Url(urlStr.value)
     }
 
     // url protocol parser
-    def http: PackratParser[Protocol.Http.type] =
+    lazy val http: PackratParser[Protocol.Http.type] =
       "(?i)(HTTP)\\b".r ^^ { _ => Protocol.Http }
-    def https: PackratParser[Protocol.Https.type] =
+    lazy val https: PackratParser[Protocol.Https.type] =
       "(?i)(HTTPS)\\b".r ^^ { _ => Protocol.Https }
 
-    def urlProtocol: PackratParser[Protocol] =
+    lazy val urlProtocol: PackratParser[Protocol] =
       "PROTOCOL" ~> (https | http)
 
     // url host parser
-    def urlHost: PackratParser[Host] =
+    lazy val urlHost: PackratParser[Host] =
       "HOST" ~> literal ^^ { hostStr =>
         Host(hostStr)
       }
 
     // url port parser
-    def urlPort: PackratParser[Port] =
+    lazy val urlPort: PackratParser[Port] =
       "PORT" ~> long ^^ { l =>
         Port.CustomPort(IntValue(l.value.toInt))
       }
 
     // url path parser
-    def urlPath: PackratParser[Path] =
+    lazy val urlPath: PackratParser[Path] =
       "PATH" ~> literal ^^ { pathStr =>
         Path(pathStr)
       }
 
     // url query parameters parser
-    def urlQueryParams: PackratParser[QueryParams] =
+    lazy val urlQueryParams: PackratParser[QueryParams] =
       "PARAMS" ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
         QueryParams(ListMap(opts: _*))
       }
 
     // url part parser
-    def urlPart: PackratParser[UrlPart] = urlProtocol | urlHost | urlPort | urlPath | urlQueryParams
+    lazy val urlPart: PackratParser[UrlPart] =
+      urlProtocol | urlHost | urlPort | urlPath | urlQueryParams
 
     // combined url parts parser
-    def urlParts: PackratParser[Url] =
+    lazy val urlParts: PackratParser[Url] =
       rep(urlPart) ^^ { parts =>
         Url(parts)
       }
 
     // method parser
-    def get: PackratParser[Method.Get.type] =
+    lazy val get: PackratParser[Method.Get.type] =
       "(?i)(GET)\\b".r ^^ { _ => Method.Get }
-    def post: PackratParser[Method.Post.type] =
+    lazy val post: PackratParser[Method.Post.type] =
       "(?i)(POST)\\b".r ^^ { _ => Method.Post }
-    def put: PackratParser[Method.Put.type] =
+    lazy val put: PackratParser[Method.Put.type] =
       "(?i)(PUT)\\b".r ^^ { _ => Method.Put }
-    def del: PackratParser[Method.Delete.type] =
+    lazy val del: PackratParser[Method.Delete.type] =
       "(?i)(DELETE)\\b".r ^^ { _ => Method.Delete }
 
-    def httpMethod: PackratParser[Method] = get | post | put | del
+    lazy val httpMethod: PackratParser[Method] = get | post | put | del
 
     // headers parser
-    def headers: PackratParser[Headers] =
+    lazy val headers: PackratParser[Headers] =
       "HEADERS" ~> start ~ repsep(option, separator) ~ end ^^ { case _ ~ opts ~ _ =>
         Headers(ListMap(opts: _*))
       }
 
     // body parser
-    def body: PackratParser[Body] =
+    lazy val body: PackratParser[Body] =
       "BODY" ~> literal ^^ { body =>
         Body(body)
       }
 
-    def timeout: PackratParser[Option[Timeout]] =
+    lazy val timeout: PackratParser[Option[Timeout]] =
       "TIMEOUT" ~> start ~ repsep(option, separator) <~ end ^^ { case _ ~ t =>
         Timeout(t.toMap)
       }
 
-    def httpRequest: PackratParser[HttpRequest] =
+    lazy val httpRequest: PackratParser[HttpRequest] =
       httpMethod ~ (url | urlParts) ~ opt(headers) ~ opt(body) ~ opt(timeout) ^^ {
         case method ~ url ~ headersOpt ~ bodyOpt ~ timeoutOpt =>
           HttpRequest(

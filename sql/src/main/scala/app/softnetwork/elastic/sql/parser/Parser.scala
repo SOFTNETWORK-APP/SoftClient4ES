@@ -87,16 +87,16 @@ object Parser
     with OrderByParser
     with LimitParser {
 
-  def single: PackratParser[SingleSearch] = {
+  lazy val single: PackratParser[SingleSearch] = {
     select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.? ^^ {
       case s ~ f ~ w ~ g ~ h ~ o ~ l ~ oc =>
         SingleSearch(s, f, w, g, h, o, l, onConflict = oc).update()
     }
   }
 
-  def union: PackratParser[UNION.type] = UNION.regex ^^ (_ => UNION)
+  lazy val union: PackratParser[UNION.type] = UNION.regex ^^ (_ => UNION)
 
-  def searchStatement: PackratParser[SearchStatement] = rep1sep(single, union) ^^ {
+  lazy val searchStatement: PackratParser[SearchStatement] = rep1sep(single, union) ^^ {
     case x :: Nil => x
     case s        => MultiSearch(s)
   }
@@ -105,13 +105,13 @@ object Parser
     * 1 LIMIT 100` must parse — it is Superset's engine probe AND what the Flight sidecar's own
     * schemaProbeSql rewrites `SELECT 1` into.
     */
-  def fromlessSelect: PackratParser[FromlessSelect] =
+  lazy val fromlessSelect: PackratParser[FromlessSelect] =
     select ~ limit.? ^^ { case s ~ l => FromlessSelect(s, l) }
 
-  def row: PackratParser[List[Value[_]]] =
+  lazy val row: PackratParser[List[Value[_]]] =
     lparen ~> repsep(array_of_struct | struct | value, comma) <~ rparen
 
-  def rows: PackratParser[List[List[Value[_]]]] =
+  lazy val rows: PackratParser[List[List[Value[_]]]] =
     repsep(row, comma)
 
   /** DELIBERATELY still `ident` (story 21.7 Task 1.1). This selects a processor TYPE, not a name:
@@ -119,7 +119,7 @@ object Parser
     * `processorType.name.toUpperCase`, so a quoted spelling could not round-trip even if it parsed.
     * The one `ident` position that is not a name is not converted.
     */
-  def processorType: PackratParser[IngestProcessorType] =
+  lazy val processorType: PackratParser[IngestProcessorType] =
     ident ^^ { name =>
       name.toLowerCase match {
         case "set"             => IngestProcessorType.Set
@@ -132,12 +132,12 @@ object Parser
       }
     }
 
-  def processor: PackratParser[IngestProcessor] =
+  lazy val processor: PackratParser[IngestProcessor] =
     processorType ~ objectValue ^^ { case pt ~ opts =>
       IngestProcessor(pt, opts)
     }
 
-  def createOrReplacePipeline: PackratParser[CreatePipeline] =
+  lazy val createOrReplacePipeline: PackratParser[CreatePipeline] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
       "PIPELINE"
     )) ~ identRef ~ (keyword("WITH") ~ keyword("PROCESSORS")) ~ start ~ repsep(
@@ -153,7 +153,7 @@ object Parser
       )
     }
 
-  def createPipeline: PackratParser[CreatePipeline] =
+  lazy val createPipeline: PackratParser[CreatePipeline] =
     (keyword("CREATE") ~ keyword("PIPELINE")) ~ ifNotExists ~ identRef ~ (keyword(
       "WITH"
     ) ~ keyword(
@@ -171,48 +171,48 @@ object Parser
       )
     }
 
-  def dropPipeline: PackratParser[DropPipeline] =
+  lazy val dropPipeline: PackratParser[DropPipeline] =
     (keyword("DROP") ~ keyword("PIPELINE")) ~ ifExists ~ identRef ^^ { case _ ~ ie ~ name =>
       DropPipeline(name._1, ifExists = ie, parts = name._2)
     }
 
-  def showPipeline: PackratParser[ShowPipeline] =
+  lazy val showPipeline: PackratParser[ShowPipeline] =
     (keyword("SHOW") ~ keyword("PIPELINE")) ~ identRef ^^ { case _ ~ pipeline =>
       ShowPipeline(pipeline._1, parts = pipeline._2)
     }
 
-  def showPipelines: PackratParser[ShowPipelines.type] =
+  lazy val showPipelines: PackratParser[ShowPipelines.type] =
     (keyword("SHOW") ~ keyword("PIPELINES")) ^^ { _ =>
       ShowPipelines
     }
 
-  def showCreatePipeline: PackratParser[ShowCreatePipeline] =
+  lazy val showCreatePipeline: PackratParser[ShowCreatePipeline] =
     (keyword("SHOW") ~ keyword("CREATE") ~ keyword("PIPELINE")) ~ identRef ^^ {
       case _ ~ _ ~ _ ~ pipeline =>
         ShowCreatePipeline(pipeline._1, parts = pipeline._2)
     }
 
-  def describePipeline: PackratParser[DescribePipeline] =
+  lazy val describePipeline: PackratParser[DescribePipeline] =
     ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("PIPELINE")) ~ identRef ^^ {
       case _ ~ pipeline =>
         DescribePipeline(pipeline._1, parts = pipeline._2)
     }
 
-  def addProcessor: PackratParser[AddPipelineProcessor] =
+  lazy val addProcessor: PackratParser[AddPipelineProcessor] =
     (keyword("ADD") ~ keyword("PROCESSOR")) ~ processor ^^ { case _ ~ proc =>
       AddPipelineProcessor(proc)
     }
 
-  def dropProcessor: PackratParser[DropPipelineProcessor] =
+  lazy val dropProcessor: PackratParser[DropPipelineProcessor] =
     (keyword("DROP") ~ keyword("PROCESSOR")) ~ processorType ~ start ~ identName ~ end ^^ {
       case _ ~ pt ~ _ ~ name ~ _ =>
         DropPipelineProcessor(pt, name)
     }
 
-  def alterPipelineStatement: PackratParser[AlterPipelineStatement] =
+  lazy val alterPipelineStatement: PackratParser[AlterPipelineStatement] =
     addProcessor | dropProcessor
 
-  def alterPipeline: PackratParser[AlterPipeline] =
+  lazy val alterPipeline: PackratParser[AlterPipeline] =
     (keyword("ALTER") ~ keyword("PIPELINE")) ~ ifExists ~ identRef ~ start.? ~ repsep(
       alterPipelineStatement,
       separator
@@ -235,42 +235,42 @@ object Parser
     * KEYWORD` unconsumed — so `SET FIELD` silently did nothing before #213 made trailing input an
     * error, and could not parse at all afterwards.
     */
-  def multiFields: PackratParser[List[Column]] =
+  lazy val multiFields: PackratParser[List[Column]] =
     keyword("FIELDS") ~ start ~> repsep(column, separator) <~ end ^^ (cols => cols)
 
-  def optionalMultiFields: PackratParser[List[Column]] = multiFields | success(Nil)
+  lazy val optionalMultiFields: PackratParser[List[Column]] = multiFields | success(Nil)
 
-  def ifExists: PackratParser[Boolean] =
+  lazy val ifExists: PackratParser[Boolean] =
     opt(keyword("IF") ~ keyword("EXISTS")) ^^ {
       case Some(_) => true
       case None    => false
     }
 
-  def ifNotExists: PackratParser[Boolean] =
+  lazy val ifNotExists: PackratParser[Boolean] =
     opt(keyword("IF") ~ keyword("NOT") ~ keyword("EXISTS")) ^^ {
       case Some(_) => true
       case None    => false
     }
 
-  def notNull: PackratParser[Boolean] =
+  lazy val notNull: PackratParser[Boolean] =
     opt(keyword("NOT") ~ keyword("NULL")) ^^ {
       case Some(_) => true
       case None    => false
     }
 
-  def defaultVal: PackratParser[Option[Value[_]]] =
+  lazy val defaultVal: PackratParser[Option[Value[_]]] =
     opt(keyword("DEFAULT") ~ (value | ingest_id | ingest_timestamp)) ^^ {
       case Some(_ ~ v) => Some(v)
       case None        => None
     }
 
-  def comment: PackratParser[Option[String]] =
+  lazy val comment: PackratParser[Option[String]] =
     opt(keyword("COMMENT") ~ literal) ^^ {
       case Some(_ ~ v) => Some(v.value)
       case None        => None
     }
 
-  def scriptValue: PackratParser[PainlessScript] = identifierWithArithmeticExpression |
+  lazy val scriptValue: PackratParser[PainlessScript] = identifierWithArithmeticExpression |
     identifierWithTransformation |
     identifierWithIntervalFunction |
     identifierWithFunction
@@ -337,7 +337,7 @@ object Parser
     }
   }
 
-  def script: PackratParser[PainlessScript] =
+  lazy val script: PackratParser[PainlessScript] =
     (keyword("SCRIPT") ~ keyword("AS")) ~> scriptBody >> { body =>
       parseAll(scriptValue, body) match {
         case Success(s, _)     => success(s)
@@ -352,10 +352,10 @@ object Parser
     * `_meta.columns` from the parsed columns (it drops the incoming `columns` key), so anything not
     * recoverable from the column list is erased on the first round-trip. Measured, not assumed.
     */
-  def storedScript: PackratParser[(PainlessScript, Boolean)] =
+  lazy val storedScript: PackratParser[(PainlessScript, Boolean)] =
     script ~ opt(keyword("STORED")) ^^ { case s ~ stored => (s, stored.isDefined) }
 
-  def column: PackratParser[Column] =
+  lazy val column: PackratParser[Column] =
     identName ~ extension_type ~ (storedScript | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       ListMap.empty[String, Value[_]]
     )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
@@ -376,10 +376,10 @@ object Parser
       }
     }
 
-  def columns: PackratParser[List[Column]] =
+  lazy val columns: PackratParser[List[Column]] =
     start ~ repsep(column, separator) ~ end ^^ { case _ ~ cols ~ _ => cols }
 
-  def primaryKey: PackratParser[List[String]] =
+  lazy val primaryKey: PackratParser[List[String]] =
     separator ~ keyword("PRIMARY") ~ keyword("KEY") ~ start ~ repsep(
       identName,
       separator
@@ -387,7 +387,7 @@ object Parser
       keys
     } | success(Nil)
 
-  def granularity: PackratParser[TimeUnit] = start ~
+  lazy val granularity: PackratParser[TimeUnit] = start ~
     ((keyword("YEAR") ^^^ TimeUnit.YEARS) |
     (keyword("MONTH") ^^^ TimeUnit.MONTHS) |
     (keyword("DAY") ^^^ TimeUnit.DAYS) |
@@ -395,13 +395,13 @@ object Parser
     (keyword("MINUTE") ^^^ TimeUnit.MINUTES) |
     (keyword("SECOND") ^^^ TimeUnit.SECONDS)) ~ end ^^ { case _ ~ gf ~ _ => gf }
 
-  def partitionBy: PackratParser[Option[PartitionDate]] =
+  lazy val partitionBy: PackratParser[Option[PartitionDate]] =
     opt(keyword("PARTITION") ~ keyword("BY") ~ identName ~ opt(granularity)) ^^ {
       case Some(_ ~ _ ~ pb ~ gf) => Some(PartitionDate(pb, gf.getOrElse(TimeUnit.DAYS)))
       case None                  => None
     }
 
-  def columnsWithPartitionBy
+  lazy val columnsWithPartitionBy
     : PackratParser[(List[Column], List[String], Option[PartitionDate], ListMap[String, Any])] =
     start ~ repsep(
       column,
@@ -412,7 +412,7 @@ object Parser
       (cols, pk, pb, opts)
     }
 
-  def createOrReplaceTable: PackratParser[CreateTable] =
+  lazy val createOrReplaceTable: PackratParser[CreateTable] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
       "TABLE"
     )) ~ identRef ~ (columnsWithPartitionBy | (keyword("AS") ~> searchStatement)) ^^ {
@@ -445,7 +445,7 @@ object Parser
         }
     }
 
-  def createTable: PackratParser[CreateTable] =
+  lazy val createTable: PackratParser[CreateTable] =
     (keyword("CREATE") ~ keyword(
       "TABLE"
     )) ~ ifNotExists ~ identRef ~ (columnsWithPartitionBy | (keyword(
@@ -525,45 +525,45 @@ object Parser
     "that Elasticsearch does not have. Use CREATE TABLE for a regular index and DROP TABLE it " +
     "when you are done."
 
-  def patterns: PackratParser[List[String]] = keyword("LIKE") ~> repsep(literal, comma) ^^ {
+  lazy val patterns: PackratParser[List[String]] = keyword("LIKE") ~> repsep(literal, comma) ^^ {
     patterns =>
       patterns.map(_.value)
   }
 
-  def showTables: PackratParser[ShowTables] =
+  lazy val showTables: PackratParser[ShowTables] =
     (keyword("SHOW") ~ keyword("TABLES")) ~> opt(patterns) ^^ { indices =>
       ShowTables(indices.getOrElse(Seq.empty))
     }
 
-  def showTable: PackratParser[ShowTable] =
+  lazy val showTable: PackratParser[ShowTable] =
     (keyword("SHOW") ~ keyword("TABLE")) ~ identRef ^^ { case _ ~ table =>
       ShowTable(table._1, parts = table._2)
     }
 
-  def showCreateTable: PackratParser[ShowCreateTable] =
+  lazy val showCreateTable: PackratParser[ShowCreateTable] =
     (keyword("SHOW") ~ keyword("CREATE") ~ keyword("TABLE")) ~ identRef ^^ {
       case _ ~ _ ~ _ ~ table =>
         ShowCreateTable(table._1, parts = table._2)
     }
 
-  def describeTable: PackratParser[DescribeTable] =
+  lazy val describeTable: PackratParser[DescribeTable] =
     ((keyword("DESCRIBE") | keyword("DESC")) ~ opt(keyword("TABLE"))) ~ identRef ^^ {
       case _ ~ table =>
         DescribeTable(table._1, parts = table._2)
     }
 
-  def dropTable: PackratParser[DropTable] =
+  lazy val dropTable: PackratParser[DropTable] =
     (keyword("DROP") ~ (keyword("TABLE") | keyword("INDEX"))) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
         DropTable(name._1, ifExists = ie, parts = name._2)
     }
 
-  def truncateTable: PackratParser[TruncateTable] =
+  lazy val truncateTable: PackratParser[TruncateTable] =
     (keyword("TRUNCATE") ~ keyword("TABLE")) ~ identRef ^^ { case _ ~ name =>
       TruncateTable(name._1, parts = name._2)
     }
 
-  def frequency: PackratParser[Frequency] =
+  lazy val frequency: PackratParser[Frequency] =
     (keyword("REFRESH") ~ keyword(
       "EVERY"
     )) ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ { str =>
@@ -571,12 +571,12 @@ object Parser
       Frequency(TransformTimeUnit(parts(1)), parts(0).toLong)
     }
 
-  def withOptions: PackratParser[ListMap[String, Value[_]]] =
+  lazy val withOptions: PackratParser[ListMap[String, Value[_]]] =
     (keyword("WITH") ~ lparen) ~> repsep(option, separator) <~ rparen ^^ { opts =>
       ListMap(opts: _*)
     }
 
-  def createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
+  lazy val createOrReplaceMaterializedView: PackratParser[CreateMaterializedView] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("MATERIALIZED") ~ keyword(
       "VIEW"
     )) ~ identRef ~ opt(frequency) ~ opt(
@@ -593,7 +593,7 @@ object Parser
       )
     }
 
-  def createMaterializedView: PackratParser[CreateMaterializedView] =
+  lazy val createMaterializedView: PackratParser[CreateMaterializedView] =
     (keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifNotExists ~ identRef ~ opt(
       frequency
     ) ~ opt(
@@ -610,117 +610,117 @@ object Parser
       )
     }
 
-  def dropMaterializedView: PackratParser[DropMaterializedView] =
+  lazy val dropMaterializedView: PackratParser[DropMaterializedView] =
     (keyword("DROP") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
         DropMaterializedView(name._1, ifExists = ie, parts = name._2)
     }
 
-  def refreshMaterializedView: PackratParser[RefreshMaterializedView] =
+  lazy val refreshMaterializedView: PackratParser[RefreshMaterializedView] =
     (keyword("REFRESH") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ ifExists ~ identRef ~ opt(
       keyword("WITH") ~ keyword("SCHEDULE") ~ keyword("NOW")
     ) ^^ { case _ ~ ie ~ view ~ wn =>
       RefreshMaterializedView(view._1, ifExists = ie, scheduleNow = wn.isDefined, parts = view._2)
     }
 
-  def showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
+  lazy val showMaterializedViewStatus: PackratParser[ShowMaterializedViewStatus] =
     (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW") ~ keyword(
       "STATUS"
     )) ~ identRef ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
       ShowMaterializedViewStatus(view._1, parts = view._2)
     }
 
-  def showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
+  lazy val showCreateMaterializedView: PackratParser[ShowCreateMaterializedView] =
     (keyword("SHOW") ~ keyword("CREATE") ~ keyword("MATERIALIZED") ~ keyword(
       "VIEW"
     )) ~ identRef ^^ { case _ ~ _ ~ _ ~ _ ~ view =>
       ShowCreateMaterializedView(view._1, parts = view._2)
     }
 
-  def showMaterializedView: PackratParser[ShowMaterializedView] =
+  lazy val showMaterializedView: PackratParser[ShowMaterializedView] =
     (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEW")) ~ identRef ^^ {
       case _ ~ _ ~ view =>
         ShowMaterializedView(view._1, parts = view._2)
     }
 
-  def showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
+  lazy val showMaterializedViews: PackratParser[ShowMaterializedViews.type] =
     (keyword("SHOW") ~ keyword("MATERIALIZED") ~ keyword("VIEWS")) ^^ { _ =>
       ShowMaterializedViews
     }
 
-  def describeMaterializedView: PackratParser[DescribeMaterializedView] =
+  lazy val describeMaterializedView: PackratParser[DescribeMaterializedView] =
     ((keyword("DESCRIBE") | keyword("DESC")) ~ keyword("MATERIALIZED") ~ keyword(
       "VIEW"
     )) ~ identRef ^^ { case _ ~ _ ~ _ ~ view =>
       DescribeMaterializedView(view._1, parts = view._2)
     }
 
-  def addColumn: PackratParser[AddColumn] =
+  lazy val addColumn: PackratParser[AddColumn] =
     (keyword("ADD") ~ keyword("COLUMN")) ~ ifNotExists ~ column ^^ { case _ ~ ine ~ col =>
       AddColumn(col, ifNotExists = ine)
     }
 
-  def dropColumn: PackratParser[DropColumn] =
+  lazy val dropColumn: PackratParser[DropColumn] =
     (keyword("DROP") ~ keyword("COLUMN")) ~ ifExists ~ identName ^^ { case _ ~ ie ~ name =>
       DropColumn(name, ifExists = ie)
     }
 
-  def renameColumn: PackratParser[RenameColumn] =
+  lazy val renameColumn: PackratParser[RenameColumn] =
     (keyword("RENAME") ~ keyword("COLUMN")) ~ identName ~ (keyword("TO") ~> identName) ^^ {
       case _ ~ oldName ~ newName =>
         RenameColumn(oldName, newName)
     }
 
-  def alterColumnIfExists: PackratParser[Boolean] =
+  lazy val alterColumnIfExists: PackratParser[Boolean] =
     (keyword("ALTER") ~ keyword("COLUMN")) ~ ifExists ^^ { case _ ~ ie =>
       ie
     }
 
-  def alterColumnOptions: PackratParser[AlterColumnOptions] =
+  lazy val alterColumnOptions: PackratParser[AlterColumnOptions] =
     alterColumnIfExists ~ identName ~ keyword("SET") ~ options ^^ { case ie ~ col ~ _ ~ opts =>
       AlterColumnOptions(col, opts, ifExists = ie)
     }
 
-  def alterColumnOption: PackratParser[AlterColumnOption] =
+  lazy val alterColumnOption: PackratParser[AlterColumnOption] =
     alterColumnIfExists ~ identName ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
       "OPTION"
     )) ~ start ~ option ~ end ^^ { case ie ~ col ~ _ ~ _ ~ opt ~ _ =>
       AlterColumnOption(col, opt._1, opt._2, ifExists = ie)
     }
 
-  def dropColumnOption: PackratParser[DropColumnOption] =
+  lazy val dropColumnOption: PackratParser[DropColumnOption] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("OPTION")) ~ identName ^^ {
       case ie ~ col ~ _ ~ optionName =>
         DropColumnOption(col, optionName, ifExists = ie)
     }
 
-  def alterColumnFields: PackratParser[AlterColumnFields] =
+  lazy val alterColumnFields: PackratParser[AlterColumnFields] =
     alterColumnIfExists ~ identName ~ keyword("SET") ~ multiFields ^^ {
       case ie ~ col ~ _ ~ fields =>
         AlterColumnFields(col, fields, ifExists = ie)
     }
 
-  def alterColumnField: PackratParser[AlterColumnField] =
+  lazy val alterColumnField: PackratParser[AlterColumnField] =
     alterColumnIfExists ~ identName ~ ((keyword("SET") | keyword("ADD")) ~ keyword(
       "FIELD"
     )) ~ column ^^ { case ie ~ col ~ _ ~ field =>
       AlterColumnField(col, field, ifExists = ie)
     }
 
-  def dropColumnField: PackratParser[DropColumnField] =
+  lazy val dropColumnField: PackratParser[DropColumnField] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("FIELD")) ~ identName ^^ {
       case ie ~ col ~ _ ~ fieldName =>
         DropColumnField(col, fieldName, ifExists = ie)
     }
 
-  def alterColumnType: PackratParser[AlterColumnType] =
+  lazy val alterColumnType: PackratParser[AlterColumnType] =
     alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("DATA") ~ keyword(
       "TYPE"
     )) ~ extension_type ^^ { case ie ~ name ~ _ ~ newType =>
       AlterColumnType(name, newType, ifExists = ie)
     }
 
-  def alterColumnScript: PackratParser[AlterColumnScript] =
+  lazy val alterColumnScript: PackratParser[AlterColumnScript] =
     alterColumnIfExists ~ identName ~ keyword("SET") ~ storedScript ^^ {
       case ie ~ name ~ _ ~ ((ns, stored)) =>
         AlterColumnScript(
@@ -730,7 +730,7 @@ object Parser
         )
     }
 
-  def dropColumnScript: PackratParser[DropColumnScript] =
+  lazy val dropColumnScript: PackratParser[DropColumnScript] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("SCRIPT")) ^^ {
       case ie ~ name ~ _ =>
         DropColumnScript(name, ifExists = ie)
@@ -742,57 +742,57 @@ object Parser
     * whenever that column already exists (`TableDiff` renders `ColumnDefaultSet` and the extension
     * runs the rendered SQL).
     */
-  def alterColumnDefault: PackratParser[AlterColumnDefault] =
+  lazy val alterColumnDefault: PackratParser[AlterColumnDefault] =
     alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword(
       "DEFAULT"
     )) ~ (value | ingest_id | ingest_timestamp) ^^ { case ie ~ name ~ _ ~ dv =>
       AlterColumnDefault(name, dv, ifExists = ie)
     }
 
-  def dropColumnDefault: PackratParser[DropColumnDefault] =
+  lazy val dropColumnDefault: PackratParser[DropColumnDefault] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("DEFAULT")) ^^ {
       case ie ~ name ~ _ =>
         DropColumnDefault(name, ifExists = ie)
     }
 
-  def alterColumnNotNull: PackratParser[AlterColumnNotNull] =
+  lazy val alterColumnNotNull: PackratParser[AlterColumnNotNull] =
     alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
       case ie ~ name ~ _ =>
         AlterColumnNotNull(name, ifExists = ie)
     }
 
-  def dropColumnNotNull: PackratParser[DropColumnNotNull] =
+  lazy val dropColumnNotNull: PackratParser[DropColumnNotNull] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("NOT") ~ keyword("NULL")) ^^ {
       case ie ~ name ~ _ =>
         DropColumnNotNull(name, ifExists = ie)
     }
 
-  def alterColumnComment: PackratParser[AlterColumnComment] =
+  lazy val alterColumnComment: PackratParser[AlterColumnComment] =
     alterColumnIfExists ~ identName ~ (keyword("SET") ~ keyword("COMMENT")) ~ literal ^^ {
       case ie ~ name ~ _ ~ c =>
         AlterColumnComment(name, c.value, ifExists = ie)
     }
 
-  def dropColumnComment: PackratParser[DropColumnComment] =
+  lazy val dropColumnComment: PackratParser[DropColumnComment] =
     alterColumnIfExists ~ identName ~ (keyword("DROP") ~ keyword("COMMENT")) ^^ {
       case ie ~ name ~ _ =>
         DropColumnComment(name, ifExists = ie)
     }
 
-  def alterTableMapping: PackratParser[AlterTableMapping] =
+  lazy val alterTableMapping: PackratParser[AlterTableMapping] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("MAPPING")) ~ option ^^ { case _ ~ opt =>
       AlterTableMapping(opt._1, opt._2)
     }
 
-  def dropTableMapping: PackratParser[DropTableMapping] =
+  lazy val dropTableMapping: PackratParser[DropTableMapping] =
     (keyword("DROP") ~ keyword("MAPPING")) ~> identName ^^ { m => DropTableMapping(m) }
 
-  def alterTableSetting: PackratParser[AlterTableSetting] =
+  lazy val alterTableSetting: PackratParser[AlterTableSetting] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("SETTING")) ~ option ^^ { case _ ~ opt =>
       AlterTableSetting(opt._1, opt._2)
     }
 
-  def dropTableSetting: PackratParser[DropTableSetting] =
+  lazy val dropTableSetting: PackratParser[DropTableSetting] =
     (keyword("DROP") ~ keyword("SETTING")) ~> identName ^^ { m => DropTableSetting(m) }
 
   /** `SET SCHEMA CACHE TTL = '10m'` — sugar over the metadata write it desugars to, NOT a second
@@ -804,7 +804,7 @@ object Parser
     * refused at parse time rather than silently ignored for the lifetime of the index. `err`, never
     * `throw`: `Parser.apply` is typed `Either[ParserError, Statement]` (#250).
     */
-  def alterTableSchemaCacheTtl: PackratParser[AlterTableMapping] =
+  lazy val alterTableSchemaCacheTtl: PackratParser[AlterTableMapping] =
     ((keyword("SET") ~ keyword("SCHEMA") ~ keyword("CACHE") ~ keyword(
       "TTL"
     )) ~ "=".? ~ literal) >> { case _ ~ _ ~ ttl =>
@@ -814,20 +814,20 @@ object Parser
       }
     }
 
-  def dropTableSchemaCacheTtl: PackratParser[DropTableMapping] =
+  lazy val dropTableSchemaCacheTtl: PackratParser[DropTableMapping] =
     (keyword("DROP") ~ keyword("SCHEMA") ~ keyword("CACHE") ~ keyword("TTL")) ^^ { _ =>
       DropTableMapping(SchemaCacheTtl.MetadataPath)
     }
 
-  def alterTableAlias: PackratParser[AlterTableAlias] =
+  lazy val alterTableAlias: PackratParser[AlterTableAlias] =
     ((keyword("SET") | keyword("ADD")) ~ keyword("ALIAS")) ~ option ^^ { case _ ~ opt =>
       AlterTableAlias(opt._1, opt._2)
     }
 
-  def dropTableAlias: PackratParser[DropTableAlias] =
+  lazy val dropTableAlias: PackratParser[DropTableAlias] =
     (keyword("DROP") ~ keyword("ALIAS")) ~> identName ^^ { m => DropTableAlias(m) }
 
-  def alterTableStatement: PackratParser[AlterTableStatement] =
+  lazy val alterTableStatement: PackratParser[AlterTableStatement] =
     addColumn |
     dropColumn |
     renameColumn |
@@ -855,7 +855,7 @@ object Parser
     alterTableAlias |
     dropTableAlias
 
-  def alterTable: PackratParser[AlterTable] =
+  lazy val alterTable: PackratParser[AlterTable] =
     (keyword("ALTER") ~ keyword("TABLE")) ~ ifExists ~ identRef ~ start.? ~ repsep(
       alterTableStatement,
       separator
@@ -879,20 +879,20 @@ object Parser
   // Watcher parsers
 
   // Watcher condition parsers
-  def alwaysWatcherCondition: PackratParser[AlwaysWatcherCondition.type] =
+  lazy val alwaysWatcherCondition: PackratParser[AlwaysWatcherCondition.type] =
     keyword("ALWAYS") ^^ { _ => AlwaysWatcherCondition }
 
-  def neverWatcherCondition: PackratParser[NeverWatcherCondition.type] =
+  lazy val neverWatcherCondition: PackratParser[NeverWatcherCondition.type] =
     keyword("NEVER") ^^ { _ => NeverWatcherCondition }
 
-  private def comparison_operator: PackratParser[ComparisonOperator] =
+  private lazy val comparison_operator: PackratParser[ComparisonOperator] =
     eq | ne | diff | gt | ge | lt | le
 
-  private def dateMathScript
+  private lazy val dateMathScript
     : PackratParser[DateTimeFunction with FunctionWithIdentifier with DateMathScript] =
     date_add | datetime_add | date_sub | datetime_sub
 
-  def compareWatcherCondition: PackratParser[CompareWatcherCondition] =
+  lazy val compareWatcherCondition: PackratParser[CompareWatcherCondition] =
     keyword("WHEN") ~> opt(not) ~ identName ~ comparison_operator ~ opt(value) ~ opt(
       dateMathScript
     ) >> { case n ~ field ~ op ~ v ~ fun =>
@@ -928,13 +928,13 @@ object Parser
         }
     }
 
-  private def scriptParams: PackratParser[ListMap[String, Value[_]]] =
+  private lazy val scriptParams: PackratParser[ListMap[String, Value[_]]] =
     (keyword("WITH") ~ keyword("PARAMS")) ~> lparen ~ repsep(option, comma) ~ rparen ^^ {
       case _ ~ opts ~ _ =>
         ListMap(opts: _*)
     }
 
-  def scriptWatcherCondition: PackratParser[ScriptWatcherCondition] =
+  lazy val scriptWatcherCondition: PackratParser[ScriptWatcherCondition] =
     (keyword("WHEN") ~ keyword("SCRIPT")) ~> literal ~ opt(
       keyword("USING") ~ keyword("LANG") ~> literal
     ) ~ opt(
@@ -947,33 +947,33 @@ object Parser
       )
     }
 
-  def watcherCondition: PackratParser[WatcherCondition] =
+  lazy val watcherCondition: PackratParser[WatcherCondition] =
     neverWatcherCondition | alwaysWatcherCondition | compareWatcherCondition | scriptWatcherCondition
 
   // Watcher trigger parsers
-  def triggerWatcherEveryInterval: PackratParser[IntervalWatcherTrigger] =
+  lazy val triggerWatcherEveryInterval: PackratParser[IntervalWatcherTrigger] =
     keyword("EVERY") ~> """\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?""".r ^^ {
       str =>
         val parts = str.trim.split("\\s+")
         IntervalWatcherTrigger(Delay(TransformTimeUnit(parts(1)), parts(0).toLong))
     }
 
-  def triggerWatcherAtSchedule: PackratParser[CronWatcherTrigger] =
+  lazy val triggerWatcherAtSchedule: PackratParser[CronWatcherTrigger] =
     (keyword("AT") ~ keyword("SCHEDULE")) ~> literal ^^ { cronExpr =>
       CronWatcherTrigger(cronExpr.value)
     }
 
-  def watcherTrigger: PackratParser[WatcherTrigger] =
+  lazy val watcherTrigger: PackratParser[WatcherTrigger] =
     triggerWatcherEveryInterval | triggerWatcherAtSchedule
 
   // Watcher input parsers
-  def simpleWatcherInput: PackratParser[SimpleWatcherInput] =
+  lazy val simpleWatcherInput: PackratParser[SimpleWatcherInput] =
     opt(keyword("WITH") ~ keyword("INPUT")) ~> start ~ repsep(option, comma) ~ end ^^ {
       case _ ~ opts ~ _ =>
         SimpleWatcherInput(payload = ObjectValue(ListMap(opts: _*)))
     }
 
-  def withinTimeout: PackratParser[Option[Delay]] =
+  lazy val withinTimeout: PackratParser[Option[Delay]] =
     opt(
       keyword("WITHIN") ~> """(\d+\s+(MILLISECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?)""".r
     ) ^^ {
@@ -1027,7 +1027,7 @@ object Parser
   // `err` (not `failure`) is deliberate: it short-circuits the enclosing alternatives instead of
   // letting `watcherInput` fall through to `success(EmptyWatcherInput)` and report a position
   // error that names neither JOIN nor the watcher.
-  def searchInput: PackratParser[SearchWatcherInput] =
+  lazy val searchInput: PackratParser[SearchWatcherInput] =
     from ~ opt(where) ~ withinTimeout >> { case f ~ w ~ t =>
       // Story 22.1 — a watcher input keeps only `tables.map(_.name)`, and a derived table's name
       // is its ALIAS, so the watcher would silently watch an index named after the subquery. Same
@@ -1081,17 +1081,17 @@ object Parser
         }
     }
 
-  def httpInput: PackratParser[HttpInput] =
+  lazy val httpInput: PackratParser[HttpInput] =
     opt(keyword("WITH") ~ keyword("INPUT")) ~> httpRequest ^^ { req =>
       HttpInput(req)
     }
 
-  def chainInput: PackratParser[(String, WatcherInput)] =
+  lazy val chainInput: PackratParser[(String, WatcherInput)] =
     identName ~ opt(keyword("AS")) ~ watcherInput ^^ { case name ~ _ ~ input =>
       (name, input)
     }
 
-  def chainInputs: PackratParser[WatcherInput] =
+  lazy val chainInputs: PackratParser[WatcherInput] =
     (keyword("WITH") ~ keyword("INPUTS")) ~> rep1sep(
       chainInput,
       comma
@@ -1099,7 +1099,7 @@ object Parser
       ChainInput(ListMap(inputs: _*))
     }
 
-  def watcherInput: PackratParser[WatcherInput] =
+  lazy val watcherInput: PackratParser[WatcherInput] =
     chainInputs | searchInput | httpInput | simpleWatcherInput | success(EmptyWatcherInput)
 
   // logging action parsers
@@ -1108,17 +1108,17 @@ object Parser
   def warn: Parser[LoggingLevel] = "(?i)(WARN)\\b".r ^^ { _ => LoggingLevel.WARN }
   def error: Parser[LoggingLevel] = "(?i)(ERROR)\\b".r ^^ { _ => LoggingLevel.ERROR }
 
-  def loggingLevel: PackratParser[LoggingLevel] =
+  lazy val loggingLevel: PackratParser[LoggingLevel] =
     info | debug | warn | error
 
   // action foreach limit parser
-  def foreachWithLimit: PackratParser[(String, Int)] =
+  lazy val foreachWithLimit: PackratParser[(String, Int)] =
     (keyword("FOREACH") ~> literal) ~ (keyword("LIMIT") ~> """\d+""".r) ^^ { case fe ~ l =>
       (fe.value, l.toInt)
     }
 
   // simple logging action parser
-  def loggingAction: PackratParser[Option[LoggingAction]] =
+  lazy val loggingAction: PackratParser[Option[LoggingAction]] =
     (keyword("LOG") ~> literal) ~ opt(keyword("AT") ~> loggingLevel) ~ opt(foreachWithLimit) ^^ {
       case text ~ levelOpt ~ feOpt =>
         val foreach = feOpt.map(_._1)
@@ -1127,14 +1127,14 @@ object Parser
     }
 
   // webhook action parser
-  def webhookAction: PackratParser[Option[WebhookAction]] =
+  lazy val webhookAction: PackratParser[Option[WebhookAction]] =
     keyword("WEBHOOK") ~> httpRequest ~ opt(foreachWithLimit) ^^ { case req ~ feOpt =>
       val foreach = feOpt.map(_._1)
       val limit = feOpt.map(_._2)
       Some(WebhookAction(req, foreach, limit))
     }
 
-  def watcherAction: PackratParser[(String, WatcherAction)] =
+  lazy val watcherAction: PackratParser[(String, WatcherAction)] =
     identName ~ opt(keyword("AS")) ~ (loggingAction | webhookAction) >> { case name ~ _ ~ wa =>
       wa match {
         case Some(wa) => success((name, wa))
@@ -1142,7 +1142,7 @@ object Parser
       }
     }
 
-  def watcherActions: PackratParser[ListMap[String, WatcherAction]] =
+  lazy val watcherActions: PackratParser[ListMap[String, WatcherAction]] =
     rep1sep(
       watcherAction,
       separator
@@ -1157,7 +1157,7 @@ object Parser
     * accept the SAME watcher-name spellings; the discarded qualifier run is the price of that
     * uniformity, and it is one allocation on a statement that opens a watch.
     */
-  def createOrReplaceWatcher: PackratParser[CreateWatcher] =
+  lazy val createOrReplaceWatcher: PackratParser[CreateWatcher] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword(
       "WATCHER"
     )) ~> identRef ~ opt(
@@ -1177,7 +1177,7 @@ object Parser
         )
     }
 
-  def createWatcher: PackratParser[CreateWatcher] =
+  lazy val createWatcher: PackratParser[CreateWatcher] =
     (keyword("CREATE") ~ keyword("WATCHER")) ~ ifNotExists ~ identRef ~ opt(
       keyword("AS")
     ) ~ watcherTrigger ~ watcherInput ~ watcherCondition ~ (keyword(
@@ -1195,22 +1195,22 @@ object Parser
         )
     }
 
-  def showWatcherStatus: PackratParser[ShowWatcherStatus] =
+  lazy val showWatcherStatus: PackratParser[ShowWatcherStatus] =
     (keyword("SHOW") ~ keyword("WATCHER") ~ keyword("STATUS")) ~> identRef ^^ { name =>
       ShowWatcherStatus(name._1, parts = name._2)
     }
 
-  def showWatchers: PackratParser[ShowWatchers.type] =
+  lazy val showWatchers: PackratParser[ShowWatchers.type] =
     (keyword("SHOW") ~ keyword("WATCHERS")) ^^ { _ =>
       ShowWatchers
     }
 
-  def dropWatcher: PackratParser[DropWatcher] =
+  lazy val dropWatcher: PackratParser[DropWatcher] =
     (keyword("DROP") ~ keyword("WATCHER")) ~ ifExists ~ identRef ^^ { case _ ~ ie ~ name =>
       DropWatcher(name._1, ifExists = ie, parts = name._2)
     }
 
-  def createEnrichPolicy: PackratParser[CreateEnrichPolicy] =
+  lazy val createEnrichPolicy: PackratParser[CreateEnrichPolicy] =
     (keyword("CREATE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~
     ifNotExists ~
     identRef ~
@@ -1235,7 +1235,7 @@ object Parser
       )
     }
 
-  def createOrReplaceEnrichPolicy: PackratParser[CreateEnrichPolicy] =
+  lazy val createOrReplaceEnrichPolicy: PackratParser[CreateEnrichPolicy] =
     (keyword("CREATE") ~ keyword("OR") ~ keyword("REPLACE") ~ keyword("ENRICH") ~ keyword(
       "POLICY"
     )) ~
@@ -1263,38 +1263,38 @@ object Parser
       )
     }
 
-  def executeEnrichPolicy: PackratParser[ExecuteEnrichPolicy] =
+  lazy val executeEnrichPolicy: PackratParser[ExecuteEnrichPolicy] =
     (keyword("EXECUTE") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> identRef ^^ { name =>
       ExecuteEnrichPolicy(name._1, parts = name._2)
     }
 
-  def dropEnrichPolicy: PackratParser[DropEnrichPolicy] =
+  lazy val dropEnrichPolicy: PackratParser[DropEnrichPolicy] =
     (keyword("DROP") ~ keyword("ENRICH") ~ keyword("POLICY")) ~ ifExists ~ identRef ^^ {
       case _ ~ ie ~ name =>
         DropEnrichPolicy(name._1, ifExists = ie, parts = name._2)
     }
 
-  def showEnrichPolicy: PackratParser[ShowEnrichPolicy] =
+  lazy val showEnrichPolicy: PackratParser[ShowEnrichPolicy] =
     (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICY")) ~> identRef ^^ { name =>
       ShowEnrichPolicy(name._1, parts = name._2)
     }
 
-  def showEnrichPolicies: PackratParser[ShowEnrichPolicies.type] =
+  lazy val showEnrichPolicies: PackratParser[ShowEnrichPolicies.type] =
     (keyword("SHOW") ~ keyword("ENRICH") ~ keyword("POLICIES")) ^^ { _ =>
       ShowEnrichPolicies
     }
 
-  def showClusterName: PackratParser[ShowClusterName.type] =
+  lazy val showClusterName: PackratParser[ShowClusterName.type] =
     (keyword("SHOW") ~ keyword("CLUSTER") ~ keyword("NAME")) ^^ { _ =>
       ShowClusterName
     }
 
-  def showLicense: PackratParser[ShowLicense.type] =
+  lazy val showLicense: PackratParser[ShowLicense.type] =
     (keyword("SHOW") ~ keyword("LICENSE")) ^^ { _ =>
       ShowLicense
     }
 
-  def refreshLicense: PackratParser[RefreshLicense.type] =
+  lazy val refreshLicense: PackratParser[RefreshLicense.type] =
     (keyword("REFRESH") ~ keyword("LICENSE")) ^^ { _ =>
       RefreshLicense
     }
@@ -1310,10 +1310,10 @@ object Parser
     * The ascription is needed because `Parser[+T].|[U >: T]` cannot unify `SearchStatement` with
     * `FromlessSelect`; their common supertype is `DqlStatement`.
     */
-  override def derivedTableBodyInner: PackratParser[DqlStatement] =
+  override lazy val derivedTableBodyInner: PackratParser[DqlStatement] =
     (searchStatement: PackratParser[DqlStatement]) | fromlessSelect
 
-  def dqlStatement: PackratParser[DqlStatement] = {
+  lazy val dqlStatement: PackratParser[DqlStatement] = {
     searchStatement |
     // Issue #251 — FROM-less SELECT. MUST stay immediately AFTER searchStatement: `|` commits
     // to the first SUCCEEDING alternative, and searchStatement FAILS (not partially succeeds)
@@ -1342,7 +1342,7 @@ object Parser
     refreshLicense
   }
 
-  def ddlStatement: PackratParser[DdlStatement] =
+  lazy val ddlStatement: PackratParser[DdlStatement] =
     // Recognise-to-reject, FIRST on purpose — measured, not assumed. `TEMPORARY` is mandatory and
     // no other alternative accepts it in that position, so this can never commit to a prefix of a
     // statement another alternative handles (proved by a 994-statement differential probe: zero
@@ -1374,18 +1374,18 @@ object Parser
     executeEnrichPolicy |
     dropEnrichPolicy
 
-  def onConflict: PackratParser[OnConflict] =
+  lazy val onConflict: PackratParser[OnConflict] =
     (keyword("ON") ~ keyword("CONFLICT") ~> opt(conflictTarget) <~ keyword("DO")) ~ (keyword(
       "UPDATE"
     ) | keyword("NOTHING")) ^^ { case target ~ action =>
       OnConflict(target, action == "UPDATE")
     }
 
-  def conflictTarget: PackratParser[List[String]] =
+  lazy val conflictTarget: PackratParser[List[String]] =
     start ~> repsep(identName, separator) <~ end
 
   /** INSERT INTO table [(col1, col2, ...)] VALUES (v1, v2, ...) */
-  def insert: PackratParser[Insert] =
+  lazy val insert: PackratParser[Insert] =
     (keyword("INSERT") ~ keyword("INTO")) ~ identRef ~ opt(
       lparen ~> repsep(identName, comma) <~ rparen
     ) ~
@@ -1412,7 +1412,7 @@ object Parser
     * the loss. A FILE_FORMAT followed by anything but a known format is a hard `err` for the same
     * reason: backtracking here can only ever mean dropping what the user wrote.
     */
-  def fileFormat: PackratParser[FileFormat] =
+  lazy val fileFormat: PackratParser[FileFormat] =
     (keyword("FILE_FORMAT") ~ opt("=")) ~> (
       (keyword("PARQUET") ^^^ Parquet) |
       (keyword("JSON_ARRAY") ^^^ JsonArray) |
@@ -1438,7 +1438,7 @@ object Parser
     )
 
   /** COPY INTO table FROM source */
-  def copy: PackratParser[CopyInto] =
+  lazy val copy: PackratParser[CopyInto] =
     (keyword("COPY") ~ keyword("INTO")) ~ identRef ~ (keyword("FROM") ~> literal) ~ opt(
       fileFormat
     ) ~ opt(onConflict) ^^ { case _ ~ table ~ source ~ format ~ conflict =>
@@ -1458,7 +1458,7 @@ object Parser
     * to be discarded in silence and the UPDATE ran against the first table alone (#213). It catches
     * both operand orders: written before the WHERE, `where.?` yields None and this fires.
     */
-  def update: PackratParser[Update] =
+  lazy val update: PackratParser[Update] =
     (keyword("UPDATE") ~> identRef) ~ (keyword("SET") ~> repsep(
       identName ~ "=" ~ (value | scriptValue),
       separator
@@ -1490,7 +1490,7 @@ object Parser
     * `DELETE FROM a` with **no** WHERE, which the client turns into `match_all` — wiping the whole
     * index instead of the matching rows (#213).
     */
-  def delete: PackratParser[Delete] =
+  lazy val delete: PackratParser[Delete] =
     (keyword("DELETE") ~ keyword("FROM")) ~> rep1sep(table, separator) ~ where.? >> {
       case tables ~ w =>
         tables.flatMap(_.joins) match {
@@ -1531,9 +1531,9 @@ object Parser
         }
     }
 
-  def dmlStatement: PackratParser[DmlStatement] = insert | update | delete | copy
+  lazy val dmlStatement: PackratParser[DmlStatement] = insert | update | delete | copy
 
-  def statement: PackratParser[Statement] = ddlStatement | dqlStatement | dmlStatement
+  lazy val statement: PackratParser[Statement] = ddlStatement | dqlStatement | dmlStatement
 
   /** Strip `--` comments and collapse newlines OUTSIDE string literals only. The previous
     * line-based normalizer (`split("\n").map(_.split("--")(0))`) was blind to quotes: it cut `WHERE
@@ -1757,12 +1757,12 @@ trait Parser
   val startStruct: Parser[String] = "{"
   val endStruct: Parser[String] = "}"
 
-  def objectValue: PackratParser[ObjectValue] =
+  lazy val objectValue: PackratParser[ObjectValue] =
     lparen ~> repsep(option, comma) <~ rparen ^^ { opts =>
       ObjectValue(ListMap(opts: _*))
     }
 
-  def objectValues: PackratParser[ObjectValues] =
+  lazy val objectValues: PackratParser[ObjectValues] =
     lbracket ~> rep1sep(objectValue, comma) <~ rbracket ^^ { ovs =>
       ObjectValues(ovs)
     }
@@ -1770,7 +1770,7 @@ trait Parser
   // `ingest_id | ingest_timestamp` for the same reason as `alterColumnDefault`: the mapping
   // metadata a column's DEFAULT is mirrored into (`_meta.columns.<c>.default_value`) is written
   // through this production.
-  def option: PackratParser[(String, Value[_])] =
+  lazy val option: PackratParser[(String, Value[_])] =
     (identName | literal) ~ "=" ~ (objectValues | objectValue | value | ingest_id | ingest_timestamp) ^^ {
       case key ~ _ ~ value =>
         key match {
@@ -1779,33 +1779,33 @@ trait Parser
         }
     }
 
-  def options: PackratParser[ListMap[String, Value[_]]] =
+  lazy val options: PackratParser[ListMap[String, Value[_]]] =
     keyword("OPTIONS") ~ lparen ~ repsep(option, comma) ~ rparen ^^ { case _ ~ _ ~ opts ~ _ =>
       ListMap(opts: _*)
     }
 
-  def array_of_struct: PackratParser[ObjectValues] =
+  lazy val array_of_struct: PackratParser[ObjectValues] =
     lbracket ~> repsep(struct, comma) <~ rbracket ^^ { ovs =>
       ObjectValues(ovs)
     }
 
-  def struct_entry: PackratParser[(String, Value[_])] =
+  lazy val struct_entry: PackratParser[(String, Value[_])] =
     identName ~ "=" ~ (array_of_struct | struct | value) ^^ { case key ~ _ ~ v =>
       key -> v
     }
 
-  def struct: PackratParser[ObjectValue] =
+  lazy val struct: PackratParser[ObjectValue] =
     startStruct ~> repsep(struct_entry, comma) <~ endStruct ^^ { entries =>
       ObjectValue(ListMap(entries: _*))
     }
 
-  def start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
+  lazy val start: PackratParser[Delimiter] = "(" ^^ (_ => StartPredicate)
 
-  def end: PackratParser[Delimiter] = ")" ^^ (_ => EndPredicate)
+  lazy val end: PackratParser[Delimiter] = ")" ^^ (_ => EndPredicate)
 
-  def separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
+  lazy val separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
 
-  def valueExpr: PackratParser[PainlessScript] = {
+  lazy val valueExpr: PackratParser[PainlessScript] = {
     // the order is important here
     identifierWithWindowFunction |
     identifierWithTransformation | // transformations applied to an identifier
@@ -1823,7 +1823,7 @@ trait Parser
     case _ => Identifier(mf)
   }
 
-  def sql_function: PackratParser[Function] =
+  lazy val sql_function: PackratParser[Function] =
     aggregate_function | time_function | conditional_function
 
   private val reservedKeywords = Seq(
@@ -2104,10 +2104,10 @@ trait Parser
     */
   private val bareFirstPartRegex: Regex = bareFirstPartStr.r
 
-  private def quotedPart: PackratParser[(String, Boolean)] =
+  private lazy val quotedPart: PackratParser[(String, Boolean)] =
     quotedNameRegex ^^ (lexeme => (unquoteName(lexeme), true))
 
-  private def bareFirstPart: PackratParser[(String, Boolean)] =
+  private lazy val bareFirstPart: PackratParser[(String, Boolean)] =
     bareFirstPartRegex ^^ (n => (n, false))
 
   /** One dot-separated tail element, **separator included**, matched as a SINGLE regex so the dot
@@ -2130,7 +2130,7 @@ trait Parser
   /** Compiled once, for the same reason as `bareFirstPartRegex`. */
   private val nameTailPartRegex: Regex = nameTailPartStr.r
 
-  private def nameTailPart: PackratParser[(String, Boolean)] =
+  private lazy val nameTailPart: PackratParser[(String, Boolean)] =
     nameTailPartRegex ^^ { lexeme =>
       val part = lexeme.substring(1) // drop the leading dot, which this regex owns
       part.charAt(0) match {
@@ -2139,7 +2139,7 @@ trait Parser
       }
     }
 
-  private def nameTail: PackratParser[List[(String, Boolean)]] = rep(nameTailPart)
+  private lazy val nameTail: PackratParser[List[(String, Boolean)]] = rep(nameTailPart)
 
   private def joinNameParts(parts: List[(String, Boolean)]): (String, Boolean) =
     (parts.map(_._1).mkString("."), parts.exists(_._2))
@@ -2152,14 +2152,14 @@ trait Parser
     * PUBLIC on purpose: story 21.2 rewrites `FromParser.table` on top of this so the FROM/JOIN
     * surface cannot become a second lexer.
     */
-  def qualifiedName: PackratParser[(String, Boolean)] =
+  lazy val qualifiedName: PackratParser[(String, Boolean)] =
     (quotedPart | bareFirstPart) ~ nameTail ^^ { case h ~ t => joinNameParts(h :: t) }
 
   /** `qualifiedName`, but the FIRST part must be quoted -- which makes `quotedIdentifier` a strict
     * subset of `identifier` and lets every existing `quotedIdentifier | ...` alternation keep its
     * exact current behaviour.
     */
-  def quotedQualifiedName: PackratParser[(String, Boolean)] =
+  lazy val quotedQualifiedName: PackratParser[(String, Boolean)] =
     quotedPart ~ nameTail ^^ { case h ~ t => joinNameParts(h :: t) }
 
   /** One QUOTED name part consumed as a leading TABLE-name qualifier: `` `prod_us`. `` or
@@ -2185,7 +2185,7 @@ trait Parser
     *
     * `quotedPart` is private to this trait; this is its one FROM-side export.
     */
-  def qualifierPart: PackratParser[NamePart] =
+  lazy val qualifierPart: PackratParser[NamePart] =
     quotedPart <~ "." ^^ (p => NamePart(p._1, quoted = true))
 
   /** A table reference as the ordered part list the statement wrote -- never split, never
@@ -2215,7 +2215,7 @@ trait Parser
     *
     * PUBLIC because `FromParser` has `self: Parser with ... =>` and can only see public members.
     */
-  def tableParts: PackratParser[Seq[NamePart]] =
+  lazy val tableParts: PackratParser[Seq[NamePart]] =
     rep(qualifierPart) ~ qualifiedName ^^ { case ps ~ nq => ps :+ NamePart(nq._1, nq._2) }
 
   // -----------------------------------------------------------------------------------------------
@@ -2260,7 +2260,7 @@ trait Parser
     * measurement that forced it was an OPTION key (`OPTIONS (a. = 1)`), and a rule justified by "no
     * regression in existing parsing" cannot hold for option keys and not for table names.
     */
-  def identParts: PackratParser[Seq[NamePart]] =
+  lazy val identParts: PackratParser[Seq[NamePart]] =
     (tableParts <~ not(".")) | (ident ^^ (n => Seq(NamePart(n, quoted = false))))
 
   /** `identParts` reduced to what an AST node carries: the name (the LAST part's value,
@@ -2275,7 +2275,7 @@ trait Parser
     * normalised at the ONE site that produces it, so the AST and the render of every bare-spelled
     * statement stay byte-identical to what they were before this story (AC-5).
     */
-  def identRef: PackratParser[(String, Seq[NamePart])] =
+  lazy val identRef: PackratParser[(String, Seq[NamePart])] =
     identParts ^^ { ps =>
       (ps.last.value, if (ps.size == 1 && !ps.head.quoted) Nil else ps)
     }
@@ -2310,7 +2310,7 @@ trait Parser
     * backtick struct-entry key, and a hyphenated key such as `Content-Type` that `ident`'s charset
     * could never spell), 0 narrowed.
     */
-  def identName: PackratParser[String] =
+  lazy val identName: PackratParser[String] =
     ((qualifiedName ^^ (_._1)) <~ not(".")) | ident
 
   /** Kept, and kept FIRST in `SelectParser.field`, `GroupByParser.bucketWithFunction`,
@@ -2327,7 +2327,7 @@ trait Parser
     * `identifierWithValue` inside `identifierWithIntervalFunction` -- see that call site for why
     * the alternative had to exist for the render to be a fixed point.
     */
-  def quotedIdentifier: PackratParser[Identifier] =
+  lazy val quotedIdentifier: PackratParser[Identifier] =
     (Distinct.regex.? ~ quotedQualifiedName ^^ { case d ~ nq =>
       GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
     }) >> cast
@@ -2354,7 +2354,7 @@ trait Parser
     * expression. Guarding it there would push the operand down to `identifierWithValue` and turn it
     * back into a string, which is the AD-13 corruption in reverse.
     */
-  def quotedIdentifierUnlessArithmetic: PackratParser[Identifier] =
+  lazy val quotedIdentifierUnlessArithmetic: PackratParser[Identifier] =
     quotedIdentifier <~ not(add | subtract | multiply | divide | modulo)
 
   /** A quoted lexeme that can ONLY be an identifier: its first part is quoted AND at least one
@@ -2379,7 +2379,7 @@ trait Parser
     * (`equality`, `comparison`). `IN` / `BETWEEN` / `LIKE` take literals only; giving them an
     * identifier operand would be a new feature, not this fix.
     */
-  def quotedQualifiedIdentifier: PackratParser[Identifier] =
+  lazy val quotedQualifiedIdentifier: PackratParser[Identifier] =
     (Distinct.regex.? ~ (quotedPart ~ rep1(nameTailPart) ^^ { case h ~ t =>
       joinNameParts(h :: t)
     }) ^^ { case d ~ nq =>
@@ -2390,12 +2390,12 @@ trait Parser
     * that end in `| identifier` -- the four-alternative operand idiom alone occurs 21 times -- so a
     * production added later inherits it instead of having to remember it.
     */
-  def identifier: PackratParser[Identifier] =
+  lazy val identifier: PackratParser[Identifier] =
     (Distinct.regex.? ~ qualifiedName ^^ { case d ~ nq =>
       GenericIdentifier(nq._1, None, d.isDefined, quoted = nq._2)
     }) >> cast
 
-  def identifierWithTransformation: PackratParser[Identifier] =
+  lazy val identifierWithTransformation: PackratParser[Identifier] =
     (mathematicalFunctionWithIdentifier |
     conversionFunctionWithIdentifier |
     conditionalFunctionWithIdentifier |
@@ -2403,7 +2403,7 @@ trait Parser
     stringFunctionWithIdentifier |
     geoFunctionWithIdentifier) >> cast
 
-  def identifierWithFunction: PackratParser[Identifier] =
+  lazy val identifierWithFunction: PackratParser[Identifier] =
     ((rep1sep(
       sql_function,
       start
@@ -2453,14 +2453,14 @@ trait Parser
     * `UNNEST(...) alias`, a JOIN source's alias and the FROM table's alias (`FromParser`) -- so a
     * backticked table alias and `SELECT a AS "my col"` are the same fix.
     */
-  def alias: PackratParser[Alias] =
+  lazy val alias: PackratParser[Alias] =
     Alias.regex.? ~ (quotedNameRegex ^^ (l => Alias(unquoteName(l), quoted = true)) |
     regexAliasRegex ^^ (b => Alias(b))) ^^ { case _ ~ a => a }
 
   /** Retained for `SelectParser.field`'s `(quotedAlias | alias)`, and now a strict subset of
     * `alias` -- same lexeme, same un-escaping, same `quoted` bit.
     */
-  def quotedAlias: PackratParser[Alias] =
+  lazy val quotedAlias: PackratParser[Alias] =
     Alias.regex.? ~ quotedNameRegex ^^ { case _ ~ l => Alias(unquoteName(l), quoted = true) }
 
 }

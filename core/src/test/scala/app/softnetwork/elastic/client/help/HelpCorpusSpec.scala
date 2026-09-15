@@ -802,6 +802,14 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
     // and no user can type one as a statement of its own, so the package walk's coverage is
     // unchanged. Verified by the superset assertion below and by this file's parser -> doc gate
     // staying green with no new help document.
+    // `app$softnetwork$elastic$sql$parser$WhereParser$$subqueryBody` is the TRAIT-PRIVATE
+    // `subqueryBody` of `WhereParser`. It appears here - and only here - because the packrat
+    // memoisation fix declares every production as a `lazy val`: a trait-private `def` compiles to
+    // a private method, while a trait-private `lazy val` needs a mangled but PUBLIC accessor in
+    // the mixing class, which `getMethods` can see. It names no new statement leaf: its body is
+    // `start ~> derivedTableBodyInner <~ end`, i.e. the already-enumerated `derivedTableBodyInner`
+    // in parentheses, so the package walk's coverage is unchanged (the superset assertion below
+    // stays green and no new help document is required).
     val expectedAbstract =
       Set(
         "statement",
@@ -809,7 +817,8 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
         "ddlStatement",
         "dmlStatement",
         "searchStatement",
-        "derivedTableBodyInner"
+        "derivedTableBodyInner",
+        "app$softnetwork$elastic$sql$parser$WhereParser$$subqueryBody"
       )
     withClue(
       "the set of productions returning a SEALED TRAIT has changed. Every one of them hides its " +

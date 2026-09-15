@@ -32,17 +32,17 @@ import app.softnetwork.elastic.sql.parser.Parser
 package object math {
 
   trait ArithmeticParser { self: Parser =>
-    def add: PackratParser[ArithmeticOperator] = ADD.sql ^^ (_ => ADD)
+    lazy val add: PackratParser[ArithmeticOperator] = ADD.sql ^^ (_ => ADD)
 
-    def subtract: PackratParser[ArithmeticOperator] = SUBTRACT.sql ^^ (_ => SUBTRACT)
+    lazy val subtract: PackratParser[ArithmeticOperator] = SUBTRACT.sql ^^ (_ => SUBTRACT)
 
-    def multiply: PackratParser[ArithmeticOperator] = MULTIPLY.sql ^^ (_ => MULTIPLY)
+    lazy val multiply: PackratParser[ArithmeticOperator] = MULTIPLY.sql ^^ (_ => MULTIPLY)
 
-    def divide: PackratParser[ArithmeticOperator] = DIVIDE.sql ^^ (_ => DIVIDE)
+    lazy val divide: PackratParser[ArithmeticOperator] = DIVIDE.sql ^^ (_ => DIVIDE)
 
-    def modulo: PackratParser[ArithmeticOperator] = MODULO.sql ^^ (_ => MODULO)
+    lazy val modulo: PackratParser[ArithmeticOperator] = MODULO.sql ^^ (_ => MODULO)
 
-    def factor: PackratParser[PainlessScript] =
+    lazy val factor: PackratParser[PainlessScript] =
       "(" ~> arithmeticExpressionLevel2 <~ ")" ^^ {
         case expr: ArithmeticExpression =>
           expr.copy(group = true)
