@@ -18,6 +18,13 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql._
+// 🔴 Scala 2.12 resolves a member of the ENCLOSING PACKAGE over an explicit wildcard import, and
+// `app.softnetwork.elastic.client` defines its OWN `StringValue` / `BooleanValue`. Without these
+// aliases the file compiles on 2.13 and fails on the 2.12 leg with `found client.StringValue,
+// required sql.StringValue`. MEASURED pre-existing on `origin/main` at 10f5e4d5 (a control run of
+// `++ 2.12.20 core/Test/compile` reproduces the same seven errors) — no gate in CI or in the
+// documented build line compiles core TEST sources on 2.12, which is exactly how it survived.
+import app.softnetwork.elastic.sql.{BooleanValue => SqlBooleanValue, StringValue => SqlStringValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.operator.{DIFF, GT, NOT}
 import app.softnetwork.elastic.sql.parser.Parser
@@ -67,6 +74,43 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"expected a success, got $other")
     }
 
+  /** Both mappings in the schema cache, so `SearchApi.resolvedSchema` answers for the inner AND the
+    * outer index (story 22.3 AD-3 needs both).
+    */
+  private def seededClient(): ElasticClientApi = {
+    val client = new NopeClientApi {
+      override protected def logger: org.slf4j.Logger =
+        org.slf4j.LoggerFactory.getLogger(classOf[SubqueryResolverSpec])
+    }
+    client.updateSchema(
+      "orders",
+      schema.Table(
+        "orders",
+        columns = List(
+          schema.Column("id", SQLTypes.Keyword),
+          schema.Column("cid", SQLTypes.Keyword),
+          schema.Column("amount", SQLTypes.Double),
+          schema.Column(
+            "address",
+            SQLTypes.Struct,
+            multiFields = List(schema.Column("city", SQLTypes.Keyword))
+          )
+        )
+      )
+    )
+    client.updateSchema(
+      "customers",
+      schema.Table(
+        "customers",
+        columns = List(
+          schema.Column("id", SQLTypes.Keyword),
+          schema.Column("tier", SQLTypes.Keyword)
+        )
+      )
+    )
+    client
+  }
+
   private def errorOf(r: ElasticResult[_]): ElasticError = r match {
     case ElasticFailure(e) => e
     case other             => fail(s"expected a failure, got $other")
@@ -110,14 +154,14 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       single("SELECT id FROM t WHERE name IN (SELECT name FROM u)"),
       new Recording({ case _ => rows("name", "a", "b") }).execute
     )
-    valuesOf(whereOf(s)) shouldBe StringValues(Seq(StringValue("a"), StringValue("b")))
+    valuesOf(whereOf(s)) shouldBe StringValues(Seq(SqlStringValue("a"), SqlStringValue("b")))
     val b = SubqueryResolver.resolve(
       single("SELECT id FROM t WHERE flag IN (SELECT flag FROM u)"),
       new Recording({ case _ =>
         rows("flag", java.lang.Boolean.TRUE, java.lang.Boolean.FALSE)
       }).execute
     )
-    valuesOf(whereOf(b)) shouldBe BooleanValues(Seq(BooleanValue(true), BooleanValue(false)))
+    valuesOf(whereOf(b)) shouldBe BooleanValues(Seq(SqlBooleanValue(true), SqlBooleanValue(false)))
   }
 
   /** 🔴 FIXED-WIDTH milliseconds, not `ISO_INSTANT`. `ISO_INSTANT` varies its fraction width, so
@@ -133,7 +177,7 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       new Recording({ case _ => rows("created", zdt, zdt.toInstant) }).execute
     )
     // both cells are the SAME instant, so the set collapses to one value
-    valuesOf(whereOf(res)) shouldBe StringValues(Seq(StringValue("2024-01-01T00:00:00.000Z")))
+    valuesOf(whereOf(res)) shouldBe StringValues(Seq(SqlStringValue("2024-01-01T00:00:00.000Z")))
     // and the ordering the quantified reduction reads IS chronological across fraction widths
     val half = zdt.plusNanos(500000000L)
     TermValues.sorted(Seq(half, zdt).map(TermValues.canonical)) shouldBe
@@ -144,7 +188,7 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
     ) shouldBe GenericExpression(
       sc.whereSubqueries.head.asInstanceOf[ScalarSubquery].identifier,
       GT,
-      StringValue("2024-01-01T00:00:00.000Z"),
+      SqlStringValue("2024-01-01T00:00:00.000Z"),
       None
     )
   }
@@ -196,7 +240,7 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       single("SELECT id FROM t WHERE tag IN (SELECT UPPER(tag) AS up FROM u)"),
       new Recording({ case _ => rows("up", List("A"), List("B", "C")) }).execute
     )
-    valuesOf(whereOf(res)) shouldBe StringValues(Seq("A", "B", "C").map(StringValue))
+    valuesOf(whereOf(res)) shouldBe StringValues(Seq("A", "B", "C").map(SqlStringValue))
   }
 
   it should "keep a body's own LIMIT and bound a row-shaped no-LIMIT body at MaxTerms+1" in {
@@ -545,6 +589,70 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       .resolve(s, new Recording({ case _ => fail("must not execute") }).execute)
       .asInstanceOf[ElasticSuccess[SingleSearch]]
       .value should be theSameInstanceAs s
+  }
+
+  /** Story 22.3 (AD-3) — `scopeCorrelation` through a REAL client with both mappings seeded, so the
+    * schema plumbing (`resolvedSchema` -> the cache) is exercised, not stubbed.
+    */
+  it should "[22.3] name every scope searched for a qualified name in NO scope" in {
+    val client = seededClient()
+    val outer =
+      single(
+        "SELECT id FROM customers c WHERE id IN (SELECT cid FROM orders o WHERE zip.code = 'X')"
+      )
+    val inner = outer.whereSubqueries.head.inner.getOrElse(fail("no body"))
+    val msg = client.scopeCorrelation(outer, inner).getOrElse(fail("expected a rejection"))
+    msg should include("names no source in scope")
+    msg should include("Scopes searched (innermost first)")
+    msg should include("[0] o=orders")
+    msg should include("[1] c=customers")
+  }
+
+  /** The control that makes the row above non-vacuous: `address` IS a mapped object of the inner
+    * index, so `address.city` is an OBJECT PATH and must pass. A check that rejected every dotted
+    * name would redden here.
+    */
+  it should "[22.3] let a mapped OBJECT field through" in {
+    val client = seededClient()
+    val outer = single(
+      "SELECT id FROM customers c WHERE id IN (SELECT cid FROM orders o WHERE address.city = 'X')"
+    )
+    val inner = outer.whereSubqueries.head.inner.getOrElse(fail("no body"))
+    client.scopeCorrelation(outer, inner) shouldBe None
+  }
+
+  it should "[22.3] keep story 22.2's bare-name rule, with the QUALIFY remedy" in {
+    val client = seededClient()
+    val outer =
+      single(
+        "SELECT id FROM customers c WHERE id IN (SELECT cid FROM orders o WHERE tier = 'gold')"
+      )
+    val inner = outer.whereSubqueries.head.inner.getOrElse(fail("no body"))
+    val msg = client.scopeCorrelation(outer, inner).getOrElse(fail("expected a rejection"))
+    msg should include("'tier' is not a column of 'orders'")
+    msg should include("must be QUALIFIED")
+  }
+
+  /** 🔴 Story 22.3b's DEFENSIVE arm. `GatewayApi.run(statement: Statement)` never calls
+    * `validate()` and the seam's closure guard reads the STATEMENT, so a node handed straight to
+    * this object must never have its correlated body executed as if it were self-contained. The
+    * executor `fail`s on any call, so a regression is a test failure, not a silent pass.
+    */
+  it should "[22.3b] refuse a correlated node outright and never execute its body" in {
+    // since story 22.3b this statement PARSES — the rejection moved from the parser to the venues,
+    // and THIS object must still never run it
+    val outer = single(
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)"
+    )
+    outer.whereSubqueries.head.correlatedRefs should not be empty
+    val res = SubqueryResolver.resolve(
+      outer,
+      new Recording({ case s => fail(s"must not execute ${s.sql}") }).execute
+    )
+    val err = errorOf(res)
+    err.statusCode shouldBe Some(400)
+    err.message should include("A correlated subquery")
+    err.message should include(RelationalClosureGuard.ExtensionJar)
   }
 
   it should "reject a correlated bare name through the injected mapping check" in {

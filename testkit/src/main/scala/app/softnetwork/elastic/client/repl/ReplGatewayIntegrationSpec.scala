@@ -1409,7 +1409,13 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     ()
   }
 
-  it should "refuse a CORRELATED subquery with the story-22.3 message, not the JOIN message" in {
+  /** Story 22.3b RETARGETED this row. The CONTRACT it pins is unchanged — a correlated subquery is
+    * never executed as if it were self-contained at a venue with no relational engine — but the
+    * rejection moved from the PARSER to `RelationalClosureGuard`, so the message now names the
+    * shape and the jar that runs it. Story 22.2 asserted `not include "… jar"`; that is now the
+    * opposite, deliberately, and it is the pin that proves the flip reached a real cluster.
+    */
+  it should "refuse a CORRELATED subquery by naming the shape and the engine jar" in {
     val res = executeSync(
       "SELECT o.id FROM dql_orders o WHERE EXISTS " +
       "(SELECT 1 FROM dql_orders x WHERE x.customer_id = o.customer_id)"
@@ -1417,7 +1423,26 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     res shouldBe a[ExecutionFailure]
     val error = res.asInstanceOf[ExecutionFailure].error
     error.statusCode shouldBe Some(400)
-    error.message should include("Correlated subquery")
+    error.message should include("A correlated subquery")
+    error.message should include("softclient4es-arrow-extensions")
+  }
+
+  /** Story 22.3 — a derived table reading an outer alias is SQL:1999 LATERAL, refused in the `sql`
+    * module, so the refusal holds at every venue and on every Elasticsearch major.
+    */
+  it should "refuse a derived table reading an outer alias (LATERAL) with the ANSI message" in {
+    val res = executeSync(
+      "SELECT o.id FROM dql_orders o JOIN " +
+      "(SELECT x.id AS cid FROM dql_orders x WHERE x.id = o.id) d ON d.cid = o.id"
+    )
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    // 🔴 Both substrings must survive `GatewayApi.excerpt`, which caps the reason at 200 characters
+    // and elides the MIDDLE (head 120 + "..." + tail 77). This row is why `lateralMessage` leads
+    // with the construct name: the first wording put "LATERAL" at character ~128 and the REPL user
+    // never saw it. MEASURED here on real Elasticsearch 8.18, not reasoned about.
+    error.message should include("LATERAL is not supported")
+    error.message should include("derived table cannot reference an outer alias")
   }
 
   it should "still answer the handshake — the subquery phase did not widen" in {

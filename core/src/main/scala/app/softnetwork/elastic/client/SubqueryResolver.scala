@@ -85,7 +85,7 @@ object SubqueryResolver {
     resolve(
       single,
       s => api.search(s)(EntityContext), // an absent key stays ABSENT — never null-filled
-      api.bareNameCorrelation(single, _),
+      api.scopeCorrelation(single, _),
       api.innerColumnType
     )
 
@@ -154,6 +154,15 @@ object SubqueryResolver {
       // Unreachable after `validate()`; `GatewayApi.run(statement)` does not validate a
       // programmatically built statement, so the arm is a named 400 rather than a MatchError.
       case None => Left(bad(s"Unsupported subquery body in ${node.sql}"))
+      // Story 22.3b — DEFENSIVE, and UNREACHABLE through every route that exists today: a node with
+      // non-empty `correlatedRefs` implies `hasCorrelatedSubqueries`, which both
+      // `SearchApi.resolveWithSchema` (before phase one) and `CoreDqlExtension.execute` refuse
+      // first. It is kept because the invariant it protects is a SILENT wrong answer if it ever
+      // breaks — executing a correlated body as if it were self-contained — and because a future
+      // caller of this object need not know the guard exists one layer up. Do not read it as
+      // evidence of an open hole.
+      case Some(_) if node.correlatedRefs.nonEmpty =>
+        Left(RelationalClosureGuard.correlatedRejection)
       case Some(inner) =>
         correlation(inner) match {
           case Some(reason) => Left(bad(reason))

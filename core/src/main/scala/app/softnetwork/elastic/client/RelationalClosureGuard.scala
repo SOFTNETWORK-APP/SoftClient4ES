@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.ElasticError
-import app.softnetwork.elastic.sql.query.{derivedTablesPresent, Statement}
+import app.softnetwork.elastic.sql.query.{closureSearches, derivedTablesPresent, Statement}
 
 /** The ONE rejection every venue WITHOUT the relational engine emits for a closure-shaped statement
   * — a cross-index JOIN or a derived table (epic 22 AD-5; #157's discipline, widened).
@@ -38,8 +38,27 @@ object RelationalClosureGuard {
     * did not choose.
     */
   def shapeOf(statement: Statement): String =
-    if (derivedTablesPresent(statement)) "A derived table (subquery in FROM/JOIN)"
+    if (closureSearches(statement).exists(_.hasCorrelatedSubqueries)) CorrelatedShape
+    else if (derivedTablesPresent(statement)) "A derived table (subquery in FROM/JOIN)"
     else "A cross-index JOIN"
+
+  /** Story 22.3 — reported FIRST, for the same reason the derived table outranks the JOIN: it is
+    * the construct with the narrowest remedy (qualify differently, or rewrite as a JOIN), and a
+    * statement that carries both is refused for the one the analyst is least likely to have chosen.
+    */
+  private val CorrelatedShape =
+    "A correlated subquery (a WHERE subquery that reads an outer alias)"
+
+  /** The same rejection for a caller that holds a NODE rather than a statement — story 22.3b's
+    * defensive arm in `SubqueryResolver`, which is reached only through the
+    * `GatewayApi.run(statement: Statement)` path that never validates. ONE message, never two.
+    */
+  def correlatedRejection: ElasticError =
+    ElasticError(
+      message = messageFor(CorrelatedShape),
+      statusCode = Some(400),
+      operation = Some("search")
+    )
 
   /** `operation` stays `"join"` on the gateway path for BOTH shapes: nothing downstream
     * distinguishes them (the JDBC driver relays `message` verbatim), so changing it would be a
@@ -54,13 +73,15 @@ object RelationalClosureGuard {
     */
   def rejection(statement: Statement, operation: String = "join"): ElasticError =
     ElasticError(
-      message =
-        s"${shapeOf(statement)} requires the relational engine shipped in the $ExtensionJar jar " +
-        "(Java 11+); this venue has none, so the statement is refused rather than executed " +
-        s"against the first index it names. Put $ExtensionJar on the classpath (at the REPL: " +
-        "re-run the installer, or drop --no-extensions). See " +
-        "documentation/client/repl.md#extensions-cross-index-joins-materialized-views.",
+      message = messageFor(shapeOf(statement)),
       statusCode = Some(400),
       operation = Some(operation)
     )
+
+  private def messageFor(shape: String): String =
+    s"$shape requires the relational engine shipped in the $ExtensionJar jar " +
+    "(Java 11+); this venue has none, so the statement is refused rather than executed " +
+    s"against the first index it names. Put $ExtensionJar on the classpath (at the REPL: " +
+    "re-run the installer, or drop --no-extensions). See " +
+    "documentation/client/repl.md#extensions-cross-index-joins-materialized-views."
 }

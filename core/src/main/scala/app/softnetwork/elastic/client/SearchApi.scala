@@ -253,21 +253,76 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private[client] def innerColumnType(inner: SingleSearch, name: String): Option[SQLType] =
     resolvedSchema(inner).flatMap(_.find(name).map(_.dataType))
 
-  /** Story 22.2 (PD-2) — the SCHEMA-aware half of the correlation rule.
+  /** Story 22.3 (AD-3) — the SCHEMA-aware SCOPE check, generalised from story 22.2's
+    * `bareNameCorrelation`. Reached only for a statement the closure guard did NOT already route to
+    * the relational engine, so it answers the two questions parse time provably cannot:
     *
-    * A QUALIFIED reference to an outer alias is caught structurally at parse time
-    * (`SubqueryScope`). A BARE one cannot be: SQL resolves a bare name innermost-first, so `cid`
-    * inside the subquery is the INNER column whenever the inner index has it — and that is the
-    * right reading in the overwhelming majority of statements. When BOTH mappings are in hand,
-    * though, a bare name the inner index does NOT map while the outer one DOES is a correlated
-    * reference beyond reasonable doubt, and executing it as uncorrelated would send an unknown
-    * field to Elasticsearch and answer zero rows with HTTP 200 — the silent-wrong-answer mode epic
-    * 22 exists to close.
+    *   1. a BARE name the inner index does not map while the outer one DOES. SQL resolves a bare
+    *      name innermost-first, so `cid` inside the subquery is the INNER column whenever the inner
+    *      index has it — the right reading in the overwhelming majority of statements — but when
+    *      BOTH mappings are in hand the other case is a correlated reference beyond reasonable
+    *      doubt, and executing it as uncorrelated would send an unknown field to Elasticsearch and
+    *      answer zero rows with HTTP 200. It is refused with the remedy that makes it EXECUTABLE
+    *      since story 22.3b: qualify it, and the statement routes. 2. a QUALIFIED name that
+    *      resolves in NO scope of the chain and is not a mapped object field of the inner index
+    *      either. At parse time those two are indistinguishable (story 22.2's PD-2 assumes the
+    *      object path, which is why no arm rejects it there); with the mapping in hand they are
+    *      not, and the message NAMES every scope it searched.
     *
     * Any schema-absent condition answers `None` (assume inner — PD-2's documented boundary), so
     * this never turns a schema outage into a rejection.
     */
-  private[client] def bareNameCorrelation(
+  private[client] def scopeCorrelation(
+    outer: SingleSearch,
+    inner: SingleSearch
+  ): Option[String] =
+    bareNameCorrelation(outer, inner).orElse(unresolvedQualifier(outer, inner))
+
+  /** Question 2 of [[scopeCorrelation]]. `Schema.find(head)` answers for an OBJECT field too (it
+    * returns the object column itself), so one lookup separates `address.city` from a typo.
+    */
+  private def unresolvedQualifier(
+    outer: SingleSearch,
+    inner: SingleSearch
+  ): Option[String] =
+    // 🔴 An EMPTY mapping is a mapping GAP, never evidence that a name does not exist: an index
+    // created but not yet written to, or one whose dynamic mapping has not caught up, would
+    // otherwise turn every dotted object path in a subquery body into a 400. Same posture as the
+    // schema-absent conditions in `resolvedSchema` — a mapping we do not have must never become a
+    // rejection.
+    resolvedSchema(inner).filter(_.columns.nonEmpty).flatMap { innerMapping =>
+      val chain = SubqueryScope.chain(inner, Seq(outer))
+      inner.referencedIdentifiers.iterator
+        .filter(id =>
+          id.tableAlias.isEmpty && id.table.isEmpty && !id.nested && id.name.contains(".")
+        )
+        .flatMap { id =>
+          SubqueryScope.resolve(id, chain) match {
+            // 🔴 The resolver sees a name the DETECTOR did not report. That is possible because the
+            // two used to read different maps, and it is exactly the shape that answers HTTP 200
+            // with zero rows if it executes: Elasticsearch reads `o.region` as an object path.
+            // `correlationNames` now derives from `scopeOf`, so this should be unreachable —
+            // it is the belt for the day the two drift again, and it fails LOUD, never silent.
+            case SubqueryScope.Resolved(depth, _, _) if depth >= 1 =>
+              Some(
+                SubqueryScope.bareCorrelatedMessage(
+                  id.name,
+                  inner.sources.headOption.getOrElse("the subquery's table"),
+                  outer.sources.headOption.getOrElse("the outer table")
+                )
+              )
+            // Unresolved: a typo, or an object path. Only the mapping can tell, and it does.
+            case SubqueryScope.Unresolved
+                if innerMapping.find(id.name.split("\\.", 2)(0)).isEmpty =>
+              Some(SubqueryScope.unresolvedMessage(id, chain, inner.sql))
+            case _ => None
+          }
+        }
+        .toSeq
+        .headOption
+    }
+
+  private def bareNameCorrelation(
     outer: SingleSearch,
     inner: SingleSearch
   ): Option[String] =

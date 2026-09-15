@@ -223,18 +223,24 @@ class DerivedTableSpec extends AnyFlatSpec with Matchers {
     rejects(
       "SELECT c.id FROM customers c JOIN (SELECT o.cid FROM orders o WHERE o.cid = c.id) d " +
       "ON d.cid = c.id",
-      "A derived table cannot reference an outer alias",
+      // 🔴 story 22.3 moved "LATERAL" to the FRONT of this message: `GatewayApi.excerpt` caps a
+      // rejection reason at 200 characters and elides the MIDDLE, so the old wording reached the
+      // REPL user without the word that names the construct. Contract unchanged, order fixed.
+      "LATERAL is not supported",
+      "derived table cannot reference an outer alias",
       "'c.id'",
-      "derived table 'd'",
-      "LATERAL"
+      "derived table 'd'"
     )
   }
 
   it should "be rejected in FROM position, against a later comma-list table" in {
     rejects(
       "SELECT d.x FROM (SELECT o.cid AS x FROM orders o WHERE o.cid = customers.id) d, customers",
-      "A derived table cannot reference an outer alias",
-      "LATERAL"
+      // 🔴 story 22.3 moved "LATERAL" to the FRONT of this message: `GatewayApi.excerpt` caps a
+      // rejection reason at 200 characters and elides the MIDDLE, so the old wording reached the
+      // REPL user without the word that names the construct. Contract unchanged, order fixed.
+      "LATERAL is not supported",
+      "derived table cannot reference an outer alias"
     )
   }
 

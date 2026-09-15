@@ -65,7 +65,7 @@ compose nested queries — where the tool lets you:
 
 ## Not in this release (coming in the next release, Quarter 4 2026)
 
-- **Subqueries**: scalar, `IN (SELECT …)`, `EXISTS (SELECT …)`, derived tables `FROM (SELECT …)`, and correlated subqueries.
+- **Subqueries**: scalar, `IN (SELECT …)`, `EXISTS (SELECT …)`, derived tables `FROM (SELECT …)`.
 - **CTEs**: `WITH name AS (SELECT …)` — recursive and non-recursive.
 - **Set operators**: `UNION` (with row de-duplication), `INTERSECT`, and the `EXCEPT` **set operator**. The `EXCEPT` set operator is **distinct from** the `SELECT * EXCEPT(cols)` column-exclusion clause above — that one works; the set operator does not.
 - **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented; coming with the next release's analytical-SQL work. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work in the current release; the positional/tiling window functions are a different family.)
@@ -189,6 +189,7 @@ permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).
+  **Not this**: correlating one Elasticsearch index against **another Elasticsearch index** — `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` / a scalar comparison against a subquery that reads the outer row — is **single-cluster** and runs through the relational engine shipped in `softclient4es-arrow-extensions`. Its one rule: the outer reference must be **qualified** with the outer table's alias (`… WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`), because a bare column name inside a subquery is read as the subquery's own column. A venue without that jar refuses the statement with HTTP 400 rather than executing it as if it were self-contained.
 
 ## Deferred (a future release, demand-driven — tell us what you need)
 
