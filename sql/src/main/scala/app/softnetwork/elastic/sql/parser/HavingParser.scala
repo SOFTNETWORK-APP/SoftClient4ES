@@ -21,7 +21,7 @@ import app.softnetwork.elastic.sql.query.Having
 trait HavingParser {
   self: Parser with WhereParser =>
 
-  def having: PackratParser[Having] = Having.regex ~> whereCriteria >> { rawTokens =>
+  lazy val having: PackratParser[Having] = Having.regex ~> whereCriteria >> { rawTokens =>
     // `err`, not `throw` and not `failure` (#250) - same treatment as `WhereParser.where`, whose
     // comment carries the full reasoning. `~>` binds tighter than `>>`.
     processTokens(rawTokens) match {

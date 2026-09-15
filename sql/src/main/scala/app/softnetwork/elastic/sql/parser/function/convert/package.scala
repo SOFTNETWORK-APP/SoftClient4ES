@@ -25,7 +25,7 @@ package object convert {
 
   trait ConvertParser { self: Parser =>
 
-    def cast_identifier: PackratParser[Identifier] =
+    lazy val cast_identifier: PackratParser[Identifier] =
       Cast.regex ~ start ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
@@ -33,7 +33,7 @@ package object convert {
         i.withFunctions(Cast(i, targetType = t, as = as.isDefined) +: i.functions)
       }
 
-    def try_cast_identifier: PackratParser[Identifier] =
+    lazy val try_cast_identifier: PackratParser[Identifier] =
       TryCast.regex ~ start ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
@@ -43,7 +43,7 @@ package object convert {
         )
       }
 
-    def convert_identifier: PackratParser[Identifier] =
+    lazy val convert_identifier: PackratParser[Identifier] =
       Convert.regex ~ start ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
@@ -65,7 +65,7 @@ package object convert {
       * 'utf8'`. Taking only the bare form would half-support a spelling the lead confirmed we keep
       * (OQ-3), and `ident` cannot express a quoted one.
       */
-    def convert_using_identifier: PackratParser[Identifier] =
+    lazy val convert_using_identifier: PackratParser[Identifier] =
       Convert.regex ~ start ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
@@ -73,7 +73,7 @@ package object convert {
         i.withFunctions(Convert(i, targetType = SQLTypes.Varchar) +: i.functions)
       }
 
-    def convert_transact_sql_identifier: PackratParser[Identifier] =
+    lazy val convert_transact_sql_identifier: PackratParser[Identifier] =
       Convert.regex ~ start ~> sql_type ~ separator ~ (identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
@@ -88,7 +88,7 @@ package object convert {
           i.withFunctions(CastOperator(i, targetType = t) +: i.functions)
       }
 
-    def conversionFunctionWithIdentifier: PackratParser[Identifier] =
+    lazy val conversionFunctionWithIdentifier: PackratParser[Identifier] =
       (cast_identifier |
       try_cast_identifier |
       convert_identifier |

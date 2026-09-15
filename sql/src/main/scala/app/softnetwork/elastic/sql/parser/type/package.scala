@@ -63,52 +63,53 @@ package object `type` {
       * a bare `"x"`. An EMPTY `""` stays the empty STRING — `quotedNameRegex`'s content quantifier
       * is `+` on purpose.
       */
-    def literal: PackratParser[StringValue] =
+    lazy val literal: PackratParser[StringValue] =
       (""""([^"\\]|\\.|"")*"""".r ^^ { str =>
         StringValue(unescapeStringLiteral(str.substring(1, str.length - 1), '"'))
       }) | ("""'([^'\\]|\\.|'')*'""".r ^^ { str =>
         StringValue(unescapeStringLiteral(str.substring(1, str.length - 1), '\''))
       })
 
-    def long: PackratParser[LongValue] =
+    lazy val long: PackratParser[LongValue] =
       """(-)?(0|[1-9]\d*)""".r ^^ (str => LongValue(str.toLong))
 
-    def double: PackratParser[DoubleValue] =
+    lazy val double: PackratParser[DoubleValue] =
       """(-)?(\d+\.\d+)""".r ^^ (str => DoubleValue(str.toDouble))
 
-    def pi: PackratParser[Value[Double]] =
+    lazy val pi: PackratParser[Value[Double]] =
       PiValue.regex ^^ (_ => PiValue)
 
-    def random: PackratParser[Value[Double]] = """(?i)random\b""".r ^^ (_ => RandomValue)
+    lazy val random: PackratParser[Value[Double]] = """(?i)random\b""".r ^^ (_ => RandomValue)
 
-    def boolean: PackratParser[BooleanValue] =
+    lazy val boolean: PackratParser[BooleanValue] =
       """(?i)(true|false)\b""".r ^^ (bool => BooleanValue(bool.toBoolean))
 
-    def param: PackratParser[ParamValue.type] =
+    lazy val param: PackratParser[ParamValue.type] =
       "?" ^^ (_ => ParamValue)
 
-    def nullValue: PackratParser[Null.type] =
+    lazy val nullValue: PackratParser[Null.type] =
       "(?i)NULL\\b".r ^^ (_ => Null)
 
-    def literals: PackratParser[Value[_]] = "[" ~> repsep(literal, ",") <~ "]" ^^ { list =>
+    lazy val literals: PackratParser[Value[_]] = "[" ~> repsep(literal, ",") <~ "]" ^^ { list =>
       StringValues(list)
     }
 
-    def longs: PackratParser[Value[_]] = "[" ~> repsep(long, ",") <~ "]" ^^ { list =>
+    lazy val longs: PackratParser[Value[_]] = "[" ~> repsep(long, ",") <~ "]" ^^ { list =>
       LongValues(list)
     }
 
-    def doubles: PackratParser[Value[_]] = "[" ~> repsep(double, ",") <~ "]" ^^ { list =>
+    lazy val doubles: PackratParser[Value[_]] = "[" ~> repsep(double, ",") <~ "]" ^^ { list =>
       DoubleValues(list)
     }
 
-    def booleans: PackratParser[BooleanValues] = "[" ~> repsep(boolean, ",") <~ "]" ^^ { list =>
-      BooleanValues(list)
+    lazy val booleans: PackratParser[BooleanValues] = "[" ~> repsep(boolean, ",") <~ "]" ^^ {
+      list =>
+        BooleanValues(list)
     }
 
-    def array: PackratParser[Value[_]] = literals | longs | doubles | booleans
+    lazy val array: PackratParser[Value[_]] = literals | longs | doubles | booleans
 
-    def value: PackratParser[Value[_]] =
+    lazy val value: PackratParser[Value[_]] =
       literal | pi | random | double | long | boolean | nullValue | param | array
 
     /** The two ingest-time placeholders a column DEFAULT may carry. They live beside `value` so
@@ -116,9 +117,9 @@ package object `type` {
       * `option` both need them, and only the former could see them while they were declared in the
       * object.
       */
-    def ingest_id: PackratParser[Value[_]] = "_id" ^^ (_ => IdValue)
+    lazy val ingest_id: PackratParser[Value[_]] = "_id" ^^ (_ => IdValue)
 
-    def ingest_timestamp: PackratParser[Value[_]] =
+    lazy val ingest_timestamp: PackratParser[Value[_]] =
       "_ingest.timestamp" ^^ (_ => IngestTimestampValue)
 
     def identifierWithValue: Parser[Identifier] = (value ^^ functionAsIdentifier) >> cast
@@ -126,7 +127,7 @@ package object `type` {
     /** An UNSIGNED decimal integer — deliberately NOT `long`, whose regex carries an optional sign
       * and would accept `CHAR(-1)`.
       */
-    private def typeParamValue: PackratParser[String] = """\d+""".r ^^ (v => v)
+    private lazy val typeParamValue: PackratParser[String] = """\d+""".r ^^ (v => v)
 
     /** An ANSI/MySQL type parameter list — `CHAR(10)`, `DECIMAL(10,2)`, `INT(11)`, `TIMESTAMP(3)`.
       *
@@ -147,13 +148,13 @@ package object `type` {
       * yields a `Failure` (never an `Error` — none of `start`/`separator`/`end` is `~!`/`err`),
       * which `|` recovers, restoring the input position.
       */
-    def typeParams: PackratParser[Unit] =
+    lazy val typeParams: PackratParser[Unit] =
       opt(start ~ typeParamValue ~ opt(separator ~ typeParamValue) ~ end) ^^ (_ => ())
 
-    def char_type: PackratParser[SQLTypes.Char.type] =
+    lazy val char_type: PackratParser[SQLTypes.Char.type] =
       "(?i)char".r ~ typeParams ^^ (_ => SQLTypes.Char)
 
-    def string_type: PackratParser[SQLTypes.Varchar.type] =
+    lazy val string_type: PackratParser[SQLTypes.Varchar.type] =
       "(?i)varchar|string".r ~ typeParams ^^ (_ => SQLTypes.Varchar)
 
     /** `DECIMAL` / `NUMERIC` / `DEC` map to DOUBLE, **not** to `SQLTypes.Numeric`.
@@ -163,7 +164,7 @@ package object `type` {
       * identity fallback and would emit the operand UNCONVERTED — the #205 silent-wrong-answer
       * shape. DOUBLE is also what Elasticsearch actually stores for these.
       */
-    def decimal_type: PackratParser[SQLTypes.Double.type] =
+    lazy val decimal_type: PackratParser[SQLTypes.Double.type] =
       """(?i)(decimal|numeric|dec)\b""".r ~ typeParams ^^ (_ => SQLTypes.Double)
 
     /** MySQL's `CAST(x AS SIGNED)` / `AS UNSIGNED` — what Tableau's MySQL dialect emits. Both are
@@ -171,53 +172,53 @@ package object `type` {
       * UNSIGNED is an alias of BIGINT and the documentation says so rather than pretending. Neither
       * spelling takes a parameter list in any dialect, so neither gets one.
       */
-    def signed_type: PackratParser[SQLTypes.BigInt.type] =
+    lazy val signed_type: PackratParser[SQLTypes.BigInt.type] =
       """(?i)(signed|unsigned)(\s+(integer|int))?\b""".r ^^ (_ => SQLTypes.BigInt)
 
     /** No dialect gives `DATE` a precision — a fractional-seconds precision belongs to `TIME`,
       * `TIMESTAMP` and `DATETIME`.
       */
-    def date_type: PackratParser[SQLTypes.Date.type] = "(?i)date".r ^^ (_ => SQLTypes.Date)
+    lazy val date_type: PackratParser[SQLTypes.Date.type] = "(?i)date".r ^^ (_ => SQLTypes.Date)
 
-    def time_type: PackratParser[SQLTypes.Time.type] =
+    lazy val time_type: PackratParser[SQLTypes.Time.type] =
       "(?i)time".r ~ typeParams ^^ (_ => SQLTypes.Time)
 
-    def datetime_type: PackratParser[SQLTypes.DateTime.type] =
+    lazy val datetime_type: PackratParser[SQLTypes.DateTime.type] =
       "(?i)(datetime)".r ~ typeParams ^^ (_ => SQLTypes.DateTime)
 
-    def timestamp_type: PackratParser[SQLTypes.Timestamp.type] =
+    lazy val timestamp_type: PackratParser[SQLTypes.Timestamp.type] =
       "(?i)(timestamp)".r ~ typeParams ^^ (_ => SQLTypes.Timestamp)
 
-    def boolean_type: PackratParser[SQLTypes.Boolean.type] =
+    lazy val boolean_type: PackratParser[SQLTypes.Boolean.type] =
       "(?i)boolean".r ^^ (_ => SQLTypes.Boolean)
 
-    def byte_type: PackratParser[SQLTypes.TinyInt.type] =
+    lazy val byte_type: PackratParser[SQLTypes.TinyInt.type] =
       "(?i)(byte|tinyint)".r ~ typeParams ^^ (_ => SQLTypes.TinyInt)
 
-    def short_type: PackratParser[SQLTypes.SmallInt.type] =
+    lazy val short_type: PackratParser[SQLTypes.SmallInt.type] =
       "(?i)(short|smallint)".r ~ typeParams ^^ (_ => SQLTypes.SmallInt)
 
-    def int_type: PackratParser[SQLTypes.Int.type] =
+    lazy val int_type: PackratParser[SQLTypes.Int.type] =
       "(?i)(integer|int)".r ~ typeParams ^^ (_ => SQLTypes.Int)
 
-    def long_type: PackratParser[SQLTypes.BigInt.type] =
+    lazy val long_type: PackratParser[SQLTypes.BigInt.type] =
       "(?i)long|bigint".r ~ typeParams ^^ (_ => SQLTypes.BigInt)
 
-    def double_type: PackratParser[SQLTypes.Double.type] =
+    lazy val double_type: PackratParser[SQLTypes.Double.type] =
       "(?i)double".r ~ typeParams ^^ (_ => SQLTypes.Double)
 
-    def float_type: PackratParser[SQLTypes.Real.type] =
+    lazy val float_type: PackratParser[SQLTypes.Real.type] =
       "(?i)float|real".r ~ typeParams ^^ (_ => SQLTypes.Real)
 
-    def struct_type: PackratParser[SQLTypes.Struct.type] =
+    lazy val struct_type: PackratParser[SQLTypes.Struct.type] =
       "(?i)struct".r ^^ (_ => SQLTypes.Struct)
 
-    def array_type: PackratParser[SQLTypes.Array] =
+    lazy val array_type: PackratParser[SQLTypes.Array] =
       "(?i)array<".r ~> sql_type <~ ">" ^^ { elementType =>
         SQLTypes.Array(elementType)
       }
 
-    def binary_type: PackratParser[SQLTypes.VarBinary.type] =
+    lazy val binary_type: PackratParser[SQLTypes.VarBinary.type] =
       "(?i)(binary|varbinary)".r ~ typeParams ^^ (_ => SQLTypes.VarBinary)
 
     /** 🔴 The ORDER is load-bearing: none of these regexes carries a `\b`, so a shorter name that
@@ -230,7 +231,7 @@ package object `type` {
       * only) — which is precisely why a DQL cast to `TEXT` or `KEYWORD` was rejected while `CREATE
       * TABLE t (c TEXT)` worked.
       */
-    def sql_type: PackratParser[SQLType] =
+    lazy val sql_type: PackratParser[SQLType] =
       char_type |
       string_type |
       decimal_type |
@@ -252,17 +253,17 @@ package object `type` {
       array_type |
       binary_type
 
-    def text_type: PackratParser[SQLTypes.Text.type] =
+    lazy val text_type: PackratParser[SQLTypes.Text.type] =
       "(?i)text".r ~ typeParams ^^ (_ => SQLTypes.Text)
 
     /** Elasticsearch's `keyword` has no length, in SQL or in ES. */
-    def keyword_type: PackratParser[SQLTypes.Keyword.type] =
+    lazy val keyword_type: PackratParser[SQLTypes.Keyword.type] =
       "(?i)keyword".r ^^ (_ => SQLTypes.Keyword)
 
-    def geo_point_type: PackratParser[SQLTypes.GeoPoint.type] =
+    lazy val geo_point_type: PackratParser[SQLTypes.GeoPoint.type] =
       "(?i)(geo_point|geopoint)".r ^^ (_ => SQLTypes.GeoPoint)
 
-    def extension_type: PackratParser[SQLType] =
+    lazy val extension_type: PackratParser[SQLType] =
       sql_type | geo_point_type
   }
 }

@@ -21,7 +21,7 @@ import app.softnetwork.elastic.sql.query.{Except, Field, Select}
 trait SelectParser {
   self: Parser with WhereParser =>
 
-  def field: PackratParser[Field] =
+  lazy val field: PackratParser[Field] =
     // #284: decline the quoted lexeme when an arithmetic operator follows, so
     // `SELECT `amount` + 1` reaches identifierWithArithmeticExpression below.
     (quotedIdentifierUnlessArithmetic |
@@ -35,12 +35,12 @@ trait SelectParser {
       Field(i, a)
     }
 
-  def except: PackratParser[Except] = Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ {
-    case _ ~ _ ~ e ~ _ =>
+  lazy val except: PackratParser[Except] =
+    Except.regex ~ start ~ rep1sep(field, separator) ~ end ^^ { case _ ~ _ ~ e ~ _ =>
       Except(e)
-  }
+    }
 
-  def select: PackratParser[Select] =
+  lazy val select: PackratParser[Select] =
     Select.regex ~ rep1sep(
       field,
       separator

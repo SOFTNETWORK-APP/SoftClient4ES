@@ -36,20 +36,20 @@ import app.softnetwork.elastic.sql.query.{
 trait FromParser {
   self: Parser with WhereParser with LimitParser =>
 
-  def unnest: PackratParser[Join] =
+  lazy val unnest: PackratParser[Join] =
     Unnest.regex ~ start ~ identifier ~ end ~ alias.? ^^ { case _ ~ i ~ _ ~ a =>
       Unnest(i, None, a)
     }
 
-  def inner_join: PackratParser[JoinType] = InnerJoin.regex ^^ { _ => InnerJoin }
-  def left_join: PackratParser[JoinType] = LeftJoin.regex ^^ { _ => LeftJoin }
-  def right_join: PackratParser[JoinType] = RightJoin.regex ^^ { _ => RightJoin }
-  def full_join: PackratParser[JoinType] = FullJoin.regex ^^ { _ => FullJoin }
-  def cross_join: PackratParser[JoinType] = CrossJoin.regex ^^ { _ => CrossJoin }
-  def join_type: PackratParser[JoinType] =
+  lazy val inner_join: PackratParser[JoinType] = InnerJoin.regex ^^ { _ => InnerJoin }
+  lazy val left_join: PackratParser[JoinType] = LeftJoin.regex ^^ { _ => LeftJoin }
+  lazy val right_join: PackratParser[JoinType] = RightJoin.regex ^^ { _ => RightJoin }
+  lazy val full_join: PackratParser[JoinType] = FullJoin.regex ^^ { _ => FullJoin }
+  lazy val cross_join: PackratParser[JoinType] = CrossJoin.regex ^^ { _ => CrossJoin }
+  lazy val join_type: PackratParser[JoinType] =
     inner_join | left_join | right_join | full_join | cross_join
 
-  def on: PackratParser[On] = On.regex ~> whereCriteria >> { rawTokens =>
+  lazy val on: PackratParser[On] = On.regex ~> whereCriteria >> { rawTokens =>
     // `On(criteria: Criteria)` is not optional (query/From.scala), which is why an ON whose
     // criteria resolve to nothing used to `throw new Exception`. #250: `err`, like every other
     // rejection in this package - see `WhereParser.where` for the full reasoning.
@@ -79,7 +79,7 @@ trait FromParser {
     * would render `"logs-2025"."03"` and re-parse as qualifier `logs-2025` + index `03`.
     * `StandardJoin.sql` renders each `NamePart` as ONE lexeme instead (21.2 AD-5).
     */
-  def source: PackratParser[StandardJoin] =
+  lazy val source: PackratParser[StandardJoin] =
     derivedTable ^^ { dt =>
       // A derived JOIN leg owns its alias and its parts are empty — the AD-1 invariant that
       // `StandardJoin.validate()` ENFORCES.
@@ -95,12 +95,13 @@ trait FromParser {
       )
     }
 
-  def join: PackratParser[Join] = opt(join_type) ~ Join.regex ~ (unnest | source) ~ opt(on) ^^ {
-    case _ ~ _ ~ (u: Unnest) ~ _ =>
-      u // Unnest cannot have a join type or an ON clause
-    case jt ~ _ ~ (sj: StandardJoin) ~ o =>
-      sj.copy(joinType = jt, on = o)
-  }
+  lazy val join: PackratParser[Join] =
+    opt(join_type) ~ Join.regex ~ (unnest | source) ~ opt(on) ^^ {
+      case _ ~ _ ~ (u: Unnest) ~ _ =>
+        u // Unnest cannot have a join type or an ON clause
+      case jt ~ _ ~ (sj: StandardJoin) ~ o =>
+        sj.copy(joinType = jt, on = o)
+    }
 
   /** The FROM (and DELETE, and CTAS/MV/WATCHER body) table reference.
     *
@@ -109,7 +110,7 @@ trait FromParser {
     * discarded, which is what the `quotedSchemaPrefix` this replaces used to do (#85): the render
     * no longer deletes a clause the statement carried.
     */
-  def table: PackratParser[Table] =
+  lazy val table: PackratParser[Table] =
     (derivedTable ^^ { dt => Table(dt.name, None, Nil, Nil, derived = Some(dt)) } |
     tableParts ~ alias.? ^^ { case ps ~ a => Table(ps.last.value, a, Nil, parts = ps) }) ~
     rep(join) ^^ { case t ~ js => t.copy(joins = js) }
@@ -142,7 +143,7 @@ trait FromParser {
     * Recursion (`table -> derivedTable -> searchStatement -> single -> from -> table`) runs through
     * a CONSUMED `(`, so it is not left recursion; Packrat memoises it and nesting is unbounded.
     */
-  override def derivedTable: PackratParser[DerivedTable] =
+  override lazy val derivedTable: PackratParser[DerivedTable] =
     (start ~> (derivedTableBodyInner | err(
       "A derived table body must be a SELECT: write FROM (SELECT ...) AS <name>"
     )) <~ end) ~ alias.? >> {
@@ -154,8 +155,9 @@ trait FromParser {
         )
     }
 
-  def from: PackratParser[From] = From.regex ~ rep1sep(table, separator) ^^ { case _ ~ tables =>
-    From(tables)
+  lazy val from: PackratParser[From] = From.regex ~ rep1sep(table, separator) ^^ {
+    case _ ~ tables =>
+      From(tables)
   }
 
 }

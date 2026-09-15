@@ -88,21 +88,21 @@ import app.softnetwork.elastic.sql.query.{
 trait WhereParser {
   self: Parser with GroupByParser with OrderByParser =>
 
-  def isNull: PackratParser[Criteria] = (quotedIdentifier | identifier) ~ IS_NULL.regex ^^ {
+  lazy val isNull: PackratParser[Criteria] = (quotedIdentifier | identifier) ~ IS_NULL.regex ^^ {
     case i ~ _ =>
       IsNullExpr(i)
   }
 
-  def isNotNull: PackratParser[Criteria] =
+  lazy val isNotNull: PackratParser[Criteria] =
     (quotedIdentifier | identifier) ~ IS_NOT_NULL.regex ^^ { case i ~ _ =>
       IsNotNullExpr(i)
     }
 
-  def eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
+  lazy val eq: PackratParser[ComparisonOperator] = EQ.sql ^^ (_ => EQ)
 
-  def ne: PackratParser[ComparisonOperator] = NE.sql ^^ (_ => NE)
+  lazy val ne: PackratParser[ComparisonOperator] = NE.sql ^^ (_ => NE)
 
-  def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
+  lazy val diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
   /** 🔴 `lazy val`, NOT `def` — and it is a PERFORMANCE contract, not a style choice.
     *
@@ -135,37 +135,37 @@ trait WhereParser {
     identifierWithValue |
     identifier
 
-  private def equality: PackratParser[GenericExpression] =
+  private lazy val equality: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (eq | ne | diff) ~ (boolean | quotedQualifiedIdentifier | literal | double | pi | geo_distance | long | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
-  def like: PackratParser[GenericExpression] =
+  lazy val like: PackratParser[GenericExpression] =
     any_identifier ~ not.? ~ LIKE.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
       GenericExpression(i, LIKE, v, n)
     }
 
-  def rlike: PackratParser[GenericExpression] =
+  lazy val rlike: PackratParser[GenericExpression] =
     any_identifier ~ not.? ~ RLIKE.regex ~ literal ^^ { case i ~ n ~ _ ~ v =>
       GenericExpression(i, RLIKE, v, n)
     }
 
-  def ge: PackratParser[ComparisonOperator] = GE.sql ^^ (_ => GE)
+  lazy val ge: PackratParser[ComparisonOperator] = GE.sql ^^ (_ => GE)
 
-  def gt: PackratParser[ComparisonOperator] = GT.sql ^^ (_ => GT)
+  lazy val gt: PackratParser[ComparisonOperator] = GT.sql ^^ (_ => GT)
 
-  def le: PackratParser[ComparisonOperator] = LE.sql ^^ (_ => LE)
+  lazy val le: PackratParser[ComparisonOperator] = LE.sql ^^ (_ => LE)
 
-  def lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
+  lazy val lt: PackratParser[ComparisonOperator] = LT.sql ^^ (_ => LT)
 
-  private def comparison: PackratParser[GenericExpression] =
+  private lazy val comparison: PackratParser[GenericExpression] =
     not.? ~ any_identifier ~ (ge | gt | le | lt) ~ (double | pi | random | geo_distance | long | quotedQualifiedIdentifier | literal | any_identifier) ^^ {
       case n ~ i ~ o ~ v => GenericExpression(i, o, v, n)
     }
 
-  def in: PackratParser[ExpressionOperator] = IN.regex ^^ (_ => IN)
+  lazy val in: PackratParser[ExpressionOperator] = IN.regex ^^ (_ => IN)
 
-  private def inLiteral: PackratParser[Criteria] =
+  private lazy val inLiteral: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(literal, separator) ~ end ^^ {
       case i ~ n ~ _ ~ _ ~ v ~ _ =>
         InExpr(
@@ -175,7 +175,7 @@ trait WhereParser {
         )
     }
 
-  private def inDoubles: PackratParser[Criteria] =
+  private lazy val inDoubles: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(
       double,
       separator
@@ -187,7 +187,7 @@ trait WhereParser {
       )
     }
 
-  private def inLongs: PackratParser[Criteria] =
+  private lazy val inLongs: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ start ~ rep1sep(
       long,
       separator
@@ -199,27 +199,27 @@ trait WhereParser {
       )
     }
 
-  def between: PackratParser[Criteria] =
+  lazy val between: PackratParser[Criteria] =
     any_identifier ~ not.? ~ BETWEEN.regex ~ literal ~ and ~ literal ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LiteralFromTo(from, to), n)
     }
 
-  def betweenLongs: PackratParser[Criteria] =
+  lazy val betweenLongs: PackratParser[Criteria] =
     any_identifier ~ not.? ~ BETWEEN.regex ~ long ~ and ~ long ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, LongFromTo(from, to), n)
     }
 
-  def betweenDoubles: PackratParser[Criteria] =
+  lazy val betweenDoubles: PackratParser[Criteria] =
     any_identifier ~ not.? ~ BETWEEN.regex ~ double ~ and ~ double ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, DoubleFromTo(from, to), n)
     }
 
-  def betweenIdentifiers: PackratParser[Criteria] =
+  lazy val betweenIdentifiers: PackratParser[Criteria] =
     any_identifier ~ not.? ~ BETWEEN.regex ~ any_identifier ~ and ~ any_identifier ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to => BetweenExpr(i, IdentifierFromTo(from, to), n)
     }
 
-  def betweenDistances: PackratParser[Criteria] =
+  lazy val betweenDistances: PackratParser[Criteria] =
     distance_identifier ~ not.? ~ BETWEEN.regex ~ (geo_distance | long) ~ and ~ (geo_distance | long) ^^ {
       case i ~ n ~ _ ~ from ~ _ ~ to =>
         BetweenExpr(
@@ -243,7 +243,7 @@ trait WhereParser {
       DistanceCriteria(d, o, g)
     }*/
 
-  def matchCriteria: PackratParser[MultiMatchCriteria] =
+  lazy val matchCriteria: PackratParser[MultiMatchCriteria] =
     MATCH.regex ~ start ~ rep1sep(
       any_identifier,
       separator
@@ -251,13 +251,13 @@ trait WhereParser {
       MultiMatchCriteria(i, l)
     }
 
-  def and: PackratParser[PredicateOperator] = AND.regex ^^ (_ => AND)
+  lazy val and: PackratParser[PredicateOperator] = AND.regex ^^ (_ => AND)
 
-  def or: PackratParser[PredicateOperator] = OR.regex ^^ (_ => OR)
+  lazy val or: PackratParser[PredicateOperator] = OR.regex ^^ (_ => OR)
 
-  def not: PackratParser[NOT.type] = NOT.regex ^^ (_ => NOT)
+  lazy val not: PackratParser[NOT.type] = NOT.regex ^^ (_ => NOT)
 
-  def logical_criteria: PackratParser[Criteria] =
+  lazy val logical_criteria: PackratParser[Criteria] =
     (is_null | is_notnull) ^^ { case ConditionalFunctionAsCriteria(c) =>
       c
     }
@@ -272,23 +272,24 @@ trait WhereParser {
     * rejected. With `derivedTableBodyInner` the failure inside the parentheses is a plain `Failure`
     * and the fall-through keeps the parenthesised-expression reading. Pinned by the neighbour test.
     */
-  private def subqueryBody: PackratParser[DqlStatement] = start ~> derivedTableBodyInner <~ end
+  private lazy val subqueryBody: PackratParser[DqlStatement] = start ~> derivedTableBodyInner <~ end
 
-  private def comparisonOp: PackratParser[ComparisonOperator] = eq | ne | diff | ge | gt | le | lt
+  private lazy val comparisonOp: PackratParser[ComparisonOperator] =
+    eq | ne | diff | ge | gt | le | lt
 
   /** `SOME` is canonicalised to `ANY` here (ANSI synonyms), so the AST carries one spelling and `x
     * > SOME (S)` renders — and re-parses — as `x > ANY (S)`.
     */
-  private def quantifier: PackratParser[Quantifier] =
+  private lazy val quantifier: PackratParser[Quantifier] =
     ANY.regex ^^ (_ => ANY) | SOME.regex ^^ (_ => ANY) | ALL.regex ^^ (_ => ALL)
 
-  private def existsSubquery: PackratParser[Criteria] =
+  private lazy val existsSubquery: PackratParser[Criteria] =
     not.? ~ (EXISTS.regex ~> subqueryBody) ^^ { case n ~ q => ExistsSubquery(q, n) }
 
-  private def inSubquery: PackratParser[Criteria] =
+  private lazy val inSubquery: PackratParser[Criteria] =
     any_identifier ~ not.? ~ in ~ subqueryBody ^^ { case i ~ n ~ _ ~ q => InSubquery(i, q, n) }
 
-  private def scalarSubquery: PackratParser[Criteria] =
+  private lazy val scalarSubquery: PackratParser[Criteria] =
     not.? ~ any_identifier ~ comparisonOp ~ subqueryBody ^^ { case n ~ i ~ o ~ q =>
       ScalarSubquery(i, o, q, n)
     }
@@ -308,7 +309,7 @@ trait WhereParser {
     * production fails at `subqueryBody` and the alternation falls through to `equality` with the
     * column reading intact.
     */
-  private def quantifiedSubquery: PackratParser[Criteria] =
+  private lazy val quantifiedSubquery: PackratParser[Criteria] =
     not.? ~ any_identifier ~ comparisonOp ~ quantifier ~ subqueryBody ^^ {
       case n ~ i ~ EQ ~ ANY ~ q          => InSubquery(i, q, n)
       case n ~ i ~ (NE | DIFF) ~ ALL ~ q =>
@@ -356,7 +357,7 @@ trait WhereParser {
     matchCriteria |
     logical_criteria) ^^ (c => c)
 
-  def predicate: PackratParser[Predicate] = criteria ~ (and | or) ~ not.? ~ criteria ^^ {
+  lazy val predicate: PackratParser[Predicate] = criteria ~ (and | or) ~ not.? ~ criteria ^^ {
     case l ~ o ~ n ~ r => Predicate(l, o, r, n)
   }
 
@@ -366,7 +367,7 @@ trait WhereParser {
     * exactly the token shape it sees at top level and builds the same tree (including
     * `Predicate.group = true`, which is what renders the parentheses back).
     */
-  private def relationGroup: PackratParser[List[Token]] =
+  private lazy val relationGroup: PackratParser[List[Token]] =
     start ~ relationTokens ~ end ^^ { case s ~ ts ~ e => (s :: ts) :+ e }
 
   /** The token stream inside a relation predicate's parentheses.
@@ -393,7 +394,7 @@ trait WhereParser {
     * tree the same expression produces at top level"* (`ParserTotalitySpec`): if one alternation
     * gains a shape the other cannot reach, the two trees stop being equal and it fails.
     */
-  private def relationTokens: PackratParser[List[Token]] =
+  private lazy val relationTokens: PackratParser[List[Token]] =
     rep1(
       relationGroup |
       allPredicate ^^ (c => List(c: Token)) |
@@ -443,39 +444,39 @@ trait WhereParser {
     * happily as `CHILD(a = 1) AND b = 2`. An opening parenthesis now commits to `childPredicate`,
     * which requires the closing one.
     */
-  def nestedCriteria: PackratParser[ElasticRelation] =
+  lazy val nestedCriteria: PackratParser[ElasticRelation] =
     Nested.regex ~> criteria ^^ { c =>
       ElasticNested(c, None, fromCriteria = false)
     }
 
-  def nestedPredicate: PackratParser[ElasticRelation] =
+  lazy val nestedPredicate: PackratParser[ElasticRelation] =
     Nested.regex ~> relationCriteria("NESTED") ^^ { c =>
       ElasticNested(c, None, fromCriteria = false)
     }
 
-  def childCriteria: PackratParser[ElasticRelation] = Child.regex ~> criteria ^^ { c =>
+  lazy val childCriteria: PackratParser[ElasticRelation] = Child.regex ~> criteria ^^ { c =>
     ElasticChild(c)
   }
 
-  def childPredicate: PackratParser[ElasticRelation] =
+  lazy val childPredicate: PackratParser[ElasticRelation] =
     Child.regex ~> relationCriteria("CHILD") ^^ { c =>
       ElasticChild(c)
     }
 
-  def parentCriteria: PackratParser[ElasticRelation] =
+  lazy val parentCriteria: PackratParser[ElasticRelation] =
     Parent.regex ~> criteria ^^ { c =>
       ElasticParent(c)
     }
 
-  def parentPredicate: PackratParser[ElasticRelation] =
+  lazy val parentPredicate: PackratParser[ElasticRelation] =
     Parent.regex ~> relationCriteria("PARENT") ^^ { c =>
       ElasticParent(c)
     }
 
-  private def allPredicate: PackratParser[Criteria] =
+  private lazy val allPredicate: PackratParser[Criteria] =
     nestedPredicate | childPredicate | parentPredicate | predicate
 
-  private def allCriteria: PackratParser[Token] =
+  private lazy val allCriteria: PackratParser[Token] =
     nestedCriteria | childCriteria | parentCriteria | criteria
 
   /** The token stream of a WHERE / HAVING / CASE-WHEN / JOIN-ON condition.
@@ -509,7 +510,7 @@ trait WhereParser {
     * Written as a plain `Parser[List[Token]]` over the existing item parser: PackratParser memoises
     * the items exactly as before, and the depth is a local of one scan, never parser state.
     */
-  def whereCriteria: PackratParser[List[Token]] = new self.Parser[List[Token]] {
+  lazy val whereCriteria: PackratParser[List[Token]] = new self.Parser[List[Token]] {
 
     // The SAME alternation, in the SAME order, as the `rep1` this replaces.
     private val item: self.Parser[Token] =
@@ -532,7 +533,7 @@ trait WhereParser {
     override def apply(in: Input): ParseResult[List[Token]] = scan(in, 0, Nil)
   }
 
-  def where: PackratParser[Where] =
+  lazy val where: PackratParser[Where] =
     Where.regex ~ whereCriteria >> { case _ ~ rawTokens =>
       // `err`, not `throw` and not `failure` (#250, same reasoning as `alterTable`,
       // Parser.scala:713-729). `Error.append` returns `this` (scala-parser-combinators 1.1.2,

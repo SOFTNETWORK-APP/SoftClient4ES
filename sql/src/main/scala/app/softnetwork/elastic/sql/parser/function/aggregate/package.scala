@@ -25,48 +25,48 @@ package object aggregate {
 
   trait AggregateParser { self: Parser with OrderByParser with LimitParser =>
 
-    def count: PackratParser[AggregateFunction] = COUNT.regex ^^ (_ => COUNT)
+    lazy val count: PackratParser[AggregateFunction] = COUNT.regex ^^ (_ => COUNT)
 
-    def min: PackratParser[AggregateFunction] = MIN.regex ^^ (_ => MIN)
+    lazy val min: PackratParser[AggregateFunction] = MIN.regex ^^ (_ => MIN)
 
-    def max: PackratParser[AggregateFunction] = MAX.regex ^^ (_ => MAX)
+    lazy val max: PackratParser[AggregateFunction] = MAX.regex ^^ (_ => MAX)
 
-    def avg: PackratParser[AggregateFunction] = AVG.regex ^^ (_ => AVG)
+    lazy val avg: PackratParser[AggregateFunction] = AVG.regex ^^ (_ => AVG)
 
-    def sum: PackratParser[AggregateFunction] = SUM.regex ^^ (_ => SUM)
+    lazy val sum: PackratParser[AggregateFunction] = SUM.regex ^^ (_ => SUM)
 
-    def stddev: PackratParser[AggregateFunction] = STDDEV.regex ^^ (_ => STDDEV)
+    lazy val stddev: PackratParser[AggregateFunction] = STDDEV.regex ^^ (_ => STDDEV)
 
-    def stddev_pop: PackratParser[AggregateFunction] = STDDEV_POP.regex ^^ (_ => STDDEV_POP)
+    lazy val stddev_pop: PackratParser[AggregateFunction] = STDDEV_POP.regex ^^ (_ => STDDEV_POP)
 
-    def stddev_samp: PackratParser[AggregateFunction] = STDDEV_SAMP.regex ^^ (_ => STDDEV_SAMP)
+    lazy val stddev_samp: PackratParser[AggregateFunction] = STDDEV_SAMP.regex ^^ (_ => STDDEV_SAMP)
 
-    def variance: PackratParser[AggregateFunction] = VARIANCE.regex ^^ (_ => VARIANCE)
+    lazy val variance: PackratParser[AggregateFunction] = VARIANCE.regex ^^ (_ => VARIANCE)
 
-    def var_pop: PackratParser[AggregateFunction] = VAR_POP.regex ^^ (_ => VAR_POP)
+    lazy val var_pop: PackratParser[AggregateFunction] = VAR_POP.regex ^^ (_ => VAR_POP)
 
-    def var_samp: PackratParser[AggregateFunction] = VAR_SAMP.regex ^^ (_ => VAR_SAMP)
+    lazy val var_samp: PackratParser[AggregateFunction] = VAR_SAMP.regex ^^ (_ => VAR_SAMP)
 
     // Longest-prefix alternation: STDDEV_POP / STDDEV_SAMP / VAR_POP / VAR_SAMP must be tried
     // before the bare STDDEV / VARIANCE so the suffixed forms are not shadowed.
-    def aggregate_function: PackratParser[AggregateFunction] =
+    lazy val aggregate_function: PackratParser[AggregateFunction] =
       count | min | max | avg | sum |
       stddev_pop | stddev_samp | stddev |
       var_pop | var_samp | variance
 
-    def aggWithFunction: PackratParser[Identifier] =
+    lazy val aggWithFunction: PackratParser[Identifier] =
       identifierWithArithmeticExpression |
       identifierWithTransformation |
       identifierWithIntervalFunction |
       identifierWithFunction |
       identifier
 
-    def identifierWithAggregation: PackratParser[Identifier] =
+    lazy val identifierWithAggregation: PackratParser[Identifier] =
       aggregate_function ~ start ~ aggWithFunction ~ end ^^ { case a ~ _ ~ i ~ _ =>
         i.withFunctions(a +: i.functions)
       }
 
-    def partition_by: PackratParser[Seq[Identifier]] =
+    lazy val partition_by: PackratParser[Seq[Identifier]] =
       PARTITION_BY.regex ~> rep1sep(identifierWithTransformation | identifier, separator)
 
     private[this] def over: Parser[(Seq[Identifier], Option[OrderBy], Option[Limit])] =
@@ -84,7 +84,7 @@ package object aggregate {
         }
       }
 
-    def first_value: PackratParser[WindowFunction] =
+    lazy val first_value: PackratParser[WindowFunction] =
       FIRST_VALUE.regex ~ window_function() ^^ { case _ ~ top =>
         FirstValue(
           top._1,
@@ -93,7 +93,7 @@ package object aggregate {
         )
       }
 
-    def last_value: PackratParser[WindowFunction] =
+    lazy val last_value: PackratParser[WindowFunction] =
       LAST_VALUE.regex ~ window_function() ^^ { case _ ~ top =>
         LastValue(
           top._1,
@@ -102,7 +102,7 @@ package object aggregate {
         )
       }
 
-    def array_agg: PackratParser[WindowFunction] =
+    lazy val array_agg: PackratParser[WindowFunction] =
       ARRAY_AGG.regex ~ window_function() ^^ { case _ ~ top =>
         ArrayAgg(
           top._1,
@@ -117,32 +117,32 @@ package object aggregate {
       * `CountAgg`'s identifier and, via `identifierWithWindowFunction`, the outer identifier -- and
       * from then on it is indistinguishable from a `COUNT(*)` the user typed.
       */
-    def count_agg: PackratParser[WindowFunction] =
+    lazy val count_agg: PackratParser[WindowFunction] =
       count ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         CountAgg(CountAgg.rowCountingOperand(top._1), top._2)
       }
 
-    def min_agg: PackratParser[WindowFunction] =
+    lazy val min_agg: PackratParser[WindowFunction] =
       min ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         MinAgg(top._1, top._2)
       }
 
-    def max_agg: PackratParser[WindowFunction] =
+    lazy val max_agg: PackratParser[WindowFunction] =
       max ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         MaxAgg(top._1, top._2)
       }
 
-    def avg_agg: PackratParser[WindowFunction] =
+    lazy val avg_agg: PackratParser[WindowFunction] =
       avg ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         AvgAgg(top._1, top._2)
       }
 
-    def sum_agg: PackratParser[WindowFunction] =
+    lazy val sum_agg: PackratParser[WindowFunction] =
       sum ~ window_function(aggWithFunction) ^^ { case _ ~ top =>
         SumAgg(top._1, top._2)
       }
 
-    def stddev_agg: PackratParser[WindowFunction] =
+    lazy val stddev_agg: PackratParser[WindowFunction] =
       (stddev_pop | stddev_samp | stddev) ~ window_function(aggWithFunction) ^^ { case fn ~ top =>
         val kind = fn match {
           case STDDEV_POP  => ExtendedStatsKind.StddevPop
@@ -152,7 +152,7 @@ package object aggregate {
         ExtendedStatsAgg(top._1, kind, top._2)
       }
 
-    def variance_agg: PackratParser[WindowFunction] =
+    lazy val variance_agg: PackratParser[WindowFunction] =
       (var_pop | var_samp | variance) ~ window_function(aggWithFunction) ^^ { case fn ~ top =>
         val kind = fn match {
           case VAR_POP  => ExtendedStatsKind.VarPop
@@ -162,18 +162,18 @@ package object aggregate {
         ExtendedStatsAgg(top._1, kind, top._2)
       }
 
-    def percentile_cont: PackratParser[AggregateFunction] =
+    lazy val percentile_cont: PackratParser[AggregateFunction] =
       PERCENTILE_CONT.regex ^^ (_ => PERCENTILE_CONT)
 
-    def percentile_disc: PackratParser[AggregateFunction] =
+    lazy val percentile_disc: PackratParser[AggregateFunction] =
       PERCENTILE_DISC.regex ^^ (_ => PERCENTILE_DISC)
 
     // Numeric percentile literal in [0,1] — accepts decimals (0.99) and whole 0/1.
-    private[this] def percentile_literal: PackratParser[Double] =
+    private[this] lazy val percentile_literal: PackratParser[Double] =
       (double ^^ (_.value)) | (long ^^ (_.value.toDouble))
 
     // (col, p) shorthand  OR  (p)
-    private[this] def percentile_args: PackratParser[(Option[Identifier], Double)] =
+    private[this] lazy val percentile_args: PackratParser[(Option[Identifier], Double)] =
       (start ~> aggWithFunction ~ (separator ~> percentile_literal) <~ end ^^ { case id ~ p =>
         (Some(id), p)
       }) |
@@ -182,7 +182,7 @@ package object aggregate {
     // WITHIN GROUP ( ORDER BY <col> ) -> value column(s). A percentile takes a
     // SINGLE value column; a multi-column ORDER BY is rejected in `percentile_agg`
     // (the full sort list is surfaced here so the guard can count columns).
-    private[this] def percentile_within_group: PackratParser[Seq[Identifier]] =
+    private[this] lazy val percentile_within_group: PackratParser[Seq[Identifier]] =
       """(?i)\bwithin\b""".r ~> """(?i)\bgroup\b""".r ~> start ~> orderBy <~ end ^^ (_.sorts.map(
         _.field
       ))
@@ -199,7 +199,7 @@ package object aggregate {
       * The `^?` guard rejects (parse failure) when there is no value column, more than one source,
       * or `p` outside `[0,1]`.
       */
-    def percentile_agg: PackratParser[WindowFunction] =
+    lazy val percentile_agg: PackratParser[WindowFunction] =
       ((percentile_cont | percentile_disc) ~ percentile_args ~
       percentile_within_group.? ~ over.?) ^? ({
         case fn ~ ((shorthandCol, p)) ~ wg ~ ov if {
@@ -233,22 +233,22 @@ package object aggregate {
         (pb.getOrElse(Seq.empty), ob, l)
       }
 
-    def row_number: PackratParser[WindowFunction] =
+    lazy val row_number: PackratParser[WindowFunction] =
       ROW_NUMBER.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
         RowNumber(partitionBy = pb, orderBy = Some(ob), limit = l)
       }
 
-    def rank: PackratParser[WindowFunction] =
+    lazy val rank: PackratParser[WindowFunction] =
       RANK.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
         Ranking(partitionBy = pb, orderBy = Some(ob), limit = l)
       }
 
-    def dense_rank: PackratParser[WindowFunction] =
+    lazy val dense_rank: PackratParser[WindowFunction] =
       DENSE_RANK.regex ~ start ~ end ~ ranking_over ^^ { case _ ~ _ ~ _ ~ ((pb, ob, l)) =>
         DenseRank(partitionBy = pb, orderBy = Some(ob), limit = l)
       }
 
-    def identifierWithWindowFunction: PackratParser[Identifier] =
+    lazy val identifierWithWindowFunction: PackratParser[Identifier] =
       (first_value | last_value | array_agg | count_agg | min_agg | max_agg | avg_agg | sum_agg |
       stddev_agg | variance_agg | percentile_agg |
       row_number | rank | dense_rank) ^^ { th =>
