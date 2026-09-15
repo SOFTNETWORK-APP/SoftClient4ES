@@ -285,6 +285,26 @@ class DerivedTableSpec extends AnyFlatSpec with Matchers {
     )
   }
 
+  /** 🔴 REGRESSION PIN — an UNNEST leg used to change the answer for a bare name, because
+    * `SubqueryScope.resolve`'s lone-source rule counted it as a source (the retired planner helper
+    * counted `TableInfo`s, and an UNNEST is part of one). The statement-level consequence: a
+    * derived table beside an UNNEST stopped being scope-checked at all, so the two rows below
+    * DISAGREED with their UNNEST-free twins — one accepted a column nothing projects.
+    */
+  "An UNNEST leg" should "not change what a bare name resolves to" in {
+    // accepted twin: an OPAQUE body accepts every reference, UNNEST or not
+    parse("SELECT a FROM (SELECT * FROM x) d")
+    parse("SELECT a FROM (SELECT * FROM x) d JOIN UNNEST(d.items) i")
+    // rejected twin: the UNNEST form used to be silently accepted (the name resolved to nothing,
+    // so nothing checked it)
+    val reason = "Column 'a' is not projected by derived table 'd'"
+    rejects("SELECT a FROM (SELECT b FROM x) d", reason, "it projects: b")
+    rejects("SELECT a FROM (SELECT b FROM x) d JOIN UNNEST(d.items) i", reason, "it projects: b")
+    // and the UNNEST alias itself still resolves as a qualifier
+    parse("SELECT i.name FROM (SELECT items FROM x) d JOIN UNNEST(d.items) i")
+    ()
+  }
+
   // ── rejections that MUST be ours (AD-3 / AD-6) ─────────────────────────────────────────────
 
   "A derived table" should "require an alias (PD-1)" in {

@@ -330,6 +330,58 @@ class SubqueryScopeSpec extends AnyFlatSpec with Matchers {
     matchPattern { case Resolved(0, DerivedSource("d", None), "zzz") => }
   }
 
+  /** 🔴 REGRESSION PIN — the THIRD narrowing of the same story-22.3 retirement. `resolve`'s
+    * scaladoc already promised that an `UnnestSource` *"takes part in NO un-qualified rule"*, but
+    * rule (0) (*"a lone source owns every bare name"*) counted EVERY source, and `scopeOf` emits
+    * the UNNEST as a source of its own — where the retired planner helper counted `TableInfo`s and
+    * an UNNEST is PART OF one. MEASURED on this branch before the fix: `FROM (SELECT * FROM x) d
+    * JOIN UNNEST(d.items) i` answered `Ambiguous` for every bare name, while the SAME statement
+    * without the UNNEST resolved to `d`. Code and its own prose disagreed.
+    */
+  it should "keep an UNNEST source out of the LONE-source rule, as the contract says" in {
+    val opaqueBesideUnnest =
+      outerOf("SELECT a FROM (SELECT * FROM x) d JOIN UNNEST(d.items) i")
+    resolve(ref("a"), Seq(scopeOf(opaqueBesideUnnest))) shouldBe
+    Resolved(0, DerivedSource("d", None), "a")
+    // the control that says the UNNEST was the whole difference: the same shape without it
+    resolve(ref("a"), Seq(scopeOf(outerOf("SELECT a FROM (SELECT * FROM x) d")))) shouldBe
+    Resolved(0, DerivedSource("d", None), "a")
+
+    // a bare name that IS the unnested column, projected by the derived table: it resolves to the
+    // derived source, and that is the right owner — `d.items` is the ARRAY, `i` is the alias of
+    // its ELEMENT. (The element's own columns are not representable: `UnnestSource.projection` is
+    // `None` by construction, since nothing but a mapping could know them.)
+    val unnested = outerOf("SELECT items FROM (SELECT items FROM x) d JOIN UNNEST(d.items) i")
+    resolve(ref("items"), Seq(scopeOf(unnested))) shouldBe
+    Resolved(0, DerivedSource("d", Some(Seq("items"))), "items")
+
+    // 🔴 THE OTHER DIRECTION — dropping the UNNEST from the COUNT never invents an owner: with two
+    // real sources beside it, a bare name is still refused.
+    resolve(
+      ref("a"),
+      Seq(
+        scopeOf(
+          outerOf("SELECT a FROM orders o JOIN customers c ON o.id = c.id JOIN UNNEST(o.items) i")
+        )
+      )
+    ) shouldBe Ambiguous
+    resolve(
+      ref("a"),
+      Seq(
+        scopeOf(
+          outerOf(
+            "SELECT a FROM orders o JOIN (SELECT * FROM x) d ON o.id = d.id JOIN UNNEST(o.items) i"
+          )
+        )
+      )
+    ) shouldBe Ambiguous
+
+    // and the UNNEST is still a SOURCE everywhere else: a correlation name (story 22.2's collapse
+    // pin depends on it) and a qualified target.
+    correlationNames(opaqueBesideUnnest) should contain("i")
+    scopeOf(opaqueBesideUnnest).byName("i") shouldBe Some(UnnestSource("i", "items"))
+  }
+
   it should "never resolve a bare name OUTWARD (PD-2: assumed inner; the seam re-checks)" in {
     val outer =
       outerOf(

@@ -223,7 +223,14 @@ object SubqueryScope {
               .collectFirst { case Some(r) => r }
               .getOrElse(Unresolved)
           case (None, None) if id.name.nonEmpty && id.name != "*" =>
-            innermost.sources match {
+            // 🔴 The UNNEST sources are dropped BEFORE rule (0), not only inside rules (1)-(3) —
+            // "takes part in NO un-qualified rule" includes the lone-source rule. The retired
+            // planner helper counted `TableInfo`s and an UNNEST is PART OF one, so counting
+            // `ScopeSource`s here quietly made `FROM (SELECT * FROM x) d JOIN UNNEST(d.items) i`
+            // two sources and answered `Ambiguous` for every bare name — where the same statement
+            // without the UNNEST resolves. Qualified resolution still sees them (`byName` searches
+            // every source); only the un-qualified rules do not.
+            innermost.sources.filterNot(_.isInstanceOf[UnnestSource]) match {
               case Seq(lone) => Resolved(0, lone, id.name)
               case sources =>
                 val projecting = sources.filter(projects(_, id.name))
