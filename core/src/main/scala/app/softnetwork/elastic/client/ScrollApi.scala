@@ -321,7 +321,11 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           ElasticQuery(
             single,
             collection.immutable.Seq(single.sources: _*),
-            sql = Some(single.sql),
+            // Story 22.2 — the statement AS WRITTEN, not the resolved one, exactly as `search`
+            // has always done (`sql = Some(query)` there). A resolved WHERE subquery carries up to
+            // 65,536 literals, and this render reaches the `Row query …` INFO line and
+            // `ElasticResponse.sql`.
+            sql = Some(parsed.sql),
             explodeNested = single.explodeNested
           )
         scrollWithMetrics(

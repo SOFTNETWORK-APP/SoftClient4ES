@@ -113,9 +113,12 @@ import app.softnetwork.elastic.sql.function.time.{
 }
 import app.softnetwork.elastic.sql.operator.{
   AGAINST,
+  ALL,
   AND,
+  ANY,
   BETWEEN,
   Child,
+  EXISTS,
   IN,
   IS_NOT_NULL,
   IS_NULL,
@@ -126,6 +129,7 @@ import app.softnetwork.elastic.sql.operator.{
   OR,
   Parent,
   RLIKE,
+  SOME,
   UNION
 }
 import app.softnetwork.elastic.sql.query.{
@@ -218,6 +222,13 @@ object SQLKeywords {
     Nested,
     Child,
     Parent,
+    // Story 22.2 — WHERE subqueries. `EXISTS` and `ALL` were already words (`statementWords`,
+    // `wordsOf("UNION ALL")`); `ANY` and `SOME` are new ones the `Expr` scan of `SQLKeywordsSpec`
+    // requires. Registering all four keeps REPL highlighting uniform.
+    EXISTS,
+    ANY,
+    SOME,
+    ALL,
     Case,
     WHEN,
     THEN,

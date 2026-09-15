@@ -22,7 +22,8 @@ import app.softnetwork.elastic.sql.schema.{Column, Schema}
 import app.softnetwork.elastic.sql.`type`.{SQLTemporal, SQLTime, SQLType}
 
 import java.time.format.DateTimeFormatter
-import java.time.{LocalDate, LocalTime}
+import java.time.temporal.TemporalAccessor
+import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, OffsetDateTime, ZoneOffset}
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -169,6 +170,17 @@ object TemporalLiterals {
     /** True when one of the custom patterns parses the literal -- Elasticsearch will too. */
     def acceptsAsCustom(literal: String): Boolean =
       customFormatters.exists(formatter => Try(formatter.parse(literal)).isSuccess)
+
+    /** Render an instant in the FIRST custom pattern, in UTC (story 22.2).
+      *
+      * `withZone` is not optional: a pattern such as `yyyy-MM-dd` cannot format a zone-less
+      * `Instant` without one, and UTC is the zone every literal this class handles is normalised
+      * to.
+      */
+    def renderCustom(temporal: TemporalAccessor): Option[String] =
+      customFormatters.headOption.flatMap(f =>
+        Try(f.withZone(ZoneOffset.UTC).format(temporal)).toOption
+      )
   }
 
   object FieldFormat {
@@ -211,7 +223,7 @@ object TemporalLiterals {
           case _                 => Right(None)
         }
       } else if (format.acceptsAsCustom(literal)) Right(None)
-      else if (!format.acceptsIsoOptionalTime) Right(None)
+      else if (!format.acceptsIsoOptionalTime) downConvert(literal, format)
       else
         literal match {
           case CalendarLiteral(date, separator, time, zone) =>
@@ -224,6 +236,32 @@ object TemporalLiterals {
         }
     }
   }
+
+  /** The column's format accepts NO ISO alternative and none of its custom patterns parses this
+    * literal, so forwarding it verbatim is a GUARANTEED Elasticsearch rejection. When the literal
+    * is itself a readable ISO date or instant, re-render it in the column's own pattern instead.
+    *
+    * 🔴 Found by story 22.2 on real ES 8.18, and it is a PRE-EXISTING gap of #276, not a new one:
+    * `WHERE placed IN ('2024-01-01T00:00:00Z')` against a `"format": "yyyy-MM-dd"` column failed
+    * the same way when written by hand. Story 22.2 makes it reachable without anyone typing an ISO
+    * literal — a subquery over a DATE column yields `java.time` cells, which are rendered as ISO
+    * instants before they reach this class.
+    *
+    * Conservative by construction: it only fires where the alternative is a certain failure, it
+    * never rejects (an unreadable literal is still forwarded for Elasticsearch to judge), and a
+    * literal that already round-trips through a custom pattern was returned two lines above.
+    */
+  private def downConvert(literal: String, format: FieldFormat): Either[String, Option[String]] =
+    readIso(literal).flatMap(format.renderCustom) match {
+      case Some(rendered) if rendered != literal => Right(Some(rendered))
+      case _                                     => Right(None)
+    }
+
+  private def readIso(literal: String): Option[TemporalAccessor] =
+    Try(Instant.parse(literal)).toOption
+      .orElse(Try(OffsetDateTime.parse(literal).toInstant).toOption)
+      .orElse(Try(LocalDateTime.parse(literal).toInstant(ZoneOffset.UTC)).toOption)
+      .orElse(Try(LocalDate.parse(literal).atStartOfDay(ZoneOffset.UTC).toInstant).toOption)
 
   private def calendar(
     literal: String,

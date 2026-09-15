@@ -319,6 +319,11 @@ trait ElasticConversion {
     val aggsNode = Option(json.path("aggregations"))
       .filter(!_.isMissingNode)
 
+    // Story 22.2 — how many documents a top-level aggregation actually aggregated over. `size: 0`
+    // still reports `hits.total`, so this is present on every aggregation response and on every
+    // major (a bare number on ES 6, `{value, relation}` on ES 7+).
+    val rootDocCount: Option[Long] = docCountOf(json.path("hits"), "total")
+
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
@@ -328,12 +333,12 @@ trait ElasticConversion {
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations)
+        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
@@ -635,11 +640,17 @@ trait ElasticConversion {
 
   /** Parse recursively aggregations from Elasticsearch response with parent context
     */
+  /** @param docCount
+    *   how many documents the enclosing scope aggregated over, threaded so an aggregate over ZERO
+    *   documents can answer ANSI NULL (story 22.2). `hits.total` at the root, a bucket's
+    *   `doc_count` inside one, a wrapper aggregation's own `doc_count` under that.
+    */
   def parseAggregations(
     aggsNode: JsonNode,
     parentContext: ListMap[String, Any],
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    docCount: Option[Long] = None
   ): Seq[ListMap[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
@@ -721,11 +732,17 @@ trait ElasticConversion {
         }
 
         // Recursively parse subaggregations
-        parseAggregations(subAggsNode, currentContext, fieldAliases, aggregations)
+        parseAggregations(
+          subAggsNode,
+          currentContext,
+          fieldAliases,
+          aggregations,
+          docCountOf(aggValue, "doc_count").orElse(docCount)
+        )
       }
     } else if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
-      val metrics = extractMetrics(aggsNode, aggregations)
+      val metrics = extractMetrics(aggsNode, aggregations, docCount)
       val allTopHits = extractAllTopHits(aggsNode, fieldAliases, aggregations)
 
       if (allTopHits.nonEmpty) {
@@ -739,7 +756,8 @@ trait ElasticConversion {
       // Handle each aggregation with buckets
       bucketAggs.flatMap { case (aggName, buckets, _) =>
         buckets.flatMap { bucket =>
-          val metrics = extractMetrics(bucket, aggregations)
+          val bucketDocCount = docCountOf(bucket, "doc_count")
+          val metrics = extractMetrics(bucket, aggregations, bucketDocCount)
           val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
 
           val bucketKey = extractBucketKey(bucket)
@@ -775,13 +793,34 @@ trait ElasticConversion {
             /*subAggFields.foreach { entry =>
               subAggsNode.set(entry.getKey, entry.getValue) // FIXME
             }*/
-            parseAggregations(subAggsNode, currentContext, fieldAliases, aggregations)
+            parseAggregations(
+              subAggsNode,
+              currentContext,
+              fieldAliases,
+              aggregations,
+              bucketDocCount
+            )
           } else {
             Seq(currentContext)
           }
         }
       }
     }
+  }
+
+  /** The document count a scope aggregated over, when the response states it.
+    *
+    * Handles both shapes Elasticsearch uses for `hits.total`: a bare number (ES 6) and `{"value":
+    * n, "relation": "eq"}` (ES 7+). A `doc_count` is always a bare number.
+    */
+  private[client] def docCountOf(node: JsonNode, field: String): Option[Long] = {
+    val n = node.path(field)
+    if (n.isMissingNode) None
+    else if (n.isNumber) Some(n.asLong())
+    else if (n.isObject) {
+      val v = n.path("value")
+      if (v.isNumber) Some(v.asLong()) else None
+    } else None
   }
 
   /** Extract the bucket key with proper typing (String, Long, Double, DateTime, etc.)
@@ -902,9 +941,15 @@ trait ElasticConversion {
 
   /** Extract metrics from an aggregation node
     */
+  /** @param docCount
+    *   how many documents the enclosing scope aggregated over, when the response states it
+    *   (`hits.total` at the root, a bucket's `doc_count` inside one). `Some(0)` is what makes an
+    *   aggregate ANSI-NULL — see [[ClientAggregation.nullOverEmptyInput]].
+    */
   def extractMetrics(
     aggsNode: JsonNode,
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    docCount: Option[Long] = None
   ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
@@ -917,8 +962,25 @@ trait ElasticConversion {
               bucketRoot = Some(agg.bucketRoot)
             case _ =>
           }
-          // Detect simple metric values
+          // 🔴 Story 22.2 — ANSI: an aggregate computed over ZERO documents is NULL (COUNT and SUM
+          // excepted — `ClientAggregation.nullOverEmptyInput` is the ONE place that rule lives).
+          //
+          // This arm comes FIRST, before the value is read, because on ES 8 the value CANNOT be
+          // trusted here: that module reads the TYPED response, `SingleMetricAggregateBase` holds a
+          // primitive `double`, and Elasticsearch's `null` has already become `0.0` inside the
+          // vendor's model before any of our code runs. MEASURED: identical wire responses on 6.8 /
+          // 7.17 / 8.18 / 9.0 (`{"value":null}`), but ES 8 alone converted it to `0.0` — so
+          // `WHERE x > (SELECT MAX(y) FROM t WHERE <no match>)` reduced to `x > 0` and returned
+          // EVERY row there while returning none elsewhere.
+          //
+          // The document count is the recoverable signal and it is EXACT, not a heuristic: a
+          // genuine `MAX` of `0.0` needs at least one document, where this rule cannot fire. On the
+          // majors that were already correct the value is `null` anyway, so this is a no-op for
+          // them beyond making the NULL explicit rather than an absent key.
+          val emptyInput =
+            docCount.contains(0L) && aggregations.get(name).exists(_.nullOverEmptyInput)
           Option(value.get("value"))
+            .filter(_ => !emptyInput)
             .filter(!_.isNull)
             .map { metricValue =>
               val numericValue = if (metricValue.isIntegralNumber) {
@@ -989,7 +1051,12 @@ trait ElasticConversion {
               } else {
                 None
               }
-            } match {
+            }
+            // An empty input yields an EXPLICIT null column rather than an absent key, so every
+            // consumer sees the same thing on every major (an absent key was the pre-existing
+            // behaviour on 6.8 / 7.17 / 9.0 and reads as NULL only because `rowNormalizer`
+            // null-fills under NativeContext).
+            .orElse(if (emptyInput) Some(name -> (null: Any)) else None) match {
             case Some(m) =>
               // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT)
               val isAuxiliary = aggregations.get(m._1).exists(_.auxiliary)

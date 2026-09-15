@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{SearchStatement, SingleSearch}
+import app.softnetwork.elastic.sql.query.{relationalClosureRequired, SearchStatement, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -97,6 +97,22 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
   it should "leave a plain statement alone" in {
     val err = refusalOf(client().search(searchStatement("SELECT a FROM t LIMIT 5")))
     err.message should not include RelationalClosureGuard.ExtensionJar
+  }
+
+  /** Story 22.2 (AD-8) — an UNCORRELATED WHERE subquery is PASSTHROUGH: it executes ES-natively in
+    * core at every venue, so it must NOT trip this guard.
+    *
+    * The assertion is falsifiable in BOTH directions here. The refusal must not be the closure one;
+    * and the message it IS must name the SUBQUERY, which proves phase one actually ran — the
+    * resolver executed the inner statement through this same (cluster-less) client and reported its
+    * failure. A seam that skipped the rewrite would report the OUTER statement's failure instead.
+    */
+  it should "let an uncorrelated WHERE subquery through the guard, and RUN phase one" in {
+    val sql = "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers)"
+    relationalClosureRequired(searchStatement(sql)) shouldBe false
+    val err = refusalOf(client().search(searchStatement(sql)))
+    err.message should not include RelationalClosureGuard.ExtensionJar
+    err.message should include("Subquery")
   }
 
   it should "leave a JOIN UNNEST alone — it is not a cross-index JOIN" in {

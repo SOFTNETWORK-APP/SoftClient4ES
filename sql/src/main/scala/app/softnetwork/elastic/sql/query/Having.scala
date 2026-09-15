@@ -85,7 +85,22 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
       criteria.map(c => Having.resolveAggregateAliases(c, request).update(request))
     )
 
-  override def validate(): Either[String, Unit] = criteria.map(_.validate()).getOrElse(Right(()))
+  /** Story 22.2 (AD-6) — HAVING reaches `criteria` through the SHARED `whereCriteria` production,
+    * so a subquery node is grammatically reachable here. It is DECLINED in `validate()` rather than
+    * by duplicating the alternation: one grammar, one reduction
+    * (`project_parser_rejection_semantics`). The subquery phase runs on the WHERE only, so a
+    * subquery left in a HAVING would reach the bucket-selector script and die in the node's
+    * `painless` throw — this arm is the named rejection that comes first.
+    */
+  override def validate(): Either[String, Unit] =
+    criteria.map(_.subqueries).getOrElse(Nil).headOption match {
+      case Some(s) =>
+        Left(
+          s"A subquery is not supported in HAVING: ${s.sql}. " +
+          "Compute the value in a separate query, or move the condition to WHERE."
+        )
+      case None => criteria.map(_.validate()).getOrElse(Right(()))
+    }
 
   def nestedElements: Seq[NestedElement] =
     criteria.map(_.nestedElements).getOrElse(Seq.empty).groupBy(_.path).map(_._2.head).toList

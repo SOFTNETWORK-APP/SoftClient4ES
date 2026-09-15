@@ -70,10 +70,13 @@ object SubqueryScope {
               id.tableAlias.isEmpty && !id.nested && id.name.contains(".") &&
               outerOnly.contains(id.name.split("\\.", 2)(0))
             }
-        // A derived table NESTED in this body is walked with this statement's names added.
-        direct ++ inner.from.derivedTables.values.toSeq.flatMap(d =>
-          correlatedReferences(d.query, outerScopes ++ innerNames)
-        )
+        // A derived table NESTED in this body, and (story 22.2) a WHERE SUBQUERY nested in it,
+        // are walked with this statement's names added — so a reference two levels in to the
+        // OUTERMOST alias is caught at the outermost `update()` too.
+        val deeper = outerScopes ++ innerNames
+        direct ++
+        inner.from.derivedTables.values.toSeq.flatMap(d => correlatedReferences(d.query, deeper)) ++
+        inner.whereSubqueries.flatMap(sq => correlatedReferences(sq.query, deeper))
       case multi: MultiSearch => multi.requests.flatMap(r => correlatedReferences(r, outerScopes))
       case _                  => Nil // a FROM-less body names no source and can reference nothing
     }
@@ -117,6 +120,30 @@ object SubqueryScope {
       correlatedReferences(d.query, here).filterNot(innerIds.contains).map(d.name -> _) ++ inner
     }
   }
+
+  /** Story 22.2 — the message a CORRELATED WHERE subquery is refused with. It names the offending
+    * reference, the outer alias it reads, the story that will execute it, and the two rewrites that
+    * work today — plus the object-field disambiguation, because a dotted path into an object field
+    * whose head happens to equal an outer alias lands here too (loud beats zero rows with HTTP
+    * 200).
+    */
+  def correlatedMessage(id: Identifier, node: Criteria): String = {
+    val alias = id.name.split("\\.", 2)(0)
+    s"Correlated subquery: '${id.name}' reads the outer alias '$alias' inside ${node.sql}. " +
+    "Correlated subqueries require the relational engine (story 22.3, softclient4es-arrow-extensions) " +
+    "and are not executed yet. Rewrite as a JOIN, make the subquery self-contained, or " +
+    s"if '$alias' is an object field of the inner table, qualify it with the inner table's alias."
+  }
+
+  /** Story 22.2 (PD-2) — the BARE-name half of the correlation rule, decided by the two MAPPINGS at
+    * the seam rather than structurally. A bare name has no alias to quote, so the message names the
+    * two indices instead.
+    */
+  def bareCorrelatedMessage(name: String, innerIndex: String, outerIndex: String): String =
+    s"Correlated subquery: '$name' is not a column of '$innerIndex' but is a column of " +
+    s"'$outerIndex', so the subquery reads the outer row. Correlated subqueries require the " +
+    "relational engine (story 22.3, softclient4es-arrow-extensions) and are not executed yet. " +
+    "Rewrite as a JOIN, or make the subquery self-contained."
 
   def lateralMessage(id: Identifier, derivedAlias: String): String =
     s"A derived table cannot reference an outer alias: '${id.name}' inside derived table " +

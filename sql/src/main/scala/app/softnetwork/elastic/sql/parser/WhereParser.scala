@@ -33,12 +33,15 @@ import app.softnetwork.elastic.sql.{
 }
 import app.softnetwork.elastic.sql.operator.{
   AGAINST,
+  ALL,
   AND,
+  ANY,
   BETWEEN,
   Child,
   ComparisonOperator,
   DIFF,
   EQ,
+  EXISTS,
   ExpressionOperator,
   GE,
   GT,
@@ -55,23 +58,30 @@ import app.softnetwork.elastic.sql.operator.{
   OR,
   Parent,
   PredicateOperator,
-  RLIKE
+  Quantifier,
+  RLIKE,
+  SOME
 }
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
   ConditionalFunctionAsCriteria,
   Criteria,
   DistanceCriteria,
+  DqlStatement,
   ElasticChild,
   ElasticNested,
   ElasticParent,
   ElasticRelation,
+  ExistsSubquery,
   GenericExpression,
   InExpr,
+  InSubquery,
   IsNotNullExpr,
   IsNullExpr,
   MultiMatchCriteria,
   Predicate,
+  QuantifiedSubquery,
+  ScalarSubquery,
   Where
 }
 
@@ -94,7 +104,26 @@ trait WhereParser {
 
   def diff: PackratParser[ComparisonOperator] = DIFF.sql ^^ (_ => DIFF)
 
-  private def any_identifier: PackratParser[Identifier] =
+  /** 🔴 `lazy val`, NOT `def` — and it is a PERFORMANCE contract, not a style choice.
+    *
+    * `PackratParsers` memoises on *(parser INSTANCE, position)*: `recall(p, in)` and
+    * `updateCacheAndGet(p, …)` key the cache on `p` itself (scala-parser-combinators 1.1.2,
+    * `PackratParsers.scala:237-289`), and the library's own scaladoc states the rule outright —
+    * *"each grammar production previously declared as a `def` without formal parameters becomes a
+    * `lazy val`"* (`:34-38`). A `def` builds a FRESH instance on every reference, so each
+    * alternative of [[criteria]] that begins with `any_identifier` got its OWN memo entry at the
+    * same position and re-did the identical 9-way alternation from scratch.
+    *
+    * MEASURED (`ParserSpec`, 10 timed runs, median): **3.490 s -> 1.228 s (-64 %) on `main` with
+    * this one word changed**, and 4.927 s -> 1.240 s on this branch. The cost was therefore
+    * GRAMMAR-WIDE and pre-existing — every statement the engine has ever parsed paid it — not
+    * something story 22.2's four new alternatives created; what those alternatives did was make it
+    * visible, because they multiplied the number of times the same `any_identifier` was re-parsed.
+    *
+    * With memoisation actually firing, the four extra alternatives cost +0.95 % (1.228 -> 1.240,
+    * ranges fully overlapping): below this suite's measurement resolution.
+    */
+  private lazy val any_identifier: PackratParser[Identifier] =
     // #284 - see quotedIdentifierUnlessArithmetic.
     quotedIdentifierUnlessArithmetic |
     identifierWithArithmeticExpression |
@@ -233,8 +262,84 @@ trait WhereParser {
       c
     }
 
-  def criteria: PackratParser[Criteria] =
-    (equality |
+  /** Story 22.2 — the parenthesised body of a WHERE subquery.
+    *
+    * It is 22.1's `derivedTableBodyInner` (`searchStatement | fromlessSelect`, in that order, for
+    * the same `|`-commit reason) with its OWN parentheses. 🔴 NOT `derivedTable`, whose `err("A
+    * derived table body must be a SELECT …")` alternative would fire on `WHERE a = (b + 1)` — an
+    * `Error` does not backtrack, so the alternation below could never fall back to `equality` and a
+    * statement that parses today (MEASURED at Task 0: `WHERE a = (b + 1)` is `Right`) would be
+    * rejected. With `derivedTableBodyInner` the failure inside the parentheses is a plain `Failure`
+    * and the fall-through keeps the parenthesised-expression reading. Pinned by the neighbour test.
+    */
+  private def subqueryBody: PackratParser[DqlStatement] = start ~> derivedTableBodyInner <~ end
+
+  private def comparisonOp: PackratParser[ComparisonOperator] = eq | ne | diff | ge | gt | le | lt
+
+  /** `SOME` is canonicalised to `ANY` here (ANSI synonyms), so the AST carries one spelling and `x
+    * > SOME (S)` renders — and re-parses — as `x > ANY (S)`.
+    */
+  private def quantifier: PackratParser[Quantifier] =
+    ANY.regex ^^ (_ => ANY) | SOME.regex ^^ (_ => ANY) | ALL.regex ^^ (_ => ALL)
+
+  private def existsSubquery: PackratParser[Criteria] =
+    not.? ~ (EXISTS.regex ~> subqueryBody) ^^ { case n ~ q => ExistsSubquery(q, n) }
+
+  private def inSubquery: PackratParser[Criteria] =
+    any_identifier ~ not.? ~ in ~ subqueryBody ^^ { case i ~ n ~ _ ~ q => InSubquery(i, q, n) }
+
+  private def scalarSubquery: PackratParser[Criteria] =
+    not.? ~ any_identifier ~ comparisonOp ~ subqueryBody ^^ { case n ~ i ~ o ~ q =>
+      ScalarSubquery(i, o, q, n)
+    }
+
+  /** `<id> <op> ANY|SOME|ALL (<subquery>)`.
+    *
+    * The two combinations that ARE the `IN` machinery collapse onto [[InSubquery]] here (PD-3): `=
+    * ANY` / `= SOME` is `IN`, `<> ALL` / `!= ALL` is `NOT IN`. Every OTHER combination becomes a
+    * [[QuantifiedSubquery]], reduced from the resolved value list at execution time (lead ruling
+    * OQ-4, 2026-09-14 — this REPLACES the spec's `err` naming a MIN/MAX rewrite).
+    *
+    * 🔴 MUST precede `equality` / `comparison` in [[criteria]]. `ANY` and `SOME` are NOT reserved
+    * words and this story reserves nothing (`WHERE any = 1` and `SELECT some FROM t` parse today —
+    * measured — and must keep parsing), so `x = ANY (…)` otherwise SUCCEEDS as `x = <column any>`
+    * and the `(SELECT …)` is left to `whereCriteria`'s bare delimiters. What makes the quantified
+    * form win is the ORDER of the alternation, never a new reserved word: on `x = any` this
+    * production fails at `subqueryBody` and the alternation falls through to `equality` with the
+    * column reading intact.
+    */
+  private def quantifiedSubquery: PackratParser[Criteria] =
+    not.? ~ any_identifier ~ comparisonOp ~ quantifier ~ subqueryBody ^^ {
+      case n ~ i ~ EQ ~ ANY ~ q          => InSubquery(i, q, n)
+      case n ~ i ~ (NE | DIFF) ~ ALL ~ q =>
+        // `NOT x <> ALL (S)` is `x IN (S)`: the two negations cancel, and the canonical render is
+        // the positive `IN`.
+        InSubquery(i, q, if (n.isDefined) None else Some(NOT))
+      case n ~ i ~ o ~ qf ~ q => QuantifiedSubquery(i, o, qf, q, n)
+    }
+
+  /** `lazy val` for the same reason as [[any_identifier]]: this is the hottest production in the
+    * grammar (every WHERE, HAVING, JOIN-ON and CASE-WHEN condition reaches it) and it is referenced
+    * from several places, each of which would otherwise rebuild the whole alternation and defeat
+    * the cache at the same position.
+    */
+  lazy val criteria: PackratParser[Criteria] =
+    // Story 22.2 — the four subquery productions come FIRST, and the order is load-bearing:
+    //   - `existsSubquery`: `EXISTS` is a reserved word, so no identifier-headed production can
+    //     match its prefix and nothing else can start with it;
+    //   - `quantifiedSubquery`: MUST precede `equality` / `comparison` — see its scaladoc;
+    //   - `inSubquery` vs `inLiteral`/`inLongs`/`inDoubles`: disjoint at the character after `(`
+    //     (`SELECT` is neither a quote nor a digit), so either order is correct; the subquery form
+    //     is first only because it fails fastest;
+    //   - `scalarSubquery` before `equality` / `comparison`: those FAIL (they do not partially
+    //     succeed) on `(SELECT`, and on `(b + 1)` it is `scalarSubquery` that FAILS — at
+    //     `derivedTableBodyInner` — so `WHERE a = (b + 1)` keeps its parenthesised-expression
+    //     reading. Every neighbour is pinned byte-identical in `WhereSubquerySpec`.
+    (existsSubquery |
+    quantifiedSubquery |
+    inSubquery |
+    scalarSubquery |
+    equality |
     like |
     rlike |
     comparison |

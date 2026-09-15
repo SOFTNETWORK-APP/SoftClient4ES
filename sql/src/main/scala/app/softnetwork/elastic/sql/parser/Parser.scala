@@ -1042,6 +1042,18 @@ object Parser
         f.joins match {
           case Nil =>
             val criteria = resolveWhere(f, w).flatMap(_.criteria)
+            // Story 22.2 — a watcher input renders its WHERE into a watcher search body WITHOUT
+            // crossing `SearchApi.resolveWithSchema`, so the two-phase subquery rewrite never runs
+            // for it and an unresolved node would reach the query builder at deployment time. Same
+            // shape, same reason, as the derived-table refusal above.
+            if (criteria.exists(_.subqueries.nonEmpty))
+              err(
+                "A watcher input cannot carry a WHERE subquery (IN (SELECT ...), EXISTS " +
+                "(SELECT ...), a scalar or quantified subquery): a watcher input is a single " +
+                "Elasticsearch search and cannot run the inner query. Pre-compute the subquery's " +
+                "values as a MATERIALIZED VIEW and watch the view."
+              )
+            else
             // `FROM a, b` stays a legitimate multi-index search; only a qualifier over it is
             // unserviceable — see `qualifiedOverManyIndices`.
             if (qualifiedOverManyIndices(f, criteria))

@@ -440,6 +440,27 @@ package object client extends SerializationApi {
       aggType == AggregationType.DenseRank
     def singleValued: Boolean = !multivalued
 
+    /** ANSI: an aggregate computed over ZERO input rows is NULL — with two deliberate exceptions.
+      *
+      *   - `COUNT` is 0, never NULL. That is ANSI's own rule and it is the single most damaging
+      *     thing to get backwards here, so it is stated first.
+      *   - `SUM` keeps Elasticsearch's own answer, `0.0`. RECORDED DECISION (story 22.2, Winston):
+      *     ANSI says NULL, but the `sum` aggregation returns `0.0` over no documents on EVERY
+      *     supported major (measured on 6.8, 7.17, 8.18 and 9.0), so passing it through reports
+      *     what the engine computed instead of inventing a different value; synthesising NULL would
+      *     mean overriding the engine on every major and silently flipping `SUM` from `0` to NULL
+      *     for every existing consumer — a far larger blast radius than the defect being fixed. The
+      *     divergence from ANSI is documented rather than papered over.
+      *
+      * Everything else — `MIN`, `MAX`, `AVG`, the STDDEV/VARIANCE family, the percentile family and
+      * `bucket_script` arithmetic over them — is unambiguous: Elasticsearch answers `null` and so
+      * must we.
+      */
+    def nullOverEmptyInput: Boolean = aggType match {
+      case AggregationType.Count | AggregationType.Sum => false
+      case _                                           => singleValued
+    }
+
     def ranking: Boolean =
       aggType == AggregationType.RowNumber ||
       aggType == AggregationType.Rank ||

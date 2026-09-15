@@ -86,6 +86,14 @@ package object query {
   def derivedTablesPresent(statement: Statement): Boolean =
     closureSearches(statement).exists(_.hasDerivedTables)
 
+  /** Story 22.2 — the statement carries a WHERE subquery somewhere. Read by the MATERIALIZED VIEW
+    * and WATCHER guards, which must refuse one: both render the SELECT into an Elasticsearch
+    * artefact (a transform, a watcher input) WITHOUT crossing `SearchApi.resolveWithSchema`, so the
+    * two-phase rewrite never runs for them and an unresolved node would reach the query builder.
+    */
+  def whereSubqueriesPresent(statement: Statement): Boolean =
+    closureSearches(statement).exists(_.hasWhereSubqueries)
+
   sealed trait Statement extends Token
 
   sealed trait DqlStatement extends Statement
@@ -164,6 +172,22 @@ package object query {
       * CTEs) and a consumer reading the FROM member would silently miss them.
       */
     lazy val relationalClosureRequired: Boolean = from.relationalClosureRequired
+
+    /** Every WHERE-subquery node this statement carries, in statement order (story 22.2).
+      *
+      * 🔴 NOT part of [[relationalClosureRequired]], and that is the epic's routing rule, not an
+      * oversight: an UNCORRELATED WHERE subquery executes ES-natively in core at EVERY venue (lead
+      * ruling OQ-1), so such a statement is PASSTHROUGH — `relationalClosureRequired == false` and
+      * `hasWhereSubqueries == true`. Story 22.3 widens the closure predicate with the CORRELATED
+      * ones only.
+      */
+    lazy val whereSubqueries: Seq[SubqueryCriteria] =
+      where.flatMap(_.criteria).map(_.subqueries).getOrElse(Nil)
+
+    /** The ONE boolean `SearchApi.resolveWithSchema` tests per statement: decided once, on the AST,
+      * so a statement without a subquery pays nothing (`feedback_no_per_row_hot_path_work`).
+      */
+    lazy val hasWhereSubqueries: Boolean = whereSubqueries.nonEmpty
 
     /** Every identifier this statement NAMES, across every clause that can carry one — the SELECT
       * list (through each item's function chain), WHERE, HAVING, GROUP BY, ORDER BY and each
@@ -1505,6 +1529,12 @@ package object query {
           "MATERIALIZED VIEW over a derived table (subquery in FROM/JOIN) is not supported: an " +
           "Elasticsearch transform reads indices. Materialize the subquery as its own view and " +
           "reference it."
+        )
+      else if (whereSubqueriesPresent(dql))
+        Left(
+          "MATERIALIZED VIEW over a WHERE subquery (IN (SELECT ...), EXISTS (SELECT ...), a " +
+          "scalar or quantified subquery) is not supported: an Elasticsearch transform cannot run " +
+          "the inner query. Materialize the subquery's values first and reference them."
         )
       else dql.validate()
 

@@ -34,8 +34,11 @@ import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SearchStatement,
   SelectStatement,
-  SingleSearch
+  SingleSearch,
+  SubqueryScope
 }
+import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql.query.TemporalLiterals
 import com.fasterxml.jackson.databind.JsonNode
 import com.typesafe.config.ConfigFactory
@@ -155,18 +158,33 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       return ElasticResult.failure(
         RelationalClosureGuard.rejection(single, operation = "search")
       )
+    // Story 22.2 — PHASE ONE. Every UNCORRELATED WHERE subquery is executed and its predicate is
+    // rewritten into the literal form Elasticsearch already runs (`terms` / a literal comparison /
+    // `match_all` / `match_none`) BEFORE the schema attach and the temporal resolution below, so
+    // the values it injects get EXACTLY the treatment a hand-written literal list gets (an ISO-8601
+    // instant string is normalised against the OUTER column's mapped format, custom formats
+    // included). It runs for EVERY source shape — the single-concrete-source guard below is about
+    // the OUTER schema, not about this, and `FROM a, b WHERE x IN (SELECT …)` must be rewritten too.
+    // `hasWhereSubqueries` is ONE boolean per statement: zero cost for every statement without one.
+    val phaseOne: SingleSearch =
+      if (!single.hasWhereSubqueries) single
+      else
+        SubqueryResolver.resolve(single, this) match {
+          case ElasticSuccess(rewritten) => rewritten
+          case ElasticFailure(error)     => return ElasticResult.failure(error)
+        }
     // #306 -- this used to return early for a statement whose WHERE carried no temporal literal.
     // That was correct while the only job was rewriting those literals, and is WRONG now that the
     // schema is also attached to the AST: almost no statement carries a temporal WHERE literal,
     // so the lookup would be skipped for almost every query and `baseType` would stay `Any`.
-    single.sources.distinct match {
+    phaseOne.sources.distinct match {
       case Seq(source) if !source.contains("*") && !source.contains(",") =>
         this match {
           case indices: IndicesApi if !schemaMissed(source) =>
             Try(indices.loadSchema(source)) match {
               case Success(ElasticSuccess(schema)) =>
                 schemaMisses.remove(source)
-                TemporalLiterals(single, schema) match {
+                TemporalLiterals(phaseOne, schema) match {
                   case Right(literalsResolved) =>
                     // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
                     // `col.map(_.dataType)` and `col` is populated only here, inside `update`, from
@@ -187,7 +205,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                     // routes a row query through `scrollRows` -> `ScrollApi.scroll`, which resolves
                     // AGAIN, so this runs twice on that path (pinned in SchemaAttachSpec).
                     val resolved = literalsResolved.update(Some(schema))
-                    if (resolved ne single)
+                    if (resolved ne phaseOne)
                       logger.debug(
                         s"Temporal literals resolved against the mapping of '$source':${resolved.where
                           .map(_.sql)
@@ -210,18 +228,83 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(single)
+                ElasticResult.success(phaseOne)
               case Failure(e) =>
                 logger.debug(
                   s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(single)
+                ElasticResult.success(phaseOne)
             }
-          case _ => ElasticResult.success(single)
+          case _ => ElasticResult.success(phaseOne)
         }
-      case _ => ElasticResult.success(single)
+      case _ => ElasticResult.success(phaseOne)
     }
   }
+
+  /** The mapped type of a column PROJECTED BY AN INNER STATEMENT, when it can be known for free
+    * (story 22.2).
+    *
+    * `None` under every #306 skip condition — several sources, a wildcard, a client that is not an
+    * `IndicesApi`, a remembered miss, a failed or absent schema. The caller (`SubqueryResolver`)
+    * reads it for ONE decision: a `text` column cannot carry a terms aggregation, so mode P is
+    * declined for it. An unknown mapping therefore keeps the cheap default, and an Elasticsearch
+    * refusal propagates loudly with the inner statement's own message.
+    */
+  private[client] def innerColumnType(inner: SingleSearch, name: String): Option[SQLType] =
+    resolvedSchema(inner).flatMap(_.find(name).map(_.dataType))
+
+  /** Story 22.2 (PD-2) — the SCHEMA-aware half of the correlation rule.
+    *
+    * A QUALIFIED reference to an outer alias is caught structurally at parse time
+    * (`SubqueryScope`). A BARE one cannot be: SQL resolves a bare name innermost-first, so `cid`
+    * inside the subquery is the INNER column whenever the inner index has it — and that is the
+    * right reading in the overwhelming majority of statements. When BOTH mappings are in hand,
+    * though, a bare name the inner index does NOT map while the outer one DOES is a correlated
+    * reference beyond reasonable doubt, and executing it as uncorrelated would send an unknown
+    * field to Elasticsearch and answer zero rows with HTTP 200 — the silent-wrong-answer mode epic
+    * 22 exists to close.
+    *
+    * Any schema-absent condition answers `None` (assume inner — PD-2's documented boundary), so
+    * this never turns a schema outage into a rejection.
+    */
+  private[client] def bareNameCorrelation(
+    outer: SingleSearch,
+    inner: SingleSearch
+  ): Option[String] =
+    for {
+      innerMapping <- resolvedSchema(inner)
+      outerMapping <- resolvedSchema(outer)
+      // 🔴 A name the INNER SELECT list defines as an alias is an inner name, whatever the mappings
+      // say: `IN (SELECT id AS cid FROM customers ORDER BY cid)` references `cid`, which no mapping
+      // carries — and rejecting it because the OUTER index happens to have a `cid` column would
+      // refuse a perfectly self-contained subquery. `referencedIdentifiers` covers ORDER BY and
+      // GROUP BY, which is exactly where such an alias is referenced.
+      innerAliases = inner.select.fieldAliases.values.toSet
+      offender <- inner.referencedIdentifiers.find { id =>
+        id.tableAlias.isEmpty && !id.nested && !id.name.contains(".") &&
+        id.functions.isEmpty && id.name.nonEmpty && id.name != "*" &&
+        !innerAliases.contains(id.name) &&
+        innerMapping.find(id.name).isEmpty && outerMapping.find(id.name).isDefined
+      }
+    } yield SubqueryScope.bareCorrelatedMessage(
+      offender.name,
+      innerMapping.name,
+      outerMapping.name
+    )
+
+  private def resolvedSchema(s: SingleSearch): Option[Schema] =
+    s.sources.distinct match {
+      case Seq(source) if !source.contains("*") && !source.contains(",") =>
+        this match {
+          case indices: IndicesApi if !schemaMissed(source) =>
+            Try(indices.loadSchema(source)) match {
+              case Success(ElasticSuccess(schema)) => Some(schema)
+              case _                               => None
+            }
+          case _ => None
+        }
+      case _ => None
+    }
 
   /** Sources whose schema answered 404, with the time of the miss (see [[resolveWithSchema]]). Per
     * client instance, like the schema cache it shadows. Keys are caller-supplied FROM names, so the
@@ -557,7 +640,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             .getOrElse(query)}\nin indices '$indices' -> ${error.message}"
         )
         ElasticResult.failure(
-          enrichMaxResultWindowError(error).copy(
+          enrichBoundError(error).copy(
             operation = Some("search"),
             index = Some(elasticQuery.indices.mkString(","))
           )
@@ -664,7 +747,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           s"❌ Failed to execute multi-search for query \n$elasticQueries\n -> ${error.message}"
         )
         ElasticResult.failure(
-          enrichMaxResultWindowError(error).copy(
+          enrichBoundError(error).copy(
             operation = Some("multiSearch")
           )
         )
@@ -866,7 +949,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           )
           Future.successful(
             ElasticResult.failure(
-              enrichMaxResultWindowError(error).copy(
+              enrichBoundError(error).copy(
                 operation = Some("searchAsync"),
                 index = Some(elasticQuery.indices.mkString(","))
               )
@@ -884,7 +967,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
               .getOrElse(query)}\nin indices '$indices' -> ${t.getMessage}"
           )
           ElasticResult.failure(
-            enrichMaxResultWindowError(
+            enrichBoundError(
               ElasticError(
                 message = s"Failed to execute search: ${t.getMessage}",
                 cause = Some(t),
@@ -982,7 +1065,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           )
           Future.successful(
             ElasticResult.failure(
-              enrichMaxResultWindowError(error).copy(
+              enrichBoundError(error).copy(
                 operation = Some("multiSearchAsync")
               )
             )
@@ -996,7 +1079,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             s"❌ Failed to execute asynchronous multi-search for query \n$elasticQueries\n -> ${t.getMessage}"
           )
           ElasticResult.failure(
-            enrichMaxResultWindowError(
+            enrichBoundError(
               ElasticError(
                 message = s"Failed to execute multi-search: ${t.getMessage}",
                 cause = Some(t),
@@ -2076,6 +2159,46 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * can still surface the rejection despite the scroll routing, so translate it into an actionable
     * message here; every other error passes through unchanged.
     */
+  private[client] def enrichBoundError(error: ElasticError): ElasticError =
+    enrichMaxTermsCountError(enrichMaxResultWindowError(error))
+
+  /** Story 22.2 (AD-9) — the residual Elasticsearch-side bound, translated exactly as
+    * `index.max_result_window` was by #224.
+    *
+    * An index tuned BELOW the default (`index.max_terms_count = 100`) rejects a larger `terms`
+    * query with a shard-level `illegal_argument_exception` that names neither the subquery that
+    * produced the list nor the remedy; and mode P's own overflow on ES >= 7.10 is a
+    * `too_many_buckets_exception` against `search.max_buckets`. Both are the SAME bound from the
+    * analyst's point of view, so both become the SAME message `SubqueryResolver.tooMany` emits —
+    * one text whichever side hit the limit first. Every other error passes through unchanged.
+    */
+  private def enrichMaxTermsCountError(error: ElasticError): ElasticError = {
+    def mentionsTerms(message: String): Boolean =
+      message != null &&
+      (message.contains("max_terms_count") || message.contains("too_many_buckets"))
+    // The REST high-level clients (ES 6/7) surface the per-shard root cause as SUPPRESSED
+    // exceptions on an "all shards failed" wrapper, so the scan walks both chains (bounded).
+    def throwableMentionsTerms(t: Throwable, depth: Int = 10): Boolean =
+      t != null && depth > 0 &&
+      (mentionsTerms(t.getMessage) ||
+      t.getSuppressed.exists(x => throwableMentionsTerms(x, depth - 1)) ||
+      throwableMentionsTerms(t.getCause, depth - 1))
+    if (mentionsTerms(error.message) || error.cause.exists(t => throwableMentionsTerms(t)))
+      error.copy(
+        // 🔴 The scan is TEXTUAL and this helper now sits on EVERY search path, so the wording has
+        // to fit BOTH causes: a plain high-cardinality `GROUP BY` is the commonest way to exceed
+        // `search.max_buckets`, and it must not be told it wrote a subquery it did not write.
+        message = "This query exceeded an Elasticsearch cardinality bound: a `terms` query may " +
+          "carry at most `index.max_terms_count` values (default 65536) and an aggregation at " +
+          "most `search.max_buckets` buckets. Narrow the grouping, or the subquery that produced " +
+          "the values, raise the setting on the index, or - for a subquery - rewrite the " +
+          "statement as a JOIN (executed by the relational engine, " +
+          s"softclient4es-arrow-extensions). Elasticsearch said: ${error.message}",
+        statusCode = error.statusCode.orElse(Some(400))
+      )
+    else error
+  }
+
   private def enrichMaxResultWindowError(error: ElasticError): ElasticError = {
     def mentionsWindow(message: String): Boolean =
       message != null &&

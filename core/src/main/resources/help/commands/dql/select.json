@@ -9,6 +9,17 @@
     "[JOIN table ON condition]",
     "[JOIN (SELECT ...) [AS] alias ON condition]",
     "[WHERE condition]",
+    "",
+    "-- A WHERE condition may carry an UNCORRELATED subquery. The inner query runs FIRST and its",
+    "-- values are pushed into the outer query as a terms query or a literal comparison:",
+    "SELECT ... WHERE col IN (SELECT col FROM ...)",
+    "SELECT ... WHERE col NOT IN (SELECT col FROM ...)",
+    "SELECT ... WHERE EXISTS (SELECT 1 FROM ...)",
+    "SELECT ... WHERE NOT EXISTS (SELECT 1 FROM ...)",
+    "SELECT ... WHERE col > (SELECT MAX(col) FROM ...)",
+    "SELECT ... WHERE col = ANY (SELECT col FROM ...)",
+    "SELECT ... WHERE col > ALL (SELECT col FROM ...)",
+    "",
     "[GROUP BY columns]",
     "[HAVING condition]",
     "[ORDER BY columns [ASC|DESC]]",
@@ -34,7 +45,12 @@
       "name": "JOIN",
       "description": "Combine rows from multiple tables",
       "optional": true,
-      "variants": ["LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "OUTER JOIN"]
+      "variants": [
+        "LEFT JOIN",
+        "RIGHT JOIN",
+        "INNER JOIN",
+        "OUTER JOIN"
+      ]
     },
     {
       "name": "WHERE",
@@ -55,7 +71,12 @@
       "name": "ORDER BY",
       "description": "Sort result rows",
       "optional": true,
-      "modifiers": ["ASC", "DESC", "NULLS FIRST", "NULLS LAST"]
+      "modifiers": [
+        "ASC",
+        "DESC",
+        "NULLS FIRST",
+        "NULLS LAST"
+      ]
     },
     {
       "name": "UNION ALL",
@@ -104,6 +125,12 @@
       "description": "Aggregate in a subquery, filter the aggregate outside",
       "sql": "SELECT d.category, d.total FROM (SELECT category, SUM(amount) AS total FROM orders GROUP BY category) AS d WHERE d.total > 100",
       "output": null
+    },
+    {
+      "title": "Subquery in WHERE",
+      "description": "Filter by a set computed by another query: the subquery runs first and its values are pushed into the outer query",
+      "sql": "SELECT id, amount FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU')",
+      "output": null
     }
   ],
   "notes": [
@@ -111,12 +138,20 @@
     "Result sets larger than the index max_result_window are paged automatically; the query itself needs no scroll or search_after handling",
     "Nested fields are addressed with JOIN UNNEST(<path>) AS <alias>; see the JOIN clause above",
     "A FROM-less SELECT is evaluated against a hidden softclient4es_handshake index created on first use, so a read-only account needs it pre-created",
-    "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection"
+    "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection",
+    "A WHERE subquery must be self-contained: a reference to an outer alias (a correlated subquery) is refused until the relational engine executes it, and a bare column name inside the subquery is read as the subquery's own column",
+    "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true"
   ],
   "limitations": [
-    "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400"
+    "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
+    "A WHERE subquery may return at most 65536 distinct values (Elasticsearch index.max_terms_count); a larger set must be written as a JOIN",
+    "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; UNION ALL and FROM-less subquery bodies are rejected, and NOT IN over a GROUP BY subquery cannot see a NULL group"
   ],
-  "seeAlso": ["INSERT", "UPDATE", "DELETE"],
+  "seeAlso": [
+    "INSERT",
+    "UPDATE",
+    "DELETE"
+  ],
   "minVersion": null,
   "aliases": []
 }
