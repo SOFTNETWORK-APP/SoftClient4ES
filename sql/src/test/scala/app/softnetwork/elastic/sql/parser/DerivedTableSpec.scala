@@ -249,6 +249,42 @@ class DerivedTableSpec extends AnyFlatSpec with Matchers {
     ()
   }
 
+  /** 🔴 REGRESSION PIN — the FALSE POSITIVE. The LATERAL walk accumulated the enclosing names as it
+    * descended, so a derived body's OWN alias counted as "enclosing" for a WHERE subquery nested
+    * inside that body. MEASURED on `origin/main` at `36f0884e`, this statement was rejected with
+    * *"LATERAL is not supported: … 'o.id' inside derived table 'd' reads the enclosing FROM"* — and
+    * `o` is declared by `d`'s body. It is an ordinary correlated subquery, entirely inside `d`.
+    *
+    * The two rows ABOVE are the other direction: a reference that genuinely escapes the derived
+    * table is still refused, with the same message.
+    */
+  it should "not fire for a correlated WHERE subquery INSIDE the derived body" in {
+    val s = parse(
+      "SELECT d.id FROM (SELECT o.id FROM orders o WHERE EXISTS " +
+      "(SELECT 1 FROM returns r WHERE r.oid = o.id)) d"
+    )
+    s.relationalClosureRequired shouldBe true
+    ()
+  }
+
+  // ── derived-table column scope is CASE-INSENSITIVE (story 22.3 regression) ──────────────────
+
+  /** 🔴 REGRESSION PIN — `SubqueryScope.resolve` narrowed derived-projection matching from
+    * `equalsIgnoreCase` to `Seq.contains` when it replaced the planner's own helper, and
+    * `derivedScopeCheck` reads that resolution. An SQL identifier is case-insensitive.
+    */
+  "A derived-table column reference" should "match the projection case-insensitively" in {
+    parse("SELECT d.Total FROM (SELECT amount AS total FROM t) d")
+    parse("SELECT D.total FROM (SELECT amount AS total FROM t) d")
+    parse("SELECT Total FROM (SELECT amount AS total FROM t) d")
+    // the other direction: a name the derived table really does not project is STILL refused
+    rejects(
+      "SELECT d.nope FROM (SELECT amount AS total FROM t) d",
+      "Column 'nope' is not projected by derived table 'd'",
+      "it projects: total"
+    )
+  }
+
   // ── rejections that MUST be ours (AD-3 / AD-6) ─────────────────────────────────────────────
 
   "A derived table" should "require an alias (PD-1)" in {

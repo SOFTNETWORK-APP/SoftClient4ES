@@ -674,15 +674,24 @@ package object query {
             outerAliases.contains(id.name)
           )
           .flatMap { id =>
-            val scope: Option[DerivedTable] = SubqueryScope.resolve(id, here) match {
-              case SubqueryScope.Resolved(0, src: SubqueryScope.DerivedSource, _) =>
-                scopes.get(src.alias)
+            // 🔴 The column comes FROM the resolution, never re-derived from `id.name`: `resolve`
+            // has already stripped whatever qualifier it matched, and splitting the name again
+            // here would compare the QUALIFIER (`D` of `D.total`, which `resolve` matches
+            // case-insensitively) against the projection and refuse a statement it just resolved.
+            // One derivation, two readers — the story 21.3 lesson.
+            val scope: Option[(DerivedTable, String)] = SubqueryScope.resolve(id, here) match {
+              case SubqueryScope.Resolved(0, src: SubqueryScope.DerivedSource, column) =>
+                scopes.get(src.alias).map(_ -> column.split("\\.", 2)(0))
               case _ => None // Ambiguous / Unresolved / an enclosing scope: never guessed at
             }
-            val head = id.name.split("\\.", 2)(0)
-            scope.flatMap(d =>
-              d.outputNames.filterNot(_.contains(head)).map(names => (id, d, names))
-            )
+            scope.flatMap { case (d, head) =>
+              // Case-INSENSITIVE, the same match `SubqueryScope.resolve` makes when it decides
+              // WHICH source projects the name: an SQL identifier is case-insensitive, and the two
+              // halves disagreeing is exactly what made `SELECT Total … AS total` fail.
+              d.outputNames
+                .filterNot(names => SubqueryScope.projects(Some(names), head))
+                .map(names => (id, d, names))
+            }
           }
           .toSeq
           .headOption match {
