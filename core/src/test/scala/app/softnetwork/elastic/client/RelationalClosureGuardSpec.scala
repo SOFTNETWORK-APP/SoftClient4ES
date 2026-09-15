@@ -62,6 +62,8 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
 
   private val DerivedSelect = "SELECT COL FROM (SELECT 1 AS COL) AS d"
   private val JoinSelect = "SELECT o.id, c.name FROM orders o JOIN customers c ON o.cid = c.id"
+  private val CorrelatedSelect =
+    "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)"
 
   // ---- the ONE seam ------------------------------------------------------------------------
 
@@ -190,6 +192,45 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
     ).toOption.getOrElse(fail("rejected"))
     stmt.asInstanceOf[SingleSearch].from.enrichmentRequired shouldBe true
     RelationalClosureGuard.shapeOf(stmt) should include("derived table")
+  }
+
+  /** Story 22.3b — the correlated shape is reported FIRST when several are present, for the same
+    * reason the derived table outranks the JOIN: it carries the narrowest remedy.
+    */
+  it should "name the CORRELATED shape, and prefer it over the others" in {
+    val correlated = searchStatement(CorrelatedSelect)
+    relationalClosureRequired(correlated) shouldBe true
+    RelationalClosureGuard.shapeOf(correlated) should include("A correlated subquery")
+    val both = searchStatement(
+      "SELECT o.id FROM orders o JOIN customers c ON o.cid = c.id " +
+      "WHERE EXISTS (SELECT 1 FROM refunds r WHERE r.oid = o.id)"
+    )
+    RelationalClosureGuard.shapeOf(both) should include("A correlated subquery")
+  }
+
+  it should "refuse a correlated statement at the seam, before phase one ever runs" in {
+    val err = refusalOf(client().search(searchStatement(CorrelatedSelect)))
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("search")
+    err.message should include("A correlated subquery")
+    err.message should include(RelationalClosureGuard.ExtensionJar)
+    // 🔴 falsifiable in the right direction: the resolver would have reported the INNER statement's
+    // own failure ("Subquery …", as the uncorrelated row above asserts). Seeing the closure message
+    // instead is what proves the guard ran FIRST.
+    err.message should not include "Subquery"
+  }
+
+  it should "give DELETE ... WHERE EXISTS (correlated) the same refusal" in {
+    val err = refusalOf(
+      client()
+        .asInstanceOf[IndicesApi]
+        .deleteByQuery(
+          "orders",
+          "DELETE FROM orders WHERE EXISTS (SELECT 1 FROM refunds r WHERE r.oid = orders.id)"
+        )
+    )
+    err.statusCode shouldBe Some(400)
+    err.message should include("A correlated subquery")
   }
 
   it should "say the statement was refused rather than executed against the first index (PD-2)" in {

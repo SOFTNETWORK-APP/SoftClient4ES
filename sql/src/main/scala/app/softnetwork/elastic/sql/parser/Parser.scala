@@ -1603,9 +1603,27 @@ object Parser
     */
   val InternalParseFailure: String = "Internal parser error"
 
-  def apply(
-    query: String
-  ): Either[ParserError, Statement] = {
+  /** The grammar half of [[apply]], WITHOUT `validate()` — ONE owner of the normalisation and of
+    * the packrat reader construction (story 22.3, lead ruling OQ-8).
+    *
+    * `Parser.single`'s action still runs `.update()` on the statement it builds, so everything the
+    * UPDATE pass records (`Identifier.tableAlias` / `table`, story 22.2's `correlatedRefs`, the
+    * bucket names) is populated exactly as `apply` would have populated it — only the VALIDATION
+    * pass is skipped. That is what a test of a rule that `validate()` itself enforces needs: it
+    * must reach the AST of a statement `apply` refuses, and it must not re-implement the reader (a
+    * second construction would drift from `apply`'s, and packrat memoisation keys on the parser
+    * INSTANCE).
+    *
+    * `private[sql]` on purpose: nothing outside this module may execute an unvalidated statement.
+    */
+  private[sql] def parseUnvalidated(query: String): Either[ParserError, Statement] =
+    grammar(query)
+
+  /** Shared by [[apply]] and [[parseUnvalidated]]: normalise, build the packrat reader, run
+    * `phrase(statement)`. The `NonFatal` boundary catch (#250) wraps the WHOLE body because the AST
+    * surface `.update()` drags in can throw before `parse` even returns.
+    */
+  private def grammar(query: String): Either[ParserError, Statement] = {
     try {
       val normalizedQuery =
         normalize(query)
@@ -1635,13 +1653,8 @@ object Parser
       // one shape this cannot catch: `DELETE FROM orders customers` stays a valid single-table
       // DELETE, because an alias without AS is standard SQL — pinned as such in ParserSpec.
       parse(phrase(statement), reader) match {
-        case NoSuccess(msg, _) =>
-          Left(ParserError(msg))
-        case Success(result, _) =>
-          result.validate() match {
-            case Left(error) => Left(ParserError(error))
-            case _           => Right(result)
-          }
+        case NoSuccess(msg, _)  => Left(ParserError(msg))
+        case Success(result, _) => Right(result)
       }
     } catch {
       // #250. Totality is claimed for `NonFatal` only: VirtualMachineError (a StackOverflowError
@@ -1676,15 +1689,47 @@ object Parser
         // all named JDK classes on JDK 11 - which is exactly why they are guarded rather than
         // trusted. `getSimpleName` also returns "" for an anonymous class, which would render
         // `Internal parser error: : -1`.
-        def safely(read: => String, fallback: String): String =
-          try Option(read).map(_.trim).filter(_.nonEmpty).getOrElse(fallback)
-          catch { case NonFatal(_) => fallback }
-        val className = safely(e.getClass.getSimpleName, safely(e.getClass.getName, "Throwable"))
-        val message = safely(e.getMessage, "")
-        val detail = if (message.isEmpty) "" else s": $message"
-        Left(ParserError(s"$InternalParseFailure: $className$detail", Some(e)))
+        Left(internalFailure(e))
     }
   }
+
+  /** ONE builder for both boundary catches (#250). Two copies of this rule in one file is the
+    * story-21.3 desync class, one file over.
+    */
+  private def internalFailure(e: Throwable): ParserError = {
+    // 🔴 Both accessors can THEMSELVES throw, which would escape the boundary this exists to
+    // provide: `Class.getSimpleName` raises `InternalError: Malformed class name` on JDK 8 for some
+    // Scala inner/anonymous classes (and the drivers promise JDK 8 for ES 6/7/8), and a custom
+    // `Throwable` may override `getMessage` to throw. `getSimpleName` also returns "" for an
+    // anonymous class, which would render `Internal parser error: : -1`.
+    def safely(read: => String, fallback: String): String =
+      try Option(read).map(_.trim).filter(_.nonEmpty).getOrElse(fallback)
+      catch { case NonFatal(_) => fallback }
+    val className = safely(e.getClass.getSimpleName, safely(e.getClass.getName, "Throwable"))
+    val message = safely(e.getMessage, "")
+    val detail = if (message.isEmpty) "" else s": $message"
+    ParserError(s"$InternalParseFailure: $className$detail", Some(e))
+  }
+
+  def apply(
+    query: String
+  ): Either[ParserError, Statement] =
+    grammar(query) match {
+      case Right(result) =>
+        // 🔴 `validate()` runs INSIDE the boundary catch's sibling, not inside it: `grammar` has
+        // already returned, so a `validate()` that threw would escape `apply`. It cannot today —
+        // every `validate()` in the tree returns `Either` — and the AST surface that DOES throw
+        // (`bucketNames`, #253) is reached from `.update()`, which runs inside `grammar`. Guarded
+        // here anyway, for the same reason #250 guarded the grammar half: totality is a property
+        // of the METHOD, not of today's arms.
+        try result.validate() match {
+          case Left(error) => Left(ParserError(error))
+          case _           => Right(result)
+        } catch {
+          case NonFatal(e) => Left(internalFailure(e))
+        }
+      case left => left
+    }
 
 }
 

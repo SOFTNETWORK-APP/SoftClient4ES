@@ -167,11 +167,17 @@ package object query {
       */
     lazy val hasDerivedTables: Boolean = derivedTables.nonEmpty
 
-    /** Epic 22 AD-4 — THE predicate every venue routes on. Read THIS, never `from.` directly: later
-      * stories widen it with constructs a `From` cannot see (22.3's correlated subqueries, 22.5's
-      * CTEs) and a consumer reading the FROM member would silently miss them.
+    /** Epic 22 AD-4 — THE predicate every venue routes on. Read THIS, never `from.` directly: it
+      * carries constructs a `From` cannot see (story 22.3's correlated subqueries; story 22.5's
+      * CTEs next) and a consumer reading the FROM member would silently miss them.
+      *
+      * 🔴 The predicate family, stated ONCE for whoever lands last of 22.3 / 22.5 / 22.6: each
+      * story adds exactly ONE disjunct HERE, the package function `relationalClosureRequired` reads
+      * THIS member, and `MultiSearch` folds its branches through it. Any spec that re-derives the
+      * disjunction somewhere else is the story-21.3 desync class.
       */
-    lazy val relationalClosureRequired: Boolean = from.relationalClosureRequired
+    lazy val relationalClosureRequired: Boolean =
+      from.relationalClosureRequired || hasCorrelatedSubqueries
 
     /** Every WHERE-subquery node this statement carries, in statement order (story 22.2).
       *
@@ -188,6 +194,31 @@ package object query {
       * so a statement without a subquery pays nothing (`feedback_no_per_row_hot_path_work`).
       */
     lazy val hasWhereSubqueries: Boolean = whereSubqueries.nonEmpty
+
+    /** The TOP-LEVEL WHERE-subquery nodes whose subtree reads an enclosing scope (story 22.3).
+      *
+      * 🔴 Read what `correlatedRefs` MEANS, not its name (AD-2): story 22.2's walk recurses into a
+      * body's own subqueries with the scopes ACCUMULATED, so a reference from the innermost body to
+      * the MIDDLE body's alias — not correlated to THIS statement at all — is still reported on the
+      * top-level node. `correlatedRefs.nonEmpty` therefore means "this node's SUBTREE reads outside
+      * its own body", which is exactly the routing question: a middle body whose inner is
+      * correlated to it cannot run ES-natively either.
+      */
+    lazy val correlatedSubqueries: Seq[SubqueryCriteria] =
+      whereSubqueries.filter(_.correlatedRefs.nonEmpty)
+
+    /** DEEP (story 22.3 AC 5): any WHERE-subquery node at any nesting depth whose subtree reads an
+      * enclosing scope. A correlated body two levels down makes the MIDDLE body un-executable
+      * ES-natively, so the WHOLE statement routes to the relational engine.
+      *
+      * The `s.inner.exists(...)` half is redundant with the accumulated walk described above and is
+      * kept deliberately: it costs one already-computed boolean and it does not depend on the
+      * walk's reach staying what it is today.
+      */
+    lazy val hasCorrelatedSubqueries: Boolean =
+      whereSubqueries.exists(s =>
+        s.correlatedRefs.nonEmpty || s.inner.exists(_.hasCorrelatedSubqueries)
+      )
 
     /** Every identifier this statement NAMES, across every clause that can carry one — the SELECT
       * list (through each item's function chain), WHERE, HAVING, GROUP BY, ORDER BY and each
@@ -625,32 +656,29 @@ package object query {
       val scopes = from.derivedTables
       if (scopes.isEmpty) Right(())
       else {
-        val sole: Option[DerivedTable] = from.tables match {
-          case Seq(t) if t.joins.isEmpty => t.derived
-          case _                         => None
-        }
+        // Story 22.3 (AD-1) — resolution goes through the ONE resolver, so this check and the
+        // planner's cannot drift. It also retires the stale-`Identifier.table` fallback story 22.5
+        // would otherwise have had to add: `SubqueryScope.resolve` reads `tableAlias` FIRST and
+        // falls back to `table`, absorbing the re-`update()` staleness where every other consumer
+        // already keys on the alias.
+        val here = Seq(SubqueryScope.scopeOf(this))
         // `fieldAliases` is built over `fieldsWithComputedAliases`, so it also holds the synthetic
         // `__cN` names — harmless here, since no real column is spelled that way.
         val outerAliases: Set[String] = select.fieldAliases.values.toSet
         referencedIdentifiers.iterator
           .filter(id => id.name.nonEmpty && id.name != "*")
+          // An OUTER SELECT alias (`SELECT COL AS c … ORDER BY c`) is not a derived-table
+          // reference; it names a projection of THIS statement.
+          .filterNot(id =>
+            id.tableAlias.isEmpty && id.table.isEmpty && !id.name.contains(".") &&
+            outerAliases.contains(id.name)
+          )
           .flatMap { id =>
-            val scope: Option[DerivedTable] =
-              id.table
-                .flatMap(scopes.get)
-                // A WIDENING over the specced `id.table` alone: `Identifier.update` derives `table`
-                // only when `parts.size > 1`, so a node re-`update()`-d after its name was already
-                // normalised (which `SearchApi.resolveWithSchema` does to EVERY executed statement)
-                // keeps `tableAlias` right while `table` may be stale or absent. Checking both is
-                // what keeps the scope rule stable across the second pass.
-                .orElse(id.tableAlias.flatMap(scopes.get))
-                .orElse {
-                  if (
-                    id.tableAlias.isEmpty && id.table.isEmpty && !id.name.contains(".") &&
-                    !outerAliases.contains(id.name)
-                  ) sole
-                  else None
-                }
+            val scope: Option[DerivedTable] = SubqueryScope.resolve(id, here) match {
+              case SubqueryScope.Resolved(0, src: SubqueryScope.DerivedSource, _) =>
+                scopes.get(src.alias)
+              case _ => None // Ambiguous / Unresolved / an enclosing scope: never guessed at
+            }
             val head = id.name.split("\\.", 2)(0)
             scope.flatMap(d =>
               d.outputNames.filterNot(_.contains(head)).map(names => (id, d, names))
@@ -675,7 +703,10 @@ package object query {
       * HTTP 200. The detector is `SubqueryScope`, shared with stories 22.2 / 22.3.
       */
     private lazy val lateralCheck: Either[String, Unit] =
-      if (!from.hasDerivedTables) Right(())
+      // Story 22.3 — `hasWhereSubqueries` joins the guard because the walk now descends into
+      // WHERE-subquery bodies: a statement whose OWN FROM carries no derived table can still hold
+      // one inside a subquery body, and that shape is LATERAL just the same.
+      if (!from.hasDerivedTables && !hasWhereSubqueries) Right(())
       else
         SubqueryScope.lateralOffenders(this).headOption match {
           // The offender is carried WITH the derived table whose body names it, so the message can

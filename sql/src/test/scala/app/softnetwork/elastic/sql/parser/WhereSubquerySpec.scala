@@ -257,40 +257,116 @@ class WhereSubquerySpec extends AnyFlatSpec with Matchers {
 
   // ── correlation (AC 4) ───────────────────────────────────────────────────────────────────────
 
-  "A correlated subquery" should "be rejected with the 22.3 message when it names an outer alias" in {
-    rejects(
+  /** 🔴 Story 22.3b — THE FLIP. These three statements were `Left`s carrying "Correlated subquery …
+    * story 22.3" until this story deleted `SubqueryCriteria.commonChecks`' correlated arm. They now
+    * PARSE, and `relationalClosureRequired` routes them to the relational engine; every venue
+    * WITHOUT the engine refuses them at `SearchApi.resolveWithSchema` / `CoreDqlExtension`
+    * (`RelationalClosureGuardSpec`, `CoreDqlExtensionSpec`, `ReplGatewayIntegrationSpec` 6d).
+    *
+    * The contract that did NOT change is the one that matters: a correlated subquery is still never
+    * EXECUTED as if it were self-contained.
+    */
+  "A correlated subquery" should "parse and route to the relational engine (story 22.3b)" in {
+    val routed = Seq(
       "SELECT o.id FROM orders o WHERE o.cid IN " +
       "(SELECT c.id FROM customers c WHERE c.region = o.region)",
-      "Correlated subquery",
-      "o.region",
-      "outer alias 'o'",
-      "story 22.3"
-    )
-    rejects(
       "SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = o.cid)",
-      "Correlated subquery",
-      "o.cid"
-    )
-    rejects( // the outer INDEX name is a correlation name too
+      // the outer INDEX name is a correlation name too
       "SELECT id FROM orders WHERE cid IN (SELECT id FROM customers WHERE region = orders.region)",
-      "Correlated subquery",
-      "orders.region"
+      // a nested body's reference to the OUTERMOST alias — DEEP
+      "SELECT o.id FROM orders o WHERE o.cid IN (SELECT c.id FROM customers c WHERE c.k IN " +
+      "(SELECT k FROM z WHERE z.r = o.region))"
     )
+    routed.foreach { sql =>
+      withClue(s"[$sql] ") {
+        val s = parse(sql)
+        s.hasCorrelatedSubqueries shouldBe true
+        s.relationalClosureRequired shouldBe true
+        s.from.relationalClosureRequired shouldBe false // the FROM half is untouched
+        relationalClosureRequired(s) shouldBe true // the package fn reads the SingleSearch val
+      }
+    }
   }
 
   it should "honour shadowing: an alias the inner statement declares is the INNER one" in {
-    parse(
+    val s = parse(
       "SELECT o.id FROM orders o WHERE o.cid IN (SELECT o.id FROM customers o WHERE o.r = 'EU')"
+    )
+    // the control that keeps the flip above non-vacuous: shadowing is NOT correlation, so this
+    // statement must stay ES-native.
+    s.hasCorrelatedSubqueries shouldBe false
+    s.relationalClosureRequired shouldBe false
+  }
+
+  it should "keep an UNcorrelated WHERE subquery off the engine (story 22.2's PASSTHROUGH)" in {
+    val s = parse(
+      "SELECT id FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU')"
+    )
+    s.hasWhereSubqueries shouldBe true
+    s.hasCorrelatedSubqueries shouldBe false
+    s.relationalClosureRequired shouldBe false
+  }
+
+  /** 🔴 Story 22.3 (PD-2) — a derived body reading an ENCLOSING correlation name is SQL:1999
+    * `LATERAL`, refused at every venue and on every Elasticsearch major because the refusal lives
+    * in the `sql` module.
+    *
+    * The FROM/JOIN-position arm shipped with story 22.1; the second row is story 22.3's OWN
+    * extension of the walk to a derived table nested inside a WHERE-subquery BODY. Before it, that
+    * row was caught by the correlated arm this story DELETED — so without the extension the
+    * deletion would have turned a loud rejection into an accepted statement.
+    */
+  "A LATERAL-shaped derived table" should "be rejected by validate() with the ANSI message" in {
+    rejects(
+      "SELECT c.id FROM customers c JOIN (SELECT o.cid FROM orders o WHERE o.cid = c.id) d ON d.cid = c.id",
+      "LATERAL is not supported",
+      "derived table cannot reference an outer alias",
+      "'c.id'",
+      "derived table 'd'"
+    )
+    rejects(
+      "SELECT c.id FROM customers c WHERE c.id IN " +
+      "(SELECT x FROM (SELECT o.cid AS x FROM orders o WHERE o.cid = c.id) d)",
+      "LATERAL is not supported",
+      "derived table cannot reference an outer alias",
+      "derived table 'd'"
     )
   }
 
-  it should "see a nested body's reference to the OUTERMOST alias" in {
-    rejects(
-      "SELECT o.id FROM orders o WHERE o.cid IN (SELECT c.id FROM customers c WHERE c.k IN " +
-      "(SELECT k FROM z WHERE z.r = o.region))",
-      "Correlated subquery",
-      "o.region"
-    )
+  it should "leave a derived body that names ONLY its own sources alone" in {
+    parse("SELECT d.total FROM (SELECT amount AS total FROM t) d WHERE d.total > 1")
+    ()
+  }
+
+  /** The canonical render of every correlated form, MEASURED (story 22.3 Task 0 row 6) — the text
+    * and the fixed point, so a render that could not be re-read fails here rather than at a
+    * customer's cluster. `= ANY` canonicalises to `IN`, as story 22.2 already pinned.
+    */
+  private val correlatedRenders = Seq(
+    "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)" ->
+    "SELECT c.id FROM customers AS c WHERE EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id)",
+    "SELECT c.id FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)" ->
+    "SELECT c.id FROM customers AS c WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.customer_id = c.id)",
+    "SELECT c.id FROM customers c WHERE c.id IN (SELECT o.customer_id FROM orders o WHERE o.amount > c.credit_limit)" ->
+    "SELECT c.id FROM customers AS c WHERE c.id IN (SELECT o.customer_id FROM orders AS o WHERE o.amount > c.credit_limit)",
+    "SELECT c.id FROM customers c WHERE c.id NOT IN (SELECT o.customer_id FROM orders o WHERE o.amount > c.credit_limit)" ->
+    "SELECT c.id FROM customers AS c WHERE c.id NOT IN (SELECT o.customer_id FROM orders AS o WHERE o.amount > c.credit_limit)",
+    "SELECT c.id FROM customers c WHERE c.credit_limit > (SELECT AVG(o.amount) FROM orders o WHERE o.customer_id = c.id)" ->
+    "SELECT c.id FROM customers AS c WHERE c.credit_limit > (SELECT AVG(o.amount) FROM orders AS o WHERE o.customer_id = c.id)",
+    "SELECT c.id FROM customers c WHERE c.id = ANY (SELECT o.customer_id FROM orders o WHERE o.amount > c.credit_limit)" ->
+    "SELECT c.id FROM customers AS c WHERE c.id IN (SELECT o.customer_id FROM orders AS o WHERE o.amount > c.credit_limit)",
+    "SELECT c.id FROM customers c WHERE c.id IN (SELECT o.cid FROM orders o WHERE o.amount > (SELECT AVG(r.amount) FROM refunds r WHERE r.cid = c.id))" ->
+    "SELECT c.id FROM customers AS c WHERE c.id IN (SELECT o.cid FROM orders AS o WHERE o.amount > (SELECT AVG(r.amount) FROM refunds AS r WHERE r.cid = c.id))"
+  )
+
+  correlatedRenders.foreach { case (in, text) =>
+    it should s"[22.3b] parse, route and round-trip [$in]" in {
+      val stmt = parse(in)
+      stmt.hasCorrelatedSubqueries shouldBe true
+      stmt.relationalClosureRequired shouldBe true
+      stmt.sql shouldBe text
+      Parser(stmt.sql) shouldBe Right(stmt)
+    }
   }
 
   it should "assume a BARE name is the inner column at parse time (PD-2)" in {

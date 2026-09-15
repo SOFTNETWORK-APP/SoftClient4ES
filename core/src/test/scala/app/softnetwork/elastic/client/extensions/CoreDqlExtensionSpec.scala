@@ -457,6 +457,26 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.searchedStatement.get() shouldBe null
   }
 
+  /** Story 22.3b — the CORRELATED shape reaches the SAME guard through the SAME predicate, with
+    * zero edit in this extension: `relationalClosureRequired` gained one disjunct and every venue
+    * inherited it. The falsifiable half is that NEITHER client seam is touched — a correlated
+    * statement that leaked past the guard would have been scrolled against the OUTER index alone,
+    * silently dropping the correlation (HTTP 200, wrong answer).
+    */
+  it should "reject a CORRELATED WHERE subquery, naming the shape, and never execute it" in {
+    val (client, res) = run(
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.message should include("A correlated subquery")
+    err.message should include("softclient4es-arrow-extensions")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
   it should "reject INSERT ... SELECT and CTAS carrying a derived table, and claim them" in {
     Seq(
       "INSERT INTO target SELECT COL FROM (SELECT 1 AS COL) AS d",

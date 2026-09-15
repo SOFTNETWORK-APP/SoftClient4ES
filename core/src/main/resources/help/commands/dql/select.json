@@ -139,7 +139,7 @@
     "Nested fields are addressed with JOIN UNNEST(<path>) AS <alias>; see the JOIN clause above",
     "A FROM-less SELECT is evaluated against a hidden softclient4es_handshake index created on first use, so a read-only account needs it pre-created",
     "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection",
-    "A WHERE subquery must be self-contained: a reference to an outer alias (a correlated subquery) is refused until the relational engine executes it, and a bare column name inside the subquery is read as the subquery's own column",
+    "A WHERE subquery that reads an outer alias (a correlated subquery) executes through the relational engine shipped in softclient4es-arrow-extensions, and is refused with HTTP 400 at every venue without it. An outer reference must be QUALIFIED with the outer table's alias - a bare column name inside the subquery is read as the subquery's own column - and an object path inside the body should be qualified with the body's own alias",
     "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true"
   ],
   "limitations": [

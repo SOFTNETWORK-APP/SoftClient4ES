@@ -1333,9 +1333,16 @@ sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
 
   protected def notAsString: String = maybeNot.map(_ => "NOT ").getOrElse("")
 
-  /** Shared validation, in order: a body kind this story executes; the body's OWN rules
-    * (`Parser.apply` validates the TOP level only — story 22.1's trap, one clause over); NOT
-    * correlated (PD-2).
+  /** Shared validation, in order: a body kind this story executes, then the body's OWN rules
+    * (`Parser.apply` validates the TOP level only — story 22.1's trap, one clause over).
+    *
+    * 🔴 Story 22.3b DELETED the third arm — the `correlatedRefs.headOption => Left` rejection. That
+    * single deletion, plus ONE widened disjunct in `SingleSearch.relationalClosureRequired`, IS the
+    * rejection-to-routing flip: a correlated subquery now PARSES and routes to the relational
+    * engine, and every venue WITHOUT the engine refuses it loudly at `SearchApi.resolveWithSchema`
+    * / `CoreDqlExtension` through `RelationalClosureGuard`. Nothing else in `sql` moved.
+    * `correlatedRefs` stays RECORDED on the node — it is what the planner reads to build the
+    * correlated leg.
     */
   protected def commonChecks: Either[String, Unit] =
     for {
@@ -1353,10 +1360,6 @@ sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
           )
         case other =>
           Left(s"A WHERE subquery body must be a SELECT, got ${other.getClass.getSimpleName}")
-      }
-      _ <- correlatedRefs.headOption match {
-        case Some(id) => Left(SubqueryScope.correlatedMessage(id, this))
-        case None     => Right(())
       }
     } yield ()
 

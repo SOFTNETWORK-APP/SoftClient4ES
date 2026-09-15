@@ -170,8 +170,10 @@ trait WhereSubqueryCompletenessSpec
 
   /** 🔴 `searchAs` is a MACRO that validates the statement at COMPILE time, so every query below is
     * an inline string LITERAL — a `val` holding the same text is rejected by the macro. That is
-    * also why the correlated-subquery rejection (a parse-time `Left`) lives in the REPL integration
-    * spec, which dispatches at run time, and not here.
+    * also why the correlated-subquery rejection lives in the REPL integration spec, which
+    * dispatches at run time, and not here. (Since story 22.3b that rejection is no longer a
+    * parse-time `Left`: a correlated subquery PARSES and routes to the relational engine, and a
+    * venue without the engine refuses it through `RelationalClosureGuard`.)
     */
   private def idsOf(result: ElasticResult[Seq[WsqId]]): Seq[String] = result match {
     case ElasticSuccess(rows)  => rows.map(_.id)
