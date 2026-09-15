@@ -90,7 +90,14 @@ object SubqueryScope {
     */
   final case class Scope(depth: Int, sources: Seq[ScopeSource]) {
     lazy val names: Set[String] = sources.flatMap(s => Seq(s.key, s.alias)).toSet
-    def byName(n: String): Option[ScopeSource] = sources.find(s => s.alias == n || s.key == n)
+
+    /** 🔴 Case-INSENSITIVE, like every other name match in [[resolve]] — see `projects` there for
+      * the full argument. A qualifier is an SQL identifier: `D.total` and `d.total` name the same
+      * source. Two sources whose aliases differ only by case are a duplicate alias, which
+      * `From.validate()` is the place to refuse; here the first one written wins.
+      */
+    def byName(n: String): Option[ScopeSource] =
+      sources.find(s => s.alias.equalsIgnoreCase(n) || s.key.equalsIgnoreCase(n))
   }
 
   /** The sources a statement's FROM declares, in the order it writes them (FROM items first, then
@@ -173,6 +180,29 @@ object SubqueryScope {
     *     to the plain leg rather than becoming `Ambiguous`. Qualified resolution DOES see it
     *     (`byName` searches every source).
     */
+  /** Does `source` project `name`? **Case-INSENSITIVELY**, and that is a restoration, not a new
+    * rule: the planner-local helper story 22.3 retired in favour of this resolver compared
+    * projections with `equalsIgnoreCase`, and matching with `Seq.contains` instead narrowed it.
+    * MEASURED consequence of the narrowing: `SELECT Total FROM t JOIN (SELECT SUM(x) AS total …) d`
+    * stopped resolving to `d` — at two plain legs it became `Ambiguous column 'Total'`, and at one
+    * plain leg it silently resolved to the PLAIN leg instead, which is the worse half.
+    *
+    * 🔴 A QUOTED name is matched the same way, deliberately. ANSI would compare a delimited
+    * identifier exactly, but (a) the projection side carries NO quoting information —
+    * `DerivedTable.outputNames` is a `Seq[String]` — so an exact rule could only be applied to one
+    * half and `"Total"` would resolve against `Total` exactly while `total` resolved
+    * case-insensitively, and (b) the retired helper this restores was case-insensitive for every
+    * operand, quoted or not, so exempting quoted names would be a NEW narrowing with no mandate.
+    * Nothing is rewritten by this decision: [[Resolved]] carries the caller's own spelling
+    * (`id.name`), so the column reaches DuckDB / Elasticsearch exactly as written — this choice
+    * decides WHICH SOURCE owns a name, never how it is spelled.
+    */
+  private[query] def projects(projection: Option[Seq[String]], name: String): Boolean =
+    projection.exists(_.exists(_.equalsIgnoreCase(name)))
+
+  private def projects(source: ScopeSource, name: String): Boolean =
+    projects(source.projection, name)
+
   def resolve(id: Identifier, chain: Seq[Scope]): Resolution =
     chain.headOption match {
       case None => Unresolved
@@ -193,10 +223,17 @@ object SubqueryScope {
               .collectFirst { case Some(r) => r }
               .getOrElse(Unresolved)
           case (None, None) if id.name.nonEmpty && id.name != "*" =>
-            innermost.sources match {
+            // 🔴 The UNNEST sources are dropped BEFORE rule (0), not only inside rules (1)-(3) —
+            // "takes part in NO un-qualified rule" includes the lone-source rule. The retired
+            // planner helper counted `TableInfo`s and an UNNEST is PART OF one, so counting
+            // `ScopeSource`s here quietly made `FROM (SELECT * FROM x) d JOIN UNNEST(d.items) i`
+            // two sources and answered `Ambiguous` for every bare name — where the same statement
+            // without the UNNEST resolves. Qualified resolution still sees them (`byName` searches
+            // every source); only the un-qualified rules do not.
+            innermost.sources.filterNot(_.isInstanceOf[UnnestSource]) match {
               case Seq(lone) => Resolved(0, lone, id.name)
               case sources =>
-                val projecting = sources.filter(_.projection.exists(_.contains(id.name)))
+                val projecting = sources.filter(projects(_, id.name))
                 val plain = sources.collect { case p: PlainSource => p }
                 val opaque = sources.exists {
                   case d: DerivedSource => d.projection.isEmpty
@@ -240,6 +277,31 @@ object SubqueryScope {
   private[query] def correlatedReferences(
     body: DqlStatement,
     outerScopes: Set[String]
+  ): Seq[Identifier] = escapingReferences(body, outerScopes, accumulate = true)
+
+  /** ONE walk, two boundaries — the parameter is the whole difference between the two questions
+    * this object answers, and writing it twice is how they would drift.
+    *
+    *   - `accumulate = true` (the CORRELATION question, story 22.2): each level ADDS its own names
+    *     to the set the deeper levels are measured against, so a body reading ANY enclosing scope —
+    *     including an intermediate one — is reported at the outermost statement, which is where
+    *     routing is decided.
+    *   - `accumulate = false` (the LATERAL question, story 22.3): the set only ever SHRINKS, by the
+    *     names each level declares. It answers "does this subtree read OUTSIDE ITSELF", measured
+    *     against one fixed boundary.
+    *
+    * 🔴 The distinction is a FIX, not a refinement. `lateralOffenders` used the accumulating walk,
+    * so a WHERE subquery nested inside a derived body and reading that BODY's own alias — `FROM
+    * (SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM returns r WHERE r.oid = o.id)) d` — was
+    * reported as LATERAL: the derived body's own `o` had been added to the "outer" set one level
+    * up. That is an ordinary correlated subquery, entirely inside `d`, and refusing it made story
+    * 22.3's own AC 11 unreachable. Shrinking never loses a genuine offender: a reference to a name
+    * declared OUTSIDE the derived table is outside it at every depth.
+    */
+  private def escapingReferences(
+    body: DqlStatement,
+    outerScopes: Set[String],
+    accumulate: Boolean
   ): Seq[Identifier] =
     body match {
       case inner: SingleSearch =>
@@ -254,13 +316,16 @@ object SubqueryScope {
             }
         // A derived table NESTED in this body, and (story 22.2) a WHERE SUBQUERY nested in it,
         // are walked with this statement's names added — so a reference two levels in to the
-        // OUTERMOST alias is caught at the outermost `update()` too.
-        val deeper = outerScopes ++ innerNames
+        // OUTERMOST alias is caught at the outermost `update()` too. For the LATERAL question the
+        // boundary does not move: the deeper levels keep measuring against `outerOnly`.
+        val deeper = if (accumulate) outerScopes ++ innerNames else outerOnly
         direct ++
-        inner.from.derivedTables.values.toSeq.flatMap(d => correlatedReferences(d.query, deeper)) ++
-        inner.whereSubqueries.flatMap(sq => correlatedReferences(sq.query, deeper))
-      case multi: MultiSearch => multi.requests.flatMap(r => correlatedReferences(r, outerScopes))
-      case _                  => Nil // a FROM-less body names no source and can reference nothing
+        inner.from.derivedTables.values.toSeq
+          .flatMap(d => escapingReferences(d.query, deeper, accumulate)) ++
+        inner.whereSubqueries.flatMap(sq => escapingReferences(sq.query, deeper, accumulate))
+      case multi: MultiSearch =>
+        multi.requests.flatMap(r => escapingReferences(r, outerScopes, accumulate))
+      case _ => Nil // a FROM-less body names no source and can reference nothing
     }
 
   /** LATERAL-shaped references: a DERIVED body (FROM or JOIN position) naming an ENCLOSING
@@ -281,11 +346,15 @@ object SubqueryScope {
   /** The same walk, keeping the correlation name of the derived table whose body names each
     * offending identifier.
     *
-    * 🔴 The pairing is not cosmetic. `correlatedReferences` recurses into derived tables NESTED in
-    * a body, so a reference two levels in belongs to the INNER derived table, not to the outer one
-    * a `find` over the top-level map would return — and the alias is the whole point of the
-    * message. Returning the pair also removes the `getOrElse("")` that could render `derived table
-    * ''`.
+    * 🔴 The pairing is not cosmetic. The walk recurses into derived tables NESTED in a body, so a
+    * reference two levels in belongs to the INNER derived table, not to the outer one a `find` over
+    * the top-level map would return — and the alias is the whole point of the message. Returning
+    * the pair also removes the `getOrElse("")` that could render `derived table ''`.
+    *
+    * 🔴 The walk is NON-accumulating ([[escapingReferences]]): the boundary is the derived table
+    * itself, so a correlated WHERE subquery living entirely INSIDE the body — reading an alias the
+    * body declares — is not LATERAL and is not refused here. Only a reference that escapes the
+    * derived table is.
     */
   def lateralOffenders(
     s: SingleSearch,
@@ -299,7 +368,9 @@ object SubqueryScope {
         case _                  => Nil
       }
       val innerIds = inner.map(_._2).toSet
-      correlatedReferences(d.query, here).filterNot(innerIds.contains).map(d.name -> _) ++ inner
+      escapingReferences(d.query, here, accumulate = false)
+        .filterNot(innerIds.contains)
+        .map(d.name -> _) ++ inner
     } ++
     // Story 22.3 (A2) — the SECOND half of the walk: a derived table nested inside a WHERE
     // SUBQUERY body is LATERAL too, and nothing saw it before.

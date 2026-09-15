@@ -330,6 +330,58 @@ class SubqueryScopeSpec extends AnyFlatSpec with Matchers {
     matchPattern { case Resolved(0, DerivedSource("d", None), "zzz") => }
   }
 
+  /** 🔴 REGRESSION PIN — the THIRD narrowing of the same story-22.3 retirement. `resolve`'s
+    * scaladoc already promised that an `UnnestSource` *"takes part in NO un-qualified rule"*, but
+    * rule (0) (*"a lone source owns every bare name"*) counted EVERY source, and `scopeOf` emits
+    * the UNNEST as a source of its own — where the retired planner helper counted `TableInfo`s and
+    * an UNNEST is PART OF one. MEASURED on this branch before the fix: `FROM (SELECT * FROM x) d
+    * JOIN UNNEST(d.items) i` answered `Ambiguous` for every bare name, while the SAME statement
+    * without the UNNEST resolved to `d`. Code and its own prose disagreed.
+    */
+  it should "keep an UNNEST source out of the LONE-source rule, as the contract says" in {
+    val opaqueBesideUnnest =
+      outerOf("SELECT a FROM (SELECT * FROM x) d JOIN UNNEST(d.items) i")
+    resolve(ref("a"), Seq(scopeOf(opaqueBesideUnnest))) shouldBe
+    Resolved(0, DerivedSource("d", None), "a")
+    // the control that says the UNNEST was the whole difference: the same shape without it
+    resolve(ref("a"), Seq(scopeOf(outerOf("SELECT a FROM (SELECT * FROM x) d")))) shouldBe
+    Resolved(0, DerivedSource("d", None), "a")
+
+    // a bare name that IS the unnested column, projected by the derived table: it resolves to the
+    // derived source, and that is the right owner — `d.items` is the ARRAY, `i` is the alias of
+    // its ELEMENT. (The element's own columns are not representable: `UnnestSource.projection` is
+    // `None` by construction, since nothing but a mapping could know them.)
+    val unnested = outerOf("SELECT items FROM (SELECT items FROM x) d JOIN UNNEST(d.items) i")
+    resolve(ref("items"), Seq(scopeOf(unnested))) shouldBe
+    Resolved(0, DerivedSource("d", Some(Seq("items"))), "items")
+
+    // 🔴 THE OTHER DIRECTION — dropping the UNNEST from the COUNT never invents an owner: with two
+    // real sources beside it, a bare name is still refused.
+    resolve(
+      ref("a"),
+      Seq(
+        scopeOf(
+          outerOf("SELECT a FROM orders o JOIN customers c ON o.id = c.id JOIN UNNEST(o.items) i")
+        )
+      )
+    ) shouldBe Ambiguous
+    resolve(
+      ref("a"),
+      Seq(
+        scopeOf(
+          outerOf(
+            "SELECT a FROM orders o JOIN (SELECT * FROM x) d ON o.id = d.id JOIN UNNEST(o.items) i"
+          )
+        )
+      )
+    ) shouldBe Ambiguous
+
+    // and the UNNEST is still a SOURCE everywhere else: a correlation name (story 22.2's collapse
+    // pin depends on it) and a qualified target.
+    correlationNames(opaqueBesideUnnest) should contain("i")
+    scopeOf(opaqueBesideUnnest).byName("i") shouldBe Some(UnnestSource("i", "items"))
+  }
+
   it should "never resolve a bare name OUTWARD (PD-2: assumed inner; the seam re-checks)" in {
     val outer =
       outerOf(
@@ -338,6 +390,43 @@ class SubqueryScopeSpec extends AnyFlatSpec with Matchers {
     resolve(ref("vip"), chain(firstBody(outer), Seq(outer))) should matchPattern {
       case Resolved(0, PlainSource("orders", "orders"), "vip") =>
     }
+  }
+
+  /** 🔴 REGRESSION PIN — story 22.3 retired the planner-local `resolveUnqualified`, which compared
+    * projections with `equalsIgnoreCase`, in favour of this resolver, which compared them with
+    * `Seq.contains`. MEASURED on `origin/main` at `36f0884e`, both halves of the narrowing:
+    *   - beside TWO plain legs, `Total` became `Ambiguous` (the reported *"Ambiguous column"*);
+    *   - beside ONE plain leg it silently resolved to the PLAIN leg — the worse half, a wrong leg
+    *     with no error at all.
+    *
+    * SQL identifiers are case-insensitive; a QUOTED one is matched the same way here, deliberately
+    * (see `projects`' scaladoc: the projection side carries no quoting information, so an exact
+    * rule could only be applied to one half). Nothing is rewritten — `Resolved.column` keeps the
+    * caller's own spelling, pinned below.
+    */
+  it should "match a derived projection case-INSENSITIVELY, and keep the caller's spelling" in {
+    val onePlain = outerOf(
+      "SELECT Total FROM bi_events JOIN (SELECT SUM(amount) AS total FROM bi_events) AS d " +
+      "ON bi_events.id = d.total"
+    )
+    resolve(ref("Total"), Seq(scopeOf(onePlain))) shouldBe
+    Resolved(0, DerivedSource("d", Some(Seq("total"))), "Total")
+    // a QUALIFIER is an identifier too: `D.total` names the source written `d`
+    resolve(ref("D.total"), Seq(scopeOf(onePlain))) shouldBe
+    Resolved(0, DerivedSource("d", Some(Seq("total"))), "total")
+    // the control, unchanged: a name the derived table does NOT project still falls to the plain leg
+    resolve(ref("other"), Seq(scopeOf(onePlain))) shouldBe
+    Resolved(0, PlainSource("bi_events", "bi_events"), "other")
+
+    val twoPlain = outerOf(
+      "SELECT Total FROM orders o JOIN customers c ON o.id = c.id " +
+      "JOIN (SELECT SUM(x) AS total FROM t) d ON o.id = d.total"
+    )
+    resolve(ref("Total"), Seq(scopeOf(twoPlain))) shouldBe
+    Resolved(0, DerivedSource("d", Some(Seq("total"))), "Total")
+    // 🔴 the other direction: a genuinely ambiguous bare name is STILL refused — this fix widens
+    // the MATCH, never the rule that follows it
+    resolve(ref("nope"), Seq(scopeOf(twoPlain))) shouldBe Ambiguous
   }
 
   behavior of "SubqueryScope.lateralReferences"
@@ -364,6 +453,49 @@ class SubqueryScopeSpec extends AnyFlatSpec with Matchers {
     lateralReferences(
       outerOf("SELECT d.total FROM (SELECT amount AS total FROM t) d WHERE d.total > 1")
     ) shouldBe Nil
+  }
+
+  /** 🔴 REGRESSION PIN — the FALSE POSITIVE that made story 22.3's own AC 11 unreachable.
+    *
+    * The walk `lateralOffenders` used ACCUMULATED the enclosing names as it descended, so a derived
+    * body's OWN alias was added to the "outer" set one level up and a correlated WHERE subquery
+    * living entirely INSIDE the body was reported as LATERAL. MEASURED on `origin/main` at
+    * `36f0884e`: the statement below was rejected with *"LATERAL is not supported: … 'o.id' inside
+    * derived table 'd' reads the enclosing FROM"* — except `o` is declared by `d`'s body, not by
+    * the enclosing FROM.
+    *
+    * Both directions are pinned here: this shape resolves to NOTHING, and every genuine LATERAL
+    * shape above and below still reports its offender.
+    */
+  it should "NOT fire for a correlated subquery INSIDE the derived body (its own alias)" in {
+    val ac11 =
+      "SELECT d.id FROM (SELECT o.id FROM orders o WHERE EXISTS " +
+      "(SELECT 1 FROM returns r WHERE r.oid = o.id)) d"
+    lateralReferences(outerOf(ac11)) shouldBe Nil
+    // …and the statement therefore PARSES, which is the acceptance criterion this closes.
+    Parser(ac11) should matchPattern { case Right(_: SingleSearch) => }
+    // it still needs the relational engine — the shape is accepted, not executed ES-natively
+    Parser(ac11).toOption.collect { case s: SingleSearch => s.relationalClosureRequired } shouldBe
+    Some(true)
+  }
+
+  /** The two shapes that must NOT be let through by the boundary above — the derived table is still
+    * the boundary, at every depth.
+    */
+  it should "still fire when the reference escapes the derived table, at any depth" in {
+    // a nested derived table two levels in, reading the OUTERMOST alias: attributed to the INNER
+    // derived table, as the pairing promises
+    lateralOffenders(
+      outerOf(
+        "SELECT d.y FROM customers c, (SELECT y FROM " +
+        "(SELECT o.cid AS y FROM orders o WHERE o.cid = c.id) e) d"
+      )
+    ).map { case (alias, id) => alias -> id.name } shouldBe Seq("e" -> "c.id")
+    // a WHERE subquery inside the body reading the DERIVED TABLE'S OWN name is still LATERAL: `d`
+    // is declared by the ENCLOSING FROM, not by the body
+    lateralReferences(
+      outerOf("SELECT d.x FROM (SELECT x FROM t WHERE y IN (SELECT z FROM u WHERE u.k = d.k)) d")
+    ).map(_.name) shouldBe Seq("d.k")
   }
 
   it should "name the derived table whose body reads the outer alias" in {
