@@ -47,7 +47,7 @@ class ExtensionRegistry(
         "extension will be available - not even the core DDL/DQL extensions shipped in " +
         "softclient4es-core, let alone cross-index JOIN or materialized views. Providers are " +
         "resolved against the classloader that loaded softclient4es-core, never the thread context " +
-        "classloader: the extension jars must be on that same classpath (#258)."
+        "classloader: the extension jars must be on that same classpath."
       )
     }
 
