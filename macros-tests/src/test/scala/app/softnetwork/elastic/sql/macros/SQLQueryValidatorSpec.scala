@@ -77,6 +77,35 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  // Story 22.6 — a set operation is a `MultiSearch`, so it reaches the GUARDED `MultiSearch` arm
+  // (`relationalClosureRequired(multi)`), which now sees the operator list. `UNION ALL` must keep
+  // compiling: it is typed from the first leg exactly as before.
+  it should "REJECT a UNION / INTERSECT / EXCEPT at compile time" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(a: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "SELECT a FROM x UNION SELECT a FROM y"
+      )""")
+  }
+
+  it should "REJECT an INTERSECT at compile time" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(a: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "SELECT a FROM x INTERSECT SELECT a FROM y"
+      )""")
+  }
+
   /** 🔴 `assertDoesNotCompile` reports only THAT a snippet failed, never WHY — so the two rows
     * above cannot see the shape naming at all: disabling the `ctesPresent` branch in
     * `closureAbortMessage` left them GREEN. The message is asserted DIRECTLY, the way
@@ -100,6 +129,15 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
     )
     val join = "SELECT o.id, c.name FROM orders o JOIN customers c ON o.cid = c.id"
     SQLQueryValidator.closureAbortMessage(parsed(join), join) should include("Cross-index JOINs")
+    // Story 22.6 — the set operation outranks every branch shape, for the same reason.
+    val setOp = "SELECT a FROM t UNION SELECT a FROM u"
+    val setOpMsg = SQLQueryValidator.closureAbortMessage(parsed(setOp), setOp)
+    setOpMsg should include("UNION / UNION DISTINCT / INTERSECT / EXCEPT set operations")
+    setOpMsg should not include "Cross-index JOINs"
+    // ...and a plain UNION ALL is not a closure shape at all, so it never reaches this message
+    app.softnetwork.elastic.sql.query.relationalClosureRequired(
+      parsed("SELECT a FROM t UNION ALL SELECT a FROM u")
+    ) shouldBe false
   }
 
   // ============================================================
@@ -119,6 +157,22 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
 
       TestElasticClientApi.searchAs[Strings](
         "SELECT vchar::VARCHAR, c::CHAR, text FROM strings WHERE c IN (SELECT c FROM others)"
+      )""")
+  }
+
+  /** Story 22.6 — the CONTROL for the two set-operator rejections above. `UNION ALL` is typed from
+    * the first leg, exactly as before this story; without this row a macro arm that rejected every
+    * `MultiSearch` would look identical.
+    */
+  it should "ACCEPT a plain UNION ALL at compile time (typed from the first leg, as before)" in {
+    assertCompiles("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.macros.SQLQueryValidatorSpec.Strings
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      TestElasticClientApi.searchAs[Strings](
+        "SELECT vchar::VARCHAR, c::CHAR, text FROM strings UNION ALL SELECT vchar::VARCHAR, c::CHAR, text FROM strings"
       )""")
   }
 

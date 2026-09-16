@@ -414,6 +414,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
   /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
   private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+    // Story 22.6 — only `UNION ALL` is an Elasticsearch `_msearch`; UNION (de-duplicating),
+    // UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] all need the relational engine. Refuse HERE,
+    // before any branch is resolved or any request is built: this is the ONE seam every direct-API
+    // path crosses, so a de-duplicating UNION can never degrade into a UNION ALL that returns
+    // duplicates with HTTP 200 — the silent-wrong-answer mode this operator family invites.
+    if (!multiple.isUnionAllOnly)
+      return ElasticResult.failure(
+        RelationalClosureGuard.rejection(multiple, operation = "search")
+      )
     val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
     multiple.requests.foldLeft(zero) {
       case (ElasticSuccess(acc), request) =>
@@ -424,8 +433,23 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       case (failure, _) => failure
     } match {
       case ElasticSuccess(resolved) =>
-        val unchanged = resolved.zip(multiple.requests).forall { case (a, b) => a eq b }
-        ElasticResult.success(if (unchanged) multiple else multiple.copy(requests = resolved))
+        // Story 22.6 — with each branch's schema attached, bare columns are TYPED: re-run the
+        // pairwise compatibility check that passed vacuously at parse time (where a bare column is
+        // `Any`). This is the only type guard the family has — DuckDB casts implicitly across
+        // branches, so the relational engine is never a backstop either.
+        MultiSearch.branchTypes(resolved) match {
+          case Left(reason) =>
+            ElasticResult.failure(
+              ElasticError(
+                message = reason,
+                statusCode = Some(400),
+                operation = Some("search")
+              )
+            )
+          case Right(()) =>
+            val unchanged = resolved.zip(multiple.requests).forall { case (a, b) => a eq b }
+            ElasticResult.success(if (unchanged) multiple else multiple.copy(requests = resolved))
+        }
       case ElasticFailure(error) => ElasticResult.failure(error)
     }
   }

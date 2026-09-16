@@ -31,11 +31,16 @@ object ReplKeywords {
   val sqlWords: Set[String] = SQLKeywords.highlightedWords
 
   /** REPL-only entries — NOT parser keywords at this baseline:
-    * INTERSECT/EXPLAIN/BULK/CONDITION/ACTION/TRANSFORM were advertised by the pre-#161
-    * completer/highlighter; GEO is the compound trigger for "GEO MATCH".
+    * EXPLAIN/BULK/CONDITION/ACTION/TRANSFORM were advertised by the pre-#161 completer/highlighter;
+    * GEO is the compound trigger for "GEO MATCH".
+    *
+    * 🔴 Story 22.6 REMOVED `INTERSECT` from this set: the parser now accepts it, so it is a real
+    * keyword and lives in `SQLKeywords.clauseTokens`. `ReplKeywordsSpec` asserts these two sets are
+    * DISJOINT — "a word the parser actually accepts must live in SQLKeywords, never here" — so
+    * leaving it in both would redden that guard. The REPL still offers it, now through `sqlWords`.
     */
   val extraWords: Set[String] =
-    Set("ACTION", "BULK", "CONDITION", "EXPLAIN", "GEO", "INTERSECT", "TRANSFORM")
+    Set("ACTION", "BULK", "CONDITION", "EXPLAIN", "GEO", "TRANSFORM")
 
   /** Everything the REPL highlights and completes. */
   val all: Set[String] = sqlWords ++ extraWords

@@ -3072,14 +3072,59 @@ object DialectCensus {
       "UNION ALL",
       "UNION ALL",
       OP,
-      """case object UNION extends Expr("UNION ALL") with Operator with TokenRegex""",
+      """case object UNION extends Expr("UNION ALL") with SetOperator""",
       "SELECT id FROM emp UNION ALL SELECT id FROM contractors",
       "2..n",
       Ansi,
       "SQL:2016 Part 2 (Foundation) Feature E071-02 UNION ALL table operator",
       RequestShape,
-      "msearch multi-request; the token is the literal two-word UNION ALL - bare UNION (with " +
-      "duplicate elimination) does NOT exist in this dialect"
+      "msearch multi-request; the ONLY set operator Elasticsearch executes natively. Story 22.6 " +
+      "added the de-duplicating spellings, which route to the relational engine instead"
+    ),
+    e(
+      "clause.union-distinct",
+      Clause,
+      "UNION [DISTINCT]",
+      "UNION DISTINCT",
+      OP,
+      """case object UNION_DISTINCT extends Expr("UNION")""",
+      "SELECT id FROM emp UNION SELECT id FROM contractors",
+      "2..n",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature E071-01 UNION DISTINCT table operator",
+      ClientSide,
+      "story 22.6 - no Elasticsearch equivalent; planned as a DuckDB set expression by the " +
+      "relational engine, refused with HTTP 400 at every venue without it"
+    ),
+    e(
+      "clause.intersect",
+      Clause,
+      "INTERSECT [ALL]",
+      "INTERSECT",
+      OP,
+      """case object INTERSECT extends Expr("INTERSECT")""",
+      "SELECT id FROM emp INTERSECT SELECT id FROM contractors",
+      "2..n",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature F302-02 INTERSECT table operator",
+      ClientSide,
+      "story 22.6 - relational engine only; INTERSECT binds tighter than UNION and EXCEPT. The " +
+      "word became RESERVED with this story"
+    ),
+    e(
+      "clause.except.setop",
+      Clause,
+      "EXCEPT [ALL]",
+      "EXCEPT",
+      OP,
+      """case object EXCEPT extends Expr("EXCEPT")""",
+      "SELECT id FROM emp EXCEPT SELECT id FROM contractors",
+      "2..n",
+      Ansi,
+      "SQL:2016 Part 2 (Foundation) Feature E071-03 EXCEPT DISTINCT table operator",
+      ClientSide,
+      "story 22.6 - relational engine only. DISTINCT from the SELECT * EXCEPT(cols) projection " +
+      "clause, which is a column exclusion and executes natively"
     ),
     e(
       "clause.join.bare",

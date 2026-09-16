@@ -16,7 +16,8 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.operator.{SetOperator, UNION}
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   Column,
@@ -64,20 +65,54 @@ package object query {
     * deliberately NOT arms — they reject closure shapes in the grammar or in `validate()`, so they
     * never reach a router carrying one.
     */
-  def closureSearches(statement: Statement): Seq[SingleSearch] = statement match {
-    case s: SingleSearch      => Seq(s)
-    case m: MultiSearch       => m.requests
-    case sel: SelectStatement => sel.statement.toSeq.flatMap(closureSearches)
-    case ins: Insert          => ins.values.left.toOption.toSeq.flatMap(closureSearches)
-    case ct: CreateTable      => ct.ddl.left.toOption.toSeq.flatMap(closureSearches)
-    case _                    => Nil
-  }
+  def closureSearches(statement: Statement): Seq[SingleSearch] =
+    embeddedSearchStatements(statement).flatMap {
+      case s: SingleSearch => Seq(s)
+      case m: MultiSearch  => m.requests
+      case _               => Nil
+    }
 
-  /** Epic 22 AD-4 — the statement needs the relational engine (a cross-index JOIN or a derived
-    * table today; stories 22.3/22.5/22.6 widen the per-statement value this reads).
+  /** The `SearchStatement`s a statement EMBEDS, AS WRITTEN — a `MultiSearch` stays whole here.
+    *
+    * 🔴 This is where the arms live; [[closureSearches]] derives from it by flattening a set
+    * operation into its branches. Story 22.6 needs BOTH views and neither may be a second `match`:
+    * the operator list is a property of the `MultiSearch` itself, invisible once it is flattened,
+    * while every per-branch question (a derived table, a CTE, a correlated subquery) reads the
+    * branches.
+    */
+  private def embeddedSearchStatements(statement: Statement): Seq[SearchStatement] =
+    statement match {
+      case s: SingleSearch      => Seq(s)
+      case m: MultiSearch       => Seq(m)
+      case sel: SelectStatement => sel.statement.toSeq.flatMap(embeddedSearchStatements)
+      case ins: Insert          => ins.values.left.toOption.toSeq.flatMap(embeddedSearchStatements)
+      case ct: CreateTable      => ct.ddl.left.toOption.toSeq.flatMap(embeddedSearchStatements)
+      case _                    => Nil
+    }
+
+  /** Epic 22 AD-4 — the statement needs the relational engine (a cross-index JOIN, a derived table,
+    * a CTE, a correlated subquery, or — story 22.6 — a set operator other than `UNION ALL`).
+    *
+    * 🔴 Reads the SET-OPERATION level, not only the branches: `SELECT a FROM t UNION SELECT a FROM
+    * u` needs the engine although every branch alone is plain Elasticsearch, and flattening through
+    * [[closureSearches]] would lose exactly that.
     */
   def relationalClosureRequired(statement: Statement): Boolean =
-    closureSearches(statement).exists(_.relationalClosureRequired)
+    embeddedSearchStatements(statement).exists {
+      case s: SingleSearch => s.relationalClosureRequired
+      case m: MultiSearch  => m.relationalClosureRequired
+      case _               => false
+    }
+
+  /** Story 22.6 — a set operation other than `UNION ALL` is present. Read by the rejection message
+    * (the shape the analyst wrote) and by the MATERIALIZED VIEW guard; routing reads
+    * [[relationalClosureRequired]] only.
+    */
+  def setOperationsPresent(statement: Statement): Boolean =
+    embeddedSearchStatements(statement).exists {
+      case m: MultiSearch => !m.isUnionAllOnly
+      case _              => false
+    }
 
   /** Narrower than [[relationalClosureRequired]]: a derived table specifically. Read by the
     * rejection message (the remedy differs — a JOIN can be rewritten by hand, a derived table is
@@ -169,12 +204,24 @@ package object query {
       */
     ctes: Seq[Cte] = Nil
   ) extends SearchStatement {
-    override def sql: String = {
-      val withPrefix = if (ctes.isEmpty) "" else ctes.map(_.sql).mkString("WITH ", ", ", " ")
-      s"$withPrefix$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(
+
+    /** The rendered `WITH` prefix, or `""` (story 22.5). Split out of [[sql]] so story 22.6's
+      * parenthesised set-operation render can HOIST it: `(WITH x AS (…) SELECT …) UNION (…)` cannot
+      * parse, because a set-operation branch is a `single` and `single` has no `WITH`. ONE
+      * derivation — [[sql]] is `ctePrefix + sqlWithoutCtes`.
+      */
+    lazy val ctePrefix: String =
+      if (ctes.isEmpty) "" else ctes.map(_.sql).mkString("WITH ", ", ", " ")
+
+    /** This statement rendered WITHOUT its `WITH` prefix — the body a parenthesised set-operation
+      * branch renders as. Identical to [[sql]] whenever `ctes` is empty.
+      */
+    lazy val sqlWithoutCtes: String =
+      s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(
         orderBy
       )}${asString(limit)}${asString(onConflict)}"
-    }
+
+    override def sql: String = ctePrefix + sqlWithoutCtes
 
     override def withoutNestedExplosion: SingleSearch = this.copy(explodeNested = false)
 
@@ -1027,9 +1074,91 @@ package object query {
       })
   }
 
-  case class MultiSearch(requests: Seq[SingleSearch], explodeNested: Boolean = true)
-      extends SearchStatement {
-    override def sql: String = s"${requests.map(_.sql).mkString(" UNION ALL ")}"
+  /** Two or more `SELECT` branches combined by set operators (story 22.6; before it, `UNION ALL`
+    * only).
+    *
+    * The list is FLAT and in TEXT order: `operators(i)` sits between `requests(i)` and `requests(i
+    * + 1)`. `Nil` — the default, and what every pre-22.6 construction produces — means "every
+    * operator is [[app.softnetwork.elastic.sql.operator.UNION]] ", i.e. `UNION ALL`, so
+    * `MultiSearch(branches)` keeps its historical meaning and every positional construction in
+    * core/macros/tests keeps compiling.
+    *
+    * 🔴 `Nil` is the CANONICAL form, not merely a default: the parser stores `Nil` whenever every
+    * operator is `UNION` ([[app.softnetwork.elastic.sql.parser.Parser.searchStatement]]). Without
+    * that normalisation a programmatic `MultiSearch(reqs)` and its own re-parse would render to the
+    * same text and compare UNEQUAL (`Nil` vs `Seq(UNION)`), so `Parser(stmt.sql) == Right(stmt)` —
+    * the house fixed point — would fail for the one shape that pre-dates this story. Readers
+    * consult [[resolvedOperators]], never the raw field.
+    *
+    * Precedence (`INTERSECT` before `UNION`/`EXCEPT`, otherwise left to right, SQL-92 §7.10) is a
+    * DERIVED view ([[tree]]), never stored: the flat list re-renders to the flat text, so the
+    * render fixed point holds by construction and no parenthesisation has to be remembered. A
+    * user-written grouping that DIFFERS from precedence — `(a UNION b) INTERSECT c` — is rejected
+    * in the grammar and is written as a derived table instead.
+    *
+    * Binary-incompatible for a downstream that CONSTRUCTS or DESTRUCTURES `MultiSearch` (arity
+    * 2→3); release note.
+    */
+  case class MultiSearch(
+    requests: Seq[SingleSearch],
+    explodeNested: Boolean = true,
+    operators: Seq[SetOperator] = Nil
+  ) extends SearchStatement {
+
+    /** [[operators]] with the legacy `Nil` expanded — the ONE list every reader consults. */
+    lazy val resolvedOperators: Seq[SetOperator] =
+      if (operators.isEmpty) Seq.fill(math.max(requests.size - 1, 0))(UNION) else operators
+
+    /** The historical shape: `UNION ALL` between every pair. Only this shape may reach
+      * Elasticsearch's `_msearch`; every other operator needs the relational engine.
+      */
+    lazy val isUnionAllOnly: Boolean = resolvedOperators.forall(_ == UNION)
+
+    /** Epic 22 AD-4, lifted to the set operation: true when the OPERATOR LIST needs the engine
+      * (anything but `UNION ALL`) or when any branch does.
+      *
+      * 🔴 Reads the branch's STATEMENT-level member [[SingleSearch.relationalClosureRequired]],
+      * never `_.from.…`: story 22.3 widened that member with `hasCorrelatedSubqueries` and 22.5
+      * with `ctes.nonEmpty`, and a set operation over a correlated or CTE-bearing branch must route
+      * exactly as that branch would alone. One member, every widening inherited.
+      */
+    lazy val relationalClosureRequired: Boolean =
+      !isUnionAllOnly || requests.exists(_.relationalClosureRequired)
+
+    /** SQL-92 precedence as a binary tree over branch INDICES (0-based). Left-associative within a
+      * precedence level; `INTERSECT [ALL]` groups first. Consumed by the DuckDB render in
+      * softclient4es-arrow and by nothing in core.
+      */
+    lazy val tree: SetOpNode =
+      MultiSearch.precedenceTree(requests.indices.toList, resolvedOperators.toList)
+
+    /** The WITH prefix this statement renders, hoisted from branch 0 (story 22.5 keeps the list
+      * there and `MultiSearch` gains no `ctes` field of its own).
+      */
+    private lazy val ctePrefix: String = requests.headOption.map(_.ctePrefix).getOrElse("")
+
+    /** `UNION ALL`-only renders BYTE-FOR-BYTE as before story 22.6 (epic AC 4). Any other operator
+      * list renders every branch parenthesised: a branch carrying its own `ORDER BY` / `LIMIT`
+      * would otherwise re-parse under the trailing-clause rejection, and the parenthesised form is
+      * accepted for every operator, so the fixed point holds for every shape with ONE rule.
+      *
+      * 🔴 Branch 0's `WITH` prefix is hoisted OUT of the parentheses and emitted once, ahead of the
+      * whole operation: `(WITH x AS (…) SELECT …) UNION (…)` cannot parse, because a set-operation
+      * branch is a `single` and `single` has no `WITH`. `validate()` refuses a WITH list on any
+      * OTHER branch, which the grammar cannot produce and whose render could not re-parse.
+      */
+    override def sql: String =
+      if (isUnionAllOnly) requests.map(_.sql).mkString(" UNION ALL ")
+      else {
+        val rendered = requests.zipWithIndex.map {
+          case (r, 0) => s"(${r.sqlWithoutCtes})"
+          case (r, _) => s"(${r.sql})"
+        }
+        ctePrefix + rendered
+          .zipAll(resolvedOperators.map(op => s" ${op.sql} "), "", "")
+          .map { case (branch, op) => branch + op }
+          .mkString
+      }
 
     override def withoutNestedExplosion: MultiSearch = {
       this.copy(explodeNested = false, requests = requests.map(_.withoutNestedExplosion))
@@ -1038,10 +1167,32 @@ package object query {
     def update(): MultiSearch = this.copy(requests = requests.map(_.update()))
 
     override def validate(): Either[String, Unit] = {
-      requests.map(_.validate()).filter(_.isLeft) match {
-        case Nil    => Right(()) // TODO validate that all requests have the same fields
-        case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
-      }
+      for {
+        _ <- requests.map(_.validate()).filter(_.isLeft) match {
+          case Nil    => Right(())
+          case errors => Left(errors.map { case Left(err) => err }.mkString("\n"))
+        }
+        _ <-
+          if (operators.isEmpty || operators.size == requests.size - 1) Right(())
+          else
+            Left(
+              s"A set operation over ${requests.size} branches needs ${requests.size - 1} " +
+              s"operators, got ${operators.size}"
+            )
+        // The grammar attaches a WITH clause to the FIRST SELECT only, so this can be reached by a
+        // programmatic construction alone -- and it is refused rather than rendered, because the
+        // parenthesised render would hoist branch 0's prefix and silently DROP this one.
+        _ <- requests.zipWithIndex.drop(1).collectFirst { case (r, i) if r.hasCtes => i } match {
+          case Some(i) =>
+            Left(
+              s"A WITH clause must precede the FIRST branch of a set operation; branch ${i + 1} " +
+              "carries one. Move the common table expressions in front of the first SELECT."
+            )
+          case None => Right(())
+        }
+        _ <- MultiSearch.branchArity(requests)
+        _ <- MultiSearch.branchTypes(requests)
+      } yield ()
     }
 
     lazy val sqlAggregations: ListMap[String, SQLAggregation] =
@@ -1049,6 +1200,97 @@ package object query {
 
     lazy val fieldAliases: ListMap[String, String] =
       ListMap(requests.flatMap(_.fieldAliases).distinct: _*)
+  }
+
+  /** A node of [[MultiSearch.tree]]. Leaves are branch INDICES into `MultiSearch.requests`. */
+  sealed trait SetOpNode
+
+  case class SetOpLeaf(branch: Int) extends SetOpNode
+
+  case class SetOpBranch(left: SetOpNode, operator: SetOperator, right: SetOpNode) extends SetOpNode
+
+  object MultiSearch {
+
+    /** Fold the flat list into the precedence tree: first every `INTERSECT [ALL]` pair, left to
+      * right, then the remaining `UNION`/`EXCEPT` operators, left to right. Pure, total,
+      * index-based.
+      */
+    private[query] def precedenceTree(branches: List[Int], ops: List[SetOperator]): SetOpNode = {
+      val (nodes1, ops1) = ops
+        .zip(branches.tail)
+        .foldLeft((List[SetOpNode](SetOpLeaf(branches.head)), List[SetOperator]())) {
+          case ((nodes, kept), (op, b)) if op.bindsTighter =>
+            (nodes.init :+ SetOpBranch(nodes.last, op, SetOpLeaf(b)), kept)
+          case ((nodes, kept), (op, b)) => (nodes :+ SetOpLeaf(b), kept :+ op)
+        }
+      ops1.zip(nodes1.tail).foldLeft(nodes1.head) { case (acc, (op, n)) => SetOpBranch(acc, op, n) }
+    }
+
+    /** The projection a branch DECLARES — `None` for a bare `SELECT *` (OPAQUE: its width is the
+      * index mapping's, unknown here, and is never guessed).
+      */
+    private def declared(s: SingleSearch): Option[Seq[Field]] =
+      if (s.select.fields.exists(f => f.identifier.name == "*" && f.identifier.functions.isEmpty))
+        None
+      else Some(s.select.fields)
+
+    /** SQL-92 §7.10: every branch must project the same number of columns. Checked between the
+      * DECLARING branches only.
+      */
+    private[query] def branchArity(requests: Seq[SingleSearch]): Either[String, Unit] = {
+      val known = requests.zipWithIndex.flatMap { case (r, i) => declared(r).map(f => (i, f)) }
+      known.headOption match {
+        case None => Right(())
+        case Some((i0, f0)) =>
+          known.find(_._2.size != f0.size) match {
+            case Some((i, f)) =>
+              Left(
+                s"Set operation branches must project the same number of columns: branch " +
+                s"${i0 + 1} projects ${f0.size} (${f0.map(_.outputName).mkString(", ")}), branch " +
+                s"${i + 1} projects ${f.size} (${f.map(_.outputName).mkString(", ")})"
+              )
+            case None => Right(())
+          }
+      }
+    }
+
+    /** Positional type compatibility with the FIRST declaring branch, using the ONE pairwise
+      * predicate the cast/coercion layer already trusts (`SQLTypeUtils.matches`: same family, or
+      * either side `Any`/`Null`).
+      *
+      * At parse time a bare column is `Any` and passes; once `SearchApi.resolveWithSchema` has
+      * attached each branch's schema the SAME method rejects a `keyword UNION long` pair before any
+      * request is sent — which is why this is `private[elastic]` and not `private[query]`.
+      *
+      * 🔴 Deliberately NOT `leastCommonSuperType`, which answers `Varchar` for `{BigInt, Varchar}`
+      * — a super type, not a verdict — and would let `SELECT 1 … UNION SELECT 'a' …` through. And
+      * this is the ONLY type guard: DuckDB performs implicit casting across set-operation branches
+      * (MEASURED on 1.5.5.1: `BIGINT UNION VARCHAR` succeeds and yields a VARCHAR column), so the
+      * engine is never a backstop.
+      *
+      * Column NAMES are NOT checked: SQL takes the first branch's.
+      */
+    private[elastic] def branchTypes(requests: Seq[SingleSearch]): Either[String, Unit] = {
+      val known = requests.zipWithIndex.flatMap { case (r, i) => declared(r).map(f => (i, f)) }
+      known.headOption match {
+        case None => Right(())
+        case Some((i0, f0)) =>
+          val offending = for {
+            (i, f)        <- known.tail
+            ((a, b), pos) <- f0.zip(f).zipWithIndex
+            if !SQLTypeUtils.matches(a.identifier.out, b.identifier.out)
+          } yield (i, pos, a, b)
+          offending.headOption match {
+            case Some((i, pos, a, b)) =>
+              Left(
+                s"Set operation branches must project compatible types at column ${pos + 1}: " +
+                s"branch ${i0 + 1} '${a.outputName}' is ${a.identifier.out.typeId}, branch " +
+                s"${i + 1} '${b.outputName}' is ${b.identifier.out.typeId}"
+              )
+            case None => Right(())
+          }
+      }
+    }
   }
 
   /** FROM-less SELECT of constant scalar expressions — the connection/health idiom of the
@@ -1628,7 +1870,19 @@ package object query {
       * the derived half only.
       */
     override def validate(): Either[String, Unit] =
-      if (derivedTablesPresent(dql))
+      // Story 22.6 — FIRST, and it narrows nothing: `search` (below) THROWS
+      // `IllegalArgumentException("Materialized view must be a single search")` for EVERY
+      // non-`SingleSearch` body, `UNION ALL` included, and `MaterializedViewExtension` reads
+      // `create.search`. So every set operation already failed here; what changes is that it now
+      // fails as a parse-time 400 carrying a reason instead of a caught throwable.
+      if (dql.isInstanceOf[MultiSearch])
+        Left(
+          "MATERIALIZED VIEW over a set operation is not supported: UNION ALL, UNION, INTERSECT " +
+          "and EXCEPT are not materializable, because an Elasticsearch transform reads indices " +
+          "and cannot combine or de-duplicate across sources. Materialize each branch as its own " +
+          "view."
+        )
+      else if (derivedTablesPresent(dql))
         Left(
           "MATERIALIZED VIEW over a derived table (subquery in FROM/JOIN) is not supported: an " +
           "Elasticsearch transform reads indices. Materialize the subquery as its own view and " +

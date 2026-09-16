@@ -235,8 +235,14 @@ class ReplKeywordsSpec extends AnyFlatSpec with Matchers {
     completionsFor("SELECT RANK() OV", "OV") should contain("OVER")
   }
 
-  it should "still offer legacy extras (INTERSECT) and compound continuations" in {
+  it should "still offer legacy extras (EXPLAIN) and compound continuations" in {
+    completionsFor("SELECT 1 EXPLA", "EXPLA") should contain("EXPLAIN")
+    // Story 22.6 — INTERSECT is no longer a legacy EXTRA: the parser accepts it, so it moved into
+    // `SQLKeywords.clauseTokens` (and out of `ReplKeywords.extraWords`, which this suite asserts
+    // is DISJOINT from the registry). The REPL must still offer it, now through `sqlWords`.
     completionsFor("SELECT 1 INTERS", "INTERS") should contain("INTERSECT")
+    ReplKeywords.extraWords should not contain "INTERSECT"
+    SQLKeywords.highlightedWords should contain("INTERSECT")
     // NOTE: the baseline compound path derives previousWord = words(length - 2) from the
     // TRIMMED buffer, so it only triggers once the continuation is being typed
     // ("ORDER B" -> previous "ORDER"), not on "ORDER " with an empty current word.

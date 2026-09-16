@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.query.{
   closureSearches,
   ctesPresent,
   derivedTablesPresent,
+  setOperationsPresent,
   Statement
 }
 
@@ -43,10 +44,15 @@ object RelationalClosureGuard {
     * did not choose.
     */
   def shapeOf(statement: Statement): String =
-    // Story 22.5 — FIRST: a CTE reference IS a derived table, so a WITH statement would otherwise
-    // be reported as "a derived table (subquery in FROM/JOIN)" — a shape the user did not write.
+    // Story 22.6 — FIRST, for the same reason 22.5's CTE arm is first: a set operation is what the
+    // analyst typed, and it is the construct whose silent degradation matters most (executing a
+    // de-duplicating UNION as UNION ALL returns duplicates with HTTP 200). Its branches may ALSO
+    // carry a CTE or a derived table; the set operation still outranks them.
+    if (setOperationsPresent(statement)) SetOperationShape
+    // Story 22.5 — a CTE reference IS a derived table, so a WITH statement would otherwise be
+    // reported as "a derived table (subquery in FROM/JOIN)" — a shape the user did not write.
     // Naming what was actually typed is the whole point of this method.
-    if (ctesPresent(statement)) CteShape
+    else if (ctesPresent(statement)) CteShape
     else if (closureSearches(statement).exists(_.hasCorrelatedSubqueries)) CorrelatedShape
     else if (derivedTablesPresent(statement)) "A derived table (subquery in FROM/JOIN)"
     else "A cross-index JOIN"
@@ -57,6 +63,13 @@ object RelationalClosureGuard {
     * `LATERAL` incident).
     */
   private val CteShape = "A WITH clause (common table expression)"
+
+  /** Story 22.6. The words `set operation` and the operator names sit in the first 60 characters
+    * for the same reason `CteShape`'s do: `GatewayApi.excerpt` caps a rejection at 200 characters
+    * and elides the MIDDLE (head 120 + tail 77).
+    */
+  private val SetOperationShape =
+    "A set operation (UNION, UNION DISTINCT, INTERSECT or EXCEPT)"
 
   /** Story 22.3 — reported FIRST, for the same reason the derived table outranks the JOIN: it is
     * the construct with the narrowest remedy (qualify differently, or rewrite as a JOIN), and a

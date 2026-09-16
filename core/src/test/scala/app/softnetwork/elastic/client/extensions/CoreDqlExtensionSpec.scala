@@ -513,6 +513,64 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.searchedStatement.get() shouldBe null
   }
 
+  /** Story 22.6 — a set operation reaches the SAME guard through the SAME predicate, with zero edit
+    * in this extension. The falsifiable half is the pair of `null` seam assertions PLUS the `UNION
+    * ALL` control below: a distinct `UNION` that leaked past the guard would have been executed as
+    * an `_msearch`, i.e. as `UNION ALL` — returning DUPLICATES with HTTP 200, which is exactly the
+    * silent degradation this operator family invites.
+    */
+  it should "reject UNION / INTERSECT / EXCEPT, naming the set operation, and never execute it" in {
+    Seq(
+      "SELECT a FROM t UNION SELECT a FROM u",
+      "SELECT a FROM t UNION DISTINCT SELECT a FROM u",
+      "SELECT a FROM t INTERSECT SELECT a FROM u",
+      "SELECT a FROM t INTERSECT ALL SELECT a FROM u",
+      "SELECT a FROM t EXCEPT SELECT a FROM u",
+      "SELECT a FROM t EXCEPT ALL SELECT a FROM u"
+    ).foreach { sql =>
+      val (client, res) = run(sql, Quota.Community)
+      withClue(s"[$sql] ") {
+        res shouldBe a[ElasticFailure]
+        val err = res.asInstanceOf[ElasticFailure].elasticError
+        err.statusCode shouldBe Some(400)
+        err.message should include("A set operation")
+        err.message should include("softclient4es-arrow-extensions")
+        client.scrolledStatement.get() shouldBe null
+        client.searchedStatement.get() shouldBe null
+      }
+    }
+  }
+
+  /** The CONTROL. Without it the row above is satisfied by a guard that refuses every
+    * `MultiSearch`, which would take the ES-native fast path down with it.
+    */
+  it should "still execute a plain UNION ALL (the ES-native fast path is untouched)" in {
+    val (client, res) = run(
+      "SELECT a FROM t LIMIT 5 UNION ALL SELECT a FROM u LIMIT 5",
+      Quota.Community
+    )
+    res shouldBe a[ElasticSuccess[_]]
+    // it reached the client, i.e. it was EXECUTED rather than refused
+    client.searchedStatement.get() should not be null
+  }
+
+  it should "reject INSERT ... SELECT and CTAS carrying a set operation, and claim them" in {
+    Seq(
+      "INSERT INTO target SELECT a FROM t EXCEPT SELECT a FROM u",
+      "CREATE TABLE target AS SELECT a FROM t INTERSECT SELECT a FROM u"
+    ).foreach { sql =>
+      val (client, res) = run(sql, Quota.Community)
+      withClue(s"[$sql] ") {
+        res shouldBe a[ElasticFailure]
+        val err = res.asInstanceOf[ElasticFailure].elasticError
+        err.statusCode shouldBe Some(400)
+        err.message should include("A set operation")
+        client.scrolledStatement.get() shouldBe null
+        client.searchedStatement.get() shouldBe null
+      }
+    }
+  }
+
   it should "reject INSERT ... SELECT and CTAS carrying a derived table, and claim them" in {
     Seq(
       "INSERT INTO target SELECT COL FROM (SELECT 1 AS COL) AS d",

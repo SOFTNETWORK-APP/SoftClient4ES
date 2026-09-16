@@ -91,7 +91,41 @@ package object operator {
   case object AND extends Expr("AND") with PredicateOperator
   case object OR extends Expr("OR") with PredicateOperator
 
-  case object UNION extends Expr("UNION ALL") with Operator with TokenRegex
+  /** A set operator between two `SELECT` branches (story 22.6).
+    *
+    * `all` says whether duplicates are KEPT (bag semantics: `UNION ALL` / `INTERSECT ALL` / `EXCEPT
+    * ALL`) or the result is a SET.
+    *
+    * 🔴 [[UNION]] keeps its historical identity — the literal token `"UNION ALL"`, the value every
+    * pre-22.6 `MultiSearch` implicitly carried between its legs — so `wordsOf(UNION) ==
+    * List("UNION", "ALL")` and every `case UNION` / `== UNION` in the tree keeps meaning "keep
+    * every row". The bare, de-duplicating spelling is [[UNION_DISTINCT]], whose `words` accept both
+    * `UNION DISTINCT` and a bare `UNION` — multi-word FIRST, because `TokenRegex.regex` is an
+    * ordered alternation and `UNION` alone is a prefix of `UNION DISTINCT`.
+    */
+  sealed trait SetOperator extends Operator with TokenRegex {
+
+    /** true = duplicates kept (bag semantics), false = set semantics. */
+    def all: Boolean
+
+    /** SQL-92 §7.10 precedence: `INTERSECT` binds tighter than `UNION` / `EXCEPT`. */
+    def bindsTighter: Boolean = this == INTERSECT || this == INTERSECT_ALL
+  }
+
+  case object UNION extends Expr("UNION ALL") with SetOperator { val all = true }
+
+  case object UNION_DISTINCT extends Expr("UNION") with SetOperator {
+    val all = false
+    override def words: List[String] = List("UNION DISTINCT", "UNION")
+  }
+
+  case object INTERSECT extends Expr("INTERSECT") with SetOperator { val all = false }
+
+  case object INTERSECT_ALL extends Expr("INTERSECT ALL") with SetOperator { val all = true }
+
+  case object EXCEPT extends Expr("EXCEPT") with SetOperator { val all = false }
+
+  case object EXCEPT_ALL extends Expr("EXCEPT ALL") with SetOperator { val all = true }
 
   /** Story 22.2 — the WHERE-subquery operators.
     *
