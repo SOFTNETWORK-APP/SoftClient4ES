@@ -1351,7 +1351,7 @@ sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
         case _: MultiSearch =>
           Left(
             s"UNION ALL inside a WHERE subquery is not supported yet: $sql. " +
-            "Write one subquery per branch, or wait for set-operator support (story 22.6)."
+            "Write one subquery per branch."
           )
         case _: FromlessSelect =>
           Left(

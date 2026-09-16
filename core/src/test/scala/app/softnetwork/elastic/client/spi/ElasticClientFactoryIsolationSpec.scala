@@ -151,7 +151,10 @@ class ElasticClientFactoryIsolationSpec extends AnyFlatSpec with Matchers with B
         // the substring the jdbc/arrow ContextClassLoaderIsolationSpecs pin - kept, appended to
         cause.getMessage should include("No ElasticClientSpi implementation found")
         cause.getMessage should include(isolating.toString)
-        cause.getMessage should include("#258")
+        // The remedy, not the issue number: the message is customer-facing, so it may not carry an
+        // internal work-item reference (UserFacingMessageHygieneSpec).
+        cause.getMessage should include("never the thread context classloader")
+        cause.getMessage should not include "#258"
       case other =>
         fail(s"expected create() to fail on an empty provider list, got $other")
     }

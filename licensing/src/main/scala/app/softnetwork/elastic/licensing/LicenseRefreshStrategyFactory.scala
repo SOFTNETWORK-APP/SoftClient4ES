@@ -131,7 +131,7 @@ object LicenseRefreshStrategyFactory extends LazyLogging {
               s"back to ${classOf[NopRefreshStrategy].getSimpleName} (Community license, refresh " +
               "disabled for this JVM). Providers are resolved against the classloader that loaded " +
               "softclient4es-licensing, never the thread context classloader: the licensing jars " +
-              "must be on that same classpath (#258)."
+              "must be on that same classpath."
             )
             val fallback = new NopRefreshStrategy()
             fallback.initialize()
