@@ -149,7 +149,29 @@ ORDER BY sales DESC
 LIMIT 100;
 ```
 
-**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
+Subqueries and derived tables are part of DQL too:
+
+```sql
+-- Subquery in WHERE — IN / NOT IN, EXISTS / NOT EXISTS, a scalar comparison,
+-- or a quantified one (= ANY | SOME, <> ALL, > ALL, >= ANY, …)
+SELECT name FROM employees
+WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
+
+-- Derived table in FROM (also valid in JOIN, nested to any depth)
+SELECT d.category, d.n
+FROM (SELECT category, COUNT(*) AS n FROM bi_events GROUP BY category) d
+WHERE d.n > 10;
+
+-- Correlated subquery — the body reads the outer row
+SELECT c.name FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+```
+
+- **Uncorrelated `WHERE` subqueries run on Elasticsearch itself**, so they work on every surface — including a plain REPL with no extensions.
+- **Derived tables and correlated subqueries run on the relational engine** (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
+- **Not yet:** CTEs (`WITH …`) and set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`).
+
+**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries and derived tables, window functions, aggregations, nested fields, geospatial queries, and more.
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
 
@@ -509,6 +531,9 @@ Materialized views with JOINs rely on **Elasticsearch Watcher** to automatically
 - [x] Arrow Flight SQL server (gRPC, Docker)
 - [x] ADBC driver (in-process, columnar)
 - [x] Cross-index JOINs
+- [x] Subqueries (`IN` / `EXISTS` / scalar / quantified, correlated or not) and derived tables
+- [ ] CTEs (`WITH …`)
+- [ ] Set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`)
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge

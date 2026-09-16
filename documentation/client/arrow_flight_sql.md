@@ -197,7 +197,7 @@ The single-cluster sidecar on this page is the free shape. Multi-cluster **feder
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
+Subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported in this release, correlated or not. **CTEs** (`WITH`) and set operators beyond `UNION ALL` are not — inline the CTE body as a derived table instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 
@@ -218,7 +218,7 @@ The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no S
 
 ## Known limitations
 
-Subqueries, CTEs (`WITH`), and set operators beyond `UNION ALL` are not in R1 — and some BI tools auto-generate them. See [Known Limitations & Roadmap](../sql/known_limitations.md) for exactly what works today, what's coming in R2a, and the per-tool workaround.
+Subqueries and derived tables — which some BI tools auto-generate — work in this release. CTEs (`WITH`) and set operators beyond `UNION ALL` do not. See [Known Limitations & Roadmap](../sql/known_limitations.md#subqueries-and-derived-tables) for exactly what works today and what is still refused.
 
 ---
 

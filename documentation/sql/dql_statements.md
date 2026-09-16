@@ -638,7 +638,7 @@ The SQL Gateway executes `UNION ALL` using **Elasticsearch Multi‑Search (`_mse
 1. Each SELECT query is translated into an independent ES search request.
 2. All requests are sent in a single `_msearch` call.
 3. The Gateway concatenates the results **in order**, without deduplication.
-4. ORDER BY, LIMIT, OFFSET apply **per SELECT**, not globally (unless wrapped in a subquery, which is not supported).
+4. ORDER BY, LIMIT, OFFSET apply **per SELECT**, not globally. Wrapping the whole `UNION ALL` in a derived table to sort it globally is not supported either — a `UNION ALL` cannot be a derived-table body.
 
 ### Notes
 
@@ -1337,8 +1337,8 @@ For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
-- No correlated subqueries
-- No arbitrary subqueries in `SELECT` or `WHERE` (except `INSERT ... AS SELECT` in DML)
+- Subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a `UNION ALL` subquery body.
+- No CTEs (`WITH name AS (SELECT …)`)
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`
 - No explicit window frame clauses (`ROWS BETWEEN ...`)

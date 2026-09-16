@@ -37,11 +37,11 @@ Tableau's own connector documentation says that when the temp-table capabilities
 *"Tableau will attempt to generate an alternative query to retrieve the necessary results."*
 
 The probe therefore costs one failed round trip per connection and is not itself a problem. What
-follows it can be: Tableau's alternative for a source without temporary tables uses **subqueries**,
-which this release does not accept, so some interactions fail — with the same kind of clear error
-naming the statement, never a hang and never a silently wrong answer. Tableau's own documentation
-also warns that the subquery path *"can be poor, particularly with large datasets."* See the
-Honest-gap note below for what lands when.
+follows it is Tableau's alternative for a source without temporary tables, which uses **subqueries** —
+and subqueries and derived tables **are accepted in this release**. Tableau's own documentation warns
+that the subquery path *"can be poor, particularly with large datasets"*, so it is a performance
+characteristic to watch rather than a refusal. Note that a derived table runs on the relational engine:
+the JDBC driver ships it, so a Tableau connection has it.
 
 **A Tableau datasource customization file (`.tdc`) cannot suppress the probe.** The capability that
 would do it, `CAP_SUPPRESS_TEMP_TABLE_CHECKS`, is not among the capabilities Tableau documents for
@@ -53,10 +53,13 @@ dead end worth not walking down.
 
 ## Honest-gap note
 
-The superpower of this release is a **cross-index JOIN** that Elasticsearch can't do, and it runs best
-through explicit `JOIN … ON …` SQL — from any tool where you control the statement that is sent (Superset
-SQL Lab, DBeaver, Grafana). Some BI tools compose SQL for you: subqueries and CTEs are not in this release
-yet, and neither is the quoted, fully-qualified identifier form Tableau generates. Tableau's Custom SQL is
-not a way around that — Tableau wraps a custom query inside a `SELECT … FROM ( … )`, which is a derived
-table (Tableau's Custom SQL documentation, checked 2026-09-01). Full BI-tool subquery / CTE support is coming in the next release (Quarter 4 2026). See the
-website's Known Limitations page for the full picture.
+The superpower of this release is a **cross-index JOIN** that Elasticsearch can't do. It runs from explicit
+`JOIN … ON …` SQL and, in this release, from the nested SQL a BI tool composes for you: **subqueries and
+derived tables are accepted**, and so is the quoted, fully-qualified identifier form Tableau generates.
+Tableau's Custom SQL wraps your query inside a `SELECT … FROM ( … )` (Tableau's Custom SQL documentation,
+checked 2026-09-01) — that wrapper is a derived table, which now runs on the relational engine the JDBC
+driver ships.
+
+What is still missing for a tool that composes SQL: **CTEs** (`WITH …`) and **set operators beyond
+`UNION ALL`**, both coming in the next release (Quarter 4 2026). See the website's Known Limitations page
+for the full picture, including the subquery forms that are still refused by name.
