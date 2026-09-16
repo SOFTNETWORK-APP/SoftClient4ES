@@ -2,10 +2,10 @@
 
 # Known Limitations & Roadmap
 
-SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries and derived tables that Elasticsearch itself cannot do. A couple of advanced constructs (CTEs, set operators beyond `UNION ALL`) are not supported yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
+SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries, derived tables and non-recursive CTEs that Elasticsearch itself cannot do. One advanced construct — set operators beyond `UNION ALL` — is not supported yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
 
-> **Since engine `0.24.0`:** subqueries and derived tables work, including the nested SQL BI tools
-> generate for you. CTEs (`WITH …`) and set operators beyond `UNION ALL` are not yet supported.
+> **Since engine `0.24.0`:** subqueries, derived tables and non-recursive CTEs work, including the
+> nested SQL BI tools generate for you. Set operators beyond `UNION ALL` are not yet supported.
 
 ## Using a BI tool? Read this first
 
@@ -223,7 +223,7 @@ they do **not** cover yet:
 
 ## Not yet supported
 
-- **CTEs**: `WITH name AS (SELECT …)` — recursive and non-recursive.
+- **Recursive CTEs** (`WITH RECURSIVE …`) and **CTE column lists** (`WITH a (x, y) AS …`), both refused by name. Plain non-recursive CTEs work since engine `0.24.0`, with two further limits: a `WITH` clause is accepted only at the top of a `SELECT` (not inside a subquery body, CTAS, `INSERT … SELECT` or a materialized view), and a CTE body may not name the CTE itself — unlike PostgreSQL, which binds such a name to the base table, this engine rejects it.
 - **Set operators**: `UNION` (with row de-duplication), `INTERSECT`, and the `EXCEPT` **set operator**. The `EXCEPT` set operator is **distinct from** the `SELECT * EXCEPT(cols)` column-exclusion clause above — that one works; the set operator does not.
 - **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
 
@@ -231,25 +231,25 @@ When they arrive they will be a driver-side enhancement — single-cluster custo
 
 ### What a not-yet-supported query looks like
 
-A CTE is rejected by the parser today:
+A de-duplicating `UNION` is rejected by the parser today:
 
 ```sql
--- Not supported: CTEs are not implemented.
--- (Still true on 0.24.0 — unlike the subquery forms below.)
+-- Not supported: only UNION ALL is implemented.
+SELECT name FROM employees_eu
+UNION
+SELECT name FROM employees_us;
+```
+
+Use `UNION ALL` and de-duplicate in the outer query, or run the two branches separately. `INTERSECT` and
+the `EXCEPT` set operator are rejected the same way.
+
+The non-recursive CTE below, on the other hand, runs since engine `0.24.0` — a CTE reference is a derived
+table, so it executes on the relational engine and carries the same venue requirement:
+
+```sql
 WITH eu_departments AS (SELECT id FROM departments WHERE region = 'EU')
 SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu_departments);
 ```
-
-Inline the CTE body as a subquery or a derived table — both of which engine `0.24.0` runs:
-
-```sql
-SELECT name
-FROM employees
-WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
-```
-
-`UNION` (de-duplicating), `INTERSECT` and the `EXCEPT` set operator are rejected the same way; `UNION ALL`
-works.
 
 ## Temporary tables are not supported
 

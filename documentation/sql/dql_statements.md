@@ -1338,7 +1338,7 @@ Even though the DQL engine is powerful, some SQL features are not (yet) supporte
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
 - **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a `UNION ALL` subquery body.
-- No CTEs (`WITH name AS (SELECT …)`)
+- **Since engine `0.24.0`**, non-recursive CTEs (`WITH name AS (SELECT …)`) are supported at the top of a `SELECT`, each one able to reference the CTEs declared before it. Still not supported: `WITH RECURSIVE`, CTE column lists (`WITH a (x, y) AS …`), a CTE body that names the CTE itself, and a `WITH` clause anywhere other than the top of a `SELECT` (not in a subquery body, CTAS, `INSERT … SELECT` or a materialized view).
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`
 - No explicit window frame clauses (`ROWS BETWEEN ...`)

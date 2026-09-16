@@ -169,7 +169,8 @@ WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 
 - **Uncorrelated `WHERE` subqueries run on Elasticsearch itself**, so they work on every surface — including a plain REPL with no extensions.
 - **Derived tables and correlated subqueries run on the relational engine** — since engine `0.24.0` with arrow-extensions `0.3.4` (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
-- **Not yet supported:** CTEs (`WITH …`) and set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`).
+- **Non-recursive CTEs run on that same relational engine** — a CTE reference *is* a derived table, so it carries the same venue requirement. A `WITH` clause is accepted at the top of a `SELECT` only; `WITH RECURSIVE` and CTE column lists (`WITH a (x, y) AS …`) are refused by name.
+- **Not yet supported:** set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`).
 
 **Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries and derived tables, window functions, aggregations, nested fields, geospatial queries, and more.
 
@@ -532,7 +533,7 @@ Materialized views with JOINs rely on **Elasticsearch Watcher** to automatically
 - [x] ADBC driver (in-process, columnar)
 - [x] Cross-index JOINs
 - [x] Subqueries (`IN` / `EXISTS` / scalar / quantified, correlated or not) and derived tables — `0.24.0`
-- [ ] CTEs (`WITH …`)
+- [x] Non-recursive CTEs (`WITH name AS (SELECT …)`) — `0.24.0`
 - [ ] Set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`)
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions

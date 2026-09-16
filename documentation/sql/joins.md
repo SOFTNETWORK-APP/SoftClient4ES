@@ -33,7 +33,7 @@ Cross-index JOIN ships in three shapes ("rows"). Pick by where your data lives:
 
 The rule the engine actually applies: it counts the **distinct source catalogs** in the rewritten `FROM` / `JOIN` clauses versus the target catalog. Same (or no) catalog → Row 1; exactly one source catalog different from the target → Row 2; two or more source catalogs → Row 3.
 
-> **What does NOT work yet:** Cross-index JOINs are first-class, and since engine **`0.24.0`** so are **subqueries and derived tables** — including a derived table as a JOIN leg, and a JOIN inside a derived body (see [Known limitations](known_limitations.md#subqueries-and-derived-tables)). Two things are intentionally **not** here yet: **CTEs** (`WITH …`) and set operators beyond `UNION ALL`, which are not yet supported, and **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …), which land in **the upcoming release (Quarter 1 2027)** — this release's Row 3 is multi-**Elasticsearch** only.
+> **What does NOT work yet:** Cross-index JOINs are first-class, and since engine **`0.24.0`** so are **subqueries, derived tables and non-recursive CTEs** — including a derived table as a JOIN leg, and a JOIN inside a derived body (see [Known limitations](known_limitations.md#subqueries-and-derived-tables)). Two things are intentionally **not** here yet: set operators beyond `UNION ALL`, which are not yet supported, and **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …), which land in **the upcoming release (Quarter 1 2027)** — this release's Row 3 is multi-**Elasticsearch** only.
 
 ---
 
@@ -389,7 +389,7 @@ For the full price matrix and editions, see the licensing & pricing page on the 
 
 ## What does NOT work yet
 
-- **CTEs** (`WITH …`) inside a JOIN query — not yet supported. Subqueries and derived tables *do* work **since engine `0.24.0`**: a derived table can be a JOIN leg, a derived body can itself carry a JOIN, and a correlated `WHERE` subquery counts as **one** unit against `maxJoins` (a derived table counts none). See [Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
+- **Set operators beyond `UNION ALL`** (`UNION`, `INTERSECT`, `EXCEPT`) — not yet supported. Subqueries, derived tables and non-recursive CTEs *do* work **since engine `0.24.0`**: a derived table can be a JOIN leg, a derived body can itself carry a JOIN, a CTE reference is a derived table and so can be a JOIN leg too, and a correlated `WHERE` subquery counts as **one** unit against `maxJoins` (a derived table, CTE reference included, counts none). See [Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
 - **A correlated subquery body that is not a single Elasticsearch source** — it may not carry its own `JOIN`, comma-separated `FROM`, `JOIN UNNEST`, derived table or window function. Move the construct to the outer `FROM` and correlate against it.
 - **Heterogeneous Row-3 sources** (joining Elasticsearch with Postgres, MySQL, Snowflake, …) — coming in **the upcoming release (Quarter 1 2027)**; this release's Row 3 is multi-Elasticsearch only.
 - **JOIN inside a watcher input** (`CREATE WATCHER … FROM a JOIN b ON …`) — a watcher input is a single Elasticsearch `search` request over a list of indices, so the join is rejected at parse time. Pre-join the sources with a [materialized view](materialized_views.md) and have the watcher search the view.

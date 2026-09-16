@@ -62,6 +62,7 @@ Tableau's Custom SQL wraps your query inside a `SELECT … FROM ( … )` (Tablea
 checked 2026-09-01) — that wrapper is a derived table, which now runs on the relational engine the JDBC
 driver ships.
 
-What is still missing for a tool that composes SQL: **CTEs** (`WITH …`) and **set operators beyond
-`UNION ALL`**, neither of which is supported yet. See the website's Known Limitations page for the full
+Non-recursive **CTEs** (`WITH …`) run on that same engine since `0.24.0`, because a CTE reference is a
+derived table. What is still missing for a tool that composes SQL: **set operators beyond `UNION ALL`**,
+which are not supported yet. See the website's Known Limitations page for the full
 picture, including the subquery forms that are still refused by name.
