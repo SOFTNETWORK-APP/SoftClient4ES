@@ -2,7 +2,18 @@
 
 # Keywords
 
-A list of reserved words recognized by the parser for this engine.
+The words the parser recognises. Two different sets live on this page, and the difference matters when
+you name a column:
+
+- **Recognised** — the word has a meaning in the grammar. Everything listed below is recognised.
+- **Reserved** — the word additionally **cannot be used as a bare identifier**. Most, but *not all*, of
+  the words below are reserved.
+
+`EXISTS` is reserved, so `SELECT exists FROM t` is a parse error. `ANY` and `SOME` are **deliberately not
+reserved**, so `SELECT any, some FROM t WHERE any = 1` parses as columns — even though `x = ANY (SELECT …)`
+is real grammar. If you have a column whose name collides with a reserved word, **quote it** rather than
+renaming it: `SELECT "exists" FROM t` works, and so does the backtick spelling — see
+[Quoted identifiers](dql_statements.md#quoted-identifiers).
 
 ## Main clauses
 COPY
@@ -28,6 +39,7 @@ LIMIT
 ON
 CONFLICT
 DO
+UNION ALL
 SHOW
 DESCRIBE
 EVERY
@@ -181,6 +193,21 @@ NOT IN
 NOT BETWEEN  
 IS NULL  
 IS NOT NULL  
+EXISTS  
+NOT EXISTS  
+ALL  
+ANY  
+SOME  
+
+`EXISTS` and `ALL` are **reserved** — a column of either name must be quoted. `ANY` and `SOME` are
+recognised but **not reserved**, on purpose: a column called `any` keeps parsing, and the grammar tells the
+two readings apart by what follows.
+
+These five words introduce the subquery predicates. `= ANY` and `= SOME` mean `IN`, and `<> ALL` means
+`NOT IN` — the engine normalises them, so `WHERE customer_id = ANY (SELECT id FROM customers)` is stored
+and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The ordering quantifiers
+(`> ALL`, `>= ANY`, `< ALL`, …) keep their own spelling. See
+[Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
 
 ## Logical operators
 AND  
