@@ -20,3 +20,10 @@
 # Tableau corpus beside them, whose statements carry literal TAB characters and are
 # replayed through the same parser by the same kind of gate.
 sql/src/test/resources/corpus/*.csv -text
+
+# documentation/sql/keywords.md is compared BYTE FOR BYTE against freshly generated output by
+# `KeywordsPageSpec`. Checkout-time eol conversion would rewrite the whole file on a clone with
+# `core.autocrlf=true`, while the generator emits LF, so the guard would redden for the platform
+# rather than for the content - invisibly, since macOS/Linux CI never reproduces it. `-text` keeps
+# the stored bytes byte for byte everywhere.
+documentation/sql/keywords.md -text
