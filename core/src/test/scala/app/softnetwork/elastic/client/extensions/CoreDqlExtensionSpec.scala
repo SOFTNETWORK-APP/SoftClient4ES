@@ -233,6 +233,48 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** A client that counts the ONE-SHOT searches Elasticsearch is asked for, and answers each with
+    * an empty hit set so a WHERE subquery can actually resolve.
+    *
+    * `resolveWithSchema(single)` is NOT a pure check: when a leg carries a WHERE subquery it runs
+    * `SubqueryResolver.resolve`, which EXECUTES the inner statement, and there is no cache. This
+    * counter is what tells "the seam resolved once and the fold reused it" from "every leg resolved
+    * again and the inner query ran twice".
+    */
+  private class InnerSearchCountingClient extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+    val innerSearches = new java.util.concurrent.atomic.AtomicInteger(0)
+
+    private def emptyResponse: ElasticResult[Option[com.fasterxml.jackson.databind.JsonNode]] = {
+      val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+      val root = mapper.createObjectNode()
+      val hits = root.putObject("hits")
+      hits.putArray("hits")
+      hits.putObject("total").put("value", 0)
+      ElasticResult.success(Some(root))
+    }
+
+    override private[client] def executeSingleSearch(
+      elasticQuery: ElasticQuery
+    ): ElasticResult[Option[com.fasterxml.jackson.databind.JsonNode]] = {
+      innerSearches.incrementAndGet()
+      emptyResponse
+    }
+
+    @volatile var scrolled: Seq[SearchStatement] = Seq.empty
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+      synchronized { scrolled = scrolled :+ statement }
+      Source.single((ListMap[String, Any]("a" -> 1), ScrollMetrics()))
+    }
+  }
+
   /** A client that records whether the cap path consulted the `UNION ALL` seam, and can make it
     * refuse. The seam is where AD-4's cross-branch TYPE re-check lives (pinned against a real stub
     * schema in `TemporalLiteralSearchSpec`); rule (3) reaches it through `search(multi)` and the
@@ -791,35 +833,62 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     capHits(collector)("max_query_results") shouldBe 1L
   }
 
-  /** 🔴 The cap is not a cap when nothing was cut. A quota of exactly the number of rows available
-    * fired a cap-hit and flagged `truncated` — F6 removed the systematic over-report and left this
-    * boundary behind. Each leg is now asked for one row MORE than it may contribute, so the two
-    * cases are distinguishable facts.
+  /** 🔴 THE BOUNDARY MATRIX. `truncated` and the cap-hit meter must both follow the FACT, in both
+    * directions, and the budget is GLOBAL — so a probe that only looks INSIDE a leg cannot see the
+    * truncation that happens AT A LEG BOUNDARY.
+    *
+    * An earlier draft of mine reported `truncated = false`, an empty warning and ZERO cap-hits for
+    * a statement it had genuinely cut, whenever the budget was exhausted exactly at the end of a
+    * leg with legs still to come. My own row picked the single sub-case where that logic is right —
+    * the budget exhausting at the end of the LAST leg — so it certified the bug. Every row below
+    * comes from the independent review's measurement on real ES 8.18 (3-shard indices, 5 documents
+    * each); the THREE-leg rows are the ones a per-leg probe cannot pass.
     */
-  it should "report no truncation when the result is exactly the quota's size" in {
-    val collector = new TelemetryCollector
-    val client = new BudgetClient(rowsPerLeg = 5)
-    val ext = new CoreDqlExtension()
-    ext.initialize(
-      ConfigFactory.empty(),
-      strategy(
-        managerWithQuota(Quota.Community.copy(maxQueryResults = Some(10)), LicenseType.Community),
-        collector
-      )
+  it should "report truncation and the cap-hit from the FACT, at every budget boundary" in {
+    val matrix = Seq(
+      // legs, quota, expected rows, expected truncated
+      // 🔴 budget exhausted AT a leg boundary with a leg still to come — silently false before
+      (2, 5, 5, true),
+      (3, 5, 5, true),
+      (3, 10, 10, true),
+      // the budget covers everything: nothing was cut, and the meter must stay quiet
+      (2, 11, 10, false),
+      (2, 10, 10, false),
+      (3, 15, 15, false),
+      // cut INSIDE the last leg — what the per-leg probe row covers
+      (2, 9, 9, true)
     )
-    val parsed = Parser("SELECT a FROM x UNION ALL SELECT a FROM y") match {
-      case Right(st) => st
-      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    matrix.foreach { case (legs, quota, expectedRows, expectedTruncated) =>
+      val collector = new TelemetryCollector
+      val client = new BudgetClient(rowsPerLeg = 5)
+      val ext = new CoreDqlExtension()
+      ext.initialize(
+        ConfigFactory.empty(),
+        strategy(
+          managerWithQuota(
+            Quota.Community.copy(maxQueryResults = Some(quota)),
+            LicenseType.Community
+          ),
+          collector
+        )
+      )
+      val sql = (1 to legs).map(i => s"SELECT a FROM t$i").mkString(" UNION ALL ")
+      val parsed = Parser(sql) match {
+        case Right(st) => st
+        case Left(e)   => fail(s"parse failed: ${e.msg}")
+      }
+      val rows = Await.result(ext.execute(parsed, client), 10.seconds) match {
+        case ElasticSuccess(q: QueryRows) => q
+        case other                        => fail(s"[$sql @ $quota] expected QueryRows, got $other")
+      }
+      withClue(s"[$legs legs x 5 rows, quota $quota] ") {
+        rows.rows should have size expectedRows.toLong
+        rows.truncation.map(_.truncated) shouldBe Some(expectedTruncated)
+        // the warning and the meter follow the SAME fact — they may not disagree with the flag
+        rows.truncation.map(_.warning.nonEmpty) shouldBe Some(expectedTruncated)
+        capHits(collector)("max_query_results") shouldBe (if (expectedTruncated) 1L else 0L)
+      }
     }
-    val rows = Await.result(ext.execute(parsed, client), 10.seconds) match {
-      case ElasticSuccess(q: QueryRows) => q
-      case other                        => fail(s"expected QueryRows, got $other")
-    }
-    // 5 + 5 rows available, quota 10 — the budget is spent EXACTLY, and nothing was truncated
-    rows.rows should have size 10
-    rows.truncation.map(_.truncated) shouldBe Some(false)
-    rows.truncation.map(_.warning) shouldBe Some("")
-    capHits(collector)("max_query_results") shouldBe 0L
   }
 
   /** 🔴 The loud backstop, exercised. Until this row existed, reinstating `case _ => success(acc)`
@@ -907,6 +976,40 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     capped should have size 2
     capped.map(_.keys.toSeq).distinct shouldBe Seq(Seq("category", "tag"))
     capped.map(_("category")) shouldBe Seq("category@1", "category@2")
+  }
+
+  /** 🔴 The seam resolves the statement ONCE, and the fold executes what it resolved.
+    *
+    * Discarding the resolved statement was a regression: `resolveWithSchema` EXECUTES a leg's WHERE
+    * subquery through `SubqueryResolver`, so checking here and letting every leg resolve again
+    * inside its own `search` ran the inner query TWICE (measured on real ES 8.18: 2 executions,
+    * against 1 before the seam call existed). Phase one rewrites the subquery into literals, so the
+    * resolved legs have nothing left to execute.
+    */
+  it should "resolve a branch's WHERE subquery exactly once on the cap path" in {
+    val client = new InnerSearchCountingClient
+    val res = runWith(
+      "SELECT a FROM x WHERE a IN (SELECT b FROM y) UNION ALL SELECT a FROM z",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      client
+    )
+    res shouldBe a[ElasticSuccess[_]]
+    // ONE execution of the inner statement: the seam's.
+    client.innerSearches.get() shouldBe 1
+    // 🔴 …and THE MECHANISM, which is what a count alone cannot see here: the leg the fold executes
+    // is the RESOLVED one, so there is no subquery left for `ScrollApi.scroll` to re-execute. This
+    // stub intercepts `scroll`, so the second execution would happen inside the REAL scroll and
+    // never reach the counter above — asserting only the count would have been vacuous (measured:
+    // the mutation that discards the resolved statement leaves the count at 1).
+    client.scrolled should have size 2
+    client.scrolled.foreach { stmt =>
+      withClue(s"the fold was handed an UNRESOLVED leg [${stmt.sql}]: ") {
+        stmt match {
+          case single: SingleSearch => single.hasWhereSubqueries shouldBe false
+          case other                => fail(s"expected a SingleSearch, got $other")
+        }
+      }
+    }
   }
 
   it should "never open a scroll for a leg the budget cannot pay for" in {
@@ -1023,13 +1126,26 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
 
   /** …and the fold MATERIALISES that stream: bounded by the budget, normalised like every other
     * leg, never refused as an "unexpected result variant".
+    *
+    * 🔴 The fixture is `NamedRowsClient`, not `BudgetClient`, and that is the difference between a
+    * test and a tautology: `BudgetClient` serves `"a" -> i` for EVERY statement whatever its
+    * projection, so no leg could produce a second key and the row-shape assertion this row used to
+    * carry held for any implementation at all — deleting the normalisation from the fold left it
+    * GREEN.
+    *
+    * ⚠️ RECORDED, not asserted: where branch 1 declares a DUPLICATE output name (`SELECT amount,
+    * amount`), `rowNormalizer` takes its legacy per-row path with a requested-name SET, and a leg's
+    * extra columns — an internal aggregate key such as `max#m` included — survive into the rows;
+    * measured on real ES 8.18, the three routes disagree on that shape. PRE-EXISTING, not
+    * introduced by the row contract, and NOT fixed here: it belongs with the by-name normalisation
+    * question in SoftClient4ES#354.
     */
   it should "materialise a QueryStream branch under the cap instead of failing it" in {
-    val client = new BudgetClient(rowsPerLeg = 5)
+    val client = new NamedRowsClient
     val res = runWith(
       // leg 1 is row-shaped and un-LIMITed (that is what puts the statement on the cap path);
-      // leg 2 is the `QueryStream` shape
-      "SELECT a, a FROM x UNION ALL SELECT a, MAX(a) AS m FROM y",
+      // leg 2 is the `QueryStream` shape — not row-shaped, no LIMIT, fields projected
+      "SELECT amount, category FROM x UNION ALL SELECT amount, MAX(amount) AS m FROM y",
       Quota.Community.copy(maxQueryResults = Some(50)),
       client
     )
@@ -1040,10 +1156,13 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     }
     // both legs contributed — the stream leg was consumed, not refused (HTTP 500 before the fix)
     // and not dropped (HTTP 200 with half the rows)
-    rows should have size 10L
-    // …and EVERY row carries the first branch's columns: an internal aggregate key (`max#m`) or a
-    // second shape leaking into user-visible rows is exactly what the row contract prevents
-    rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("a"))
+    rows should have size 2
+    // …and the row contract reached the STREAM leg's rows too: its `amount` lands under `amount`,
+    // the first branch's `category` it does not declare is null-filled, and its own `m` follows as
+    // an extra. A fold that skipped `normalise` for this arm reddens here.
+    rows.head shouldBe ListMap[String, Any]("amount" -> "amount@1", "category" -> "category@1")
+    rows(1) shouldBe
+    ListMap[String, Any]("amount" -> "amount@2", "category" -> null, "m" -> "m@2")
   }
 
   /** …and the fold handles that variant end to end, with the branch LIMIT honoured. */

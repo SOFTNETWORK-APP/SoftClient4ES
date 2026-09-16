@@ -277,10 +277,17 @@ class CoreDqlExtension extends ExtensionSpi {
           // plain client and bypassed on the licensed gateway, which is the surface the REPL, the
           // JDBC driver and the Flight sidecar actually use. MEASURED by the independent review:
           // `SELECT category FROM l UNION ALL SELECT amount FROM r` answered 400 through
-          // `client.search` and HTTP 200 with 54 rows through here. The resolved statement is
-          // DISCARDED on purpose: every leg is re-resolved by its own `search`, idempotently
-          // (`SchemaAttachSpec`), and re-using it here would make this fold a second owner of a
-          // resolution it does not perform.
+          // `client.search` and HTTP 200 with 54 rows through here.
+          //
+          // 🔴 The RESOLVED statement is what the fold then executes, and discarding it was a
+          // regression. `resolveWithSchema` is NOT a pure check: when a leg carries a WHERE
+          // subquery it runs `SubqueryResolver.resolve`, which EXECUTES the inner statement
+          // against Elasticsearch, and there is no cache — so resolving here and letting every
+          // leg resolve again inside its own `search` ran the inner query TWICE (measured on real
+          // ES 8.18: 2 executions here, 1 before this seam existed). Carrying the resolved legs
+          // forward keeps the guard and pays for the resolution once: phase one has already
+          // rewritten the subquery into literals, so the per-leg `search` finds nothing left to
+          // execute.
           val seam = client.resolveWithSchema(multi)
           logger.info(
             s"ℹ️ No LIMIT on a UNION ALL branch; bounding the concatenated result at license " +
@@ -289,7 +296,7 @@ class CoreDqlExtension extends ExtensionSpi {
           (seam match {
             case ElasticFailure(error) =>
               Future.successful(ElasticResult.failure[(Seq[ListMap[String, Any]], Boolean)](error))
-            case ElasticSuccess(_) => cappedUnionAllRows(multi, max, client)
+            case ElasticSuccess(resolved) => cappedUnionAllRows(resolved, max, client)
           }).map {
             case ElasticFailure(error)          => ElasticFailure(error)
             case ElasticSuccess((rows, capBit)) =>
@@ -360,13 +367,14 @@ class CoreDqlExtension extends ExtensionSpi {
     context: ConversionContext
   ): Future[ElasticResult[(Seq[ListMap[String, Any]], Boolean)]] = {
     implicit val ec: ExecutionContext = system.dispatcher
-    // 🔴 Each leg is ASKED for one row more than the budget can pay for and KEEPS at most the
-    // budget. That one probe row is what tells "the result is exactly `max` rows long" apart from
-    // "the result was cut at `max`" — `rows.size >= max` cannot, and fired a cap-hit beside a
-    // `truncated` flag for a statement nothing had truncated. Raising the BUDGET instead would
-    // have been the obvious edit and a regression: `acc` would reach `max + 1`, so a later leg
-    // would still have one row of budget left and would be executed — losing the property that
-    // legs past the spent budget never run at all.
+    // Truncation is detected in TWO places, because it can happen in two:
+    //   * INSIDE a leg — each leg is ASKED for one row more than the budget can pay for and keeps
+    //     at most the budget, so `rows.size > remaining` is exact. This is what covers the LAST
+    //     leg, where no later leg exists to signal anything.
+    //   * AT A LEG BOUNDARY — the budget is spent and a leg is dropped unexecuted (below).
+    // Raising the BUDGET instead of probing would have been the obvious edit and a regression:
+    // `acc` would reach `max + 1`, so a later leg would still have one row of budget left and
+    // would be executed — losing the property that legs past a spent budget never run at all.
     val capBit = new java.util.concurrent.atomic.AtomicBoolean(false)
     // The row contract, hoisted ONCE for the whole statement — the same function the per-leg and
     // one-shot routes apply, so all three routes answer with one row shape. Per-row work on this
@@ -386,8 +394,25 @@ class CoreDqlExtension extends ExtensionSpi {
               if (rows.size.toLong > remaining) capBit.set(true)
               acc ++ rows.take(remaining.toInt).map(normalise)
             }
-            if (remaining <= 0L) Future.successful(ElasticResult.success(acc))
-            else if (leg.returnsRows && leg.limit.isEmpty)
+            if (remaining <= 0L) {
+              // 🔴 THE BUDGET IS GLOBAL, SO THE PROBE MUST BE. A per-leg probe row cannot see the
+              // truncation that happens AT A LEG BOUNDARY: when leg `i` returns exactly
+              // `remaining` rows there is no probe row in it, and legs `i+1…n` are then skipped
+              // here without anyone asking whether they had rows — so a genuinely truncated
+              // statement reported `truncated = false`, an empty warning and ZERO cap-hits.
+              // MEASURED on real ES 8.18 over 3-shard 5-document indices: `A UNION ALL B` at quota
+              // 5 returned 5 rows where SQL says 10, silently; for a Community user
+              // (`maxQueryResults = 10000`) that is any `UNION ALL` whose first leg holds 10,000
+              // documents. The flag and the meter agreed with each other AND BOTH LIED, which is
+              // worse than the contradiction it replaced because nothing detects it.
+              //
+              // Reaching this arm means the budget is spent and a leg is being dropped: that IS
+              // the truncation. It over-reports only when every remaining leg happens to be
+              // EMPTY — accepted by the lead as far narrower than the corner it closes, and not
+              // worth a global probe row that would cost an extra leg execution.
+              capBit.set(true)
+              Future.successful(ElasticResult.success(acc))
+            } else if (leg.returnsRows && leg.limit.isEmpty)
               client
                 .scroll(leg, client.defaultScrollConfig.copy(maxDocuments = Some(probe)))
                 .map(_._1)
