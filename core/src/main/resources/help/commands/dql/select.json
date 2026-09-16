@@ -153,14 +153,15 @@
     "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection",
     "A WHERE subquery that reads an outer alias (a correlated subquery) executes through the relational engine shipped in softclient4es-arrow-extensions, and is refused with HTTP 400 at every venue without it. An outer reference must be QUALIFIED with the outer table's alias - a bare column name inside the subquery is read as the subquery's own column - and an object path inside the body should be qualified with the body's own alias",
     "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true",
-    "A CTE name shadows an index of the same name for the duration of the statement; a CTE referenced twice is executed twice (inline semantics)"
+    "A CTE name shadows an index of the same name for the duration of the statement, so a CTE cannot be named after the index it reads: write WITH orders_f AS (SELECT ... FROM orders ...) rather than WITH orders AS (SELECT ... FROM orders ...). A CTE referenced twice is executed twice (inline semantics)"
   ],
   "limitations": [
     "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
     "A WHERE subquery may return at most 65536 distinct values (Elasticsearch index.max_terms_count); a larger set must be written as a JOIN",
     "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; UNION ALL and FROM-less subquery bodies are rejected, and NOT IN over a GROUP BY subquery cannot see a NULL group",
     "WITH RECURSIVE and CTE column lists (WITH a (x, y) AS ...) are not supported; a WITH clause is accepted only at the top of a SELECT, not inside a subquery body, CTAS, INSERT ... SELECT or MATERIALIZED VIEW",
-    "A statement with a WITH clause executes only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400"
+    "A statement with a WITH clause executes only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
+    "A CTE body may not name the CTE itself: unlike PostgreSQL and other engines, which bind such a name to the base table, this engine rejects it. Rename the CTE (WITH orders_f AS (SELECT ... FROM orders ...)). WITH RECURSIVE is a separate unsupported feature."
   ],
   "seeAlso": [
     "INSERT",

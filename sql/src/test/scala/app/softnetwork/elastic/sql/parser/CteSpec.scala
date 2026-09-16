@@ -234,7 +234,21 @@ class CteSpec extends AnyFlatSpec with Matchers {
       "WITH a AS (SELECT 1 AS x), a AS (SELECT 2 AS x) SELECT * FROM a",
       "CTE 'a' is defined more than once"
     )
-    rejects("WITH a AS (SELECT x FROM a) SELECT * FROM a", "CTE 'a' references itself")
+    // 🔴 The message names what HAPPENED, not what it resembles. The commonest analyst idiom that
+    // lands here — `WITH orders AS (SELECT id FROM orders WHERE id > 1) SELECT * FROM orders` —
+    // contains no recursion at all: ANSI/PostgreSQL/DuckDB bind the inner `orders` to the BASE
+    // TABLE, this engine takes AD-2 rule 3 and refuses it, and telling that author "recursive CTEs
+    // are not supported" is simply false. The remedy must be in the message.
+    rejects(
+      "WITH a AS (SELECT x FROM a) SELECT * FROM a",
+      "A CTE body may not name the CTE itself",
+      "Rename the CTE"
+    )
+    rejects(
+      "WITH orders AS (SELECT id FROM orders WHERE id > 1) SELECT * FROM orders",
+      "A CTE body may not name the CTE itself",
+      "WITH orders_f AS (SELECT ... FROM orders ...)"
+    )
     rejects(
       "WITH a AS (SELECT x FROM b), b AS (SELECT x FROM t) SELECT * FROM a",
       "CTE 'a' references CTE 'b', which is defined later"
@@ -267,6 +281,14 @@ class CteSpec extends AnyFlatSpec with Matchers {
     // 🔴 A criteria tree is NOT a list of conjuncts: a node under `OR`, under a relation wrapper or
     // behind a `NOT` arrives wrapped, and a walk that dispatches on the node's TYPE alone never
     // sees it. Each of these shapes must still MARK the inner reference.
+    //
+    // ⚠️ Every shape below is a WHERE subquery, and that is not an omission: WHERE is the ONLY
+    // criteria position a subquery can occupy today. MEASURED on the control as well as on this
+    // branch — `HAVING k IN (SELECT ...)` is rejected ("A subquery is not supported in HAVING")
+    // and a subquery in a JOIN `ON` is rejected ("ON clause ... must use either equality operator
+    // or AND predicate"). `CteSubstitution.embeddedStatements` walks HAVING and ON anyway, as
+    // DEFENCE for whoever opens those positions; neither arm can fire today, so nothing here
+    // covers them and a later reader should not think otherwise.
     Seq(
       "WITH c AS (SELECT id FROM t) SELECT * FROM u WHERE a = 1 OR k IN (SELECT id FROM c)",
       "WITH c AS (SELECT id FROM t) SELECT * FROM u WHERE k NOT IN (SELECT id FROM c)",
@@ -313,6 +335,40 @@ class CteSpec extends AnyFlatSpec with Matchers {
     // The converse, or the arm above would pass for a statement that simply names nothing.
     SingleSearch(from = From(Seq(Table("u"))), where = None, ctes = Seq(cte))
       .validate() shouldBe Right(())
+  }
+
+  /** 🔴 M-1 (found by independent review). `CteSubstitution.apply` is PUBLIC, and
+    * `SingleSearch.unsubstitutedCteReference` names it in the very message it hands an embedder
+    * ("build the statement through Parser or CteSubstitution"), so a caller CAN reach the arm for a
+    * body kind that cannot carry a WITH list.
+    *
+    * It used to be `case other => other`, which DROPPED the list before it was ever attached.
+    * MEASURED on that form: `Right(SelectStatement)`, `ctesPresent` false,
+    * `relationalClosureRequired` false, `validate()` `Right(())`, the render lost the WITH clause
+    * entirely, and `sources` was `List(a)` — the statement would have executed against an INDEX
+    * named after the CTE. Every safety net this story has keys on `ctes.nonEmpty`, so dropping the
+    * list disarms all of them at once. Loud beats silent.
+    */
+  "CteSubstitution.apply" should "REFUSE a body kind that cannot carry a WITH list" in {
+    val body = Parser("SELECT x FROM t") match {
+      case Right(d: DqlStatement) => d
+      case other                  => fail(s"unexpected $other")
+    }
+    val cte = Cte(NamePart("a", quoted = false), body)
+    CteSubstitution(Seq(cte), SelectStatement("SELECT x FROM a")) match {
+      case Left(msg) =>
+        msg should include("cannot be attached to a SelectStatement")
+        msg should include("re-parsed")
+      case Right(s) =>
+        fail(s"the WITH list was silently dropped: ctes=${ctesPresent(s)} render=[${s.sql}]")
+    }
+    // A programmatic `MultiSearch(Nil)` has no branch 0 to carry the list either.
+    CteSubstitution(Seq(cte), MultiSearch(Nil)).isLeft shouldBe true
+    // …and the control: the two body kinds that CAN carry it still do.
+    CteSubstitution(Seq(cte), body.asInstanceOf[SingleSearch]) match {
+      case Right(s: SingleSearch) => s.ctes should have size 1
+      case other                  => fail(s"a SingleSearch must still be substituted, got $other")
+    }
   }
 
   // -- render: the fixed point AND the text ----------------------------------------------------
@@ -380,6 +436,24 @@ class CteSpec extends AnyFlatSpec with Matchers {
     val sql =
       """CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS """ +
       """(RENAME (field = "old_name", target_field = "new_name", ignore_failure = true))"""
+    val stmt = Parser(sql).toOption.getOrElse(fail(s"[$sql] rejected: ${reasonOf(sql)}"))
+    Parser(stmt.sql).toOption.map(_.sql) shouldBe Some(stmt.sql)
+  }
+
+  it should "leave the watcher `WITH INPUT <http>` family exactly where it was" in {
+    // The SEVENTH and last `keyword("WITH")` family (`Parser.scala:1085`,
+    // `opt(keyword("WITH") ~ keyword("INPUT")) ~> httpRequest`) — a DIFFERENT production from the
+    // `WITH INPUT (...)` search form in the block below. Copied from `ParserSpec:2920`.
+    //
+    // TEXT fixed point only, for the same measured reason as the pipeline row: a watcher carrying
+    // an HTTP input is NOT an AST fixed point on `origin/main` either (control worktree at
+    // unmodified `de8f7594`: AST `false`, TEXT `true` — the two renders are byte-identical and the
+    // ASTs still compare unequal). Pre-existing, unowned, untouched by this story.
+    val sql =
+      """CREATE OR REPLACE WATCHER my_watcher AS AT SCHEDULE '0 */5 * * * ?' """ +
+      """WITH INPUT GET PROTOCOL https HOST "www.example.com" PATH "/api/data" """ +
+      """HEADERS ("Authorization" = "Bearer token") TIMEOUT (connection = "5s") """ +
+      """ALWAYS DO log_action AS LOG "x" AT INFO END"""
     val stmt = Parser(sql).toOption.getOrElse(fail(s"[$sql] rejected: ${reasonOf(sql)}"))
     Parser(stmt.sql).toOption.map(_.sql) shouldBe Some(stmt.sql)
   }

@@ -115,11 +115,15 @@ sealed trait Criteria extends Updateable with PainlessScript {
     * meaningful.
     *
     * The structural arms are the same three shapes `subqueries` recurses through; the leaf arm
-    * delegates to [[SubqueryCriteria.withQuery]], which is ABSTRACT, so a criteria kind that gains
-    * an embedded statement cannot forget to take part -- the compiler refuses it. (An overridable
-    * default would have made the omission silent, and the failure mode is a CTE name inside `IN
-    * (SELECT ... FROM cte)` read as an INDEX: `index_not_found` when absent, a wrong answer with
-    * HTTP 200 when an index of that name exists.)
+    * delegates to [[SubqueryCriteria.withQuery]], which is ABSTRACT.
+    *
+    * 🔴 What that buys, stated exactly: a new `SubqueryCriteria` cannot forget to take part -- the
+    * compiler refuses it. It does NOT extend to a new `Criteria` subtype that is not a
+    * `SubqueryCriteria`; such a type falls to `case _ => this` SILENTLY, and if it ever carries a
+    * statement the failure mode is a CTE name inside `IN (SELECT ... FROM cte)` read as an INDEX
+    * (`index_not_found` when absent, a wrong answer with HTTP 200 when an index of that name
+    * exists). `Criteria` is sealed, so that would be an edit to THIS file -- which is the whole of
+    * the protection, and it is a convention rather than a compiler guarantee.
     */
   def mapEmbeddedStatements(f: DqlStatement => DqlStatement): Criteria = this match {
     case p: Predicate =>

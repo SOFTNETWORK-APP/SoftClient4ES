@@ -89,8 +89,18 @@ object CteSubstitution {
               val laterOrSelf = names.drop(k).toSet
               referencedNames(cte.query).find(laterOrSelf.contains) match {
                 case Some(n) if n == cte.name.value =>
+                  // 🔴 Say what HAPPENED, not what it resembles. "recursive CTEs are not
+                  // supported" is FALSE for the commonest analyst idiom that lands here —
+                  // `WITH orders AS (SELECT id FROM orders WHERE id > 1) SELECT * FROM orders`
+                  // contains no recursion at all; the author meant the BASE TABLE, which is what
+                  // ANSI/PostgreSQL/DuckDB bind it to (a non-recursive CTE is not in scope inside
+                  // its own body). This engine takes rule 3 instead and refuses it, so the message
+                  // has to name the real cause and the real remedy. The load-bearing terms sit in
+                  // the first 120 characters because `GatewayApi.excerpt` elides the MIDDLE.
                   Left(
-                    s"CTE '$n' references itself; recursive CTEs (WITH RECURSIVE) are not supported"
+                    s"A CTE body may not name the CTE itself: '$n' is referenced inside its own " +
+                    s"definition. Rename the CTE, e.g. WITH ${n}_f AS (SELECT ... FROM $n ...). " +
+                    "(Recursive CTEs, WITH RECURSIVE, are a separate unsupported feature.)"
                   )
                 case Some(n) =>
                   Left(
@@ -119,19 +129,45 @@ object CteSubstitution {
     * programmatic `MultiSearch(Nil)`, which is returned untouched rather than thrown on.
     */
   def apply(ctes: Seq[Cte], body: SearchStatement): Either[String, SearchStatement] =
-    resolve(ctes).map { resolved =>
+    resolve(ctes).flatMap { resolved =>
       val scope = resolved.map(c => c.name.value -> c).toMap
       body match {
         case s: SingleSearch =>
-          substituteSingle(s, scope).copy(ctes = resolved).update()
+          Right(substituteSingle(s, scope).copy(ctes = resolved).update())
         case m: MultiSearch =>
           val branches = m.requests.map(b => substituteSingle(b, scope))
           branches.headOption match {
             case Some(h) =>
-              m.copy(requests = h.copy(ctes = resolved).update() +: branches.tail.map(_.update()))
-            case None => m
+              Right(
+                m.copy(requests = h.copy(ctes = resolved).update() +: branches.tail.map(_.update()))
+              )
+            // `requests` is non-empty by construction (`rep1sep`); this guards a programmatic
+            // `MultiSearch(Nil)`, which has no branch 0 to carry the list -- so it is refused for
+            // the same reason the arm below is, rather than returned with the list dropped.
+            case None =>
+              Left("A WITH clause cannot be attached to a MultiSearch with no branches")
           }
-        case other => other // SelectStatement is programmatic; the grammar never produces it here
+        case other =>
+          // 🔴 NEVER `case other => other`. This method is PUBLIC, and
+          // `SingleSearch.unsubstitutedCteReference` names it in the very message it gives an
+          // embedder ("build the statement through Parser or CteSubstitution"), so a caller can
+          // and will reach this arm. Returning the statement unchanged DROPS the WITH list BEFORE
+          // it is ever attached, and every safety net this story has keys on `ctes.nonEmpty` — the
+          // closure guard, `unsubstitutedCteReference`, `RelationalClosureGuard.shapeOf` and the
+          // render all go quiet at once. MEASURED on the `case other => other` form:
+          // `CteSubstitution(Seq(Cte("a", …)), SelectStatement("SELECT x FROM a"))` answered
+          // `Right`, `validate()` passed, the render lost the WITH clause, and `sources` was
+          // `List(a)` — i.e. the statement would have executed against an INDEX named after the
+          // CTE. Loud beats silent (story 22.3b's rule).
+          //
+          // `SelectStatement` cannot carry a substitution at all: its `query` is a SQL STRING and
+          // its `statement` is a LAZY RE-PARSE of that string, so a `WITH` written inside it is
+          // already substituted by `Parser` on the way through and never needs this method.
+          Left(
+            s"A WITH clause cannot be attached to a ${other.getClass.getSimpleName}: it carries " +
+            "the statement as SQL text, which is re-parsed on use. Write the WITH clause inside " +
+            "that text and let Parser substitute it."
+          )
       }
     }
 

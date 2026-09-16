@@ -185,13 +185,13 @@ trait SQLQueryValidator {
       // `searchAs` / `scrollAs` bind ONE index mapping and can type neither a derived table's
       // projection nor a JOIN's merged row.
       case Right(request: SingleSearch) if relationalClosureRequired(request) =>
-        c.abort(c.enclosingPosition, closureAbortMessage(request, sqlQuery))
+        c.abort(c.enclosingPosition, SQLQueryValidator.closureAbortMessage(request, sqlQuery))
 
       case Right(request: SingleSearch) =>
         request
 
       case Right(multi: MultiSearch) if relationalClosureRequired(multi) =>
-        c.abort(c.enclosingPosition, closureAbortMessage(multi, sqlQuery))
+        c.abort(c.enclosingPosition, SQLQueryValidator.closureAbortMessage(multi, sqlQuery))
 
       case Right(multi: MultiSearch) =>
         multi.requests.headOption.getOrElse {
@@ -217,22 +217,6 @@ trait SQLQueryValidator {
           s"Query: $sqlQuery"
         )
     }
-  }
-
-  /** ⚠️ Behaviour change (story 22.1, release note): a `searchAs[T]("… JOIN …")` that COMPILED
-    * before — and then ran the FIRST index alone — is a compile error now. That is the #157
-    * silent-wrong-answer mode, moved from run time to compile time.
-    */
-  private def closureAbortMessage(statement: Statement, sqlQuery: String): String = {
-    val shape =
-      // Story 22.5 — FIRST, the same reason `RelationalClosureGuard.shapeOf` names the CTE first:
-      // a CTE reference IS a derived table, so without this arm the compile error would name a
-      // construct the author never wrote.
-      if (ctesPresent(statement)) "WITH clauses (common table expressions)"
-      else if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
-      else "Cross-index JOINs"
-    s"❌ $shape cannot be typed at compile time: searchAs/scrollAs bind one index mapping. " +
-    s"Run this statement through GatewayApi.run with the relational engine.\nQuery: $sqlQuery"
   }
 
   // ============================================================
@@ -850,6 +834,27 @@ trait SQLQueryValidator {
 
 object SQLQueryValidator {
   val DEBUG: Boolean = sys.props.get("sql.macro.debug").contains("true")
+
+  /** ⚠️ Behaviour change (story 22.1, release note): a `searchAs[T]("… JOIN …")` that COMPILED
+    * before — and then ran the FIRST index alone — is a compile error now. That is the #157
+    * silent-wrong-answer mode, moved from run time to compile time.
+    */
+  /** `private[macros]` rather than `private` so `SQLQueryValidatorSpec` can assert the MESSAGE.
+    * `assertDoesNotCompile` reports only THAT a snippet failed, never why, so the shape naming
+    * below was asserted by nothing — the story-22.4 "name the mechanism, then ask which input
+    * distinguishes it" rule, caught by review.
+    */
+  private[macros] def closureAbortMessage(statement: Statement, sqlQuery: String): String = {
+    val shape =
+      // Story 22.5 — FIRST, the same reason `RelationalClosureGuard.shapeOf` names the CTE first:
+      // a CTE reference IS a derived table, so without this arm the compile error would name a
+      // construct the author never wrote.
+      if (ctesPresent(statement)) "WITH clauses (common table expressions)"
+      else if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
+      else "Cross-index JOINs"
+    s"❌ $shape cannot be typed at compile time: searchAs/scrollAs bind one index mapping. " +
+    s"Run this statement through GatewayApi.run with the relational engine.\nQuery: $sqlQuery"
+  }
 
   // ✅ Cache to avoid redundant validations
   private val validationCache = scala.collection.mutable.Map[String, Boolean]()
