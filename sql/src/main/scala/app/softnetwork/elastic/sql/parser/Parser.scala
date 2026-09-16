@@ -1960,7 +1960,21 @@ trait Parser
   lazy val sql_function: PackratParser[Function] =
     aggregate_function | time_function | conditional_function
 
-  private val reservedKeywords = Seq(
+  /** The words a BARE identifier may not be, checked case-insensitively at offset 0 of a dotted
+    * name by `bareFirstPartStr` below (and by `regexAlias`). Read-only: deriving this list from
+    * `SQLKeywords` would change what parses, so it stays hand-maintained.
+    *
+    * `private[sql]` rather than `private` so the generator behind `documentation/sql/keywords.md`
+    * can mark the reserved flag per word from the list itself instead of scraping this source file.
+    * Nothing outside the `sql` package can see it, and no production code reads it.
+    *
+    * Leave the declaration WITHOUT a type ascription. `SQLKeywordsSpec`'s anti-drift scan finds
+    * this block by raw text - the name, then ` = Seq(` - so an ascription between the two makes the
+    * scan miss. It fails loudly, but for a reason that reads as unrelated. For the same reason the
+    * anchor text is spelled in two pieces here: a scan is comment-blind, and a comment quoting it
+    * whole would be matched INSTEAD of the declaration.
+    */
+  private[sql] val reservedKeywords = Seq(
     "select",
     "insert",
     "update",
@@ -2113,7 +2127,10 @@ trait Parser
     "ltrim",
     "rtrim",
     "replace",
-    "on",
+    // NOTE: "on" is NOT repeated here - it is declared once, above, beside the JOIN keywords.
+    // A duplicate alternative changed nothing for the regex, but story 22.x made this list a
+    // DOCUMENTATION source (documentation/sql/keywords.md), and `KeywordsPageSpec` now asserts it
+    // is duplicate-free so a second copy cannot quietly reappear.
     "conflict",
     "do",
     "show",

@@ -196,7 +196,14 @@ class SQLKeywordsSpec extends AnyFlatSpec with Matchers {
     val parserFile = new File(sourceRoot.get, "parser/Parser.scala")
     assume(parserFile.isFile, "parser/Parser.scala not found - source-scan skipped")
     val text = read(parserFile)
-    val start = text.indexOf("reservedKeywords = Seq(")
+    val anchor = "reservedKeywords" + " = Seq("
+    // Exactly once. This scan is raw text, so a COMMENT quoting the anchor in full is matched
+    // INSTEAD of the declaration and the block cut below silently yields nothing - which is why
+    // the anchor is spelled in two pieces here, and why the scaladoc at the declaration says so.
+    withClue(s"'$anchor' must occur exactly once in Parser.scala: ") {
+      text.split(java.util.regex.Pattern.quote(anchor), -1).length shouldBe 2
+    }
+    val start = text.indexOf(anchor)
     start should be >= 0
     val block = text.substring(start, text.indexOf(")", start))
     val entry = """"([a-z_0-9]+)"""".r

@@ -702,3 +702,12 @@ addCommandAlias(
   "; softclient4es8-sql-bridge/checkLog4jClosure; softclient4es9-sql-bridge/checkLog4jClosure" +
   "; es6cli/checkLog4jClosure; es7cli/checkLog4jClosure; es8cli/checkLog4jClosure; es9cli/checkLog4jClosure"
 )
+
+// documentation/sql/keywords.md is GENERATED from SQLKeywords + Parser.reservedKeywords; only the
+// prose outside the two `<!-- ... GENERATED KEYWORDS -->` markers is hand-written. `KeywordsPageSpec`
+// fails when the committed page and the engine disagree, and its message names this alias.
+// `sql` is not forked, so the generator's working directory is the repository root.
+addCommandAlias(
+  "regenerateKeywordsPage",
+  "sql/Test/runMain app.softnetwork.elastic.sql.doc.KeywordsPageGenerator"
+)
