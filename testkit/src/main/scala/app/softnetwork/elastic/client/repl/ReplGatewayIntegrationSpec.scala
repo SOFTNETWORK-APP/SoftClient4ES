@@ -1500,6 +1500,54 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     plain shouldBe a[ExecutionSuccess]
   }
 
+  behavior of "REPL - set operators without the relational engine"
+
+  it should "refuse UNION / INTERSECT / EXCEPT with HTTP 400 naming the extension" in {
+    // `dql_users` is created by section 5, so the indices EXIST: a 404 can never satisfy this
+    // assertion in place of the 400 guard. Before this story a bare `UNION` was a PARSE error and
+    // `INTERSECT` was read as a table alias — the message change is a release note.
+    Seq("UNION", "UNION DISTINCT", "INTERSECT", "INTERSECT ALL", "EXCEPT", "EXCEPT ALL").foreach {
+      op =>
+        val res = executeSync(s"SELECT id FROM dql_users $op SELECT id FROM dql_users")
+        withClue(s"[$op] ") {
+          res shouldBe a[ExecutionFailure]
+          val error = res.asInstanceOf[ExecutionFailure].error
+          error.statusCode shouldBe Some(400)
+          // 🔴 Both substrings must survive `GatewayApi.excerpt` (200-character cap, MIDDLE
+          // elided: head 120 + "..." + tail 77). `A set operation (UNION, UNION DISTINCT,
+          // INTERSECT or EXCEPT)` opens the message, so both terms sit inside the first 120
+          // characters. No unit test can see that — only this one goes through
+          // `GatewayApi.run(sql)`.
+          error.message should include("A set operation")
+          error.message should include("softclient4es-arrow-extensions")
+        }
+    }
+  }
+
+  it should "refuse a trailing ORDER BY on the last branch, naming the derived-table remedy" in {
+    val res = executeSync(
+      "SELECT id FROM dql_users UNION SELECT id FROM dql_users ORDER BY id"
+    )
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    // the RULE is in the head of the message, the REMEDY in its tail — both survive the elision
+    error.message should include("applies to that branch only")
+    error.message should include("derived table")
+  }
+
+  /** The CONTROL, and the reason the rows above mean anything: the ES-native `UNION ALL` path is
+    * untouched. The `:660` row in section 5 is the other half of it — left byte-for-byte alone.
+    */
+  it should "still execute UNION ALL natively" in {
+    val rows = assertQueryRows(
+      System.nanoTime(),
+      executeSync(
+        "SELECT id FROM dql_users WHERE age > 30 UNION ALL SELECT id FROM dql_users WHERE age <= 30"
+      )
+    )
+    rows should have size 4
+  }
+
   // =========================================================================
   // 7. Error handling
   // =========================================================================

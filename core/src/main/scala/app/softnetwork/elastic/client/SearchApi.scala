@@ -527,6 +527,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }
+        // Story 22.6 — an `_msearch` leg is ONE-SHOT: a row-shaped leg with no bounding LIMIT
+        // gets Elasticsearch's default 10 hits with HTTP 200. That is issue #209's family, one
+        // venue over, and this story pins this path as "the fast path" — pinning a silently
+        // truncating request byte-for-byte would pin a defect as a contract. Such a leg is
+        // executed through `search(leg)`, which routes it through scroll/PIT exactly as the same
+        // statement executes on its own, and the legs are concatenated IN ORDER. Every other
+        // shape (every leg LIMITed within `max_result_window`, or aggregation-shaped) keeps the
+        // single `_msearch`, byte-for-byte the request emitted before this story.
+        if (unionAllNeedsPerLeg(multiple))
+          return unionAllByLeg(multiple, query)
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -904,6 +914,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
         }
+        // Story 22.6 — the async twin of the per-leg route; see `search`'s arm.
+        if (unionAllNeedsPerLeg(multiple))
+          return unionAllByLegAsync(multiple, statement.sql)
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -2223,6 +2236,83 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     *     pages unnecessarily but stays correct — and a >10k one-shot response is better paged
     *     regardless.
     */
+  /** Story 22.6 — true when at least one leg of a `UNION ALL` cannot be answered one-shot.
+    *
+    * `_msearch` sends every leg as its own one-shot request, so a row-shaped leg with no bounding
+    * LIMIT silently comes back with Elasticsearch's default 10 hits. Aggregation-shaped legs and
+    * legs bounded within `max_result_window` are unaffected and keep the single `_msearch`.
+    *
+    * ONE boolean per statement, decided on the AST: a bounded `UNION ALL` pays nothing.
+    */
+  private def unionAllNeedsPerLeg(multiple: MultiSearch): Boolean =
+    this.isInstanceOf[ScrollApi] &&
+    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))
+
+  /** Story 22.6 — sequential per-leg execution of a `UNION ALL` whose legs cannot all be one-shot.
+    *
+    * Rows are concatenated in LEG ORDER (the `_msearch` order). Output names come from the first
+    * leg — the pre-existing simplification of the one-shot path, kept so the two routes agree. Each
+    * leg's response is whatever `search(leg)` produces, so the schema attach, the temporal
+    * literals, the scroll routing and the #224 error translation all apply per leg BY CONSTRUCTION
+    * rather than by a second copy of any of them.
+    *
+    * SEQUENTIAL, not parallel, and that is a memory decision: N un-LIMITed legs in parallel would
+    * open N scrolls and hold N partial results for a consumer that concatenates them anyway.
+    *
+    * ⚠️ Within a leg, row ORDER may differ from the one-shot order — an un-ordered extraction is
+    * interleaved across sliced PIT readers (issue #238). Release-noted.
+    */
+  private def unionAllByLeg(multiple: MultiSearch, sql: String)(implicit
+    context: ConversionContext
+  ): ElasticResult[ElasticResponse] = {
+    val zero: ElasticResult[Seq[ElasticResponse]] = ElasticResult.success(Seq.empty)
+    multiple.requests
+      .foldLeft(zero) {
+        case (ElasticSuccess(acc), leg) =>
+          search(leg) match {
+            case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
+            case ElasticFailure(error) => ElasticResult.failure(error)
+          }
+        case (failure, _) => failure
+      }
+      .map(mergeLegResponses(multiple, sql, _))
+  }
+
+  /** The async twin. Sequential futures — same shape, same memory argument. */
+  private def unionAllByLegAsync(multiple: MultiSearch, sql: String)(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] = {
+    val zero: Future[ElasticResult[Seq[ElasticResponse]]] =
+      Future.successful(ElasticResult.success(Seq.empty))
+    multiple.requests
+      .foldLeft(zero) { (accF, leg) =>
+        accF.flatMap {
+          case ElasticSuccess(acc) =>
+            searchAsync(leg).map {
+              case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
+              case ElasticFailure(error) => ElasticResult.failure(error)
+            }
+          case failure => Future.successful(failure)
+        }
+      }
+      .map(_.map(mergeLegResponses(multiple, sql, _)))
+  }
+
+  /** ONE merge, two callers. */
+  private def mergeLegResponses(
+    multiple: MultiSearch,
+    sql: String,
+    responses: Seq[ElasticResponse]
+  ): ElasticResponse =
+    ElasticResponse(
+      Some(sql),
+      responses.map(_.query).mkString("\n"),
+      responses.flatMap(_.results),
+      multiple.fieldAliases,
+      toClientAggregations(multiple.sqlAggregations)
+    )
+
   private def requiresScrollPaging(limit: Option[Limit]): Boolean =
     limit match {
       case None => true

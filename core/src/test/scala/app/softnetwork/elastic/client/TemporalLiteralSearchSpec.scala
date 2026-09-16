@@ -116,6 +116,32 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
       lastMultiQuery = Some(elasticQueries)
       ElasticResult.success(None)
     }
+
+    /** Story 22.6 — the per-leg route reaches the client through `scroll`, not through
+      * `executeMultiSearch`, so the resolved literals have to be read off the RESOLVED statements
+      * the scroll was opened with.
+      */
+    @volatile var scrolledStatements: Seq[app.softnetwork.elastic.sql.query.SearchStatement] =
+      Seq.empty
+
+    override def scroll(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: ConversionContext
+    ): akka.stream.scaladsl.Source[
+      (
+        scala.collection.immutable.ListMap[String, Any],
+        app.softnetwork.elastic.client.scroll.ScrollMetrics
+      ),
+      akka.NotUsed
+    ] = {
+      scrolledStatements = scrolledStatements :+ statement
+      // DELEGATE: the seam's own rejections (an unparseable literal throws before any stream
+      // exists) are asserted by a neighbouring row, and swallowing them here would disarm it.
+      super.scroll(statement, config)
+    }
   }
 
   private def seeded(): RecordingClient = {
@@ -335,7 +361,29 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery shouldBe None // never reached the client
   }
 
-  it should "resolve every request of a UNION ALL" in {
+  /** RETARGETED by story 22.6, never deleted: this pins a CONTRACT — EVERY leg of a `UNION ALL` is
+    * resolved at the seam, so a temporal literal in leg 2 is normalised exactly as one in leg 1.
+    *
+    * What moved is the ROUTE, not the contract. Both legs now carry a `LIMIT`, which is what keeps
+    * this statement on the ONE-`_msearch` path the `lastMultiQuery` assertion reads; the sibling
+    * row below covers the per-leg route that an UN-LIMITed row leg now takes (issue #209's family,
+    * one venue over). Deleting either half would leave one of the two routes unasserted.
+    */
+  it should "resolve every request of a UNION ALL (the one-msearch route)" in {
+    val client = seeded()
+    client.search(
+      SelectStatement(
+        s"SELECT id FROM events WHERE event_ts >= '$spaceForm' LIMIT 5 UNION ALL " +
+        "SELECT id FROM events WHERE event_ts < '2026-06-01 00:00:00' LIMIT 5"
+      )
+    )
+    val multi = client.lastMultiQuery.getOrElse(fail("no multi-search was rendered")).multiQuery
+    multi should include(isoForm)
+    multi should include("2026-06-01T00:00:00")
+    multi should not include spaceForm
+  }
+
+  it should "resolve every request of a UNION ALL on the per-leg route (story 22.6)" in {
     val client = seeded()
     client.search(
       SelectStatement(
@@ -343,10 +391,15 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
         "SELECT id FROM events WHERE event_ts < '2026-06-01 00:00:00'"
       )
     )
-    val multi = client.lastMultiQuery.getOrElse(fail("no multi-search was rendered")).multiQuery
-    multi should include(isoForm)
-    multi should include("2026-06-01T00:00:00")
-    multi should not include spaceForm
+    // No `_msearch` is rendered at all: each un-LIMITed row leg goes through `search(leg)`.
+    client.lastMultiQuery shouldBe None
+    val recorded = client.scrolledStatements.map(_.sql)
+    recorded should have size 2
+    withClue(s"recorded=$recorded ") {
+      recorded.exists(_.contains(isoForm)) shouldBe true
+      recorded.exists(_.contains("2026-06-01T00:00:00")) shouldBe true
+      recorded.exists(_.contains(spaceForm)) shouldBe false
+    }
   }
 
   "searchAsync" should "render the T-separated literal as well" in {

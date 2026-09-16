@@ -118,6 +118,47 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** Story 22.6 — the running-budget client. `RecordingClient` above keeps only the LAST scroll (an
+    * `AtomicReference`) and serves no rows, so neither the per-leg budget nor the concatenation is
+    * observable through it. This one records EVERY scroll with its config and serves `rowsPerLeg`
+    * rows, which is what makes "leg 2 was bounded by what leg 1 left" a measurable claim rather
+    * than a narrated one.
+    */
+  private class BudgetClient(rowsPerLeg: Int) extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+
+    @volatile var scrolls: Seq[(SearchStatement, ScrollConfig)] = Seq.empty
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+      synchronized { scrolls = scrolls :+ ((statement, config)) }
+      val served = config.maxDocuments.map(_.toInt.min(rowsPerLeg)).getOrElse(rowsPerLeg)
+      Source(
+        (1 to served)
+          .map(i => (ListMap[String, Any]("a" -> i), ScrollMetrics()))
+          .toList
+      )
+    }
+  }
+
+  private def runWith(
+    sql: String,
+    quota: Quota,
+    client: ElasticClientApi,
+    tier: LicenseType = LicenseType.Community
+  ): ElasticResult[QueryResult] = {
+    val parsed = Parser(sql) match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    Await.result(newExtension(quota, tier).execute(parsed, client), 10.seconds)
+  }
+
   private def newExtension(quota: Quota, tier: LicenseType): CoreDqlExtension = {
     val ext = new CoreDqlExtension()
     ext.initialize(ConfigFactory.empty(), strategy(managerWithQuota(quota, tier)))
@@ -552,6 +593,144 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     res shouldBe a[ElasticSuccess[_]]
     // it reached the client, i.e. it was EXECUTED rather than refused
     client.searchedStatement.get() should not be null
+  }
+
+  // ---- story 22.6: the licensed cap moves with the routing (capUnionAll) --------------------
+
+  /** Rule (2): the cap binds on the CONCATENATED total with a RUNNING budget.
+    *
+    * With `maxQueryResults = 7` and a stub serving 5 rows per leg, a per-LEG cap would return 10
+    * rows (5 + 5) and a `n × quota` cap would allow 14. Seven is the only answer a running budget
+    * gives — and leg 2's recorded `maxDocuments` (2, not 7) is the mechanism itself rather than a
+    * proxy for it.
+    */
+  it should "cap a UNION ALL on the concatenated total with a running budget, and count ONE cap-hit" in {
+    val collector = new TelemetryCollector
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val ext = new CoreDqlExtension()
+    ext.initialize(
+      ConfigFactory.empty(),
+      strategy(
+        managerWithQuota(
+          Quota.Community.copy(maxQueryResults = Some(7)),
+          LicenseType.Community
+        ),
+        collector
+      )
+    )
+    val parsed = Parser("SELECT a FROM x UNION ALL SELECT a FROM y") match {
+      case Right(st) => st
+      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    }
+    val res = Await.result(ext.execute(parsed, client), 10.seconds)
+    res shouldBe a[ElasticSuccess[_]]
+    val rows = res.asInstanceOf[ElasticSuccess[QueryResult]].value match {
+      case q: QueryRows => q
+      case other        => fail(s"expected QueryRows, got $other")
+    }
+    rows.rows should have size 7
+    rows.truncation.map(_.truncated) shouldBe Some(true)
+    rows.truncation.map(_.limit) shouldBe Some(7L)
+    // the running budget, observed at the client
+    client.scrolls should have size 2
+    client.scrolls.head._2.maxDocuments shouldBe Some(7L)
+    client.scrolls(1)._2.maxDocuments shouldBe Some(2L)
+    // ONE cap-hit for the STATEMENT, never one per leg
+    capHits(collector)("max_query_results") shouldBe 1L
+  }
+
+  it should "never open a scroll for a leg the budget cannot pay for" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    runWith(
+      "SELECT a FROM x UNION ALL SELECT a FROM y UNION ALL SELECT a FROM z",
+      Quota.Community.copy(maxQueryResults = Some(5)),
+      client
+    )
+    // leg 1 alone spends the whole budget, so legs 2 and 3 are never executed at all
+    client.scrolls should have size 1
+  }
+
+  /** 🔴 A branch that FAILS while the cap is being applied must fail the STATEMENT. Dropping its
+    * rows and answering HTTP 200 with a short result is the silent-wrong-answer mode this whole
+    * story exists to close, reintroduced one layer down — and a `case _ =>` in the fold is exactly
+    * how it gets reintroduced.
+    *
+    * `BudgetClient` serves rows from `scroll` but inherits `NopeClientApi`'s cluster-less executor,
+    * so an AGGREGATION-shaped branch (which is read through `dqlExecutor.execute`, never through
+    * scroll — a bucket query returns no hits to page) fails there. The row branch before it
+    * succeeds, which is what makes "the failure is not swallowed by the accumulated rows"
+    * observable at all.
+    */
+  it should "fail the whole statement when a capped UNION ALL branch fails, never truncate silently" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val res = runWith(
+      "SELECT a FROM x UNION ALL SELECT COUNT(*) AS a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      client
+    )
+    res shouldBe a[ElasticFailure]
+    // the row branch DID execute — so the failure comes from the second branch, not from a guard
+    // that refused the statement before anything ran
+    client.scrolls should have size 1
+  }
+
+  /** Rule (1): an explicit LIMIT above the quota on ANY leg is a 402, not a silent cap — the same
+    * asymmetry the single-statement rule encodes.
+    */
+  it should "reject a UNION ALL whose branch LIMIT exceeds the quota with 402" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val res = runWith(
+      "SELECT a FROM x LIMIT 20 UNION ALL SELECT a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(10)),
+      client
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(402)
+    err.message should include("20")
+    err.message should include("10")
+    // and NOTHING executed
+    client.scrolls shouldBe empty
+  }
+
+  /** Rule (3), and the CONTROL for the two rows above: every leg bounded within quota executes
+    * unchanged, uncapped and untruncated.
+    */
+  it should "leave a UNION ALL whose legs are all within quota alone" in {
+    val (client, res) = run(
+      "SELECT a FROM x LIMIT 5 UNION ALL SELECT a FROM y LIMIT 5",
+      Quota.Community.copy(maxQueryResults = Some(10))
+    )
+    res shouldBe a[ElasticSuccess[_]]
+    truncationOf(res) shouldBe None
+    client.scrolledStatement.get() shouldBe null
+  }
+
+  /** 🔴 The suppressed-leg discipline: a derived leg whose BODY is a `UNION ALL` is executed by the
+    * relational engine through `gateway.run` under `ResultCapContext.suppressed`. Capping it here
+    * would truncate a JOIN INPUT, not a user-visible result.
+    */
+  it should "NOT cap a UNION ALL executed as a suppressed join leg" in {
+    val collector = new TelemetryCollector
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val ext = new CoreDqlExtension()
+    ext.initialize(
+      ConfigFactory.empty(),
+      strategy(
+        managerWithQuota(Quota.Community.copy(maxQueryResults = Some(7)), LicenseType.Community),
+        collector
+      )
+    )
+    val parsed = Parser("SELECT a FROM x UNION ALL SELECT a FROM y") match {
+      case Right(st) => st
+      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    }
+    val res = ResultCapContext.suppressed {
+      Await.result(ext.execute(parsed, client), 10.seconds)
+    }
+    res shouldBe a[ElasticSuccess[_]]
+    truncationOf(res) shouldBe None
+    capHits(collector)("max_query_results") shouldBe 0L
   }
 
   it should "reject INSERT ... SELECT and CTAS carrying a set operation, and claim them" in {
