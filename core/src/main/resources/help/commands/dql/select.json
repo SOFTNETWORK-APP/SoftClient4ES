@@ -3,6 +3,7 @@
   "category": "DQL",
   "shortDescription": "Retrieve data from one or more tables",
   "syntax": [
+    "WITH name AS (SELECT ...) [, name2 AS (SELECT ...)]",
     "SELECT [DISTINCT] columns",
     "FROM table [AS alias]",
     "FROM (SELECT ...) [AS] alias",
@@ -31,6 +32,11 @@
   ],
   "description": "The SELECT statement retrieves rows from Elasticsearch indices. It supports most standard SQL features including joins, aggregations, and subqueries.",
   "clauses": [
+    {
+      "name": "WITH",
+      "description": "Common table expressions: name a subquery once and reference it in FROM/JOIN like a table. Non-recursive; each CTE may reference the CTEs defined before it.",
+      "optional": true
+    },
     {
       "name": "DISTINCT",
       "description": "Remove duplicate rows from results",
@@ -131,6 +137,12 @@
       "description": "Filter by a set computed by another query: the subquery runs first and its values are pushed into the outer query",
       "sql": "SELECT id, amount FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU')",
       "output": null
+    },
+    {
+      "title": "Common table expression",
+      "description": "Aggregate in a named subquery, then select from it by name",
+      "sql": "WITH monthly AS (SELECT category, SUM(amount) AS total FROM bi_events GROUP BY category) SELECT * FROM monthly",
+      "output": null
     }
   ],
   "notes": [
@@ -140,12 +152,16 @@
     "A FROM-less SELECT is evaluated against a hidden softclient4es_handshake index created on first use, so a read-only account needs it pre-created",
     "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection",
     "A WHERE subquery that reads an outer alias (a correlated subquery) executes through the relational engine shipped in softclient4es-arrow-extensions, and is refused with HTTP 400 at every venue without it. An outer reference must be QUALIFIED with the outer table's alias - a bare column name inside the subquery is read as the subquery's own column - and an object path inside the body should be qualified with the body's own alias",
-    "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true"
+    "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true",
+    "A CTE name shadows an index of the same name for the duration of the statement, so a CTE cannot be named after the index it reads: write WITH orders_f AS (SELECT ... FROM orders ...) rather than WITH orders AS (SELECT ... FROM orders ...). A CTE referenced twice is executed twice (inline semantics)"
   ],
   "limitations": [
     "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
     "A WHERE subquery may return at most 65536 distinct values (Elasticsearch index.max_terms_count); a larger set must be written as a JOIN",
-    "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; UNION ALL and FROM-less subquery bodies are rejected, and NOT IN over a GROUP BY subquery cannot see a NULL group"
+    "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; UNION ALL and FROM-less subquery bodies are rejected, and NOT IN over a GROUP BY subquery cannot see a NULL group",
+    "WITH RECURSIVE and CTE column lists (WITH a (x, y) AS ...) are not supported; a WITH clause is accepted only at the top of a SELECT, not inside a subquery body, CTAS, INSERT ... SELECT or MATERIALIZED VIEW",
+    "A statement with a WITH clause executes only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
+    "A CTE body may not name the CTE itself: unlike PostgreSQL and other engines, which bind such a name to the base table, this engine rejects it. Rename the CTE (WITH orders_f AS (SELECT ... FROM orders ...)). WITH RECURSIVE is a separate unsupported feature."
   ],
   "seeAlso": [
     "INSERT",

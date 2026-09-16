@@ -31,6 +31,15 @@ class SplitStatementsSpec extends AnyFlatSpec with Matchers {
     GatewayApi.splitStatements("SELECT 1; SELECT 2") shouldBe List("SELECT 1", "SELECT 2")
   }
 
+  /** Story 22.5 — `splitStatements` is a quote-aware `;` scanner keyed on `'`, `"`, backtick and
+    * `--`. A `WITH` token is none of those, and the parentheses of a CTE body are not either, so
+    * the splitter needs no change: this pin is what says so rather than assuming it.
+    */
+  it should "split a CTE statement from a following statement on the `;`" in {
+    GatewayApi.splitStatements("WITH a AS (SELECT 1 AS x) SELECT * FROM a; SELECT 1") shouldBe
+    List("WITH a AS (SELECT 1 AS x) SELECT * FROM a", "SELECT 1")
+  }
+
   it should "return a single statement unchanged" in {
     GatewayApi.splitStatements("SELECT * FROM t WHERE a = 1") shouldBe
     List("SELECT * FROM t WHERE a = 1")

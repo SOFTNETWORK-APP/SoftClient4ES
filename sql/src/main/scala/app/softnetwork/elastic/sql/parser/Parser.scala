@@ -1313,7 +1313,96 @@ object Parser
   override lazy val derivedTableBodyInner: PackratParser[DqlStatement] =
     (searchStatement: PackratParser[DqlStatement]) | fromlessSelect
 
+  /** Story 22.5 — the NAME of a CTE: ONE part, bare or quoted (`identRef` normalises a single bare
+    * part to `parts = Nil`, so `WITH "My CTE" AS (…)` and `WITH my_cte AS (…)` spell exactly what
+    * `FROM "My CTE"` / `FROM my_cte` reference). A QUALIFIED spelling is an `err`: a CTE lives in
+    * the statement, not in a namespace, and reading `"s"."a"` as the CTE `a` would silently accept
+    * a qualifier the statement can never honour.
+    */
+  lazy val cteName: PackratParser[NamePart] = identRef >> { case (n, ps) =>
+    if (ps.size > 1)
+      err(s"A CTE name must be a single unqualified name, got ${renderName(ps, n)}")
+    else success(NamePart(n, ps.headOption.exists(_.quoted)))
+  }
+
+  /** The parenthesised body of a CTE.
+    *
+    * 🔴 NOT `derivedTableBodyInner` alone, and NOT `FromParser.derivedTable`: the first carries no
+    * `err`, so `WITH a AS (t) …` would surface a grammar-internal identifier failure; the second
+    * carries a derived-table-specific message and lives behind the FROM surface. A CTE body owns
+    * its OWN `err` — safe for the same reason 22.1's is: after `AS (` nothing else can match, so
+    * the `err` cannot steal an input a sibling would have taken.
+    */
+  lazy val cteBody: PackratParser[DqlStatement] =
+    start ~> (derivedTableBodyInner | err(
+      "A CTE body must be a SELECT: write WITH <name> AS (SELECT ...)"
+    )) <~ end
+
+  /** `<name> [(col, …)] AS (<body>)`.
+    *
+    * The column list is ACCEPTED by the grammar so it can be REFUSED with a message saying what to
+    * write instead; without the optional arm the rejection would be a grammar-internal `AS
+    * expected` at the `(`, which names neither the construct nor the remedy.
+    */
+  lazy val cteDefinition: PackratParser[Cte] =
+    cteName ~ opt(start ~> rep1sep(identName, separator) <~ end) ~ (keyword("AS") ~> cteBody) >> {
+      case n ~ Some(cols) ~ _ =>
+        err(
+          s"CTE '${n.value}' declares a column list (${cols.mkString(", ")}), which is not " +
+          "supported: alias the columns in the CTE's SELECT list instead " +
+          s"(WITH ${n.value} AS (SELECT expr AS ${cols.head}, ...))"
+        )
+      case n ~ None ~ body => success(Cte(n, body))
+    }
+
+  /** `WITH [RECURSIVE] <cte> [, <cte>]*`.
+    *
+    * `RECURSIVE` is refused BY NAME (epic 22 out of scope) rather than left to fail as an
+    * identifier, so the user is told what is unsupported instead of where the parser stopped. The
+    * `err` fires only when the literal follows `WITH`, so a CTE NAMED `recursive` in FIRST position
+    * is refused too — an accepted, documented cost: the same name in a later position and the
+    * QUOTED spelling (`WITH "recursive" AS (…)`, which `keyword("RECURSIVE")` cannot match) are
+    * both accepted, and the quoted form is the documented escape hatch. Neither `with` nor
+    * `recursive` is RESERVED by this story: rejecting a table or alias named `with` that parses
+    * today would be a breaking change (`feedback_alternation_order_declines`).
+    */
+  lazy val withClause: PackratParser[Seq[Cte]] =
+    keyword("WITH") ~> (
+      (keyword("RECURSIVE") ~> err(
+        "WITH RECURSIVE is not supported: only non-recursive common table expressions are " +
+        "accepted (a CTE may reference the CTEs defined before it, never itself)"
+      )) |
+      rep1sep(cteDefinition, separator)
+    )
+
+  /** Story 22.5 — a search statement prefixed by a `WITH` clause.
+    *
+    * Substitution runs HERE, in the parser action, on the FULLY PARSED statement — ONCE. It is not
+    * in `update()` because `update()` re-runs on every executed statement
+    * (`SearchApi.resolveWithSchema` is `copy(schema).update()`), so a rewrite there would need an
+    * idempotency latch and the WITH list would have to be reachable from every branch and every
+    * body at update time. See [[app.softnetwork.elastic.sql.query.CteSubstitution]].
+    *
+    * Its rejections (duplicate name, forward/self reference) are `err`s: raised at the END of a
+    * fully consumed input they sit FURTHER than every sibling alternative's offset-0 failure, so
+    * `Failure.append` keeps them and the user sees our message rather than the terminal
+    * `dmlStatement` alternative's regex complaint.
+    */
+  lazy val withQuery: PackratParser[SearchStatement] =
+    withClause ~ searchStatement >> { case ctes ~ body =>
+      CteSubstitution(ctes, body) match {
+        case Right(stmt)  => success(stmt)
+        case Left(reason) => err(reason)
+      }
+    }
+
   lazy val dqlStatement: PackratParser[DqlStatement] = {
+    // Story 22.5 — FIRST, and it narrows nothing: `withQuery` begins with the literal `(?i)WITH\b`
+    // while every other alternative of `dqlStatement`, `ddlStatement` and `dmlStatement` begins
+    // with a DIFFERENT keyword, so they are disjoint at the first token. First is chosen because a
+    // `\bWITH\b` test is cheaper than trying the SELECT regex on every statement, and because it
+    // keeps `searchStatement` and `fromlessSelect` adjacent (#251).
+    withQuery |
     searchStatement |
     // Issue #251 — FROM-less SELECT. MUST stay immediately AFTER searchStatement: `|` commits
     // to the first SUCCEEDING alternative, and searchStatement FAILS (not partially succeeds)

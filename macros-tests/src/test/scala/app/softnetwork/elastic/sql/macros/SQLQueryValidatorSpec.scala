@@ -40,6 +40,68 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  // Story 22.5 — a CTE statement is also a `SingleSearch`, so it reaches the SAME guarded arm with
+  // no new macro branch.
+  //
+  // 🔴 The SQL is an UNREFERENCED CTE, and that choice is the whole test. A statement that
+  // REFERENCES its CTE carries a derived table, so story 22.1's `from.relationalClosureRequired`
+  // arm already aborts it — MEASURED: with such a statement, deleting `|| ctes.nonEmpty` from
+  // `SingleSearch.relationalClosureRequired` left this suite 25/25 GREEN, i.e. the row could not
+  // fail for the reason its title named. `WITH u AS (...) SELECT a FROM t` has NO derived table,
+  // so only the new disjunct can reject it.
+  it should "REJECT a CTE at compile time, even when no CTE is referenced" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(a: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "WITH u AS (SELECT a FROM t) SELECT a FROM t"
+      )""")
+  }
+
+  // …and the REFERENCED form too, which 22.1's arm would also catch — kept as the neighbour, not
+  // as the guard.
+  it should "REJECT a referenced CTE at compile time" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(a: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "WITH m AS (SELECT a FROM t) SELECT a FROM m"
+      )""")
+  }
+
+  /** 🔴 `assertDoesNotCompile` reports only THAT a snippet failed, never WHY — so the two rows
+    * above cannot see the shape naming at all: disabling the `ctesPresent` branch in
+    * `closureAbortMessage` left them GREEN. The message is asserted DIRECTLY, the way
+    * `RelationalClosureGuardSpec` asserts `RelationalClosureGuard.shapeOf` for the runtime guard.
+    */
+  it should "name the WITH clause in the abort message, not the derived table it becomes" in {
+    def parsed(sql: String): app.softnetwork.elastic.sql.query.Statement =
+      app.softnetwork.elastic.sql.parser.Parser(sql) match {
+        case Right(s) => s
+        case Left(e)  => fail(s"[$sql] rejected: ${e.msg}")
+      }
+    val cte = "WITH m AS (SELECT a FROM t) SELECT a FROM m"
+    val msg = SQLQueryValidator.closureAbortMessage(parsed(cte), cte)
+    msg should include("WITH clauses (common table expressions)")
+    // The falsifiable half: it must NOT fall through to the construct the author never wrote.
+    msg should not include "Derived tables"
+    // …and the neighbours must keep their own names (the arm did not swallow them).
+    val derived = "SELECT COL FROM (SELECT 1 AS COL) AS d"
+    SQLQueryValidator.closureAbortMessage(parsed(derived), derived) should include(
+      "Derived tables (subqueries in FROM/JOIN)"
+    )
+    val join = "SELECT o.id, c.name FROM orders o JOIN customers c ON o.cid = c.id"
+    SQLQueryValidator.closureAbortMessage(parsed(join), join) should include("Cross-index JOINs")
+  }
+
   // ============================================================
   // Positive Tests (Should Compile)
   // ============================================================

@@ -433,6 +433,9 @@ object SQLKeywords {
     "PROCESSOR",
     "PROCESSORS",
     "RANGE",
+    // Story 22.5 - the `keyword("RECURSIVE")` literal of `Parser.withClause`. A REPL completion
+    // word, NOT a parser-reserved one: `SELECT recursive FROM t` still parses.
+    "RECURSIVE",
     "REFRESH",
     "RENAME",
     "REPLACE",

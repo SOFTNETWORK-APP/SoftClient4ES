@@ -17,7 +17,12 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.ElasticError
-import app.softnetwork.elastic.sql.query.{closureSearches, derivedTablesPresent, Statement}
+import app.softnetwork.elastic.sql.query.{
+  closureSearches,
+  ctesPresent,
+  derivedTablesPresent,
+  Statement
+}
 
 /** The ONE rejection every venue WITHOUT the relational engine emits for a closure-shaped statement
   * — a cross-index JOIN or a derived table (epic 22 AD-5; #157's discipline, widened).
@@ -38,9 +43,20 @@ object RelationalClosureGuard {
     * did not choose.
     */
   def shapeOf(statement: Statement): String =
-    if (closureSearches(statement).exists(_.hasCorrelatedSubqueries)) CorrelatedShape
+    // Story 22.5 — FIRST: a CTE reference IS a derived table, so a WITH statement would otherwise
+    // be reported as "a derived table (subquery in FROM/JOIN)" — a shape the user did not write.
+    // Naming what was actually typed is the whole point of this method.
+    if (ctesPresent(statement)) CteShape
+    else if (closureSearches(statement).exists(_.hasCorrelatedSubqueries)) CorrelatedShape
     else if (derivedTablesPresent(statement)) "A derived table (subquery in FROM/JOIN)"
     else "A cross-index JOIN"
+
+  /** Story 22.5. 🔴 The words `WITH clause` sit in the first 25 characters on purpose:
+    * `GatewayApi.excerpt` caps a rejection at 200 characters and elides the MIDDLE (head 120 + tail
+    * 77), so a term that must reach the user has to fit in the FIRST 120 (story 22.3's measured
+    * `LATERAL` incident).
+    */
+  private val CteShape = "A WITH clause (common table expression)"
 
   /** Story 22.3 — reported FIRST, for the same reason the derived table outranks the JOIN: it is
     * the construct with the narrowest remedy (qualify differently, or rewrite as a JOIN), and a
