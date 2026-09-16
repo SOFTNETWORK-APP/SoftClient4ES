@@ -657,6 +657,17 @@ package object bridge {
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query
   ): MultiSearchRequest = {
+    // Story 22.6 — a NAMED backstop, never a silent `UNION ALL`. Only `UNION ALL` is an
+    // Elasticsearch `_msearch`; every other set operator needs the relational engine and is
+    // refused at `SearchApi.resolveWithSchema` / `CoreDqlExtension` long before this conversion.
+    // Reachable only through the public `singleSearch(ElasticQuery)`-style bypasses, where an
+    // unresolved node must throw rather than render as its cheaper cousin.
+    require(
+      request.isUnionAllOnly,
+      "A UNION / INTERSECT / EXCEPT set operation cannot be rendered as an Elasticsearch " +
+      "_msearch; only UNION ALL can. This statement must be executed by the relational engine " +
+      "(softclient4es-arrow-extensions)."
+    )
     MultiSearchRequest(
       request.requests.map(implicitly[SearchRequest](_))
     )

@@ -94,12 +94,84 @@ object Parser
     }
   }
 
-  lazy val union: PackratParser[UNION.type] = UNION.regex ^^ (_ => UNION)
+  /** The set operators, story 22.6.
+    *
+    * 🔴 Ordered: every multi-word spelling BEFORE its one-word prefix. `|` commits to the first
+    * SUCCEEDING alternative and `UNION.regex` (`UNION\s+ALL`) FAILS — it does not partially succeed
+    * — on `UNION SELECT`, which is what lets `UNION_DISTINCT` take it. The REVERSE order would
+    * commit `UNION_DISTINCT` on the prefix of `UNION ALL` and leave `ALL` as trailing input; that
+    * is the one ordering that must never ship. `UNION_DISTINCT`'s own regex is
+    * `(UNION\s+DISTINCT|UNION)\b`, longest first for the same reason.
+    */
+  lazy val setOperator: PackratParser[SetOperator] =
+    UNION.regex ^^ (_ => UNION) |
+    UNION_DISTINCT.regex ^^ (_ => UNION_DISTINCT) |
+    INTERSECT_ALL.regex ^^ (_ => INTERSECT_ALL) |
+    INTERSECT.regex ^^ (_ => INTERSECT) |
+    EXCEPT_ALL.regex ^^ (_ => EXCEPT_ALL) |
+    EXCEPT.regex ^^ (_ => EXCEPT)
 
-  lazy val searchStatement: PackratParser[SearchStatement] = rep1sep(single, union) ^^ {
-    case x :: Nil => x
-    case s        => MultiSearch(s)
-  }
+  /** One branch of a set operation: `(SELECT ...)` or `SELECT ...`. The `Boolean` records whether
+    * it was PARENTHESISED — consumed only by the trailing-clause rule in [[searchStatement]], never
+    * stored on the AST (parentheses are not recorded; the precedence tree is derived).
+    *
+    * The `err` inside the parenthesised alternative fires when `(` was consumed HERE and a set
+    * operator follows the inner SELECT — i.e. a set operation is itself wrapped in parentheses.
+    * That covers two shapes and the message names both: a parenthesised GROUP used as a branch (`(a
+    * UNION b) INTERSECT c`) and a whole set operation wrapped in parentheses (`(SELECT ... UNION
+    * SELECT ...)` as the statement, or as a derived-table body). It can never fire for a derived
+    * table or a WHERE subquery: there the `(` belongs to `derivedTableBody` / the `IN`/`EXISTS`
+    * production, and this alternative's own `start` fails at the inner `SELECT` without consuming
+    * anything. Safe to raise this early (story 21.4's rule — an `err` is discarded only by a
+    * sibling `Failure` that got FURTHER): the bare `single` alternative fails at the very same `(`.
+    *
+    * Side effect, deliberate and release-noted: a lone parenthesised SELECT — `(SELECT a FROM t)` —
+    * now PARSES as that `SingleSearch` and renders bare. It was a parse error before.
+    */
+  lazy val setOperand: PackratParser[(SingleSearch, Boolean)] =
+    (start ~> single <~ (end | (setOperator ~> err(
+      // Both halves have to survive `GatewayApi.excerpt`, which caps a rejection at 200
+      // characters and elides the MIDDLE (head 120 + tail 77): what was refused is in the head,
+      // the remedy is in the tail.
+      "A set operation wrapped in parentheses is not supported, neither as a branch nor as a " +
+      "whole parenthesised statement or body. Remove the outer parentheses; to group " +
+      "differently use a derived table: SELECT * FROM (a UNION b) AS g INTERSECT c"
+    )))) ^^ (s => (s, true)) |
+    single ^^ (s => (s, false))
+
+  /** `SELECT ... [<set operator> SELECT ...]*`. One branch yields the `SingleSearch` exactly as
+    * before; two or more yield a `MultiSearch` carrying the flat operator list.
+    *
+    * 🔴 Trailing-clause rule. `single` consumes `ORDER BY` / `LIMIT`, so after the LAST branch they
+    * belong to THAT branch — today's documented behaviour, kept byte-for-byte for `UNION ALL`. For
+    * any other operator a set result has no branch order to preserve, so a trailing `ORDER BY` the
+    * analyst almost certainly meant for the WHOLE result would silently order nothing (HTTP 200,
+    * rows in an order nobody asked for). It is therefore an `err` — unless the branch is
+    * PARENTHESISED, which is the unambiguous spelling for "this branch only". Only the LAST branch
+    * is ambiguous: a first or middle branch carrying an unparenthesised `ORDER BY`/`LIMIT` can only
+    * mean that branch, and is accepted.
+    *
+    * 🔴 Canonical form: a `UNION ALL`-only list is stored as `Nil`, so the legacy construction
+    * `MultiSearch(branches)` and this parse are `==` and the render fixed point holds for the one
+    * shape that pre-dates story 22.6.
+    */
+  lazy val searchStatement: PackratParser[SearchStatement] =
+    setOperand ~ rep(setOperator ~ setOperand) >> {
+      case (first, _) ~ Nil => success(first)
+      case (first, _) ~ rest =>
+        val operands = first +: rest.map { case _ ~ operand => operand._1 }
+        val ops = rest.map { case op ~ _ => op }
+        val unionAllOnly = ops.forall(_ == UNION)
+        val (last, lastParenthesised) = rest.last match { case _ ~ operand => operand }
+        if (!unionAllOnly && !lastParenthesised && (last.orderBy.isDefined || last.limit.isDefined))
+          err(
+            // Head 120 / tail 77 again: the rule in the head, the remedy in the tail.
+            "ORDER BY / LIMIT after the last branch of a UNION, INTERSECT or EXCEPT applies to " +
+            "that branch only. Parenthesise the branch to keep it there, or wrap the whole set " +
+            "operation in a derived table to order or limit the whole result."
+          )
+        else success(MultiSearch(operands, operators = if (unionAllOnly) Nil else ops))
+    }
 
   /** FROM-less SELECT (issue #251): the same select-list grammar, no FROM, optional LIMIT. `SELECT
     * 1 LIMIT 100` must parse — it is Superset's engine probe AND what the Flight sidecar's own
@@ -2071,6 +2143,11 @@ trait Parser
     "else",
     "end",
     "union",
+    // Story 22.6 -- SQL-92 reserves it, and without it `FROM t INTERSECT SELECT ...` reads
+    // INTERSECT as `t`'s ALIAS (`regexAlias` carries the reserved-word lookahead). The story's ONE
+    // narrowing: a column or alias literally named `intersect` must now be quoted, exactly as one
+    // named `union` already had to be.
+    "intersect",
     "all",
     "exists",
     "true",

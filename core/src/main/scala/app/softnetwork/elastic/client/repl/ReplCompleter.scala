@@ -40,7 +40,11 @@ class ReplCompleter extends Completer {
     "CROSS"     -> List("JOIN"),
     "INNER"     -> List("JOIN"),
     "OUTER"     -> List("JOIN"),
-    "UNION"     -> List("ALL"),
+    // Story 22.6 — the set operators. `UNION ALL` is the ES-native spelling, `UNION DISTINCT` the
+    // explicit spelling of the bare de-duplicating `UNION`.
+    "UNION"     -> List("ALL", "DISTINCT"),
+    "INTERSECT" -> List("ALL"),
+    "EXCEPT"    -> List("ALL"),
     "NULLS"     -> List("FIRST", "LAST"),
     "IS"        -> List("NULL", "NOT NULL"),
     "ENRICH"    -> List("POLICY"),

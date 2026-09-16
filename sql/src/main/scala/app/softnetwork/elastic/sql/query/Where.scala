@@ -1407,10 +1407,14 @@ sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
     for {
       _ <- query match {
         case s: SingleSearch => s.validate()
-        case _: MultiSearch =>
+        // 🔴 Story 22.6 — name the operator the analyst WROTE. This message hard-coded `UNION
+        // ALL`, and until 22.6 that was the only spelling the grammar accepted, so it was always
+        // right. It is now reachable for five more, and MEASURED naming `UNION ALL` for a
+        // statement whose author wrote `UNION` — the one spelling they did not use.
+        case m: MultiSearch =>
           Left(
-            s"UNION ALL inside a WHERE subquery is not supported yet: $sql. " +
-            "Write one subquery per branch."
+            s"${m.resolvedOperators.map(_.sql).distinct.mkString(" / ")} inside a WHERE subquery " +
+            s"is not supported yet: $sql. Write one subquery per branch."
           )
         case _: FromlessSelect =>
           Left(

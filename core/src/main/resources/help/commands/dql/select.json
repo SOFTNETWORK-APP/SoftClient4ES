@@ -26,9 +26,13 @@
     "[ORDER BY columns [ASC|DESC]]",
     "[LIMIT n [OFFSET m]]",
     "",
-    "-- Two or more SELECTs may be concatenated. UNION ALL is the ONLY spelling accepted:",
-    "-- bare UNION (de-duplicating) is rejected.",
-    "SELECT ... UNION ALL SELECT ..."
+    "-- Set operators between complete SELECT ... FROM ... branches (parentheses optional):",
+    "SELECT ... UNION [ALL | DISTINCT] SELECT ...",
+    "SELECT ... INTERSECT [ALL] SELECT ...",
+    "SELECT ... EXCEPT [ALL] SELECT ...",
+    "-- ORDER BY / LIMIT after the last branch belong to that branch; to order or limit",
+    "-- the whole result, wrap the set operation in a derived table:",
+    "SELECT * FROM (SELECT ... UNION SELECT ...) AS s ORDER BY ... LIMIT n"
   ],
   "description": "The SELECT statement retrieves rows from Elasticsearch indices. It supports most standard SQL features including joins, aggregations, and subqueries.",
   "clauses": [
@@ -85,8 +89,8 @@
       ]
     },
     {
-      "name": "UNION ALL",
-      "description": "Concatenate the rows of two or more SELECT statements. Only UNION ALL is accepted - bare UNION, which would de-duplicate, is rejected by the parser.",
+      "name": "Set operators",
+      "description": "UNION ALL concatenates the rows of two or more SELECT statements and is executed natively by Elasticsearch. UNION, UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] follow SQL set semantics and execute through the relational engine. INTERSECT binds tighter than UNION and EXCEPT; otherwise the operators associate left to right.",
       "optional": true
     },
     {
@@ -122,8 +126,20 @@
     },
     {
       "title": "Concatenate two result sets",
-      "description": "UNION ALL keeps every row of both sides; bare UNION is not accepted",
+      "description": "UNION ALL keeps every row of both sides",
       "sql": "SELECT id, amount FROM orders UNION ALL SELECT id, amount FROM archived_orders",
+      "output": null
+    },
+    {
+      "title": "Distinct union",
+      "description": "One row per distinct (id, amount) across both tables",
+      "sql": "SELECT id, amount FROM orders UNION SELECT id, amount FROM archived_orders",
+      "output": null
+    },
+    {
+      "title": "Rows in one table but not the other",
+      "description": "EXCEPT is the set operator; SELECT * EXCEPT(col) is the column-exclusion clause",
+      "sql": "SELECT id FROM orders EXCEPT SELECT id FROM refunds",
       "output": null
     },
     {
@@ -153,15 +169,18 @@
     "A derived table (a SELECT in FROM or JOIN) must carry an alias; a SELECT * body exposes an unchecked projection",
     "A WHERE subquery that reads an outer alias (a correlated subquery) executes through the relational engine shipped in softclient4es-arrow-extensions, and is refused with HTTP 400 at every venue without it. An outer reference must be QUALIFIED with the outer table's alias - a bare column name inside the subquery is read as the subquery's own column - and an object path inside the body should be qualified with the body's own alias",
     "NOT IN follows SQL: when the subquery's values contain NULL, no row matches. ANY/SOME over an empty subquery is false and ALL over an empty subquery is true",
-    "A CTE name shadows an index of the same name for the duration of the statement, so a CTE cannot be named after the index it reads: write WITH orders_f AS (SELECT ... FROM orders ...) rather than WITH orders AS (SELECT ... FROM orders ...). A CTE referenced twice is executed twice (inline semantics)"
+    "A CTE name shadows an index of the same name for the duration of the statement, so a CTE cannot be named after the index it reads: write WITH orders_f AS (SELECT ... FROM orders ...) rather than WITH orders AS (SELECT ... FROM orders ...). A CTE referenced twice is executed twice (inline semantics)",
+    "Set operation branches must project the same number of compatible columns; the output column names come from the first branch, and branch names are not required to agree"
   ],
   "limitations": [
     "Derived tables parse and are validated but execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
     "A WHERE subquery may return at most 65536 distinct values (Elasticsearch index.max_terms_count); a larger set must be written as a JOIN",
-    "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; UNION ALL and FROM-less subquery bodies are rejected, and NOT IN over a GROUP BY subquery cannot see a NULL group",
+    "Subqueries are accepted in WHERE only (SELECT, DELETE, UPDATE): not in HAVING, CASE, JOIN ON, MATERIALIZED VIEW or WATCHER definitions; a subquery body may not itself be a set operation (UNION, UNION ALL, INTERSECT or EXCEPT) and may not be FROM-less, and NOT IN over a GROUP BY subquery cannot see a NULL group",
     "WITH RECURSIVE and CTE column lists (WITH a (x, y) AS ...) are not supported; a WITH clause is accepted only at the top of a SELECT, not inside a subquery body, CTAS, INSERT ... SELECT or MATERIALIZED VIEW",
     "A statement with a WITH clause executes only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
-    "A CTE body may not name the CTE itself: unlike PostgreSQL and other engines, which bind such a name to the base table, this engine rejects it. Rename the CTE (WITH orders_f AS (SELECT ... FROM orders ...)). WITH RECURSIVE is a separate unsupported feature."
+    "A CTE body may not name the CTE itself: unlike PostgreSQL and other engines, which bind such a name to the base table, this engine rejects it. Rename the CTE (WITH orders_f AS (SELECT ... FROM orders ...)). WITH RECURSIVE is a separate unsupported feature.",
+    "UNION, UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400. UNION ALL executes natively on Elasticsearch",
+    "A FROM-less SELECT cannot be a set-operation branch, and a set operation grouped in parentheses ((a UNION b) INTERSECT c) must be written as a derived table instead"
   ],
   "seeAlso": [
     "INSERT",

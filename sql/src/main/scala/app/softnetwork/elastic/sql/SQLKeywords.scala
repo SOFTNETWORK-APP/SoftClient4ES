@@ -118,8 +118,12 @@ import app.softnetwork.elastic.sql.operator.{
   ANY,
   BETWEEN,
   Child,
+  EXCEPT,
+  EXCEPT_ALL,
   EXISTS,
   IN,
+  INTERSECT,
+  INTERSECT_ALL,
   IS_NOT_NULL,
   IS_NULL,
   LIKE,
@@ -130,7 +134,8 @@ import app.softnetwork.elastic.sql.operator.{
   Parent,
   RLIKE,
   SOME,
-  UNION
+  UNION,
+  UNION_DISTINCT
 }
 import app.softnetwork.elastic.sql.query.{
   Asc,
@@ -200,6 +205,15 @@ object SQLKeywords {
     Alias,
     Except,
     UNION,
+    // Story 22.6 — the remaining set operators. `UNION` above keeps its literal `"UNION ALL"`; the
+    // bare, de-duplicating spelling is `UNION_DISTINCT`. `INTERSECT` is the only genuinely NEW
+    // word (it is also newly RESERVED); the others reuse words already in the registry, but the
+    // `Expr` scan of `SQLKeywordsSpec` requires every word-bearing TokenRegex object to be listed.
+    UNION_DISTINCT,
+    INTERSECT,
+    INTERSECT_ALL,
+    EXCEPT,
+    EXCEPT_ALL,
     InnerJoin,
     LeftJoin,
     RightJoin,

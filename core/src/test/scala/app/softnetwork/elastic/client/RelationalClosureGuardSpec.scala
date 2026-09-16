@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   ctesPresent,
   relationalClosureRequired,
+  setOperationsPresent,
   SearchStatement,
   SingleSearch
 }
@@ -288,6 +289,108 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
     val seam = refusalOf(client().asInstanceOf[IndicesApi].deleteByQuery("c", sql))
     seam.statusCode shouldBe Some(400)
     seam.message should include("WITH clause")
+  }
+
+  // ---- story 22.6: set operators -----------------------------------------------------------
+
+  /** 🔴 The silent-wrong-answer mode this family invites: a de-duplicating `UNION` executed as
+    * `UNION ALL` returns duplicates with HTTP 200. The seam refuses it BEFORE any branch is
+    * resolved, and the message names the set operation rather than one of its branches.
+    */
+  it should "name the SET OPERATION shape, and prefer it over the branches' own shapes" in {
+    val distinctUnion = searchStatement("SELECT a FROM t UNION SELECT a FROM u")
+    setOperationsPresent(distinctUnion) shouldBe true
+    relationalClosureRequired(distinctUnion) shouldBe true
+    RelationalClosureGuard.shapeOf(distinctUnion) should include("A set operation")
+    // Falsifiable half: without the arm it falls through to "A cross-index JOIN", the shape the
+    // analyst did NOT write.
+    RelationalClosureGuard.shapeOf(distinctUnion) should not include "cross-index JOIN"
+    // A set operation whose branches ALSO carry a derived table is still named for the operator.
+    val both = searchStatement(s"SELECT a FROM t UNION $DerivedSelect")
+    RelationalClosureGuard.shapeOf(both) should include("A set operation")
+    RelationalClosureGuard.shapeOf(both) should not include "derived table"
+  }
+
+  it should "refuse a distinct UNION at the seam, never execute it as UNION ALL" in {
+    val err = refusalOf(client().search(searchStatement("SELECT a FROM t UNION SELECT a FROM u")))
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("search")
+    err.message should include("A set operation")
+    err.message should include(RelationalClosureGuard.ExtensionJar)
+  }
+
+  it should "refuse INTERSECT and EXCEPT at the seam too" in {
+    Seq("INTERSECT", "INTERSECT ALL", "EXCEPT", "EXCEPT ALL", "UNION DISTINCT").foreach { op =>
+      val err = refusalOf(client().search(searchStatement(s"SELECT a FROM t $op SELECT a FROM u")))
+      withClue(s"[$op] ") {
+        err.statusCode shouldBe Some(400)
+        err.message should include("A set operation")
+      }
+    }
+  }
+
+  /** The CONTROL that makes the four rows above mean something: `UNION ALL` must still get PAST
+    * this guard. Without it, a guard that refused every `MultiSearch` would look identical.
+    */
+  it should "leave a plain UNION ALL alone (it is Elasticsearch's own msearch)" in {
+    val unionAll = searchStatement("SELECT a FROM t LIMIT 5 UNION ALL SELECT a FROM u LIMIT 5")
+    setOperationsPresent(unionAll) shouldBe false
+    relationalClosureRequired(unionAll) shouldBe false
+    val err = refusalOf(client().search(unionAll))
+    err.message should not include RelationalClosureGuard.ExtensionJar
+  }
+
+  it should "refuse a set operation on searchAsync and on scroll too" in {
+    import akka.stream.scaladsl.Sink
+    import scala.concurrent.Await
+    import scala.concurrent.duration._
+    implicit val ec: scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.global
+    val stmt = searchStatement("SELECT a FROM t EXCEPT SELECT a FROM u")
+    refusalOf(Await.result(client().searchAsync(stmt), 10.seconds)).message should include(
+      "A set operation"
+    )
+    implicit val system: akka.actor.ActorSystem = akka.actor.ActorSystem("closure-guard-setop")
+    try {
+      // 🔴 `ScrollApi.scroll` refuses EVERY MultiSearch with its own pre-existing
+      // UnsupportedOperationException, so the assertion here is only that it is LOUD — never an
+      // empty stream, which is what a silently-executed wrong query would look like.
+      val thrown = intercept[Throwable] {
+        Await.result(client().scroll(stmt).runWith(Sink.seq), 20.seconds)
+      }
+      Option(thrown.getMessage).getOrElse("") should not be empty
+    } finally {
+      Await.result(system.terminate(), 20.seconds)
+      ()
+    }
+  }
+
+  /** Story 22.6 AD-4's second half: at parse time a bare column is `SQLTypes.Any` and passes, so
+    * the check must RE-RUN once schemas are attached. `NopeClientApi` attaches none, so this row
+    * pins the LITERAL case the parse-time half already rejects plus the seam's own wiring; the
+    * schema-attached case is covered by `TemporalLiteralSearchSpec`'s stub-schema idiom.
+    */
+  it should "reject a typeable branch mismatch before any request is built" in {
+    Parser("SELECT 1 AS n FROM t UNION ALL SELECT 'a' AS n FROM u").swap.toOption
+      .map(_.msg)
+      .getOrElse("") should include("compatible types at column 1")
+  }
+
+  it should "refuse an INSERT ... SELECT carrying a set operation" in {
+    import scala.concurrent.Await
+    import scala.concurrent.duration._
+    implicit val system: akka.actor.ActorSystem = akka.actor.ActorSystem("closure-guard-setop-ins")
+    try {
+      val res = Await.result(
+        client()
+          .asInstanceOf[IndicesApi]
+          .insertByQuery("idx", "INSERT INTO idx SELECT a FROM t EXCEPT SELECT a FROM u"),
+        10.seconds
+      )
+      refusalOf(res).statusCode should not be None
+    } finally {
+      Await.result(system.terminate(), 10.seconds)
+      ()
+    }
   }
 
   it should "say the statement was refused rather than executed against the first index (PD-2)" in {

@@ -3993,7 +3993,7 @@ class ParserSpec extends AnyFlatSpec with Matchers {
     result.isRight shouldBe true
     val stmt = result.toOption.get
     stmt match {
-      case MultiSearch(Seq(left: DqlStatement, right: DqlStatement), _) =>
+      case MultiSearch(Seq(left: DqlStatement, right: DqlStatement), _, _) =>
         left.sql should include("SELECT id, name FROM dql_users WHERE age > 30")
         right.sql should include("SELECT id, name FROM dql_users WHERE age <= 30")
       case _ => fail("Expected Union")
@@ -4358,12 +4358,23 @@ class ParserSpec extends AnyFlatSpec with Matchers {
 
   /** Found by the `phrase` change. The union token is `Expr("UNION ALL")`, so a bare `UNION` never
     * matched the separator: `rep1sep` stopped after the first leg and the rest was discarded, and
-    * the query silently returned **only the first leg's rows**. `UNION` and `UNION ALL` are not
-    * synonyms — one de-duplicates — so rejecting the unimplemented one is the honest answer.
+    * the query silently returned **only the first leg's rows**.
+    *
+    * RETARGETED by story 22.6, never deleted: this pins a CONTRACT — no leg is ever dropped — and
+    * the contract is unchanged. Since 22.6 the bare spelling PARSES as the de-duplicating operator
+    * `UNION_DISTINCT` and executes only through the relational engine; what must never happen is
+    * that the second leg silently disappears, which is what the branch count asserts.
     */
-  it should "reject a bare UNION rather than silently returning the first leg" in {
-    Parser("SELECT a FROM x UNION SELECT b FROM y").isLeft shouldBe true
-    // the supported spelling still works — see "parse UNION ALL" above for the full assertion
+  it should "never silently return only the first leg of a bare UNION" in {
+    Parser("SELECT a FROM x UNION SELECT b FROM y") match {
+      case Right(m: MultiSearch) =>
+        m.requests should have size 2
+        m.operators shouldBe Seq(app.softnetwork.elastic.sql.operator.UNION_DISTINCT)
+        m.resolvedOperators shouldBe Seq(app.softnetwork.elastic.sql.operator.UNION_DISTINCT)
+        m.isUnionAllOnly shouldBe false
+      case other => fail(s"expected a two-branch MultiSearch, got $other")
+    }
+    // the ES-native spelling still works — see "parse UNION ALL" above for the full assertion
     Parser("SELECT a FROM x UNION ALL SELECT b FROM y").isRight shouldBe true
   }
 

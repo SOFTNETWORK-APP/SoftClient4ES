@@ -23,6 +23,7 @@ import app.softnetwork.elastic.sql.query.{
   ctesPresent,
   derivedTablesPresent,
   relationalClosureRequired,
+  setOperationsPresent,
   MultiSearch,
   SingleSearch,
   Statement
@@ -846,10 +847,14 @@ object SQLQueryValidator {
     */
   private[macros] def closureAbortMessage(statement: Statement, sqlQuery: String): String = {
     val shape =
-      // Story 22.5 — FIRST, the same reason `RelationalClosureGuard.shapeOf` names the CTE first:
-      // a CTE reference IS a derived table, so without this arm the compile error would name a
+      // Story 22.6 — FIRST, matching `RelationalClosureGuard.shapeOf`'s order: a set operation is
+      // what the author typed, and its branches may ALSO carry a CTE or a derived table.
+      if (setOperationsPresent(statement))
+        "UNION / UNION DISTINCT / INTERSECT / EXCEPT set operations"
+      // Story 22.5 — the same reason `RelationalClosureGuard.shapeOf` names the CTE next: a CTE
+      // reference IS a derived table, so without this arm the compile error would name a
       // construct the author never wrote.
-      if (ctesPresent(statement)) "WITH clauses (common table expressions)"
+      else if (ctesPresent(statement)) "WITH clauses (common table expressions)"
       else if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
       else "Cross-index JOINs"
     s"❌ $shape cannot be typed at compile time: searchAs/scrollAs bind one index mapping. " +

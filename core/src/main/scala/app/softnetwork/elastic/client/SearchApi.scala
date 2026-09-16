@@ -414,6 +414,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
   /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
   private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+    // Story 22.6 — only `UNION ALL` is an Elasticsearch `_msearch`; UNION (de-duplicating),
+    // UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] all need the relational engine. Refuse HERE,
+    // before any branch is resolved or any request is built: this is the ONE seam every direct-API
+    // path crosses, so a de-duplicating UNION can never degrade into a UNION ALL that returns
+    // duplicates with HTTP 200 — the silent-wrong-answer mode this operator family invites.
+    if (!multiple.isUnionAllOnly)
+      return ElasticResult.failure(
+        RelationalClosureGuard.rejection(multiple, operation = "search")
+      )
     val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
     multiple.requests.foldLeft(zero) {
       case (ElasticSuccess(acc), request) =>
@@ -424,8 +433,23 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       case (failure, _) => failure
     } match {
       case ElasticSuccess(resolved) =>
-        val unchanged = resolved.zip(multiple.requests).forall { case (a, b) => a eq b }
-        ElasticResult.success(if (unchanged) multiple else multiple.copy(requests = resolved))
+        // Story 22.6 — with each branch's schema attached, bare columns are TYPED: re-run the
+        // pairwise compatibility check that passed vacuously at parse time (where a bare column is
+        // `Any`). This is the only type guard the family has — DuckDB casts implicitly across
+        // branches, so the relational engine is never a backstop either.
+        MultiSearch.branchTypes(resolved) match {
+          case Left(reason) =>
+            ElasticResult.failure(
+              ElasticError(
+                message = reason,
+                statusCode = Some(400),
+                operation = Some("search")
+              )
+            )
+          case Right(()) =>
+            val unchanged = resolved.zip(multiple.requests).forall { case (a, b) => a eq b }
+            ElasticResult.success(if (unchanged) multiple else multiple.copy(requests = resolved))
+        }
       case ElasticFailure(error) => ElasticResult.failure(error)
     }
   }
@@ -503,6 +527,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return ElasticResult.failure(error)
         }
+        // Story 22.6 — an `_msearch` leg is ONE-SHOT: a row-shaped leg with no bounding LIMIT
+        // gets Elasticsearch's default 10 hits with HTTP 200. That is issue #209's family, one
+        // venue over, and this story pins this path as "the fast path" — pinning a silently
+        // truncating request byte-for-byte would pin a defect as a contract. Such a leg is
+        // executed through `search(leg)`, which routes it through scroll/PIT exactly as the same
+        // statement executes on its own, and the legs are concatenated IN ORDER. Every other
+        // shape (every leg LIMITed within `max_result_window`, or aggregation-shaped) keeps the
+        // single `_msearch`, byte-for-byte the request emitted before this story.
+        if (unionAllNeedsPerLeg(multiple))
+          return unionAllByLeg(multiple, query)
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -880,6 +914,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           case ElasticSuccess(resolved) => resolved
           case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
         }
+        // Story 22.6 — the async twin of the per-leg route; see `search`'s arm.
+        if (unionAllNeedsPerLeg(multiple))
+          return unionAllByLegAsync(multiple, statement.sql)
         val elasticQueries = ElasticQueries(
           multiple.requests.map { query =>
             ElasticQuery(
@@ -2199,6 +2236,124 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     *     pages unnecessarily but stays correct — and a >10k one-shot response is better paged
     *     regardless.
     */
+  /** Story 22.6 — true when at least one leg of a `UNION ALL` cannot be answered one-shot.
+    *
+    * `_msearch` sends every leg as its own one-shot request, so a row-shaped leg with no bounding
+    * LIMIT silently comes back with Elasticsearch's default 10 hits. Aggregation-shaped legs and
+    * legs bounded within `max_result_window` are unaffected and keep the single `_msearch`.
+    *
+    * ONE boolean per statement, decided on the AST: a bounded `UNION ALL` pays nothing.
+    */
+  private def unionAllNeedsPerLeg(multiple: MultiSearch): Boolean =
+    this.isInstanceOf[ScrollApi] &&
+    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))
+
+  /** Story 22.6 — sequential per-leg execution of a `UNION ALL` whose legs cannot all be one-shot.
+    *
+    * Rows are concatenated in LEG ORDER (the `_msearch` order). Output names come from the first
+    * leg — the pre-existing simplification of the one-shot path, kept so the two routes agree. Each
+    * leg's response is whatever `search(leg)` produces, so the schema attach, the temporal
+    * literals, the scroll routing and the #224 error translation all apply per leg BY CONSTRUCTION
+    * rather than by a second copy of any of them.
+    *
+    * SEQUENTIAL, not parallel, and that is a memory decision: N un-LIMITed legs in parallel would
+    * open N scrolls and hold N partial results for a consumer that concatenates them anyway.
+    *
+    * ⚠️ Within a leg, row ORDER may differ from the one-shot order — an un-ordered extraction is
+    * interleaved across sliced PIT readers (issue #238). Release-noted.
+    */
+  private def unionAllByLeg(multiple: MultiSearch, sql: String)(implicit
+    context: ConversionContext
+  ): ElasticResult[ElasticResponse] = {
+    val zero: ElasticResult[Seq[ElasticResponse]] = ElasticResult.success(Seq.empty)
+    multiple.requests
+      .foldLeft(zero) {
+        case (ElasticSuccess(acc), leg) =>
+          search(leg) match {
+            case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
+            case ElasticFailure(error) => ElasticResult.failure(error)
+          }
+        case (failure, _) => failure
+      }
+      .map(mergeLegResponses(multiple, sql, _))
+  }
+
+  /** The async twin. Sequential futures — same shape, same memory argument. */
+  private def unionAllByLegAsync(multiple: MultiSearch, sql: String)(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] = {
+    val zero: Future[ElasticResult[Seq[ElasticResponse]]] =
+      Future.successful(ElasticResult.success(Seq.empty))
+    multiple.requests
+      .foldLeft(zero) { (accF, leg) =>
+        accF.flatMap {
+          case ElasticSuccess(acc) =>
+            searchAsync(leg).map {
+              case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
+              case ElasticFailure(error) => ElasticResult.failure(error)
+            }
+          case failure => Future.successful(failure)
+        }
+      }
+      .map(_.map(mergeLegResponses(multiple, sql, _)))
+  }
+
+  /** THE row contract of a `UNION ALL`, in one place, for every route that concatenates legs.
+    *
+    * A `UNION ALL` has three execution routes — the one-shot `_msearch`, the per-leg route below,
+    * and `CoreDqlExtension`'s licensed cap fold — and a caller must not be able to tell them apart
+    * from the rows. The contract is the one the ONE-SHOT path already implements, because that is
+    * the route every bounded statement has always taken: [[ElasticConversion.rowNormalizer]] over
+    * the FIRST branch's output names.
+    *
+    * 🔴 BY NAME, not by position, and the difference is a wrong answer rather than a cosmetic one.
+    * An earlier draft of this story re-keyed positionally "because that is what the one-shot path
+    * does" — it is not: `multiSearch` hands `requests.head`'s names to `parseResponseTree`, which
+    * applies `rowNormalizer`, a name-keyed lookup that null-fills a miss and appends an extra.
+    * MEASURED by the independent review on real ES 8.18, `SELECT category, tag FROM l UNION ALL
+    * SELECT tag, category FROM r` (legal — same arity, same type) came back from the positional
+    * re-key with `category` holding the TAG and `tag` holding the CATEGORY, HTTP 200, while the
+    * one-shot route bound each value to its own name. A `SELECT *` leg was worse: its own names are
+    * unknown to `extractOutputFieldNames`, so `zip` put the id under `category` and DROPPED the
+    * columns past the first branch's width.
+    *
+    * The returned function hoists every stream-constant decision (the name array, the index, the
+    * context) ONCE per statement; it is applied per row on the un-LIMITed extraction path, where
+    * "per row" can mean millions (`feedback_no_per_row_hot_path_work`).
+    *
+    * A first branch of `SELECT *` yields NO names — `rowNormalizer` is then `identity` and every
+    * leg keeps what Elasticsearch returned, which is the only honest answer for an opaque
+    * projection.
+    *
+    * ⚠️ One shape where the routes still differ, measured on real ES 8.18 rather than assumed:
+    * `SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r` — the one-shot route answers `{x ->
+    * null, y -> …}` for EVERY row including branch 1's own, because it never applies a leg's own
+    * alias mapping; the per-leg routes answer `{x -> …}` for branch 1. That is a PRE-EXISTING
+    * defect of the one-shot path, and the better of the two answers is the one the routes here give
+    * — propagating it to make the three agree would be aligning to a bug.
+    */
+  private[client] def unionAllRowNormalizer(
+    multiple: MultiSearch
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
+    rowNormalizer(multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty))
+
+  /** ONE merge, two callers; the row contract is [[unionAllRowNormalizer]]'s. */
+  private def mergeLegResponses(
+    multiple: MultiSearch,
+    sql: String,
+    responses: Seq[ElasticResponse]
+  )(implicit context: ConversionContext): ElasticResponse = {
+    val normalise = unionAllRowNormalizer(multiple)
+    ElasticResponse(
+      Some(sql),
+      responses.map(_.query).mkString("\n"),
+      responses.flatMap(_.results.map(normalise)),
+      multiple.fieldAliases,
+      toClientAggregations(multiple.sqlAggregations)
+    )
+  }
+
   private def requiresScrollPaging(limit: Option[Limit]): Boolean =
     limit match {
       case None => true
