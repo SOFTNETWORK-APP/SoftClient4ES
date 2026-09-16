@@ -2299,19 +2299,41 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       .map(_.map(mergeLegResponses(multiple, sql, _)))
   }
 
-  /** ONE merge, two callers. */
+  /** ONE merge, two callers.
+    *
+    * 🔴 Rows are re-keyed to the FIRST branch's output names, POSITIONALLY, because that is what
+    * the one-shot `_msearch` path does (`multiSearch` is handed
+    * `requests.headOption.map(extractOutputFieldNames)` for every leg). Without it the two routes
+    * disagree about the ROW SHAPE of a heterogeneous `UNION ALL` and the presence of a `LIMIT`
+    * decides which shape a caller gets: MEASURED on real ES 8.18, `SELECT id AS x FROM a LIMIT 5
+    * UNION ALL SELECT id AS y FROM b LIMIT 5` yields every row keyed `{x, y}` while the same
+    * statement without the LIMITs yielded leg-1 rows keyed `{x}` and leg-2 rows keyed `{y}` —
+    * ragged rows for any consumer that derives its columns from the first one (JDBC, Arrow, the
+    * REPL table renderer).
+    *
+    * Positional, not by name: SQL-92 §7.10 takes the first branch's NAMES and matches branches by
+    * POSITION, which is also what `MultiSearch.branchArity` has already enforced. A leg that
+    * produced fewer values than the first branch declares keeps what it has rather than inventing
+    * nulls — the same tolerance the one-shot normaliser shows.
+    */
   private def mergeLegResponses(
     multiple: MultiSearch,
     sql: String,
     responses: Seq[ElasticResponse]
-  ): ElasticResponse =
+  ): ElasticResponse = {
+    val names: Seq[String] =
+      multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty)
+    def renamed(row: ListMap[String, Any]): ListMap[String, Any] =
+      if (names.isEmpty || row.keys.toSeq == names) row
+      else ListMap(names.zip(row.values.toSeq): _*)
     ElasticResponse(
       Some(sql),
       responses.map(_.query).mkString("\n"),
-      responses.flatMap(_.results),
+      responses.flatMap(_.results.map(renamed)),
       multiple.fieldAliases,
       toClientAggregations(multiple.sqlAggregations)
     )
+  }
 
   private def requiresScrollPaging(limit: Option[Limit]): Boolean =
     limit match {

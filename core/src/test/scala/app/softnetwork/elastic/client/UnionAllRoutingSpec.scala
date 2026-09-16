@@ -21,7 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.client.scroll.{ScrollConfig, ScrollMetrics}
-import app.softnetwork.elastic.sql.query.{SearchStatement, SelectStatement}
+import app.softnetwork.elastic.sql.query.{SearchStatement, SelectStatement, SingleSearch}
 import com.fasterxml.jackson.databind.JsonNode
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
@@ -58,6 +58,25 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
 
   private class RecordingClient extends NopeClientApi {
     override protected def logger: Logger = testLogger
+
+    /** 🔴 The two lines that make the byte pin below DISCRIMINATE. `core` does not depend on the
+      * bridge, so with the real conversion every leg renders `{"query": {"match_all": {}}}`
+      * whatever the statement and the pin proves only that SOMETHING was emitted per leg. Rendering
+      * each leg's own SQL into the emitted body — the idiom `TemporalLiteralSearchSpec` already
+      * uses — makes `multiQuery` carry each leg's CONTENT, so the pin can tell a correct `_msearch`
+      * from a wrong one.
+      */
+    override private[client] implicit def singleSearchToJsonQuery(
+      sqlSearch: app.softnetwork.elastic.sql.query.SingleSearch
+    )(implicit
+      timestamp: Long,
+      contextType: app.softnetwork.elastic.sql.PainlessContextType =
+        app.softnetwork.elastic.sql.PainlessContextType.Query
+    ): String =
+      new com.fasterxml.jackson.databind.ObjectMapper()
+        .createObjectNode()
+        .put("sql", sqlSearch.sql)
+        .toString
 
     val msearchCalls = new AtomicInteger(0)
     val scrollCalls = new AtomicInteger(0)
@@ -113,9 +132,17 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
       system: ActorSystem,
       context: ConversionContext
     ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
-      scrollCalls.incrementAndGet()
+      val n = scrollCalls.incrementAndGet()
       scrolledStatements = scrolledStatements :+ statement
-      Source.empty
+      // 🔴 One row per leg, keyed by THAT leg's own output name — because the defect this fixture
+      // exists to catch is a ROW-SHAPE difference between the two routes, and `Source.empty`
+      // cannot see it: the assertion below looped over zero rows and passed for any behaviour.
+      val key = statement match {
+        case s: SingleSearch =>
+          s.select.fields.headOption.map(_.outputName).getOrElse(s"leg$n")
+        case _ => s"leg$n"
+      }
+      Source.single((ListMap[String, Any](key -> n), ScrollMetrics()))
     }
   }
 
@@ -161,7 +188,11 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     client.msearchCalls.get() shouldBe 1
     client.scrollCalls.get() shouldBe 0
     val queries = client.lastMultiQuery.getOrElse(fail("no _msearch was emitted"))
-    queries.multiQuery shouldBe "{\"query\": {\"match_all\": {}}}\n{\"query\": {\"match_all\": {}}}"
+    // 🔴 One entry PER LEG, newline-joined, each carrying that leg's OWN statement — so a body
+    // that dropped a leg, duplicated one, or reordered them reddens here.
+    queries.multiQuery shouldBe
+    "{\"sql\":\"SELECT id, name FROM dql_users WHERE age > 30 LIMIT 100\"}\n" +
+    "{\"sql\":\"SELECT id, name FROM dql_users WHERE age <= 30 LIMIT 100\"}"
     queries.queries should have size 2
     queries.queries.map(_.indices) shouldBe Seq(Seq("dql_users"), Seq("dql_users"))
     queries.sqlQuery shouldBe sql
@@ -202,6 +233,35 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     val bounded = runAsync("SELECT a FROM x LIMIT 5 UNION ALL SELECT a FROM y LIMIT 5")
     bounded.msearchCalls.get() shouldBe 1
     bounded.scrollCalls.get() shouldBe 0
+  }
+
+  /** 🔴 The two routes must agree about the ROW SHAPE of a heterogeneous `UNION ALL`, or the
+    * presence of a `LIMIT` decides which shape a caller gets.
+    *
+    * The one-shot `_msearch` path normalises EVERY leg to the first branch's output names
+    * (`multiSearch` is handed `requests.head`'s names); the per-leg path delegates to
+    * `search(leg)`, which normalises each leg to its OWN. MEASURED on real ES 8.18 before the fix:
+    * the LIMITed spelling gave every row `{x, y}` and the un-LIMITed one gave leg-1 rows `{x}` and
+    * leg-2 rows `{y}` — ragged rows for any consumer that derives its columns from the first one.
+    */
+  "The per-leg route" should "key every row by the FIRST branch's output names" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement("SELECT a AS x FROM t UNION ALL SELECT b AS y FROM u")
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.msearchCalls.get() shouldBe 0
+    client.scrollCalls.get() shouldBe 2
+    // 🔴 The mechanism: leg 2's row arrives keyed `y` (the stub keys each leg by its OWN name) and
+    // must be re-keyed to the FIRST branch's `x`. Without the normalisation this reads
+    // `List(List(x), List(y))` — ragged rows, and only the presence of a `LIMIT` decides which
+    // shape a caller gets.
+    response.results should have size 2
+    response.results.map(_.keys.toSeq) shouldBe Seq(Seq("x"), Seq("x"))
+    // …and the VALUES are not lost in the re-keying
+    response.results.map(_.values.head) shouldBe Seq(1, 2)
   }
 
   // ── the seam guard runs FIRST ──────────────────────────────────────────────────────────────

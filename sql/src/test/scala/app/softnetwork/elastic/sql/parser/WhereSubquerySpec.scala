@@ -200,11 +200,30 @@ class WhereSubquerySpec extends AnyFlatSpec with Matchers {
     parse("SELECT id FROM t WHERE a > ANY (SELECT a FROM u)")
   }
 
-  it should "decline UNION ALL and FROM-less bodies (PD-7)" in {
+  it should "decline a set-operation body and a FROM-less body (PD-7)" in {
     rejects(
       "SELECT id FROM t WHERE a IN (SELECT a FROM u UNION ALL SELECT a FROM v)",
       "UNION ALL inside a WHERE subquery"
     )
+    // 🔴 Story 22.6 — the message must name the operator the ANALYST WROTE. It hard-coded
+    // `UNION ALL`, which was right while that was the only spelling the grammar accepted and is
+    // wrong for the five this story adds: the table below is what distinguishes them, and with the
+    // old literal every row but the first reddens.
+    Seq(
+      "UNION"          -> "UNION",
+      "UNION DISTINCT" -> "UNION",
+      "INTERSECT"      -> "INTERSECT",
+      "INTERSECT ALL"  -> "INTERSECT ALL",
+      "EXCEPT"         -> "EXCEPT",
+      "EXCEPT ALL"     -> "EXCEPT ALL"
+    ).foreach { case (written, named) =>
+      val msg = reasonOf(s"SELECT id FROM t WHERE a IN (SELECT a FROM u $written SELECT a FROM v)")
+      withClue(s"[$written] msg=[$msg] ") {
+        msg should include(s"$named inside a WHERE subquery")
+        // …and it must NOT name the one spelling the author did not write
+        if (named != "UNION ALL") msg should not include "UNION ALL inside"
+      }
+    }
     rejects("SELECT id FROM t WHERE a IN (SELECT 1)", "must read a table")
     rejects("SELECT id FROM t WHERE EXISTS (SELECT 1)", "must read a table")
   }

@@ -402,6 +402,46 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     }
   }
 
+  /** 🔴 Story 22.6 AD-4's SECOND HALF, and the only place in the tree that can pin it: the branch
+    * TYPE check RE-RUNS at `SearchApi.resolveWithSchema(multiple)` once each branch's schema is
+    * attached.
+    *
+    * At parse time a bare column is `SQLTypes.Any` and every pair passes vacuously, so a parse-only
+    * assertion pins the parse-time half TWICE and the seam not at all — which is exactly what the
+    * first version of this story shipped: replacing the seam's `MultiSearch.branchTypes(resolved)`
+    * with `Right(())` left the whole core suite green. This stub seeds `events` with `id: KEYWORD`
+    * and `amount: INT`, so the two bare columns ARE typed here and disagree.
+    */
+  it should "reject a branch TYPE mismatch at the seam, once schemas are attached" in {
+    val client = seeded()
+    client.search(
+      SelectStatement("SELECT id FROM events UNION ALL SELECT amount FROM events")
+    ) match {
+      case ElasticFailure(error) =>
+        error.statusCode shouldBe Some(400)
+        error.operation shouldBe Some("search")
+        error.message should include("compatible types at column 1")
+        error.message should include("KEYWORD")
+        error.message should include("INT")
+      case ElasticSuccess(other) => fail(s"expected a rejection, got $other")
+    }
+    // 🔴 The falsifiable half: NOTHING was sent. The seam must refuse before any request is built,
+    // not after one leg has already run.
+    client.lastQuery shouldBe None
+    client.lastMultiQuery shouldBe None
+  }
+
+  /** The CONTROL for the row above. Without it, a seam that refused every `UNION ALL` — or one
+    * whose type check was simply always `Left` — would look identical.
+    */
+  it should "accept a branch pair whose attached schemas agree" in {
+    val client = seeded()
+    client.search(
+      SelectStatement("SELECT id FROM events LIMIT 5 UNION ALL SELECT label FROM events LIMIT 5")
+    )
+    client.lastMultiQuery shouldBe defined
+  }
+
   "searchAsync" should "render the T-separated literal as well" in {
     val client = seeded()
     Await.result(

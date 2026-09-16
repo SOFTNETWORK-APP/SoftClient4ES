@@ -124,10 +124,11 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     * rows, which is what makes "leg 2 was bounded by what leg 1 left" a measurable claim rather
     * than a narrated one.
     */
-  private class BudgetClient(rowsPerLeg: Int) extends NopeClientApi {
+  private class BudgetClient(rowsPerLeg: Int, failExecute: Boolean = false) extends NopeClientApi {
     override protected def logger: Logger = testLogger
 
     @volatile var scrolls: Seq[(SearchStatement, ScrollConfig)] = Seq.empty
+    @volatile var executed: Seq[SearchStatement] = Seq.empty
 
     override def scroll(
       statement: SearchStatement,
@@ -137,11 +138,54 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
       context: ConversionContext
     ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
       synchronized { scrolls = scrolls :+ ((statement, config)) }
+      // 🔴 `rowsPerLeg` rows REGARDLESS of the statement's own LIMIT — because that is exactly what
+      // the real `ScrollApi.scroll(statement, config)` does (issue O1, pre-existing: it honours
+      // `config.maxDocuments` and IGNORES the statement's `LIMIT`). A stub that honoured the LIMIT
+      // would hide the defect this fixture exists to catch.
       val served = config.maxDocuments.map(_.toInt.min(rowsPerLeg)).getOrElse(rowsPerLeg)
       Source(
         (1 to served)
           .map(i => (ListMap[String, Any]("a" -> i), ScrollMetrics()))
           .toList
+      )
+    }
+
+    /** The route a LIMITed row leg and an aggregation leg take. It HONOURS the statement's LIMIT,
+      * which is the whole reason such a leg must not be scrolled.
+      */
+    override def searchAsync(
+      statement: SearchStatement
+    )(implicit
+      ec: scala.concurrent.ExecutionContext,
+      context: ConversionContext
+    ): scala.concurrent.Future[ElasticResult[ElasticResponse]] = {
+      // 🔴 A leg bounded ABOVE `index.max_result_window` must reach the REAL routing, which sends
+      // it through `scroll` and answers `QueryStream`. Intercepting every statement here made that
+      // arm unreachable, so the test written for it passed with the arm disabled.
+      val needsPaging = statement match {
+        case s: SingleSearch => s.returnsRows && s.limit.exists(_.limit > 10000)
+        case _               => false
+      }
+      if (needsPaging) return super.searchAsync(statement)
+      synchronized { executed = executed :+ statement }
+      if (failExecute)
+        return scala.concurrent.Future.successful(
+          ElasticFailure(ElasticError(message = "branch blew up", statusCode = Some(503)))
+        )
+      val bound = statement match {
+        case s: SingleSearch => s.limit.map(_.limit).getOrElse(rowsPerLeg)
+        case _               => rowsPerLeg
+      }
+      scala.concurrent.Future.successful(
+        ElasticSuccess(
+          ElasticResponse(
+            sql = None,
+            query = "{}",
+            results = (1 to bound.min(rowsPerLeg)).map(i => ListMap[String, Any]("a" -> i)),
+            fieldAliases = ListMap.empty,
+            aggregations = ListMap.empty
+          )
+        )
       )
     }
   }
@@ -650,28 +694,145 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.scrolls should have size 1
   }
 
+  /** 🔴 THE REGRESSION THIS STORY INTRODUCED, and the row that would have caught it.
+    *
+    * `cappedUnionAllRows` scrolled EVERY row-shaped leg, and `ScrollApi.scroll(statement, config)`
+    * does not honour the statement's own `LIMIT` — so a branch's `LIMIT` was silently DROPPED.
+    * MEASURED on real ES 8.18 over 30- and 24-document indices: `SELECT id FROM a LIMIT 3 UNION ALL
+    * SELECT id FROM b` returned 54 rows where SQL says 27, and where `main` (with the #209
+    * truncation still in place) returned 13. `QueryRows`, HTTP 200, `truncated = false`.
+    *
+    * The fixture is the mechanism, not a proxy: `BudgetClient.scroll` ignores the statement LIMIT
+    * exactly as the real one does, so a leg that is scrolled yields `rowsPerLeg` and a leg that is
+    * EXECUTED yields its own LIMIT. 5 vs 2 is what distinguishes the two routes.
+    */
+  it should "honour a branch's own LIMIT under the cap, never scroll a LIMITed leg" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val res = runWith(
+      "SELECT a FROM x LIMIT 2 UNION ALL SELECT a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      client
+    )
+    val rows = res.asInstanceOf[ElasticSuccess[QueryResult]].value match {
+      case q: QueryRows => q.rows
+      case other        => fail(s"expected QueryRows, got $other")
+    }
+    // 2 (the LIMITed leg, honoured) + 5 (the un-LIMITed leg, scrolled) — never 5 + 5.
+    rows should have size 7L
+    withClue("a LIMITed row leg must NOT be scrolled — scroll drops its LIMIT: ") {
+      client.scrolls.map(_._1.sql) shouldBe Seq("SELECT a FROM y")
+    }
+    client.executed.map(_.sql) shouldBe Seq("SELECT a FROM x LIMIT 2")
+  }
+
   /** 🔴 A branch that FAILS while the cap is being applied must fail the STATEMENT. Dropping its
     * rows and answering HTTP 200 with a short result is the silent-wrong-answer mode this whole
     * story exists to close, reintroduced one layer down — and a `case _ =>` in the fold is exactly
     * how it gets reintroduced.
     *
-    * `BudgetClient` serves rows from `scroll` but inherits `NopeClientApi`'s cluster-less executor,
-    * so an AGGREGATION-shaped branch (which is read through `dqlExecutor.execute`, never through
-    * scroll — a bucket query returns no hits to page) fails there. The row branch before it
-    * succeeds, which is what makes "the failure is not swallowed by the accumulated rows"
-    * observable at all.
+    * 🔴 An earlier version of this row could NOT fail for the reason it names: it relied on
+    * `NopeClientApi`'s cluster-less executor, whose failure is an `ElasticFailure` caught by the
+    * dedicated arm — so reinstating a `case _ => success(acc)` before the catch-all left the whole
+    * core suite green (measured by the independent review). The failure is now INJECTED at the
+    * client, and the assertions below name which arm answered.
     */
   it should "fail the whole statement when a capped UNION ALL branch fails, never truncate silently" in {
-    val client = new BudgetClient(rowsPerLeg = 5)
+    val client = new BudgetClient(rowsPerLeg = 5, failExecute = true)
     val res = runWith(
-      "SELECT a FROM x UNION ALL SELECT COUNT(*) AS a FROM y",
+      "SELECT a FROM x LIMIT 2 UNION ALL SELECT a FROM y",
       Quota.Community.copy(maxQueryResults = Some(50)),
       client
     )
     res shouldBe a[ElasticFailure]
-    // the row branch DID execute — so the failure comes from the second branch, not from a guard
-    // that refused the statement before anything ran
-    client.scrolls should have size 1
+    res.asInstanceOf[ElasticFailure].elasticError.message should include("branch blew up")
+    // the LIMITed branch DID reach the client — so the failure comes from executing it, not from a
+    // guard that refused the statement before anything ran
+    client.executed.map(_.sql) shouldBe Seq("SELECT a FROM x LIMIT 2")
+  }
+
+  /** 🔴 The `QueryStream` arm of the cap fold is DEFENCE IN DEPTH, and this row is what says so —
+    * and what will tell the next reader the day it stops being true.
+    *
+    * The review predicted that not scrolling a LIMITed row leg would make `QueryStream` reachable
+    * through `dqlExecutor.execute`. MEASURED here, on the shape most likely to produce one (a leg
+    * bounded ABOVE `index.max_result_window`, which the router does send through `scroll`): the
+    * executor COLLECTS that stream and answers `QueryStructured`. So the arm is not reachable today
+    * — it is kept because the alternative to an unreachable arm is a `case _` that would drop a
+    * branch's rows the day the executor's contract changes, and this assertion is the tripwire for
+    * exactly that change.
+    */
+  it should "pin which result variants the cap fold can actually receive" in {
+    implicit val ctx: ConversionContext = NativeContext
+    val client = new BudgetClient(rowsPerLeg = 5)
+    def variantOf(sql: String): String = {
+      val leg = Parser(sql) match {
+        case Right(st: SingleSearch) => st
+        case other                   => fail(s"expected a SingleSearch, got $other")
+      }
+      Await.result(client.dqlExecutor.execute(leg), 10.seconds) match {
+        case ElasticSuccess(v)     => v.getClass.getSimpleName
+        case ElasticFailure(error) => fail(s"[$sql] failed: ${error.message}")
+      }
+    }
+    // the two shapes the fold hands to `execute`: a LIMITed row leg (bounded, and bounded above
+    // the result window) and an aggregation leg
+    variantOf("SELECT a FROM x LIMIT 2") shouldBe "QueryStructured"
+    variantOf("SELECT a FROM x LIMIT 20000") shouldBe "QueryStructured"
+    variantOf("SELECT COUNT(*) AS a FROM x") shouldBe "QueryStructured"
+  }
+
+  /** …and the fold handles that variant end to end, with the branch LIMIT honoured. */
+  it should "materialise a bounded branch under the cap, never refuse or drop it" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val res = runWith(
+      "SELECT a FROM x LIMIT 20000 UNION ALL SELECT a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50000)),
+      client
+    )
+    res shouldBe a[ElasticSuccess[_]]
+    val rows = res.asInstanceOf[ElasticSuccess[QueryResult]].value match {
+      case q: QueryRows => q.rows
+      case other        => fail(s"expected QueryRows, got $other")
+    }
+    // both branches contributed; neither was refused and neither was silently dropped
+    rows should have size 10L
+  }
+
+  /** 🔴 F6 — the METER must fire only when the cap actually BIT. Incrementing before the run
+    * recorded a cap-hit for every bounded `UNION ALL`, beside a `truncation` saying `truncated =
+    * false` — the meter and the flag contradicting each other on one statement, which is
+    * extensions#46's false-increment class.
+    */
+  it should "record NO cap-hit for a UNION ALL that fits inside the quota" in {
+    val collector = new TelemetryCollector()
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val ext = new CoreDqlExtension()
+    ext.initialize(
+      ConfigFactory.empty(),
+      strategy(
+        managerWithQuota(
+          Quota.Community.copy(maxQueryResults = Some(10000)),
+          LicenseType.Community
+        ),
+        collector
+      )
+    )
+    val parsed = Parser("SELECT a FROM x UNION ALL SELECT a FROM y") match {
+      case Right(st) => st
+      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    }
+    val res = Await.result(ext.execute(parsed, client), 10.seconds)
+    val result = res.asInstanceOf[ElasticSuccess[QueryResult]].value match {
+      case q: QueryRows => q
+      case other        => fail(s"expected QueryRows, got $other")
+    }
+    // 10 rows against a 10 000 quota: the cap did not bite…
+    result.rows should have size 10L
+    result.truncation.map(_.truncated) shouldBe Some(false)
+    // …so the meter must agree with the flag.
+    capHits(collector)("max_query_results") shouldBe 0L
+    // and the warning must not claim a capping that did not happen
+    result.truncation.map(_.warning) shouldBe Some("")
   }
 
   /** Rule (1): an explicit LIMIT above the quota on ANY leg is a 402, not a silent cap — the same
