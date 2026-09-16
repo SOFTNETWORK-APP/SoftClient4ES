@@ -1451,6 +1451,56 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
   }
 
   // =========================================================================
+  // 6e. CTEs — story 22.5: they PARSE, then fail LOUDLY without the relational engine
+  // =========================================================================
+
+  behavior of "REPL - CTEs without the relational engine"
+
+  it should "refuse WITH ... SELECT with HTTP 400 naming the extension and the WITH clause" in {
+    // `dql_orders` is created by section 5, so the index EXISTS: a 404 can never satisfy this
+    // assertion in place of the 400 guard. Before this story the statement died on a LEXER error
+    // (`string matching regex '(?i)COPY\b' expected but 'W' found`) — the message change is the
+    // release note.
+    val res = executeSync(
+      "WITH big AS (SELECT id FROM dql_orders WHERE id > 1) SELECT * FROM big"
+    )
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    error.statusCode shouldBe Some(400)
+    // 🔴 Both substrings must survive `GatewayApi.excerpt` (200-character cap, MIDDLE elided:
+    // head 120 + "..." + tail 77). `A WITH clause (common table expression)` opens the message, so
+    // both terms sit well inside the first 120 characters. No unit test can see that — only this
+    // one goes through `GatewayApi.run(sql)`.
+    error.message should include("WITH clause")
+    error.message should include("softclient4es-arrow-extensions")
+    // It must name what the analyst WROTE, not the derived table the substitution turned it into.
+    error.message should not include "derived table"
+  }
+
+  it should "refuse a CTE statement whose CTE is never referenced" in {
+    val res = executeSync("WITH u AS (SELECT 1 AS x) SELECT id FROM dql_orders")
+    res shouldBe a[ExecutionFailure]
+    res.asInstanceOf[ExecutionFailure].error.statusCode shouldBe Some(400)
+    res.asInstanceOf[ExecutionFailure].error.message should include("WITH clause")
+  }
+
+  it should "refuse WITH RECURSIVE by name, at parse time, before any leg runs" in {
+    val res = executeSync("WITH RECURSIVE a AS (SELECT 1 AS x) SELECT * FROM a")
+    res shouldBe a[ExecutionFailure]
+    res.asInstanceOf[ExecutionFailure].error.message should include(
+      "WITH RECURSIVE is not supported"
+    )
+  }
+
+  it should "still answer the un-nested statement — the guard did not widen" in {
+    val rows = assertQueryRows(System.nanoTime(), executeSync("SELECT 1"))
+    rows shouldBe Seq(Map("1" -> 1))
+    // ... and a statement that merely MENTIONS `with` as an identifier is untouched.
+    val plain = executeSync("SELECT id FROM dql_orders ORDER BY id LIMIT 1")
+    plain shouldBe a[ExecutionSuccess]
+  }
+
+  // =========================================================================
   // 7. Error handling
   // =========================================================================
 

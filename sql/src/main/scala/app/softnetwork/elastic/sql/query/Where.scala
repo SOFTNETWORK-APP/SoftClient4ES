@@ -98,6 +98,50 @@ sealed trait Criteria extends Updateable with PainlessScript {
     case _                               => Nil
   }
 
+  /** Story 22.5 -- every statement this criteria EMBEDS, in statement order.
+    *
+    * DERIVED from [[subqueries]] rather than written as a second `this match`: the two would be arm
+    * lists over the SAME sealed hierarchy and could silently disagree about where a statement can
+    * hide -- the one-key-two-derivations drift story 21.3 paid for four times. `subqueries` already
+    * recurses through `Predicate` and the three `ElasticRelation`s and stops AT a subquery node
+    * (its own body is a separate scope, walked by whoever owns that scope), which is exactly the
+    * boundary [[CteSubstitution.referencedNames]] wants.
+    */
+  final def embeddedStatements: Seq[DqlStatement] = subqueries.map(_.query)
+
+  /** The WRITE half of [[embeddedStatements]]: rebuild this criteria with `f` applied to every
+    * statement it embeds. `eq`-preserving -- a subtree in which nothing changed is returned AS IS,
+    * which is what makes [[CteSubstitution]] 's "never touch a body that references no CTE" test
+    * meaningful.
+    *
+    * The structural arms are the same three shapes `subqueries` recurses through; the leaf arm
+    * delegates to [[SubqueryCriteria.withQuery]], which is ABSTRACT, so a criteria kind that gains
+    * an embedded statement cannot forget to take part -- the compiler refuses it. (An overridable
+    * default would have made the omission silent, and the failure mode is a CTE name inside `IN
+    * (SELECT ... FROM cte)` read as an INDEX: `index_not_found` when absent, a wrong answer with
+    * HTTP 200 when an index of that name exists.)
+    */
+  def mapEmbeddedStatements(f: DqlStatement => DqlStatement): Criteria = this match {
+    case p: Predicate =>
+      val l = p.leftCriteria.mapEmbeddedStatements(f)
+      val r = p.rightCriteria.mapEmbeddedStatements(f)
+      if ((l eq p.leftCriteria) && (r eq p.rightCriteria)) p
+      else p.copy(leftCriteria = l, rightCriteria = r)
+    case n: ElasticNested =>
+      val c = n.criteria.mapEmbeddedStatements(f)
+      if (c eq n.criteria) n else n.copy(criteria = c)
+    case c: ElasticChild =>
+      val x = c.criteria.mapEmbeddedStatements(f)
+      if (x eq c.criteria) c else c.copy(criteria = x)
+    case p: ElasticParent =>
+      val x = p.criteria.mapEmbeddedStatements(f)
+      if (x eq p.criteria) p else p.copy(criteria = x)
+    case s: SubqueryCriteria =>
+      val q = f(s.query)
+      if (q eq s.query) s else s.withQuery(q)
+    case _ => this
+  }
+
   def nested: Boolean = false
 
   def nestedElement: Option[NestedElement]
@@ -1302,6 +1346,17 @@ sealed trait SubqueryCriteria extends Criteria with ElasticFilter {
   def maybeNot: Option[NOT.type]
   def correlatedRefs: Seq[Identifier]
 
+  /** This node carrying a REWRITTEN body (story 22.5) — the write half of
+    * [[Criteria.embeddedStatements]], which `Criteria.mapEmbeddedStatements` dispatches to.
+    *
+    * ABSTRACT on purpose. A defaulted `this` would let a new subquery kind silently opt out of
+    * every rewrite that descends through criteria (today: the CTE substitution), and the failure
+    * mode is a CTE name inside `IN (SELECT ... FROM cte)` resolved as an INDEX — `index_not_found`
+    * when absent, a WRONG ANSWER with HTTP 200 when an index of that name exists. Declared here,
+    * the compiler refuses the omission.
+    */
+  def withQuery(q: DqlStatement): SubqueryCriteria
+
   /** The identifiers of the OUTER statement this node names directly (its left operand) — what
     * `referencedIdentifiers` / `derivedScopeCheck` / the aggregate-in-WHERE rejection must see.
     * `EXISTS` names none.
@@ -1392,6 +1447,8 @@ case class InSubquery(
   maybeNot: Option[NOT.type] = None,
   correlatedRefs: Seq[Identifier] = Nil
 ) extends SubqueryCriteria {
+  override def withQuery(q: DqlStatement): InSubquery = this.copy(query = q)
+
   override def operator: Operator = IN
   override def sql: String = s"$identifier $notAsString$operator (${query.sql})"
 
@@ -1432,6 +1489,8 @@ case class ExistsSubquery(
   maybeNot: Option[NOT.type] = None,
   correlatedRefs: Seq[Identifier] = Nil
 ) extends SubqueryCriteria {
+  override def withQuery(q: DqlStatement): ExistsSubquery = this.copy(query = q)
+
   override def operator: Operator = EXISTS
   override def sql: String = s"$notAsString$operator (${query.sql})"
 
@@ -1462,6 +1521,8 @@ case class ScalarSubquery(
   maybeNot: Option[NOT.type] = None,
   correlatedRefs: Seq[Identifier] = Nil
 ) extends SubqueryCriteria {
+  override def withQuery(q: DqlStatement): ScalarSubquery = this.copy(query = q)
+
   override def sql: String = s"$notAsString$identifier $operator (${query.sql})"
 
   /** 🔴 Required by `PainlessOperandFormSpec`, and it is not bookkeeping: without it a `NOT`
@@ -1531,6 +1592,8 @@ case class QuantifiedSubquery(
   maybeNot: Option[NOT.type] = None,
   correlatedRefs: Seq[Identifier] = Nil
 ) extends SubqueryCriteria {
+  override def withQuery(q: DqlStatement): QuantifiedSubquery = this.copy(query = q)
+
   override def sql: String =
     s"$notAsString$identifier $operator $quantifier (${query.sql})"
 

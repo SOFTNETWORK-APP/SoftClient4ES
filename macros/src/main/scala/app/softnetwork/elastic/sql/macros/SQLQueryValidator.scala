@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes, SQLVarchar}
 import app.softnetwork.elastic.sql.function.aggregate.{COUNT, WindowFunction}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
+  ctesPresent,
   derivedTablesPresent,
   relationalClosureRequired,
   MultiSearch,
@@ -224,7 +225,11 @@ trait SQLQueryValidator {
     */
   private def closureAbortMessage(statement: Statement, sqlQuery: String): String = {
     val shape =
-      if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
+      // Story 22.5 — FIRST, the same reason `RelationalClosureGuard.shapeOf` names the CTE first:
+      // a CTE reference IS a derived table, so without this arm the compile error would name a
+      // construct the author never wrote.
+      if (ctesPresent(statement)) "WITH clauses (common table expressions)"
+      else if (derivedTablesPresent(statement)) "Derived tables (subqueries in FROM/JOIN)"
       else "Cross-index JOINs"
     s"❌ $shape cannot be typed at compile time: searchAs/scrollAs bind one index mapping. " +
     s"Run this statement through GatewayApi.run with the relational engine.\nQuery: $sqlQuery"

@@ -477,6 +477,42 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.searchedStatement.get() shouldBe null
   }
 
+  /** Story 22.5 — a CTE statement reaches the SAME guard through the SAME predicate, with zero edit
+    * in this extension: `relationalClosureRequired` gained one disjunct and every venue inherited
+    * it.
+    *
+    * The falsifiable half is the pair of `null` seam assertions. A CTE statement reports
+    * `returnsRows == true` (no aggregate in the OUTER select), so had it slipped past the closure
+    * arm it would have been SCROLLED against an index named after the CTE's alias — `monthly` is
+    * not an index, and the alias is what `sources` yields.
+    */
+  it should "reject a CTE statement, naming the WITH clause, and never reach scroll or search" in {
+    val (client, res) = run(
+      "WITH monthly AS (SELECT category, SUM(amount) AS total FROM bi_events GROUP BY category) " +
+      "SELECT * FROM monthly",
+      Quota.Community
+    )
+    res shouldBe a[ElasticFailure]
+    val err = res.asInstanceOf[ElasticFailure].elasticError
+    err.statusCode shouldBe Some(400)
+    err.message should include("WITH clause")
+    err.message should include("softclient4es-arrow-extensions")
+    // It must be named as the construct the analyst WROTE, not as the derived table it becomes.
+    err.message should not include "derived table"
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
+  it should "reject a CTE statement even when no CTE is referenced" in {
+    // The arrow regex classifier keys on the leading token and cannot count references; the AST
+    // predicate must agree with it or the two venues disagree about who owns the statement.
+    val (client, res) = run("WITH u AS (SELECT 1 AS x) SELECT a FROM t", Quota.Community)
+    res shouldBe a[ElasticFailure]
+    res.asInstanceOf[ElasticFailure].elasticError.message should include("WITH clause")
+    client.scrolledStatement.get() shouldBe null
+    client.searchedStatement.get() shouldBe null
+  }
+
   it should "reject INSERT ... SELECT and CTAS carrying a derived table, and claim them" in {
     Seq(
       "INSERT INTO target SELECT COL FROM (SELECT 1 AS COL) AS d",

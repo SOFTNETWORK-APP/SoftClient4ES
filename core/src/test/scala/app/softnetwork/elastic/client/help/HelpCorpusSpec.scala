@@ -810,6 +810,17 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
     // `start ~> derivedTableBodyInner <~ end`, i.e. the already-enumerated `derivedTableBodyInner`
     // in parentheses, so the package walk's coverage is unchanged (the superset assertion below
     // stays green and no new help document is required).
+    // Story 22.5 adds `cteBody` and `withQuery`, and NEITHER names a new statement leaf, which is
+    // the check this comment block exists to record:
+    //   - `cteBody` is `start ~> (derivedTableBodyInner | err(...)) <~ end`, i.e. the
+    //     already-enumerated `derivedTableBodyInner` in parentheses with a message of its own. Its
+    //     leaves are `SingleSearch` / `MultiSearch` / `FromlessSelect`, all already walked.
+    //   - `withQuery` is `withClause ~ searchStatement`, typed `SearchStatement` because the WITH
+    //     list is a FIELD on `SingleSearch` (`ctes`) rather than a new `Statement` kind — which is
+    //     precisely why story 22.5 needs no new help document. A `WITH …` statement IS a
+    //     `SingleSearch` (or a `MultiSearch` for a `UNION ALL` outer), both already enumerated.
+    // Both facts are re-checked mechanically by the superset assertion below and by this file's
+    // parser -> doc gate, which stays green with no new document.
     val expectedAbstract =
       Set(
         "statement",
@@ -818,6 +829,8 @@ class HelpCorpusSpec extends AnyFlatSpec with Matchers {
         "dmlStatement",
         "searchStatement",
         "derivedTableBodyInner",
+        "cteBody",
+        "withQuery",
         "app$softnetwork$elastic$sql$parser$WhereParser$$subqueryBody"
       )
     withClue(

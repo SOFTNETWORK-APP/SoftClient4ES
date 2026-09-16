@@ -18,7 +18,12 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{relationalClosureRequired, SearchStatement, SingleSearch}
+import app.softnetwork.elastic.sql.query.{
+  ctesPresent,
+  relationalClosureRequired,
+  SearchStatement,
+  SingleSearch
+}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -64,6 +69,11 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
   private val JoinSelect = "SELECT o.id, c.name FROM orders o JOIN customers c ON o.cid = c.id"
   private val CorrelatedSelect =
     "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)"
+
+  /** Story 22.5's corpus witness, `superset.flightsql.w6.006`, verbatim. */
+  private val CteSelect =
+    "WITH monthly AS (SELECT category, SUM(amount) AS total FROM bi_events GROUP BY category) " +
+    "SELECT * FROM monthly"
 
   // ---- the ONE seam ------------------------------------------------------------------------
 
@@ -231,6 +241,53 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
     )
     err.statusCode shouldBe Some(400)
     err.message should include("A correlated subquery")
+  }
+
+  /** Story 22.5 — the CTE shape is reported FIRST, and the test that matters is the one below it: a
+    * CTE reference IS a derived table, so WITHOUT the arm this statement is refused as "a derived
+    * table (subquery in FROM/JOIN)" — a construct the analyst never wrote.
+    */
+  it should "name the CTE shape, and prefer it over the derived table it is made of" in {
+    val cte = searchStatement(CteSelect)
+    relationalClosureRequired(cte) shouldBe true
+    ctesPresent(cte) shouldBe true
+    RelationalClosureGuard.shapeOf(cte) should include("WITH clause")
+    // The falsifiable half: it must NOT fall through to the derived-table wording.
+    RelationalClosureGuard.shapeOf(cte) should not include "derived table"
+    // ... and the plain derived table must still get its own name (the arm did not swallow it).
+    RelationalClosureGuard.shapeOf(searchStatement(DerivedSelect)) should include("derived table")
+  }
+
+  it should "refuse a CTE statement on the direct API at the seam" in {
+    val err = refusalOf(client().search(searchStatement(CteSelect)))
+    err.statusCode shouldBe Some(400)
+    err.operation shouldBe Some("search")
+    err.message should include("WITH clause")
+    err.message should include(RelationalClosureGuard.ExtensionJar)
+  }
+
+  it should "refuse a CTE statement even when NO CTE is referenced" in {
+    // The classifier cannot count references, and the AST predicate must agree with it.
+    val err =
+      refusalOf(client().search(searchStatement("WITH u AS (SELECT 1 AS x) SELECT a FROM t")))
+    err.statusCode shouldBe Some(400)
+    err.message should include("WITH clause")
+  }
+
+  /** Story 22.5, Task 0 row 13. `IndicesApi.parseQueryForDeletion` ALREADY sniffed a leading `WITH`
+    * as SQL before this story, so a CTE statement handed to `deleteByQuery` used to die on a lexer
+    * error. It now PARSES, and both routes must still refuse it — never a delete-by-query over an
+    * index named after the CTE's alias.
+    */
+  it should "refuse a CTE statement handed to deleteByQuery, on both routes" in {
+    val sql = "WITH c AS (SELECT id FROM t) SELECT * FROM c"
+    // alias != index: the SingleSearch arm's index check fires first (loud, 400).
+    val mismatch = refusalOf(client().asInstanceOf[IndicesApi].deleteByQuery("t", sql))
+    mismatch.statusCode shouldBe Some(400)
+    // alias == index: the arm reaches `resolveDmlWithSchema` and the seam's closure term refuses.
+    val seam = refusalOf(client().asInstanceOf[IndicesApi].deleteByQuery("c", sql))
+    seam.statusCode shouldBe Some(400)
+    seam.message should include("WITH clause")
   }
 
   it should "say the statement was refused rather than executed against the first index (PD-2)" in {

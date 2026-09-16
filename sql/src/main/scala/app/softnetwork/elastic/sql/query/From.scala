@@ -330,15 +330,39 @@ case class StandardJoin(
   * arrow's `JoinPlanner` does today — is the story-22.4 hand-off, guarded meanwhile by the loud arm
   * this story adds there.
   */
-case class DerivedTable(query: DqlStatement, alias: Alias) extends Source {
+case class DerivedTable(
+  query: DqlStatement,
+  alias: Alias,
+  /** Story 22.5 — `Some(part)` when this derived table is a CTE REFERENCE substituted out of the
+    * statement's WITH list; `part` is the CTE's name exactly as written. `None` for a literal
+    * `(SELECT …) AS x`.
+    *
+    * A RENDER MARKER and nothing more: every resolver, scope check, guard and planner reads `query`
+    * / `alias` / `outputNames` exactly as it does for a literal derived table — that is the whole
+    * point of "a CTE reference IS a derived table" and is why this story adds no consumer arm
+    * anywhere.
+    */
+  cte: Option[NamePart] = None
+) extends Source {
 
   override val name: String = alias.alias
 
   /** `(<body>) AS <alias>` — the body through its OWN `.sql`, so nesting, `UNION ALL` and the
     * FROM-less form all round-trip by construction. `Alias.sql` already carries the leading ` AS `
     * and re-quotes a quoted alias with the canonical double quote (story 21.1 AD-1).
+    *
+    * For a CTE REFERENCE the render is the CTE NAME, plus ` AS <alias>` only when the statement
+    * gave the reference an alias of its own. `SingleSearch.sql` re-emits the WITH list, so this is
+    * what makes `Parser(stmt.sql) == Right(stmt)` hold WITHOUT expanding the statement — an
+    * expanded render would be persisted by `MaterializedViewExtension` and re-parsed as a DIFFERENT
+    * statement (an unreferenced CTE beside a literal derived table).
     */
-  override def sql: String = s"(${query.sql})$alias"
+  override def sql: String = cte match {
+    case Some(part) =>
+      val ref = renderName(Seq(part), part.value)
+      if (alias.alias == part.value) ref else s"$ref$alias"
+    case None => s"(${query.sql})$alias"
+  }
 
   /** The body is its OWN scope. Nothing in it is resolved against the enclosing statement here:
     * that would be SQL:1999 `LATERAL`, which `SingleSearch.validate()` rejects by name. The inner
@@ -385,10 +409,24 @@ object DerivedTable {
     * names. The `*` test is `identifierName` with no functions — the same spelling
     * `SearchApi.extractOutputFieldNames` uses.
     */
-  private[query] def projected(s: SingleSearch): Option[Seq[String]] =
-    if (s.select.fields.exists(f => f.identifier.name == "*" && f.identifier.functions.isEmpty))
-      None
-    else Some(s.select.fields.map(_.outputName))
+  private[query] def projected(s: SingleSearch): Option[Seq[String]] = {
+    def bareStar(f: Field): Boolean = f.identifier.name == "*" && f.identifier.functions.isEmpty
+    if (!s.select.fields.exists(bareStar)) Some(s.select.fields.map(_.outputName))
+    else
+      // Story 22.5 — `SELECT * FROM <one derived source>` (a CTE chained on a CTE, `WITH a AS (…),
+      // b AS (SELECT * FROM a)`) projects exactly what that source projects: KNOWN when the
+      // source's own projection is known, opaque otherwise. This never guesses — it forwards a
+      // projection another derived table already declared (story 22.1 PD-3 stands).
+      //
+      // Only the shape whose select list is EXACTLY the bare star over a SOLE derived source with
+      // no JOIN and no EXCEPT is claimed: `SELECT *, 1 AS extra FROM a` would otherwise be typed
+      // WITHOUT `extra` and a legal `d.extra` REJECTED.
+      (s.select.fields, s.from.tables) match {
+        case (Seq(f), Seq(t)) if bareStar(f) && t.joins.isEmpty && s.select.except.isEmpty =>
+          t.derived.flatMap(_.outputNames)
+        case _ => None
+      }
+  }
 }
 
 object Table {

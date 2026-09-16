@@ -86,6 +86,13 @@ package object query {
   def derivedTablesPresent(statement: Statement): Boolean =
     closureSearches(statement).exists(_.hasDerivedTables)
 
+  /** Story 22.5 — the statement carries a `WITH` clause. Narrower than
+    * [[relationalClosureRequired]] and read for the SAME reason as [[derivedTablesPresent]]: the
+    * rejection message names the shape the user actually wrote, and the remedy differs.
+    */
+  def ctesPresent(statement: Statement): Boolean =
+    closureSearches(statement).exists(_.hasCtes)
+
   /** Story 22.2 — the statement carries a WHERE subquery somewhere. Read by the MATERIALIZED VIEW
     * and WATCHER guards, which must refuse one: both render the SELECT into an Elasticsearch
     * artefact (a transform, a watcher input) WITHOUT crossing `SearchApi.resolveWithSchema`, so the
@@ -148,10 +155,26 @@ package object query {
     onConflict: Option[OnConflict] = None,
     schema: Option[Schema] = None,
     explodeNested: Boolean = true,
-    schemas: Map[String, Schema] = Map.empty
+    schemas: Map[String, Schema] = Map.empty,
+    /** Story 22.5 — the statement's WITH list, in order, each body already resolved against the
+      * CTEs before it. Carried for the RENDER (`sql` re-emits it), for `validate()` (an
+      * UNREFERENCED CTE's body is still validated) and for the routing predicate
+      * ([[relationalClosureRequired]]). The FROM/JOIN tree carries the REFERENCES as marked derived
+      * tables (`DerivedTable.cte`), substituted ONCE at parse time by [[CteSubstitution]] — never
+      * here, never in `update()`.
+      *
+      * For a `UNION ALL` statement the list lives on the FIRST branch only (the WITH clause is
+      * textually attached to the first SELECT and `MultiSearch.sql` concatenates branch renders);
+      * every branch's tree carries the substituted references. `MultiSearch`'s arity is unchanged.
+      */
+    ctes: Seq[Cte] = Nil
   ) extends SearchStatement {
-    override def sql: String =
-      s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(orderBy)}${asString(limit)}${asString(onConflict)}"
+    override def sql: String = {
+      val withPrefix = if (ctes.isEmpty) "" else ctes.map(_.sql).mkString("WITH ", ", ", " ")
+      s"$withPrefix$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(
+        orderBy
+      )}${asString(limit)}${asString(onConflict)}"
+    }
 
     override def withoutNestedExplosion: SingleSearch = this.copy(explodeNested = false)
 
@@ -177,7 +200,17 @@ package object query {
       * disjunction somewhere else is the story-21.3 desync class.
       */
     lazy val relationalClosureRequired: Boolean =
-      from.relationalClosureRequired || hasCorrelatedSubqueries
+      from.relationalClosureRequired || hasCorrelatedSubqueries || ctes.nonEmpty
+
+    /** Story 22.5 — `ctes.nonEmpty` is a disjunct of [[relationalClosureRequired]] even when NO CTE
+      * is referenced, and that is deliberate rather than lazy: the regex classifier
+      * (`JoinDetector.CtePattern`, arrow) keys on the statement's leading token and CANNOT count
+      * references, while `JoinDetectorSpec`'s anti-drift property asserts that the classifier and
+      * this AST predicate agree on every row. A statement whose CTEs are all unreferenced plans at
+      * the engine as ONE plain leg — correct, and rare enough that a second rule would cost more
+      * than the round trip it saves.
+      */
+    lazy val hasCtes: Boolean = ctes.nonEmpty
 
     /** Every WHERE-subquery node this statement carries, in statement order (story 22.2).
       *
@@ -724,8 +757,39 @@ package object query {
           case None              => Right(())
         }
 
+    /** Story 22.5 — a bare single-part FROM/JOIN reference that names one of THIS statement's CTEs
+      * but is not a marked derived table can only come from a PROGRAMMATIC construction that
+      * bypassed [[CteSubstitution]] (the grammar always substitutes). It would execute against an
+      * INDEX of the CTE's name — silently. Reject it by name.
+      *
+      * It walks the SAME surface the substitution walks — FROM/JOIN, literal derived bodies, and
+      * every statement embedded in a WHERE / HAVING / ON criteria — because it IS
+      * `CteSubstitution.referencedNames`, so the check and the rewrite cannot disagree about where
+      * a reference may hide. (`referencedNames` already skips marked derived tables and qualified
+      * references, so a substituted statement reports NO name: that is the invariant checked here.)
+      */
+    private lazy val unsubstitutedCteReference: Either[String, Unit] = {
+      val names = ctes.map(_.name.value).toSet
+      if (names.isEmpty) Right(())
+      else
+        CteSubstitution.referencedNames(this).find(names.contains) match {
+          case Some(n) =>
+            Left(
+              s"CTE '$n' is referenced but was not substituted: build the statement through " +
+              "Parser or CteSubstitution"
+            )
+          case None => Right(())
+        }
+    }
+
     override def validate(): Either[String, Unit] = {
       for {
+        // Story 22.5 — an UNREFERENCED CTE's body reaches `DerivedTable.validate()` through no
+        // path at all (nothing in the FROM tree points at it), so its own GROUP BY / HAVING rules
+        // would be silently skipped. A REFERENCED body is validated twice (here and through
+        // `Table.validate` -> `d.validate()`), which is idempotent and cheap.
+        _ <- ctes.map(_.validate()).collectFirst { case l @ Left(_) => l }.getOrElse(Right(()))
+        _ <- unsubstitutedCteReference
         _ <- from.validate()
         // AFTER `from.validate()` so a derived table's OWN body is validated first, and BEFORE
         // every clause rule so the scope message wins over a downstream symptom.

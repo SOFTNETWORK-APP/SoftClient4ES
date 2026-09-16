@@ -261,6 +261,28 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
         sys.error("a derived-table row must score residual — Epic 21 did not fix it")
       }
     }
+    // Story 22.5 — the CTE partition, checked BOTH ways against the table exactly as the
+    // derived-table one is.
+    CteParsesIds should have size 1
+    val cteDeclared =
+      attribution.values.filter(_.owner == "epic22b_cte").map(_.captureId).toSet
+    withClue("rows the table owns as epic22b_cte that the CODE does not pin: ") {
+      (cteDeclared -- CteParsesIds) shouldBe empty
+    }
+    withClue("CTE rows the CODE pins that the table no longer owns: ") {
+      (CteParsesIds -- cteDeclared) shouldBe empty
+    }
+    checkAll(
+      CteParsesIds.toList.sorted,
+      "CTE verdicts (pinned in code, never in the table)"
+    )(identity) { id =>
+      if (byId(id).verdict != "parses") {
+        sys.error(s"expected parses, measured ${byId(id).verdict}")
+      }
+      if (attributionOf(attribution, id).scored != "residual") {
+        sys.error("the CTE row must score residual — Epic 21 did not fix it")
+      }
+    }
     CapabilityOpenIds should have size 21
     val pending = corpus.filter(r => RejectedPendingPolicyIds.contains(r.captureId))
     checkAll(pending, "policy-pending DDL probes (must STAY rejected)")(_.captureId) { row =>
@@ -414,15 +436,15 @@ object CorpusReplay {
     */
   def expectedFor(owner: String): Option[String] =
     if (owner == "epic21" || owner == "pre_epic21") Some("parses")
-    // 🔴 Story 22.1 — `epic22a_derived_table` ALONE stopped implying `rejected`, because that epic
-    // landed. It is NOT `owner.startsWith("epic22")`: `epic22b_cte` must keep implying `rejected`,
-    // or the single CTE row (`superset.flightsql.w6.006`) would be asserted by NOTHING — neither
-    // by an implication nor by a code pin — and the day a grammar change makes `WITH … AS (`
-    // parse by accident the gate would go green and the 21.6 headline would move in silence.
-    // What replaces the implication for the derived rows is the code-pinned partition below.
+    // 🔴 Stories 22.1 / 22.5 — each `epic22*` owner stops implying `rejected` ONE AT A TIME, on the
+    // day its story lands, and is replaced by a code-pinned partition below. It is deliberately NOT
+    // `owner.startsWith("epic22")`: an owner whose story has NOT landed must keep implying
+    // `rejected`, or its rows would be asserted by NOTHING — neither an implication nor a code pin
+    // — and the day a grammar change makes them parse by accident the gate would go green and the
+    // 21.6 headline would move in silence. `epic22b_cte` joined the list with story 22.5.
     else if (
       isIssueOwner(owner) || isLocalOwner(owner) || owner == "capability_open" ||
-      owner == "epic22a_derived_table"
+      owner == "epic22a_derived_table" || owner == "epic22b_cte"
     ) None
     else Some("rejected")
 
@@ -455,6 +477,19 @@ object CorpusReplay {
   val DerivedTableRejectedIds: Set[String] = Set(
     "tableau.sql92.wx.012",
     "tableau.mysql.w8.054"
+  )
+
+  /** Story 22.5 — the CTE partition, the exact shape story 22.1 gave the derived-table rows and for
+    * the identical reason: once `epic22b_cte` stops implying `rejected` (the story landed), the
+    * only thing left asserting this row is a pin that lives in CODE, where editing the CSV cannot
+    * silence it.
+    *
+    * The corpus carries exactly ONE `WITH` statement, which is also story 22.5's entire corpus
+    * credit. Its `scored` stays `residual`: Epic 21 did not fix it, so the 21.6 headline (56/99)
+    * must not move because a later epic landed.
+    */
+  val CteParsesIds: Set[String] = Set(
+    "superset.flightsql.w6.006"
   )
 
   /** The 24 Tableau temp-table capability probes, PINNED HERE and not in the CSV.

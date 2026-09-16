@@ -40,6 +40,23 @@ class SQLQueryValidatorSpec extends AnyFlatSpec with Matchers {
       )""")
   }
 
+  // Story 22.5 — a CTE statement is also a `SingleSearch`, so it reaches the SAME guarded arm with
+  // no new macro branch: the arm keys on `relationalClosureRequired`, which this story widened with
+  // `ctes.nonEmpty`. Without that widening the macro would ACCEPT this and type `Row` against an
+  // index named `monthly` that does not exist.
+  it should "REJECT a CTE at compile time (a WITH clause needs the relational engine)" in {
+    assertDoesNotCompile("""
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi
+      import app.softnetwork.elastic.client.macros.TestElasticClientApi.defaultFormats
+      import app.softnetwork.elastic.sql.query.SelectStatement
+
+      case class Row(a: Int)
+
+      TestElasticClientApi.searchAs[Row](
+        "WITH m AS (SELECT a FROM t) SELECT a FROM m"
+      )""")
+  }
+
   // ============================================================
   // Positive Tests (Should Compile)
   // ============================================================
