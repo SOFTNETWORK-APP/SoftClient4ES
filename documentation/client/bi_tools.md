@@ -40,8 +40,9 @@ The probe therefore costs one failed round trip per connection and is not itself
 follows it is Tableau's alternative for a source without temporary tables, which uses **subqueries** —
 and **since engine `0.24.0`** subqueries and derived tables are accepted. Tableau's own documentation warns
 that the subquery path *"can be poor, particularly with large datasets"*, so it is a performance
-characteristic to watch rather than a refusal. Note that a derived table runs on the relational engine:
-the JDBC driver ships it, so a Tableau connection has it.
+characteristic to watch rather than a refusal. Note that a derived table runs on the relational engine —
+since engine `0.24.0` with arrow-extensions `0.3.4` — and the JDBC driver ships it, so a Tableau
+connection has it.
 
 **A Tableau datasource customization file (`.tdc`) cannot suppress the probe.** The capability that
 would do it, `CAP_SUPPRESS_TEMP_TABLE_CHECKS`, is not among the capabilities Tableau documents for

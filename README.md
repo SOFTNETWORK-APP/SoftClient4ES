@@ -168,7 +168,7 @@ WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 ```
 
 - **Uncorrelated `WHERE` subqueries run on Elasticsearch itself**, so they work on every surface — including a plain REPL with no extensions.
-- **Derived tables and correlated subqueries run on the relational engine** (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
+- **Derived tables and correlated subqueries run on the relational engine** — since engine `0.24.0` with arrow-extensions `0.3.4` (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
 - **Not yet supported:** CTEs (`WITH …`) and set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`).
 
 **Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries and derived tables, window functions, aggregations, nested fields, geospatial queries, and more.

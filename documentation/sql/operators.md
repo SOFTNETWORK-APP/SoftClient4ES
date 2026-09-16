@@ -722,7 +722,8 @@ WHERE NOT EXISTS (
 ```
 
 That last form is a **correlated** subquery — the body reads `c.id` from the outer row — so it runs on the
-relational engine rather than on Elasticsearch alone. The outer reference must be qualified with the outer
+relational engine rather than on Elasticsearch alone (**since engine `0.24.0` with arrow-extensions
+`0.3.4`**; the uncorrelated forms above need only the engine). The outer reference must be qualified with the outer
 alias and left unquoted. See
 [Which forms need the relational engine](known_limitations.md#which-forms-need-the-relational-engine).
 

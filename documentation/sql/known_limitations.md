@@ -47,8 +47,9 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
   that wrapper is a derived table, which now runs. **Extract** mode remains **untested** against
   SoftClient4ES. See [Tableau](../client/bi_tools.md).
 
-> **One thing to check before you rely on it:** a derived table runs on the relational engine, so the venue
-> executing your SQL must carry the `softclient4es-arrow-extensions` jar — see
+> **One thing to check before you rely on it:** a derived table runs on the relational engine — **since
+> engine `0.24.0` with arrow-extensions `0.3.4`** — so the venue executing your SQL must carry the
+> `softclient4es-arrow-extensions` jar as well as the engine. See
 > [Which forms need the relational engine](#which-forms-need-the-relational-engine) below. The JDBC driver,
 > the ADBC driver and the Arrow Flight SQL sidecar ship with it; a REPL installed with `--no-extensions`
 > does not.
@@ -75,8 +76,11 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 ## Subqueries and derived tables
 
 **Since engine `0.24.0`.** Earlier releases reject every form below at the parser, so check your engine
-version before planning around them. Correlated subqueries and derived tables additionally need the
-`softclient4es-arrow-extensions` jar from the same release — see
+version before planning around them.
+
+An **uncorrelated** `WHERE` subquery needs nothing but the engine: it executes on Elasticsearch itself, at
+every venue. **Correlated subqueries and derived tables additionally need the relational engine — since
+engine `0.24.0` with arrow-extensions `0.3.4`.** See
 [Which forms need the relational engine](#which-forms-need-the-relational-engine).
 
 Every form below **parses and executes**. The examples are literal — they are the shapes the engine
@@ -117,8 +121,8 @@ This is the distinction worth knowing before you plan around it.
 | Form | Runs where | Needs `softclient4es-arrow-extensions`? |
 | --- | --- | --- |
 | **Uncorrelated** `WHERE` subquery — `IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified | Elasticsearch, in two phases: the inner statement is executed first, then the outer one is rewritten against its values | **No** — works at every venue, including a plain REPL with no extensions |
-| **Correlated** `WHERE` subquery (the body reads an outer alias) | The relational engine | **Yes** |
-| **Derived table** in `FROM` or `JOIN` | The relational engine | **Yes** |
+| **Correlated** `WHERE` subquery (the body reads an outer alias) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| **Derived table** in `FROM` or `JOIN` | The relational engine | **Yes** — arrow-extensions `0.3.4` |
 
 A venue without that jar does not guess: it refuses the statement with an HTTP 400 naming the construct and
 the jar, rather than executing it against the first index the statement mentions. The JDBC driver, the ADBC
