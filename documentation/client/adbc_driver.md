@@ -194,7 +194,7 @@ Multi-cluster **federation** — joining across *separate* ES clusters — is **
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported in this release, correlated or not. **CTEs** (`WITH`) and set operators beyond `UNION ALL` are not — inline the CTE body as a derived table instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
+**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **CTEs** (`WITH`) and set operators beyond `UNION ALL` are not yet supported — inline the CTE body as a derived table instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 

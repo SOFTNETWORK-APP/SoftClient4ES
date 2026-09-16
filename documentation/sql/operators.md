@@ -636,7 +636,7 @@ WHERE category_id IN (
 );
 ```
 
-The subquery must project **exactly one column** (`IN (SELECT * FROM …)` is refused), must read a table
+Subqueries are accepted **since engine `0.24.0`**. The subquery must project **exactly one column** (`IN (SELECT * FROM …)` is refused), must read a table
 (`IN (SELECT 1)` is refused) and may not be a `UNION ALL`. An uncorrelated body is executed first and its
 values are collected as a distinct set — bounded at **65,536** values (`index.max_terms_count`), past which
 the statement fails loudly rather than truncating. A body over a plain column is resolved with a single

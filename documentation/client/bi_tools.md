@@ -38,7 +38,7 @@ Tableau's own connector documentation says that when the temp-table capabilities
 
 The probe therefore costs one failed round trip per connection and is not itself a problem. What
 follows it is Tableau's alternative for a source without temporary tables, which uses **subqueries** —
-and subqueries and derived tables **are accepted in this release**. Tableau's own documentation warns
+and **since engine `0.24.0`** subqueries and derived tables are accepted. Tableau's own documentation warns
 that the subquery path *"can be poor, particularly with large datasets"*, so it is a performance
 characteristic to watch rather than a refusal. Note that a derived table runs on the relational engine:
 the JDBC driver ships it, so a Tableau connection has it.
@@ -54,12 +54,13 @@ dead end worth not walking down.
 ## Honest-gap note
 
 The superpower of this release is a **cross-index JOIN** that Elasticsearch can't do. It runs from explicit
-`JOIN … ON …` SQL and, in this release, from the nested SQL a BI tool composes for you: **subqueries and
-derived tables are accepted**, and so is the quoted, fully-qualified identifier form Tableau generates.
+`JOIN … ON …` SQL and, **since engine `0.24.0`**, from the nested SQL a BI tool composes for you:
+**subqueries and derived tables are accepted**, and so is the quoted, fully-qualified identifier form
+Tableau generates.
 Tableau's Custom SQL wraps your query inside a `SELECT … FROM ( … )` (Tableau's Custom SQL documentation,
 checked 2026-09-01) — that wrapper is a derived table, which now runs on the relational engine the JDBC
 driver ships.
 
 What is still missing for a tool that composes SQL: **CTEs** (`WITH …`) and **set operators beyond
-`UNION ALL`**, both coming in the next release (Quarter 4 2026). See the website's Known Limitations page
-for the full picture, including the subquery forms that are still refused by name.
+`UNION ALL`**, neither of which is supported yet. See the website's Known Limitations page for the full
+picture, including the subquery forms that are still refused by name.

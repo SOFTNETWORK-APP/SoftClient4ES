@@ -1337,7 +1337,7 @@ For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
-- Subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a `UNION ALL` subquery body.
+- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a `UNION ALL` subquery body.
 - No CTEs (`WITH name AS (SELECT …)`)
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`

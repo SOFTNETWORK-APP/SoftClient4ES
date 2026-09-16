@@ -2,10 +2,10 @@
 
 # Known Limitations & Roadmap
 
-SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, subqueries and derived tables that Elasticsearch itself cannot do. A couple of advanced constructs (CTEs, set operators beyond `UNION ALL`) are not in this release yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
+SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries and derived tables that Elasticsearch itself cannot do. A couple of advanced constructs (CTEs, set operators beyond `UNION ALL`) are not supported yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
 
-> Subqueries and derived tables work in this release, including the nested SQL BI tools generate for you.
-> CTEs (`WITH …`) and set operators beyond `UNION ALL` are still to come.
+> **Since engine `0.24.0`:** subqueries and derived tables work, including the nested SQL BI tools
+> generate for you. CTEs (`WITH …`) and set operators beyond `UNION ALL` are not yet supported.
 
 ## Using a BI tool? Read this first
 
@@ -35,14 +35,14 @@ and Looker — on 2026-08-31 and 2026-09-01.)*
 ### Tools that generate nested SQL for you
 
 Some BI tools auto-generate nested SQL (subqueries / derived tables) even when your logical query has none.
-**That form is accepted in this release** — you no longer have to rewrite it as an explicit JOIN.
+**Since engine `0.24.0` that form is accepted** — you no longer have to rewrite it as an explicit JOIN.
 
 - **Apache Superset / DBeaver / Grafana** — you control the SQL. Subqueries, derived tables and explicit
   JOINs are all available; everything in **Works in this release** below applies.
 - **Tableau** — connecting, browsing, previewing, aggregating, filtering and sorting work. Drag-and-drop
   worksheets quote and fully qualify every identifier (backticks under the MySQL dialect,
-  `"schema"."table"` under Generic SQL-92) and wrap the query in a derived table; both forms parse in this
-  release. Tableau's **Custom SQL** wraps your statement too — it documents that it *"must wrap the custom
+  `"schema"."table"` under Generic SQL-92) and wrap the query in a derived table; since `0.24.0` both
+  forms parse. Tableau's **Custom SQL** wraps your statement too — it documents that it *"must wrap the custom
   SQL statement within a select statement"* (Tableau's Custom SQL documentation, checked 2026-09-01) — and
   that wrapper is a derived table, which now runs. **Extract** mode remains **untested** against
   SoftClient4ES. See [Tableau](../client/bi_tools.md).
@@ -59,11 +59,12 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 ## Works in this release
 
 - **Cross-index JOINs**: `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS`, plus `JOIN UNNEST` on nested arrays — something Elasticsearch cannot do natively. (See the [JOIN matrix walkthrough](joins.md) for the per-tier rows and worked examples.)
-- **Subqueries in `WHERE`**: `IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, a scalar comparison
-  against `(SELECT …)`, and the quantified forms `= ANY | SOME`, `<> ALL`, `> ALL`, `>= ANY`, `< ALL`, … —
-  **correlated or not**. See [Subqueries and derived tables](#subqueries-and-derived-tables) below.
-- **Derived tables**: `FROM (SELECT …) d` and `JOIN (SELECT …) d ON …`, nested to any depth — including
-  bodies that themselves carry a JOIN or another derived table.
+- **Subqueries in `WHERE`** — *since engine `0.24.0`*: `IN (SELECT …)` / `NOT IN`, `EXISTS` /
+  `NOT EXISTS`, a scalar comparison against `(SELECT …)`, and the quantified forms `= ANY | SOME`,
+  `<> ALL`, `> ALL`, `>= ANY`, `< ALL`, … — **correlated or not**. See
+  [Subqueries and derived tables](#subqueries-and-derived-tables) below.
+- **Derived tables** — *since engine `0.24.0`*: `FROM (SELECT …) d` and `JOIN (SELECT …) d ON …`, nested
+  to any depth — including bodies that themselves carry a JOIN or another derived table.
 - **Aggregations** + `GROUP BY` / `HAVING`.
 - **Analytical SQL**: `ROW_NUMBER` / `RANK` / `DENSE_RANK`; the `STDDEV` / `VARIANCE` family (`STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`); `PERCENTILE_CONT` / `PERCENTILE_DISC`; window aggregates and `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` over `OVER (PARTITION BY …)`.
 - **Conditionals & null handling**: `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` / `ISNULL` / `ISNOTNULL`.
@@ -73,8 +74,13 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 
 ## Subqueries and derived tables
 
-Every form below **parses and executes** in this release. The examples are literal — they are the shapes the
-engine accepts.
+**Since engine `0.24.0`.** Earlier releases reject every form below at the parser, so check your engine
+version before planning around them. Correlated subqueries and derived tables additionally need the
+`softclient4es-arrow-extensions` jar from the same release — see
+[Which forms need the relational engine](#which-forms-need-the-relational-engine).
+
+Every form below **parses and executes**. The examples are literal — they are the shapes the engine
+accepts.
 
 ```sql
 -- IN / NOT IN over a subquery
@@ -211,25 +217,26 @@ they do **not** cover yet:
 > name itself unquoted** (`` `prod_us`.orders ``) until this is fixed — see
 > [joins.md](joins.md#row-2--cross-cluster-conveyor).
 
-## Not in this release (coming in the next release, Quarter 4 2026)
+## Not yet supported
 
 - **CTEs**: `WITH name AS (SELECT …)` — recursive and non-recursive.
 - **Set operators**: `UNION` (with row de-duplication), `INTERSECT`, and the `EXCEPT` **set operator**. The `EXCEPT` set operator is **distinct from** the `SELECT * EXCEPT(cols)` column-exclusion clause above — that one works; the set operator does not.
-- **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented; coming with the next release's analytical-SQL work. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work in the current release; the positional/tiling window functions are a different family.)
+- **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
 
-These arrive in the next release as a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
+When they arrive they will be a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
 
 ### What a not-yet-supported query looks like
 
 A CTE is rejected by the parser today:
 
 ```sql
--- Not supported in this release: CTEs are not implemented.
+-- Not supported: CTEs are not implemented.
+-- (Still true on 0.24.0 — unlike the subquery forms below.)
 WITH eu_departments AS (SELECT id FROM departments WHERE region = 'EU')
 SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu_departments);
 ```
 
-Inline the CTE body as a subquery or a derived table — both of which this release runs:
+Inline the CTE body as a subquery or a derived table — both of which engine `0.24.0` runs:
 
 ```sql
 SELECT name
@@ -298,7 +305,7 @@ permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev
 
 ## Roadmap timing
 
-We do not commit firm external dates. The next release is targeted for **Quarter 4 2026**; the upcoming release (heterogeneous federation) for **Quarter 1 2027**; the deferred items are demand-driven with no committed date. Treat the next release's feature list as *planned*, not guaranteed — its scope is gated on a function-library audit.
+We do not commit firm external dates. The **Not yet supported** list above carries no target release: those items are planned, not scheduled. The upcoming heterogeneous-federation release is targeted for **Quarter 1 2027**; the deferred items are demand-driven with no committed date.
 
 ## See also
 
@@ -307,4 +314,4 @@ We do not commit firm external dates. The next release is targeted for **Quarter
 
 ---
 
-*This page describes SoftClient4ES **as of the current release**. Once the next release ships, the "Not in this release" list above shrinks — verify against your installed release.*
+*This page describes SoftClient4ES **as of engine `0.24.0`**. Availability lines name the release a feature landed in; the **Not yet supported** list shrinks as items ship — verify against your installed release.*
