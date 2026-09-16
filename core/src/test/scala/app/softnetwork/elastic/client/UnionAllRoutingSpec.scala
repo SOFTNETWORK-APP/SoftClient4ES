@@ -134,15 +134,27 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
       val n = scrollCalls.incrementAndGet()
       scrolledStatements = scrolledStatements :+ statement
-      // 🔴 One row per leg, keyed by THAT leg's own output name — because the defect this fixture
-      // exists to catch is a ROW-SHAPE difference between the two routes, and `Source.empty`
-      // cannot see it: the assertion below looped over zero rows and passed for any behaviour.
-      val key = statement match {
-        case s: SingleSearch =>
-          s.select.fields.headOption.map(_.outputName).getOrElse(s"leg$n")
-        case _ => s"leg$n"
+      // 🔴 One row per leg, carrying THAT leg's own columns, and every VALUE NAMES ITS OWN
+      // COLUMN (`category@2`). Three defects need that much:
+      //   * `Source.empty` made the row-shape assertion loop over zero rows and pass for any
+      //     behaviour at all;
+      //   * one column per leg cannot see a REORDERED projection (`SELECT category, tag` beside
+      //     `SELECT tag, category`), where the row shape agrees and the VALUES are swapped;
+      //   * a value that does not identify its column cannot tell "re-keyed correctly" from
+      //     "re-keyed onto the wrong column" — the oracle has to be independent of the mapping
+      //     under test.
+      // A `SELECT *` leg answers in `_source` order with columns the first branch never declared,
+      // which is exactly what Elasticsearch returns for an opaque projection.
+      val names: Seq[String] = statement match {
+        case sel: SingleSearch =>
+          val fields = sel.select.fieldsWithComputedAliases
+          if (fields.size == 1 && fields.head.identifier.identifierName == "*")
+            Seq("id", "category", "tag", "amount")
+          else fields.map(_.outputName)
+        case _ => Seq(s"leg$n")
       }
-      Source.single((ListMap[String, Any](key -> n), ScrollMetrics()))
+      val row = ListMap(names.map(k => k -> (s"$k@$n": Any)): _*)
+      Source.single((row, ScrollMetrics()))
     }
   }
 
@@ -235,16 +247,59 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     bounded.scrollCalls.get() shouldBe 0
   }
 
-  /** 🔴 The two routes must agree about the ROW SHAPE of a heterogeneous `UNION ALL`, or the
-    * presence of a `LIMIT` decides which shape a caller gets.
+  /** 🔴 THE ROW CONTRACT. The routes must agree, or the presence of a `LIMIT` decides what a caller
+    * gets — and the first attempt at making them agree was itself a wrong answer.
     *
-    * The one-shot `_msearch` path normalises EVERY leg to the first branch's output names
-    * (`multiSearch` is handed `requests.head`'s names); the per-leg path delegates to
-    * `search(leg)`, which normalises each leg to its OWN. MEASURED on real ES 8.18 before the fix:
-    * the LIMITed spelling gave every row `{x, y}` and the un-LIMITed one gave leg-1 rows `{x}` and
-    * leg-2 rows `{y}` — ragged rows for any consumer that derives its columns from the first one.
+    * The contract is [[ElasticConversion.rowNormalizer]] over the FIRST branch's output names: a
+    * BY-NAME lookup that null-fills a miss and appends an extra. It is the function the one-shot
+    * `_msearch` path already applies, and the lead's ruling for this story.
+    *
+    * An earlier draft re-keyed POSITIONALLY. The two rows below are the shapes that exposed it,
+    * both measured on real ES 8.18 by the independent review — and note that neither is exotic: one
+    * is the same two columns written in a different order, the other is `SELECT *`.
     */
-  "The per-leg route" should "key every row by the FIRST branch's output names" in {
+  "The per-leg route" should "bind every value to its own column when a branch REORDERS the projection" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement("SELECT category, tag FROM l UNION ALL SELECT tag, category FROM r")
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.scrollCalls.get() shouldBe 2
+    response.results should have size 2
+    // Every row keyed by the first branch's names, in its order …
+    response.results.map(_.keys.toSeq) shouldBe Seq(Seq("category", "tag"), Seq("category", "tag"))
+    // 🔴 … and each VALUE under the column it names. A positional re-key reads
+    // `category -> tag@2` here: same keys, same order, opposite binding, HTTP 200.
+    response.results.map(_("category")) shouldBe Seq("category@1", "category@2")
+    response.results.map(_("tag")) shouldBe Seq("tag@1", "tag@2")
+  }
+
+  it should "not mis-key or DROP columns when a branch is an opaque SELECT *" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement("SELECT category, tag FROM l UNION ALL SELECT * FROM r")
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.scrollCalls.get() shouldBe 2
+    response.results should have size 2
+    val starRow = response.results(1)
+    // 🔴 `MultiSearch.declared` is `None` for `SELECT *` — arity and type checks exempt it on
+    // purpose — so the leg's own names are unknown to `extractOutputFieldNames` and its row
+    // arrives in `_source` order. A positional re-key put the ID under `category` and TRUNCATED
+    // the row to the first branch's width, losing two columns. HTTP 200 both ways.
+    starRow("category") shouldBe "category@2"
+    starRow("tag") shouldBe "tag@2"
+    starRow("id") shouldBe "id@2"
+    starRow("amount") shouldBe "amount@2"
+    // the first branch's columns lead; whatever the opaque leg carried beyond them follows
+    starRow.keys.toSeq.take(2) shouldBe Seq("category", "tag")
+  }
+
+  it should "null-fill a column a branch does not declare" in {
     val client = new RecordingClient
     val response = client.search(
       SelectStatement("SELECT a AS x FROM t UNION ALL SELECT b AS y FROM u")
@@ -254,14 +309,23 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     }
     client.msearchCalls.get() shouldBe 0
     client.scrollCalls.get() shouldBe 2
-    // 🔴 The mechanism: leg 2's row arrives keyed `y` (the stub keys each leg by its OWN name) and
-    // must be re-keyed to the FIRST branch's `x`. Without the normalisation this reads
-    // `List(List(x), List(y))` — ragged rows, and only the presence of a `LIMIT` decides which
-    // shape a caller gets.
     response.results should have size 2
-    response.results.map(_.keys.toSeq) shouldBe Seq(Seq("x"), Seq("x"))
-    // …and the VALUES are not lost in the re-keying
-    response.results.map(_.values.head) shouldBe Seq(1, 2)
+    response.results.head shouldBe ListMap[String, Any]("x" -> "x@1")
+    // 🔴 Recorded rather than asserted-away, and MEASURED on real ES 8.18 rather than assumed:
+    // where the branches AGREE on a column name every route gives the same answer (the two rows
+    // above), and where they disagree — an alias per branch — this route null-fills the missing
+    // name and keeps the branch's own column as an extra:
+    //
+    //   SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r
+    //     one-shot : {x -> null, y -> L_id_1} … {x -> null, y -> R_id_2}
+    //     per-leg  : {x -> L_id_1}            … {x -> null, y -> R_id_2}
+    //
+    // The routes therefore still differ on BRANCH 1 of this one shape, because the one-shot
+    // `_msearch` route never applies a leg's own alias mapping and loses branch 1's value under
+    // its own declared name. That is PRE-EXISTING and outside this story (the review recorded it
+    // as an observation); the per-leg answer is the better of the two, and propagating the
+    // one-shot defect to make the two agree would be aligning to a bug.
+    response.results(1) shouldBe ListMap[String, Any]("x" -> null, "y" -> "y@2")
   }
 
   // ── the seam guard runs FIRST ──────────────────────────────────────────────────────────────

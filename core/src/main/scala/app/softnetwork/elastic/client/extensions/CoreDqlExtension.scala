@@ -271,13 +271,28 @@ class CoreDqlExtension extends ExtensionSpi {
         else {
           // (2) — sequential legs, running budget, ONE cap-hit.
           val max = quota.maxQueryResults.get
+          // 🔴 THE SEAM, run here too. Rule (3) reaches it through `search(multi)`; this fold
+          // executes leg by leg and never does, so AD-4's cross-branch TYPE re-check — the one
+          // that can only be made once every branch has its schema attached — was live on the
+          // plain client and bypassed on the licensed gateway, which is the surface the REPL, the
+          // JDBC driver and the Flight sidecar actually use. MEASURED by the independent review:
+          // `SELECT category FROM l UNION ALL SELECT amount FROM r` answered 400 through
+          // `client.search` and HTTP 200 with 54 rows through here. The resolved statement is
+          // DISCARDED on purpose: every leg is re-resolved by its own `search`, idempotently
+          // (`SchemaAttachSpec`), and re-using it here would make this fold a second owner of a
+          // resolution it does not perform.
+          val seam = client.resolveWithSchema(multi)
           logger.info(
             s"ℹ️ No LIMIT on a UNION ALL branch; bounding the concatenated result at license " +
             s"quota ($max rows)"
           )
-          cappedUnionAllRows(multi, max, client).map {
-            case ElasticFailure(error) => ElasticFailure(error)
-            case ElasticSuccess(rows)  =>
+          (seam match {
+            case ElasticFailure(error) =>
+              Future.successful(ElasticResult.failure[(Seq[ListMap[String, Any]], Boolean)](error))
+            case ElasticSuccess(_) => cappedUnionAllRows(multi, max, client)
+          }).map {
+            case ElasticFailure(error)          => ElasticFailure(error)
+            case ElasticSuccess((rows, capBit)) =>
               // 🔴 The METER fires only when the cap actually BIT, and the flag is computed from
               // the same fact. Incrementing before the run recorded a cap-hit for every bounded
               // `UNION ALL` — a `truncation` saying `truncated = false` beside a telemetry bucket
@@ -285,7 +300,12 @@ class CoreDqlExtension extends ExtensionSpi {
               // extensions#46's false-increment class. (`capOrReject` over-reports the same way,
               // but there `truncated` is unconditionally true so the two at least agree; it is
               // deliberately left alone — it is not on this story's path.)
-              val truncated = rows.size.toLong >= max.toLong
+              // The fold reads ONE row past the budget and says whether it found it, so a
+              // statement whose result is exactly `max` rows long is not reported as capped.
+              // `rows.size >= max` could not tell those two apart and fired a cap-hit beside
+              // `truncated = true` for a result nothing had truncated — F6's class, one boundary
+              // further in.
+              val truncated = capBit
               if (truncated)
                 capHitCollector.incrementCapHit(TelemetryCollector.CapHitKind.QueryResults)
               val warning =
@@ -324,10 +344,12 @@ class CoreDqlExtension extends ExtensionSpi {
     * commit written to close one.
     *
     * So: an un-LIMITed row leg is scrolled bounded by the remaining budget (the same mechanism
-    * [[cappedScroll]] uses, so paging past `index.max_result_window` works on every ES major).
-    * EVERY other leg — a LIMITed row leg, and an aggregation-shaped leg, which scrolling would page
-    * hits a bucket query never returns for — is executed as itself and its rows are taken from the
-    * result, bounded by the budget.
+    * [[cappedScroll]] uses, so paging past `index.max_result_window` works on every ES major). The
+    * budget is `max + 1`: the extra row is what tells "exactly `max` rows exist" apart from "the
+    * result was cut", and it is dropped before the rows are returned. EVERY other leg — a LIMITed
+    * row leg, and an aggregation-shaped leg, which scrolling would page hits a bucket query never
+    * returns for — is executed as itself and its rows are taken from the result, bounded by the
+    * budget.
     */
   private def cappedUnionAllRows(
     multi: MultiSearch,
@@ -336,58 +358,88 @@ class CoreDqlExtension extends ExtensionSpi {
   )(implicit
     system: ActorSystem,
     context: ConversionContext
-  ): Future[ElasticResult[Seq[ListMap[String, Any]]]] = {
+  ): Future[ElasticResult[(Seq[ListMap[String, Any]], Boolean)]] = {
     implicit val ec: ExecutionContext = system.dispatcher
+    // 🔴 Each leg is ASKED for one row more than the budget can pay for and KEEPS at most the
+    // budget. That one probe row is what tells "the result is exactly `max` rows long" apart from
+    // "the result was cut at `max`" — `rows.size >= max` cannot, and fired a cap-hit beside a
+    // `truncated` flag for a statement nothing had truncated. Raising the BUDGET instead would
+    // have been the obvious edit and a regression: `acc` would reach `max + 1`, so a later leg
+    // would still have one row of budget left and would be executed — losing the property that
+    // legs past the spent budget never run at all.
+    val capBit = new java.util.concurrent.atomic.AtomicBoolean(false)
+    // The row contract, hoisted ONCE for the whole statement — the same function the per-leg and
+    // one-shot routes apply, so all three routes answer with one row shape. Per-row work on this
+    // path is per-row over an UN-LIMITED extraction (`feedback_no_per_row_hot_path_work`).
+    val normalise = client.unionAllRowNormalizer(multi)
     val zero: Future[ElasticResult[Seq[ListMap[String, Any]]]] =
       Future.successful(ElasticResult.success(Seq.empty[ListMap[String, Any]]))
-    multi.requests.foldLeft(zero) { (accF, leg) =>
-      accF.flatMap {
-        case failure @ ElasticFailure(_) => Future.successful(failure)
-        case ElasticSuccess(acc) =>
-          val remaining = max - acc.size
-          if (remaining <= 0) Future.successful(ElasticResult.success(acc))
-          else if (leg.returnsRows && leg.limit.isEmpty)
-            client
-              .scroll(leg, client.defaultScrollConfig.copy(maxDocuments = Some(remaining.toLong)))
-              .map(_._1)
-              .runWith(Sink.seq)
-              .map(rows => ElasticResult.success(acc ++ rows))
-          else
-            client.dqlExecutor.execute(leg).flatMap {
-              case ElasticSuccess(q: QueryStructured) =>
-                Future.successful(ElasticResult.success(acc ++ q.response.results.take(remaining)))
-              case ElasticSuccess(q: QueryRows) =>
-                Future.successful(ElasticResult.success(acc ++ q.rows.take(remaining)))
-              // DEFENCE IN DEPTH, and measured as such: the review predicted `QueryStream` would
-              // become reachable here once a LIMITed row leg stopped being scrolled, but
-              // `dqlExecutor.execute` COLLECTS the stream it opens and answers `QueryStructured`
-              // for every shape the fold hands it (pinned in `CoreDqlExtensionSpec`). The arm
-              // stays because the alternative to an unreachable arm is a `case _` that would drop
-              // a branch's rows the day that contract changes.
-              case ElasticSuccess(q: QueryStream) =>
-                q.stream.map(_._1).take(remaining.toLong).runWith(Sink.seq).map { rows =>
-                  ElasticResult.success(acc ++ rows)
-                }
-              case ElasticFailure(error) => Future.successful(ElasticResult.failure(error))
-              // 🔴 TOTAL, and loud. `case _ => acc` here would DROP a branch's rows and answer
-              // HTTP 200 with a short result — the silent-wrong-answer mode this whole story
-              // exists to close, reintroduced one layer down. Anything reaching here is a contract
-              // change in `dqlExecutor`, and the operator must hear about it.
-              case other =>
-                Future.successful(
-                  ElasticResult.failure(
-                    ElasticError(
-                      message = "A UNION ALL branch returned an unexpected result variant " +
-                        s"(${other.getClass.getSimpleName}) while the licensed result cap was " +
-                        "being applied; the branch's rows would otherwise be dropped silently.",
-                      statusCode = Some(500),
-                      operation = Some("license")
+    multi.requests
+      .foldLeft(zero) { (accF, leg) =>
+        accF.flatMap {
+          case failure @ ElasticFailure(_) => Future.successful(failure)
+          case ElasticSuccess(acc) =>
+            val remaining = max.toLong - acc.size.toLong
+            // what the leg is ASKED for; what it may CONTRIBUTE is `remaining`
+            val probe = remaining + 1L
+            def keep(rows: Seq[ListMap[String, Any]]): Seq[ListMap[String, Any]] = {
+              if (rows.size.toLong > remaining) capBit.set(true)
+              acc ++ rows.take(remaining.toInt).map(normalise)
+            }
+            if (remaining <= 0L) Future.successful(ElasticResult.success(acc))
+            else if (leg.returnsRows && leg.limit.isEmpty)
+              client
+                .scroll(leg, client.defaultScrollConfig.copy(maxDocuments = Some(probe)))
+                .map(_._1)
+                .runWith(Sink.seq)
+                .map(rows => ElasticResult.success(keep(rows)))
+            else
+              client.dqlExecutor.execute(leg).flatMap {
+                case ElasticSuccess(q: QueryStructured) =>
+                  Future.successful(ElasticResult.success(keep(q.response.results)))
+                case ElasticSuccess(q: QueryRows) =>
+                  Future.successful(ElasticResult.success(keep(q.rows)))
+                // 🔴 REACHABLE, and my earlier claim that it was not is REFUTED. I wrote that
+                // `dqlExecutor.execute` collects every stream it opens and answers
+                // `QueryStructured`; it does not. `DqlRouterExecutor` routes a `SingleSearch` on
+                // `limit.isDefined || fields.isEmpty`, and `fields` is empty only under GROUP BY or
+                // windowing — so a leg that is NOT row-shaped, carries no LIMIT and projects
+                // fields (`SELECT amount, MAX(amount) AS m FROM r`, `SELECT category FROM l ORDER
+                // BY COUNT(*)`) is answered as `QueryStream(api.scroll(single))`. The arm is what
+                // keeps those statements working; the pin below it now uses one of those two
+                // shapes, so it fails for the reason it names.
+                case ElasticSuccess(q: QueryStream) =>
+                  q.stream.map(_._1).take(probe).runWith(Sink.seq).map { rows =>
+                    ElasticResult.success(keep(rows))
+                  }
+                case ElasticFailure(error) => Future.successful(ElasticResult.failure(error))
+                // 🔴 TOTAL, and loud. `case _ => acc` here would DROP a branch's rows and answer
+                // HTTP 200 with a short result — the silent-wrong-answer mode this whole story
+                // exists to close, reintroduced one layer down. Anything reaching here is a
+                // contract change in `dqlExecutor`, and the operator must hear about it. Pinned by
+                // a stub executor answering a variant no leg can produce today, because the three
+                // variants above are exactly the ones it CAN produce and a test that never reaches
+                // this arm leaves the silent-drop mutation green (it did).
+                // `ElasticSuccess(other)`, not a bare `other`: the wrapper's class name is
+                // `ElasticSuccess` for every possible value, so the message named nothing an
+                // operator could act on. The arm is still TOTAL — `ElasticResult` is sealed and
+                // its failure half is matched above.
+                case ElasticSuccess(other) =>
+                  Future.successful(
+                    ElasticResult.failure(
+                      ElasticError(
+                        message = "A UNION ALL branch returned an unexpected result variant " +
+                          s"(${other.getClass.getSimpleName}) while the licensed result cap was " +
+                          "being applied; the branch's rows would otherwise be dropped silently.",
+                        statusCode = Some(500),
+                        operation = Some("license")
+                      )
                     )
                   )
-                )
-            }
+              }
+        }
       }
-    }
+      .map(_.map(rows => (rows, capBit.get())))
   }
 
   /** Apply the single-index result-boundary rule (ADR D4) at the (licensed) quota.

@@ -2299,37 +2299,56 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       .map(_.map(mergeLegResponses(multiple, sql, _)))
   }
 
-  /** ONE merge, two callers.
+  /** THE row contract of a `UNION ALL`, in one place, for every route that concatenates legs.
     *
-    * 🔴 Rows are re-keyed to the FIRST branch's output names, POSITIONALLY, because that is what
-    * the one-shot `_msearch` path does (`multiSearch` is handed
-    * `requests.headOption.map(extractOutputFieldNames)` for every leg). Without it the two routes
-    * disagree about the ROW SHAPE of a heterogeneous `UNION ALL` and the presence of a `LIMIT`
-    * decides which shape a caller gets: MEASURED on real ES 8.18, `SELECT id AS x FROM a LIMIT 5
-    * UNION ALL SELECT id AS y FROM b LIMIT 5` yields every row keyed `{x, y}` while the same
-    * statement without the LIMITs yielded leg-1 rows keyed `{x}` and leg-2 rows keyed `{y}` —
-    * ragged rows for any consumer that derives its columns from the first one (JDBC, Arrow, the
-    * REPL table renderer).
+    * A `UNION ALL` has three execution routes — the one-shot `_msearch`, the per-leg route below,
+    * and `CoreDqlExtension`'s licensed cap fold — and a caller must not be able to tell them apart
+    * from the rows. The contract is the one the ONE-SHOT path already implements, because that is
+    * the route every bounded statement has always taken: [[ElasticConversion.rowNormalizer]] over
+    * the FIRST branch's output names.
     *
-    * Positional, not by name: SQL-92 §7.10 takes the first branch's NAMES and matches branches by
-    * POSITION, which is also what `MultiSearch.branchArity` has already enforced. A leg that
-    * produced fewer values than the first branch declares keeps what it has rather than inventing
-    * nulls — the same tolerance the one-shot normaliser shows.
+    * 🔴 BY NAME, not by position, and the difference is a wrong answer rather than a cosmetic one.
+    * An earlier draft of this story re-keyed positionally "because that is what the one-shot path
+    * does" — it is not: `multiSearch` hands `requests.head`'s names to `parseResponseTree`, which
+    * applies `rowNormalizer`, a name-keyed lookup that null-fills a miss and appends an extra.
+    * MEASURED by the independent review on real ES 8.18, `SELECT category, tag FROM l UNION ALL
+    * SELECT tag, category FROM r` (legal — same arity, same type) came back from the positional
+    * re-key with `category` holding the TAG and `tag` holding the CATEGORY, HTTP 200, while the
+    * one-shot route bound each value to its own name. A `SELECT *` leg was worse: its own names are
+    * unknown to `extractOutputFieldNames`, so `zip` put the id under `category` and DROPPED the
+    * columns past the first branch's width.
+    *
+    * The returned function hoists every stream-constant decision (the name array, the index, the
+    * context) ONCE per statement; it is applied per row on the un-LIMITed extraction path, where
+    * "per row" can mean millions (`feedback_no_per_row_hot_path_work`).
+    *
+    * A first branch of `SELECT *` yields NO names — `rowNormalizer` is then `identity` and every
+    * leg keeps what Elasticsearch returned, which is the only honest answer for an opaque
+    * projection.
+    *
+    * ⚠️ One shape where the routes still differ, measured on real ES 8.18 rather than assumed:
+    * `SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r` — the one-shot route answers `{x ->
+    * null, y -> …}` for EVERY row including branch 1's own, because it never applies a leg's own
+    * alias mapping; the per-leg routes answer `{x -> …}` for branch 1. That is a PRE-EXISTING
+    * defect of the one-shot path, and the better of the two answers is the one the routes here give
+    * — propagating it to make the three agree would be aligning to a bug.
     */
+  private[client] def unionAllRowNormalizer(
+    multiple: MultiSearch
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
+    rowNormalizer(multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty))
+
+  /** ONE merge, two callers; the row contract is [[unionAllRowNormalizer]]'s. */
   private def mergeLegResponses(
     multiple: MultiSearch,
     sql: String,
     responses: Seq[ElasticResponse]
-  ): ElasticResponse = {
-    val names: Seq[String] =
-      multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty)
-    def renamed(row: ListMap[String, Any]): ListMap[String, Any] =
-      if (names.isEmpty || row.keys.toSeq == names) row
-      else ListMap(names.zip(row.values.toSeq): _*)
+  )(implicit context: ConversionContext): ElasticResponse = {
+    val normalise = unionAllRowNormalizer(multiple)
     ElasticResponse(
       Some(sql),
       responses.map(_.query).mkString("\n"),
-      responses.flatMap(_.results.map(renamed)),
+      responses.flatMap(_.results.map(normalise)),
       multiple.fieldAliases,
       toClientAggregations(multiple.sqlAggregations)
     )

@@ -25,7 +25,13 @@ import app.softnetwork.elastic.client.scroll.{ScrollConfig, ScrollMetrics}
 import app.softnetwork.elastic.licensing._
 import app.softnetwork.elastic.licensing.metrics.MetricsApi
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{Limit, SearchStatement, SelectStatement, SingleSearch}
+import app.softnetwork.elastic.sql.query.{
+  DqlStatement,
+  Limit,
+  SearchStatement,
+  SelectStatement,
+  SingleSearch
+}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -188,6 +194,105 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
         )
       )
     }
+  }
+
+  /** A client whose `dqlExecutor` answers a variant no leg can produce today.
+    *
+    * The cap fold's `case other` arm is the loud backstop against a silent row drop, and NOTHING
+    * reached it: the prior review's mutation (`case _ => success(acc)` placed before it) survived
+    * the whole core suite, 1100/1100 green. `EmptyResult` is a real `QueryResult` member and is not
+    * one of the three the executor can answer for a `SingleSearch`, so it exercises the arm without
+    * pretending the executor does something it does not.
+    */
+  private class UnexpectedVariantClient extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] =
+      Source.single((ListMap[String, Any]("a" -> 1), ScrollMetrics()))
+
+    override lazy val dqlExecutor: DqlRouterExecutor = new DqlRouterExecutor(
+      searchExecutor,
+      pipelineExecutor,
+      tableExecutor,
+      watcherExecutor,
+      policyExecutor,
+      clusterExecutor,
+      licenseExecutor,
+      fromlessSelectExecutor
+    ) {
+      override def execute(
+        statement: DqlStatement
+      )(implicit system: ActorSystem): scala.concurrent.Future[ElasticResult[QueryResult]] =
+        scala.concurrent.Future.successful(ElasticSuccess(EmptyResult))
+    }
+  }
+
+  /** A client that records whether the cap path consulted the `UNION ALL` seam, and can make it
+    * refuse. The seam is where AD-4's cross-branch TYPE re-check lives (pinned against a real stub
+    * schema in `TemporalLiteralSearchSpec`); rule (3) reaches it through `search(multi)` and the
+    * cap fold, which executes leg by leg, did not — so the guard was live on the plain client and
+    * bypassed on the licensed gateway.
+    */
+  private class SeamClient(refuse: Boolean) extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+    @volatile var seamCalls = 0
+    @volatile var scrolls = 0
+
+    override private[client] def resolveWithSchema(
+      multiple: app.softnetwork.elastic.sql.query.MultiSearch
+    ): ElasticResult[app.softnetwork.elastic.sql.query.MultiSearch] = {
+      seamCalls += 1
+      if (refuse)
+        ElasticResult.failure(
+          ElasticError(message = "branch types disagree", statusCode = Some(400))
+        )
+      else super.resolveWithSchema(multiple)
+    }
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+      scrolls += 1
+      Source.single((ListMap[String, Any]("a" -> 1), ScrollMetrics()))
+    }
+  }
+
+  /** A client whose rows carry THAT leg's own column names, with every value naming its own column
+    * — the fixture the three-route agreement needs. A stub that serves `"a" -> i` for every leg
+    * cannot tell a correct re-key from a wrong one.
+    */
+  private class NamedRowsClient extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+
+    private def rowOf(statement: SearchStatement, leg: Int): ListMap[String, Any] = {
+      val names = statement match {
+        case sel: SingleSearch => sel.select.fieldsWithComputedAliases.map(_.outputName)
+        case _                 => Seq(s"leg$leg")
+      }
+      ListMap(names.map(k => k -> (s"$k@$leg": Any)): _*)
+    }
+
+    @volatile private var legs = 0
+    private def nextLeg(): Int = synchronized { legs += 1; legs }
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] =
+      Source.single((rowOf(statement, nextLeg()), ScrollMetrics()))
   }
 
   private def runWith(
@@ -677,10 +782,131 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     rows.truncation.map(_.limit) shouldBe Some(7L)
     // the running budget, observed at the client
     client.scrolls should have size 2
-    client.scrolls.head._2.maxDocuments shouldBe Some(7L)
-    client.scrolls(1)._2.maxDocuments shouldBe Some(2L)
+    // budget + ONE probe row: a leg is asked for one more than it may contribute, which is what
+    // makes "exactly `max` rows exist" distinguishable from "the result was cut" without letting
+    // `acc` exceed `max` (which would keep a later leg alive past a spent budget)
+    client.scrolls.head._2.maxDocuments shouldBe Some(8L)
+    client.scrolls(1)._2.maxDocuments shouldBe Some(3L)
     // ONE cap-hit for the STATEMENT, never one per leg
     capHits(collector)("max_query_results") shouldBe 1L
+  }
+
+  /** 🔴 The cap is not a cap when nothing was cut. A quota of exactly the number of rows available
+    * fired a cap-hit and flagged `truncated` — F6 removed the systematic over-report and left this
+    * boundary behind. Each leg is now asked for one row MORE than it may contribute, so the two
+    * cases are distinguishable facts.
+    */
+  it should "report no truncation when the result is exactly the quota's size" in {
+    val collector = new TelemetryCollector
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val ext = new CoreDqlExtension()
+    ext.initialize(
+      ConfigFactory.empty(),
+      strategy(
+        managerWithQuota(Quota.Community.copy(maxQueryResults = Some(10)), LicenseType.Community),
+        collector
+      )
+    )
+    val parsed = Parser("SELECT a FROM x UNION ALL SELECT a FROM y") match {
+      case Right(st) => st
+      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    }
+    val rows = Await.result(ext.execute(parsed, client), 10.seconds) match {
+      case ElasticSuccess(q: QueryRows) => q
+      case other                        => fail(s"expected QueryRows, got $other")
+    }
+    // 5 + 5 rows available, quota 10 — the budget is spent EXACTLY, and nothing was truncated
+    rows.rows should have size 10
+    rows.truncation.map(_.truncated) shouldBe Some(false)
+    rows.truncation.map(_.warning) shouldBe Some("")
+    capHits(collector)("max_query_results") shouldBe 0L
+  }
+
+  /** 🔴 The loud backstop, exercised. Until this row existed, reinstating `case _ => success(acc)`
+    * before the catch-all left the entire core suite green — the mutation the prior review used,
+    * still surviving after the round that claimed to have re-falsified it.
+    */
+  it should "fail loudly when a branch answers an unexpected result variant" in {
+    val res = runWith(
+      "SELECT a FROM x UNION ALL SELECT a FROM y LIMIT 2",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      new UnexpectedVariantClient
+    )
+    res shouldBe a[ElasticFailure]
+    val error = res.asInstanceOf[ElasticFailure].elasticError
+    error.statusCode shouldBe Some(500)
+    error.message should include("unexpected result variant")
+    error.message should include("EmptyResult")
+  }
+
+  /** 🔴 The seam runs on the CAP path too, or AD-4's cross-branch type check is enforced on the
+    * plain client and skipped on the licensed gateway — which is the surface the REPL, the JDBC
+    * driver and the Flight sidecar use.
+    */
+  it should "consult the UNION ALL seam before executing a capped statement" in {
+    val refusing = new SeamClient(refuse = true)
+    val res = runWith(
+      "SELECT a FROM x UNION ALL SELECT a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      refusing
+    )
+    res shouldBe a[ElasticFailure]
+    res.asInstanceOf[ElasticFailure].elasticError.message should include("branch types disagree")
+    refusing.seamCalls shouldBe 1
+    // …and the refusal happened BEFORE any leg ran: a guard that fires after execution has already
+    // paid for the wrong answer
+    refusing.scrolls shouldBe 0
+
+    // the control: with the seam passing, the same statement executes and both legs run
+    val passing = new SeamClient(refuse = false)
+    runWith(
+      "SELECT a FROM x UNION ALL SELECT a FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      passing
+    ) shouldBe a[ElasticSuccess[_]]
+    passing.seamCalls shouldBe 1
+    passing.scrolls shouldBe 2
+  }
+
+  /** 🔴 ONE ROW CONTRACT, EVERY ROUTE. A `UNION ALL` has three execution routes — the one-shot
+    * `_msearch`, the plain per-leg route, and this licensed cap fold — and a caller must not be
+    * able to tell them apart from the rows. The cap fold used to concatenate leg rows with NO
+    * re-keying at all, so one statement had THREE different row shapes depending on which route it
+    * took, and the licensed gateway (REPL, JDBC, Flight) was the one with the ragged one.
+    *
+    * The comparison below is against the route the same client takes WITHOUT the extension, on the
+    * same statement and the same rows — an oracle that is a real execution rather than a
+    * transcribed expectation. The one-shot route shares the mechanism by construction (all three
+    * call `SearchApi.unionAllRowNormalizer`) and is pinned in `UnionAllRoutingSpec`.
+    */
+  it should "produce the same row shape as the un-capped route for the same statement" in {
+    implicit val ctx: ConversionContext = NativeContext
+    val sql = "SELECT category, tag FROM x UNION ALL SELECT tag, category FROM y"
+    val parsed = Parser(sql) match {
+      case Right(st) => st
+      case Left(e)   => fail(s"parse failed: ${e.msg}")
+    }
+
+    // route 2 — the plain per-leg route, no licence in the way
+    val plainClient = new NamedRowsClient
+    val plain = plainClient.search(SelectStatement(sql)) match {
+      case ElasticSuccess(r)     => r.results
+      case ElasticFailure(error) => fail(s"per-leg route refused: ${error.message}")
+    }
+
+    // route 3 — the licensed cap fold, quota far above what the fixture serves
+    val cappedClient = new NamedRowsClient
+    val ext = newExtension(Quota.Community.copy(maxQueryResults = Some(50)), LicenseType.Community)
+    val capped = Await.result(ext.execute(parsed, cappedClient), 10.seconds) match {
+      case ElasticSuccess(q: QueryRows) => q.rows
+      case other                        => fail(s"expected QueryRows, got $other")
+    }
+
+    capped shouldBe plain
+    // …and not vacuously: both routes really produced the re-keyed heterogeneous rows
+    capped should have size 2
+    capped.map(_.keys.toSeq).distinct shouldBe Seq(Seq("category", "tag"))
+    capped.map(_("category")) shouldBe Seq("category@1", "category@2")
   }
 
   it should "never open a scroll for a leg the budget cannot pay for" in {
@@ -750,35 +976,74 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.executed.map(_.sql) shouldBe Seq("SELECT a FROM x LIMIT 2")
   }
 
-  /** 🔴 The `QueryStream` arm of the cap fold is DEFENCE IN DEPTH, and this row is what says so —
-    * and what will tell the next reader the day it stops being true.
+  /** 🔴 WHICH result variants the cap fold can receive — and my earlier answer to that question was
+    * WRONG, in the direction that leaves a branch unexercised.
     *
-    * The review predicted that not scrolling a LIMITed row leg would make `QueryStream` reachable
-    * through `dqlExecutor.execute`. MEASURED here, on the shape most likely to produce one (a leg
-    * bounded ABOVE `index.max_result_window`, which the router does send through `scroll`): the
-    * executor COLLECTS that stream and answers `QueryStructured`. So the arm is not reachable today
-    * — it is kept because the alternative to an unreachable arm is a `case _` that would drop a
-    * branch's rows the day the executor's contract changes, and this assertion is the tripwire for
-    * exactly that change.
+    * I recorded, in the code and in a commit message, that `dqlExecutor.execute` collects every
+    * stream it opens and answers `QueryStructured`, so the `QueryStream` arm was unreachable. It is
+    * not. `DqlRouterExecutor` routes a `SingleSearch` on `limit.isDefined || fields.isEmpty`, and
+    * `fields` is empty only under GROUP BY or windowing — so a leg with NO limit and non-empty
+    * fields is answered as `QueryStream(api.scroll(single))`. The probe that "measured" the
+    * opposite only ever asked about shapes satisfying that condition, which is why it agreed with
+    * me. The oracle here is the ROUTER'S OWN CONDITION, computed per statement, so the row cannot
+    * agree with a wrong expectation twice.
     */
   it should "pin which result variants the cap fold can actually receive" in {
     implicit val ctx: ConversionContext = NativeContext
     val client = new BudgetClient(rowsPerLeg = 5)
-    def variantOf(sql: String): String = {
-      val leg = Parser(sql) match {
-        case Right(st: SingleSearch) => st
-        case other                   => fail(s"expected a SingleSearch, got $other")
-      }
-      Await.result(client.dqlExecutor.execute(leg), 10.seconds) match {
+    def legOf(sql: String): SingleSearch = Parser(sql) match {
+      case Right(st: SingleSearch) => st
+      case other                   => fail(s"expected a SingleSearch, got $other")
+    }
+    def variantOf(sql: String): String =
+      Await.result(client.dqlExecutor.execute(legOf(sql)), 10.seconds) match {
         case ElasticSuccess(v)     => v.getClass.getSimpleName
         case ElasticFailure(error) => fail(s"[$sql] failed: ${error.message}")
       }
+    val shapes = Seq(
+      "SELECT a FROM x LIMIT 2",
+      "SELECT a FROM x LIMIT 20000",
+      "SELECT COUNT(*) AS a FROM x",
+      // 🔴 the shape my refutation never asked about: NOT row-shaped, no LIMIT, fields projected
+      "SELECT a, MAX(a) AS m FROM x",
+      "SELECT a FROM x ORDER BY COUNT(*)"
+    )
+    shapes.foreach { sql =>
+      val leg = legOf(sql)
+      val expected =
+        if (leg.limit.isDefined || leg.fields.isEmpty) "QueryStructured" else "QueryStream"
+      withClue(s"[$sql] returnsRows=${leg.returnsRows} fields=${leg.fields.size}: ") {
+        variantOf(sql) shouldBe expected
+      }
     }
-    // the two shapes the fold hands to `execute`: a LIMITed row leg (bounded, and bounded above
-    // the result window) and an aggregation leg
-    variantOf("SELECT a FROM x LIMIT 2") shouldBe "QueryStructured"
-    variantOf("SELECT a FROM x LIMIT 20000") shouldBe "QueryStructured"
-    variantOf("SELECT COUNT(*) AS a FROM x") shouldBe "QueryStructured"
+    // …and the set is not degenerate: BOTH variants really occur among these shapes, so a fold that
+    // handled only one of them cannot pass this row by accident.
+    shapes.map(variantOf).distinct.sorted shouldBe Seq("QueryStream", "QueryStructured")
+  }
+
+  /** …and the fold MATERIALISES that stream: bounded by the budget, normalised like every other
+    * leg, never refused as an "unexpected result variant".
+    */
+  it should "materialise a QueryStream branch under the cap instead of failing it" in {
+    val client = new BudgetClient(rowsPerLeg = 5)
+    val res = runWith(
+      // leg 1 is row-shaped and un-LIMITed (that is what puts the statement on the cap path);
+      // leg 2 is the `QueryStream` shape
+      "SELECT a, a FROM x UNION ALL SELECT a, MAX(a) AS m FROM y",
+      Quota.Community.copy(maxQueryResults = Some(50)),
+      client
+    )
+    res shouldBe a[ElasticSuccess[_]]
+    val rows = res.asInstanceOf[ElasticSuccess[QueryResult]].value match {
+      case q: QueryRows => q.rows
+      case other        => fail(s"expected QueryRows, got $other")
+    }
+    // both legs contributed — the stream leg was consumed, not refused (HTTP 500 before the fix)
+    // and not dropped (HTTP 200 with half the rows)
+    rows should have size 10L
+    // …and EVERY row carries the first branch's columns: an internal aggregate key (`max#m`) or a
+    // second shape leaking into user-visible rows is exactly what the row contract prevents
+    rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("a"))
   }
 
   /** …and the fold handles that variant end to end, with the branch LIMIT honoured. */
