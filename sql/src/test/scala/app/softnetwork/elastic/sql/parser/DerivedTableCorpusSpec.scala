@@ -23,7 +23,12 @@ class DerivedTableCorpusSpec extends AnyFlatSpec with Matchers {
 
   behavior of "The epic-19 derived-table corpus rows"
 
-  private val rows: Seq[(String, String, Expected)] = Seq(
+  /** Story 22.7 widened this from `private`: `CorpusReplaySpec`'s G9 READS these literals and
+    * compares them, per capture id, with the corpus resource. A gate that compared the resource
+    * against a THIRD hand transcription would not see the drift it exists to catch — two files, two
+    * authors, one text — so it reads the authoritative copy, which is this one.
+    */
+  private[sql] val rows: Seq[(String, String, Expected)] = Seq(
     ("tableau.mysql.wx.003", "SELECT `COL` FROM (SELECT 1 AS `COL`) AS `SUBQUERY`", Parses),
     ("tableau.mysql.w1.018", "SELECT `COL` FROM (SELECT 1 AS `COL`) AS `SUBQUERY`", Parses),
     ("tableau.mysql.w7.043", "SELECT `COL` FROM (SELECT 1 AS `COL`) AS `SUBQUERY`", Parses),
