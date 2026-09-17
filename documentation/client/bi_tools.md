@@ -62,7 +62,8 @@ Tableau's Custom SQL wraps your query inside a `SELECT … FROM ( … )` (Tablea
 checked 2026-09-01) — that wrapper is a derived table, which now runs on the relational engine the JDBC
 driver ships.
 
-Non-recursive **CTEs** (`WITH …`) run on that same engine since `0.24.0`, because a CTE reference is a
-derived table. What is still missing for a tool that composes SQL: **set operators beyond `UNION ALL`**,
-which are not supported yet. See the website's Known Limitations page for the full
-picture, including the subquery forms that are still refused by name.
+Non-recursive **CTEs** (`WITH …`) and the **set operators** (`UNION`, `INTERSECT`, `EXCEPT`, with or
+without `ALL`) run on that same engine since `0.24.0` — a CTE reference is a derived table, and a set
+operation is its branches executed separately and combined. `UNION ALL` alone still runs on Elasticsearch,
+as it always has. See the website's Known Limitations page for the full picture, including the subquery
+and set-operator forms that are still refused by name.

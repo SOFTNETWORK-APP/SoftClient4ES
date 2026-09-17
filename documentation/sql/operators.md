@@ -637,7 +637,7 @@ WHERE category_id IN (
 ```
 
 Subqueries are accepted **since engine `0.24.0`**. The subquery must project **exactly one column** (`IN (SELECT * FROM …)` is refused), must read a table
-(`IN (SELECT 1)` is refused) and may not be a `UNION ALL`. An uncorrelated body is executed first and its
+(`IN (SELECT 1)` is refused) and may not be a set operation. An uncorrelated body is executed first and its
 values are collected as a distinct set — bounded at **65,536** values (`index.max_terms_count`), past which
 the statement fails loudly rather than truncating. A body over a plain column is resolved with a single
 `terms` aggregation, so `DISTINCT` inside it buys nothing. A **correlated** body (one that reads the outer
@@ -1458,8 +1458,9 @@ WHERE first_name = 'John' OR last_name = 'Doe';
 -- May require full table scan
 
 -- Alternative: UNION ALL (if indexes exist)
--- Note: bare UNION (with de-duplication) is not supported and is rejected at
--- parse time — a row matching BOTH predicates appears twice with UNION ALL.
+-- UNION ALL keeps duplicates, so a row matching BOTH predicates appears twice —
+-- the second branch excludes them here. A bare UNION would de-duplicate for you,
+-- but it runs on the relational engine rather than on Elasticsearch directly.
 SELECT * FROM users WHERE first_name = 'John'
 UNION ALL
 SELECT * FROM users WHERE last_name = 'Doe' AND first_name <> 'John';

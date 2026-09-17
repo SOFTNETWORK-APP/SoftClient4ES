@@ -2,10 +2,11 @@
 
 # Known Limitations & Roadmap
 
-SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries, derived tables and non-recursive CTEs that Elasticsearch itself cannot do. One advanced construct — set operators beyond `UNION ALL` — is not supported yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
+SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries, derived tables, non-recursive CTEs and the `UNION` / `INTERSECT` / `EXCEPT` set operators, none of which Elasticsearch can do itself. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
 
-> **Since engine `0.24.0`:** subqueries, derived tables and non-recursive CTEs work, including the
-> nested SQL BI tools generate for you. Set operators beyond `UNION ALL` are not yet supported.
+> **Since engine `0.24.0`:** subqueries, derived tables, non-recursive CTEs and set operators
+> (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`, with or without `ALL`) all work, including the nested
+> SQL BI tools generate for you.
 
 ## Using a BI tool? Read this first
 
@@ -70,8 +71,9 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 - **Analytical SQL**: `ROW_NUMBER` / `RANK` / `DENSE_RANK`; the `STDDEV` / `VARIANCE` family (`STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`); `PERCENTILE_CONT` / `PERCENTILE_DISC`; window aggregates and `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` over `OVER (PARTITION BY …)`.
 - **Conditionals & null handling**: `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` / `ISNULL` / `ISNOTNULL`.
 - `ORDER BY … NULLS FIRST | NULLS LAST`.
-- `UNION ALL` (concatenate result sets — no de-duplication).
-- `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It is **not** the `EXCEPT` set operator (see below).
+- **Set operators** — *since engine `0.24.0`*: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` /
+  `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. See [Set operators](#set-operators) below.
+- `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It removes *columns*; the `EXCEPT` **set operator** removes *rows*. Both work, and they are unrelated.
 
 ## Subqueries and derived tables
 
@@ -167,6 +169,67 @@ A **correlated** subquery counts as one relational operation against your plan's
 same as a JOIN clause — it is a semi-, anti- or aggregate-join the engine executes over two extracted
 sources. A **derived table** costs nothing on its own; the JOINs *inside* it count, at any nesting depth.
 
+## Set operators
+
+**Since engine `0.24.0`.** Earlier releases accept `UNION ALL` only and reject every other spelling at the
+parser.
+
+| Spelling | Duplicates | Runs where | Needs `softclient4es-arrow-extensions`? |
+| --- | --- | --- | --- |
+| `UNION ALL` | kept | Elasticsearch, one `_msearch`, results concatenated in branch order | **No** — every venue, a plain REPL included |
+| `UNION` / `UNION DISTINCT` | removed | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| `INTERSECT` / `INTERSECT ALL` | removed / kept | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| `EXCEPT` / `EXCEPT ALL` | removed / kept | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+
+Elasticsearch has no operation that de-duplicates or intersects across independent searches, so everything
+but `UNION ALL` is executed by the same relational engine that runs cross-index JOINs and derived tables. A
+venue without that jar refuses the statement rather than answering from one branch.
+
+A branch may carry anything a `SELECT` can carry — `GROUP BY`, a `JOIN`, a derived table, a CTE, a
+correlated subquery. A branch that needs the relational engine on its own account routes the whole
+statement there.
+
+Full syntax, precedence and the matching rules: [Set operators](dql_statements.md#set-operators).
+
+### Columns match by position
+
+Branches are matched **column by column**, and the result takes the **first branch's** column names — the
+standard's rule (SQL-92 §7.10), and what every other SQL engine does. Column names are never compared, so
+`SELECT id AS x … UNION ALL SELECT id AS y …` returns **one** column named `x` carrying both branches' ids.
+
+> **Changed in `0.24.0`:** before this release branches were matched **by name**, so a column
+> the other branch did not name came back `NULL` — including for the first branch's own rows. If you have a
+> `UNION ALL` written against the old behaviour, check that its branches project their columns in the same
+> order.
+
+A branch written as a bare `SELECT *` declares no column list, so there is nothing to match positionally;
+such a branch is matched by name instead and its width cannot be checked. Name the columns explicitly
+whenever a branch's shape matters.
+
+### Set-operator forms that are still refused
+
+Each is rejected by name, never silently mis-executed:
+
+- **A set operation as a subquery body** — `WHERE a IN (SELECT … UNION SELECT …)`. Write one subquery per
+  branch.
+- **A parenthesised set operation** — both `(a UNION b) INTERSECT c` and a whole statement wrapped in
+  parentheses. To group against the default precedence (`INTERSECT` binds tighter than `UNION` / `EXCEPT`),
+  use a derived table: `SELECT * FROM (a UNION b) AS g INTERSECT c`.
+- **A trailing `ORDER BY` / `LIMIT` after the last branch** of a `UNION`, `INTERSECT` or `EXCEPT` — it would
+  silently bind to that branch alone. Parenthesise the branch to keep it there, or wrap the whole operation
+  in a derived table to order or limit the result. `UNION ALL` is unchanged: its `ORDER BY` / `LIMIT` have
+  always applied per branch.
+- **A set operation across catalogs** — mixing branches with catalog-qualified names (`` `cluster_b`.orders ``).
+  Catalogs are resolved by their position in the SQL text, so a branch could run on the wrong cluster; the
+  planner refuses rather than risk it. Run each branch as its own statement, or drop the catalog prefix.
+- **`CORRESPONDING` / `CORRESPONDING BY`** — SQL's opt-in for name-based matching. Not implemented;
+  positional matching is the only mode.
+
+### Licensing
+
+A set operation costs **nothing** against your plan's `maxJoins` allowance — like a derived table, it is the
+JOINs and correlated subqueries *inside* the branches that count, at any nesting depth.
+
 ## Quoted identifiers — residual limits
 
 Quoted column names, aliases and **table names** work in both spellings — see
@@ -224,31 +287,38 @@ they do **not** cover yet:
 ## Not yet supported
 
 - **Recursive CTEs** (`WITH RECURSIVE …`) and **CTE column lists** (`WITH a (x, y) AS …`), both refused by name. Plain non-recursive CTEs work since engine `0.24.0`, with two further limits: a `WITH` clause is accepted only at the top of a `SELECT` (not inside a subquery body, CTAS, `INSERT … SELECT` or a materialized view), and a CTE body may not name the CTE itself — unlike PostgreSQL, which binds such a name to the base table, this engine rejects it.
-- **Set operators**: `UNION` (with row de-duplication), `INTERSECT`, and the `EXCEPT` **set operator**. The `EXCEPT` set operator is **distinct from** the `SELECT * EXCEPT(cols)` column-exclusion clause above — that one works; the set operator does not.
 - **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
 
 When they arrive they will be a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
 
 ### What a not-yet-supported query looks like
 
-A de-duplicating `UNION` is rejected by the parser today:
+A **recursive** CTE is rejected by the parser today, by name:
 
 ```sql
--- Not supported: only UNION ALL is implemented.
-SELECT name FROM employees_eu
-UNION
-SELECT name FROM employees_us;
+-- Not supported: WITH RECURSIVE is refused — only non-recursive CTEs are accepted.
+WITH RECURSIVE subordinates AS (
+  SELECT id, manager_id FROM employees WHERE id = 1
+  UNION ALL
+  SELECT e.id, e.manager_id FROM employees e JOIN subordinates s ON e.manager_id = s.id
+)
+SELECT id FROM subordinates;
 ```
 
-Use `UNION ALL` and de-duplicate in the outer query, or run the two branches separately. `INTERSECT` and
-the `EXCEPT` set operator are rejected the same way.
+There is no rewrite that recovers arbitrary-depth recursion. Flatten the hierarchy at index time (store a
+path or a level on each document), or run one statement per level.
 
-The non-recursive CTE below, on the other hand, runs since engine `0.24.0` — a CTE reference is a derived
-table, so it executes on the relational engine and carries the same venue requirement:
+The **non-recursive** CTE and the set operator below, on the other hand, both run since engine `0.24.0` —
+a CTE reference is a derived table, so each executes on the relational engine and carries the same venue
+requirement:
 
 ```sql
 WITH eu_departments AS (SELECT id FROM departments WHERE region = 'EU')
 SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu_departments);
+
+SELECT customer_id FROM orders_q1
+INTERSECT
+SELECT customer_id FROM orders_q2;
 ```
 
 ## Temporary tables are not supported

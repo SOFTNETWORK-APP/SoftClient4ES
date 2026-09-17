@@ -11,7 +11,9 @@ you name a column:
 
 `EXISTS` is reserved, so `SELECT exists FROM t` is a parse error. `ANY` and `SOME` are **deliberately not
 reserved**, so `SELECT any, some FROM t WHERE any = 1` parses as columns — even though `x = ANY (SELECT …)`
-is real grammar. If you have a column whose name collides with a reserved word, **quote it** rather than
+is real grammar. The same split runs through the set-operator and CTE words: `UNION`, `INTERSECT`, `EXCEPT`,
+`ALL` and `DISTINCT` are reserved, while `WITH` and `RECURSIVE` are not — `SELECT a AS recursive FROM t`
+parses, `SELECT a AS intersect FROM t` does not. If you have a column whose name collides with a reserved word, **quote it** rather than
 renaming it: `SELECT "exists" FROM t` works, and so does the backtick spelling — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers).
 
@@ -40,6 +42,14 @@ ON
 CONFLICT
 DO
 UNION ALL
+UNION
+UNION DISTINCT
+INTERSECT
+INTERSECT ALL
+EXCEPT
+EXCEPT ALL
+WITH
+RECURSIVE
 SHOW
 DESCRIBE
 EVERY

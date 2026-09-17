@@ -197,7 +197,7 @@ The single-cluster sidecar on this page is the free shape. Multi-cluster **feder
 
 ## What does NOT work yet
 
-**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **Non-recursive CTEs** (`WITH name AS (SELECT …)`) are supported too, at the top of a `SELECT`; `WITH RECURSIVE` and CTE column lists are refused by name. Set operators beyond `UNION ALL` are not yet supported. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
+**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **Non-recursive CTEs** (`WITH name AS (SELECT …)`) are supported too, at the top of a `SELECT`; `WITH RECURSIVE` and CTE column lists are refused by name. **Set operators** — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported as well; everything but `UNION ALL` runs on the relational engine this driver ships. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 
@@ -218,7 +218,7 @@ The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no S
 
 ## Known limitations
 
-Subqueries, derived tables and non-recursive CTEs — which some BI tools auto-generate — work since engine `0.24.0`. Set operators beyond `UNION ALL` are not yet supported. See [Known Limitations & Roadmap](../sql/known_limitations.md#subqueries-and-derived-tables) for exactly what works today and what is still refused.
+Subqueries, derived tables, non-recursive CTEs — which some BI tools auto-generate — and the `UNION` / `INTERSECT` / `EXCEPT` set operators all work since engine `0.24.0`. See [Known Limitations & Roadmap](../sql/known_limitations.md#subqueries-and-derived-tables) for exactly what works today and what is still refused.
 
 ---
 

@@ -11,7 +11,7 @@ DQL supports:
 
 - `SELECT` with expressions, aliases, nested fields, STRUCT and ARRAY<STRUCT>
 - `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`
-- `UNION ALL`
+- set operators: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`
 - cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) across indices and clusters — see [Cross-Index JOIN](joins.md)
 - `JOIN UNNEST` on `ARRAY<STRUCT>` (the single-index nested form, handled natively inside one index)
 - aggregations, parent-level aggregations on nested arrays
@@ -29,7 +29,7 @@ DQL supports:
 - [WHERE](#where)
 - [ORDER BY](#order-by)
 - [LIMIT / OFFSET](#limit--offset)
-- [UNION ALL](#union-all)
+- [Set operators](#set-operators)
 - [JOIN UNNEST](#join-unnest)
 - [Aggregations](#aggregations)
 - [Parent-Level Aggregations on Nested Arrays](#parent-level-aggregations-on-nested-arrays)
@@ -390,7 +390,7 @@ functions of literals. Rejected with a named reason (`... requires a FROM clause
 - `EXCEPT(...)`, duplicate output column names, unbound `?` parameters, array literals,
   negative `LIMIT`/`OFFSET`
 
-Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `UNION ALL`
+Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / a set operator
 after a FROM-less select-list, and `DISTINCT` literals. A constant cast works in every
 spelling — `CAST('125' AS BIGINT)`, `CONVERT('125', BIGINT)` and `'125'::BIGINT` all parse.
 Prefer `TRY_CAST('125' AS BIGINT)` when the value may not convert: `::` is always the
@@ -608,20 +608,25 @@ LIMIT 10 OFFSET 20;
 
 ---
 
-## UNION ALL
+## Set operators
 
-`UNION ALL` combines the results of multiple `SELECT` queries **without removing duplicates**.
+A set operator combines the rows of two or more `SELECT` branches. Seven spellings are accepted:
 
-> Bare `UNION` (with row de-duplication) is **not supported** and is rejected at parse time — the
-> two are not synonyms. It used to be accepted silently, returning only the first leg's rows.
+| Spelling | Rows | Duplicates | Where it runs |
+| --- | --- | --- | --- |
+| `UNION ALL` | every row of every branch | kept | **Elasticsearch** (`_msearch`) — every venue |
+| `UNION` / `UNION DISTINCT` | rows in either branch | removed | relational engine |
+| `INTERSECT` | rows in **both** branches | removed | relational engine |
+| `INTERSECT ALL` | rows in both branches | kept (per-branch multiplicity) | relational engine |
+| `EXCEPT` | rows in the first branch and not the second | removed | relational engine |
+| `EXCEPT ALL` | rows in the first branch and not the second | kept | relational engine |
 
-All SELECT statements in a UNION ALL must be **strictly compatible**:
+`UNION` and `UNION DISTINCT` are the same operator — SQL's default for a bare `UNION` is
+de-duplication, and `DISTINCT` just says so out loud. `UNION ALL` is the one that keeps duplicates,
+and it is the only one Elasticsearch can answer by itself.
 
-- **same number of columns**
-- **same column names** (after alias resolution)
-- **same or implicitly compatible types**
-
-If these conditions are not met, the Gateway raises a validation error before executing the query.
+> **The `EXCEPT` set operator is not the `SELECT * EXCEPT(col, …)` column-exclusion clause.** The
+> first removes *rows*, the second removes *columns* from `SELECT *`. Both work; they are unrelated.
 
 **Example**
 
@@ -631,21 +636,115 @@ UNION ALL
 SELECT id, name FROM dql_users WHERE age <= 30;
 ```
 
+```sql
+-- Customers who ordered in both quarters, de-duplicated
+SELECT customer_id FROM orders_q1
+INTERSECT
+SELECT customer_id FROM orders_q2;
+```
+
+### Columns match by position, not by name
+
+Branches are matched **column by column, left to right** — SQL-92 §7.10 — and the result takes the
+**first branch's** column names. The names the other branches use play no part in the matching:
+
+```sql
+SELECT id AS x FROM left_index
+UNION ALL
+SELECT id AS y FROM right_index;
+-- One column, named x, carrying both branches' ids.
+```
+
+Two consequences worth knowing:
+
+- Reordering a branch's `SELECT` list changes the result, even though the column names still look
+  right. `SELECT a, b … UNION ALL SELECT b, a …` interleaves the two.
+- A branch written as a bare `SELECT *` declares no column list, so there is nothing to match
+  positionally. Such a branch is matched by name instead, and the engine cannot check its width.
+  Name the columns explicitly whenever a branch's shape matters.
+
+> **Changed in `0.24.0`:** before this release the engine matched branches **by name**,
+> so a column the other branch did not name came back `NULL`. Positional matching is both the
+> standard's rule and what every other SQL engine does.
+
+### Compatibility rules
+
+- **Same number of columns.** Checked at parse time, between the branches that declare a column list
+  — a mismatch is rejected before anything runs, naming both branches and their projections.
+- **Compatible types, position by position,** against the first declaring branch. A bare column has
+  no type until the index mapping is read, so the parser lets it through; the check runs again once
+  the schema is attached, and a `keyword` against a `long` is refused **before any request is sent**.
+- **Column names are never compared.** They are output labels, taken from the first branch.
+
+### Precedence and grouping
+
+`INTERSECT` binds tighter than `UNION` and `EXCEPT`; otherwise branches associate left to right
+(SQL-92 §7.10). So this:
+
+```sql
+SELECT a FROM t1 UNION SELECT a FROM t2 INTERSECT SELECT a FROM t3
+```
+
+is `t1 UNION (t2 INTERSECT t3)`.
+
+**Parenthesising a set operation is rejected** — both as a branch (`(a UNION b) INTERSECT c`) and as
+a whole statement. To group differently, use a derived table:
+
+```sql
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g
+INTERSECT
+SELECT a FROM t3;
+```
+
+### ORDER BY and LIMIT
+
+For `UNION ALL` they apply **per branch**, exactly as they always have — each `SELECT` is its own
+Elasticsearch request, and the results are concatenated in branch order.
+
+For every other operator a trailing `ORDER BY` / `LIMIT` after the **last** branch is **rejected**,
+because a set has no branch order to inherit and an analyst writing it almost certainly meant the
+whole result. Say which you meant:
+
+```sql
+-- this branch only
+SELECT a FROM t1 UNION (SELECT a FROM t2 ORDER BY a LIMIT 10);
+
+-- the whole result
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g ORDER BY a LIMIT 10;
+```
+
+A first or middle branch carrying its own `ORDER BY` / `LIMIT` is unambiguous and is accepted without
+parentheses.
+
 ### Execution model
 
-The SQL Gateway executes `UNION ALL` using **Elasticsearch Multi‑Search (`_msearch`)**:
+`UNION ALL` is executed by **Elasticsearch Multi-Search (`_msearch`)**:
 
-1. Each SELECT query is translated into an independent ES search request.
-2. All requests are sent in a single `_msearch` call.
-3. The Gateway concatenates the results **in order**, without deduplication.
-4. ORDER BY, LIMIT, OFFSET apply **per SELECT**, not globally. Wrapping the whole `UNION ALL` in a derived table to sort it globally is not supported either — a `UNION ALL` cannot be a derived-table body.
+1. Each branch is translated into an independent ES search request.
+2. All requests are sent in one `_msearch` call.
+3. Results are concatenated **in branch order**, without de-duplication or sorting.
 
-### Notes
+Every other operator needs de-duplication or set arithmetic across branches, which Elasticsearch has
+no operation for, so the statement runs on the **relational engine** — engine `0.24.0` with
+arrow-extensions `0.3.4`, the same engine that executes cross-index JOINs and derived tables. Each
+branch is executed as its own Elasticsearch query and the set operation is applied to the results. A
+venue without that engine refuses the statement with a clear error rather than answering from one
+branch. See [Known Limitations & Roadmap](known_limitations.md#subqueries-derived-tables-ctes-and-set-operators).
 
-- `UNION ALL` does **not** sort or deduplicate results.
-- Column names in the final output are taken from the **first SELECT**.
-- All subsequent SELECTs must produce columns with the **same names**.
-- Type mismatches should result in a validation error before execution. (⚠️ not implemented yet)
+A branch may carry anything a `SELECT` can carry — `GROUP BY`, a `JOIN`, a derived table, a CTE, a
+correlated subquery. A branch that needs the relational engine on its own account is planned as its
+own nested query, so the whole statement routes there.
+
+### What is not supported
+
+- **A set operation as a `WHERE` subquery body.** `WHERE a IN (SELECT … UNION SELECT …)` is rejected;
+  write one subquery per branch.
+- **A set operation across catalogs.** Combining branches with catalog-qualified names
+  (`` `cluster_b`.orders ``) is refused by name: catalogs are resolved by their position in the SQL
+  text, so a branch could silently run on the wrong cluster. Run each branch as its own statement, or
+  drop the catalog prefix.
+- **`CORRESPONDING` / `CORRESPONDING BY`** — SQL's opt-in for name-based matching. Not implemented;
+  positional matching is the only mode.
 
 ---
 
@@ -1318,7 +1417,7 @@ Notes:
 |--------------------------------|-----|-----|-----|-----|
 | Basic SELECT                   | ✔   | ✔   | ✔   | ✔   |
 | Nested fields                  | ✔   | ✔   | ✔   | ✔   |
-| UNION ALL                      | ✔   | ✔   | ✔   | ✔   |
+| Set operators                  | ✔   | ✔   | ✔   | ✔   |
 | Cross-index JOINs              | ✔   | ✔   | ✔   | ✔   |
 | JOIN UNNEST                    | ✔   | ✔   | ✔   | ✔   |
 | Aggregations                   | ✔   | ✔   | ✔   | ✔   |
@@ -1337,7 +1436,7 @@ For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
-- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a `UNION ALL` subquery body.
+- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Set operators — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported too; see [Set operators](#set-operators). Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a set operation used as a subquery body.
 - **Since engine `0.24.0`**, non-recursive CTEs (`WITH name AS (SELECT …)`) are supported at the top of a `SELECT`, each one able to reference the CTEs declared before it. Still not supported: `WITH RECURSIVE`, CTE column lists (`WITH a (x, y) AS …`), a CTE body that names the CTE itself, and a `WITH` clause anywhere other than the top of a `SELECT` (not in a subquery body, CTAS, `INSERT … SELECT` or a materialized view).
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`

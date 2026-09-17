@@ -170,9 +170,9 @@ WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 - **Uncorrelated `WHERE` subqueries run on Elasticsearch itself**, so they work on every surface — including a plain REPL with no extensions.
 - **Derived tables and correlated subqueries run on the relational engine** — since engine `0.24.0` with arrow-extensions `0.3.4` (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
 - **Non-recursive CTEs run on that same relational engine** — a CTE reference *is* a derived table, so it carries the same venue requirement. A `WITH` clause is accepted at the top of a `SELECT` only; `WITH RECURSIVE` and CTE column lists (`WITH a (x, y) AS …`) are refused by name.
-- **Not yet supported:** set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`).
+- **Set operators run on that engine too** — `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. `UNION ALL` is the exception: Elasticsearch answers it directly with one `_msearch`, at every venue. Branches are matched by column **position**, and the result takes the first branch's names.
 
-**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries and derived tables, window functions, aggregations, nested fields, geospatial queries, and more.
+**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries, derived tables, CTEs, set operators, window functions, aggregations, nested fields, geospatial queries, and more.
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
 
@@ -534,7 +534,7 @@ Materialized views with JOINs rely on **Elasticsearch Watcher** to automatically
 - [x] Cross-index JOINs
 - [x] Subqueries (`IN` / `EXISTS` / scalar / quantified, correlated or not) and derived tables — `0.24.0`
 - [x] Non-recursive CTEs (`WITH name AS (SELECT …)`) — `0.24.0`
-- [ ] Set operators beyond `UNION ALL` (`UNION`, `INTERSECT`, `EXCEPT`)
+- [x] Set operators (`UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`) — `0.24.0`
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge
