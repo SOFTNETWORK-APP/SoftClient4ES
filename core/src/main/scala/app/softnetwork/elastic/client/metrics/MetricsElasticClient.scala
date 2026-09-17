@@ -26,6 +26,7 @@ import app.softnetwork.elastic.client.{
   ElasticQueries,
   ElasticQuery,
   ElasticResponse,
+  LegProjection,
   SingleValueAggregateResult
 }
 import app.softnetwork.elastic.client.bulk._
@@ -945,7 +946,8 @@ class MetricsElasticClient(
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     measureResult("multisearch") {
       delegate.multiSearch(
@@ -954,7 +956,8 @@ class MetricsElasticClient(
         aggregations,
         fields,
         nestedHits,
-        rowInvariants
+        rowInvariants,
+        legProjections
       )
     }
   }
@@ -1014,7 +1017,8 @@ class MetricsElasticClient(
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -1028,7 +1032,8 @@ class MetricsElasticClient(
           aggregations,
           fields,
           nestedHits,
-          rowInvariants
+          rowInvariants,
+          legProjections
         )
         .asInstanceOf[Future[ElasticResult[ElasticResponse]]]
     }

@@ -290,6 +290,32 @@ package object client extends SerializationApi {
         |""".stripMargin
   }
 
+  /** What ONE branch of a `UNION ALL` needs to build ITS OWN rows, before those rows take the
+    * result's column names (issue #354).
+    *
+    * `_msearch` answers with one response per branch, and every one of them used to be parsed with
+    * the FIRST branch's aliases, projection and nested-hits mapping — so a branch that named its
+    * columns differently lost its values to a by-name lookup, and a branch with its own nested
+    * mapping was flattened by another branch's. The per-leg route never had that problem: it
+    * executes each branch through `search(leg)`, which uses that branch's own everything by
+    * construction. This carries the same three inputs to the one-shot route, so the two routes
+    * agree because they do the same thing, not because one was taught to imitate the other.
+    *
+    * @param fieldAliases
+    *   the BRANCH's `source field -> alias` map
+    * @param fields
+    *   the BRANCH's declared output names, in SELECT order — or, for an opaque `SELECT *` branch
+    *   that declares none, the FIRST branch's names, which keeps the only matching an opaque
+    *   projection admits (by name)
+    * @param nestedHits
+    *   the BRANCH's `JOIN UNNEST` mappings
+    */
+  case class LegProjection(
+    fieldAliases: ListMap[String, String],
+    fields: Seq[String],
+    nestedHits: Map[String, Seq[(String, String)]]
+  )
+
   /** Retry configuration
     */
   case class RetryConfig(

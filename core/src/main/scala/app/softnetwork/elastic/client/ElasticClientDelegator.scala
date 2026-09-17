@@ -1247,7 +1247,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] =
     delegate.multiSearch(
       elasticQueries,
@@ -1255,7 +1256,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
       aggregations,
       fields,
       nestedHits,
-      rowInvariants
+      rowInvariants,
+      legProjections
     )
 
   /** Asynchronous search for documents / aggregations matching the SQL query.
@@ -1318,7 +1320,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -1329,7 +1332,8 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
       aggregations,
       fields,
       nestedHits,
-      rowInvariants
+      rowInvariants,
+      legProjections
     )
 
   /** Searches and converts results into typed entities from an SQL query.

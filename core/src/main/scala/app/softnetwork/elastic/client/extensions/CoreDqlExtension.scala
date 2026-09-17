@@ -357,6 +357,27 @@ class CoreDqlExtension extends ExtensionSpi {
     * row leg, and an aggregation-shaped leg, which scrolling would page hits a bucket query never
     * returns for — is executed as itself and its rows are taken from the result, bounded by the
     * budget.
+    *
+    * 🔴 Once the budget is SPENT the same arithmetic keeps working, and that is issue #355's fix:
+    * `remaining` is 0, so the leg is asked for `0 + 1` rows and contributes `take(0)` of them — an
+    * EXISTENCE PROBE. A leg that answers a row is one the result was cut before; a leg that answers
+    * nothing was never going to contribute, and the statement is not reported as capped for
+    * dropping it. The previous shape treated "a leg is being dropped" as truncation outright, which
+    * over-reported whenever every remaining leg was EMPTY — `truncated = true`, a non-empty warning
+    * and a cap-hit, byte-identical in outcome to a genuine cut, on a statement nothing had cut.
+    * Probing costs at most ONE bounded request per remaining leg and stops at the first leg that
+    * answers, because from there truncation is an established fact.
+    *
+    * The probe never SCROLLS — see [[existenceProbeIfSpent]], which is gated on the same predicate
+    * `SearchExecutor` routes on, so the shape that would otherwise be paged is the shape that gets
+    * `LIMIT 1`. It is not always FREE: a leg with its own `LIMIT` and a grouped leg are executed as
+    * themselves, because neither has an existence test cheaper than running it — and both are
+    * reached only when the budget ran out precisely at the preceding leg's boundary.
+    *
+    * ⚠️ A dropped leg that FAILS now fails the statement, where before it was never executed and
+    * the statement answered HTTP 200 with `truncated = true`. That is the same rule every other leg
+    * of a capped `UNION ALL` already follows, and the alternative is reporting a cap from a leg
+    * nobody could read — but it is a user-visible change.
     */
   private def cappedUnionAllRows(
     multi: MultiSearch,
@@ -376,50 +397,40 @@ class CoreDqlExtension extends ExtensionSpi {
     // `acc` would reach `max + 1`, so a later leg would still have one row of budget left and
     // would be executed — losing the property that legs past a spent budget never run at all.
     val capBit = new java.util.concurrent.atomic.AtomicBoolean(false)
-    // The row contract, hoisted ONCE for the whole statement — the same function the per-leg and
-    // one-shot routes apply, so all three routes answer with one row shape. Per-row work on this
-    // path is per-row over an UN-LIMITED extraction (`feedback_no_per_row_hot_path_work`).
-    val normalise = client.unionAllRowNormalizer(multi)
+    // The row contract, hoisted ONCE for the whole statement — ONE mapper per leg, the same
+    // functions the per-leg and one-shot routes apply, so all three routes answer with one row
+    // shape. Per-row work on this path is per-row over an UN-LIMITED extraction
+    // (`feedback_no_per_row_hot_path_work`).
+    val mappers = client.unionAllRowMappers(multi)
     val zero: Future[ElasticResult[Seq[ListMap[String, Any]]]] =
       Future.successful(ElasticResult.success(Seq.empty[ListMap[String, Any]]))
-    multi.requests
-      .foldLeft(zero) { (accF, leg) =>
+    multi.requests.zipWithIndex
+      .foldLeft(zero) { case (accF, (leg, legIndex)) =>
         accF.flatMap {
           case failure @ ElasticFailure(_) => Future.successful(failure)
           case ElasticSuccess(acc) =>
+            val normalise =
+              mappers.applyOrElse(legIndex, (_: Int) => identity[ListMap[String, Any]] _)
             val remaining = max.toLong - acc.size.toLong
-            // what the leg is ASKED for; what it may CONTRIBUTE is `remaining`
+            // what the leg is ASKED for; what it may CONTRIBUTE is `remaining`. When the budget
+            // is spent that is `1` and `0` — the existence probe (issue #355).
             val probe = remaining + 1L
             def keep(rows: Seq[ListMap[String, Any]]): Seq[ListMap[String, Any]] = {
               if (rows.size.toLong > remaining) capBit.set(true)
               acc ++ rows.take(remaining.toInt).map(normalise)
             }
-            if (remaining <= 0L) {
-              // 🔴 THE BUDGET IS GLOBAL, SO THE PROBE MUST BE. A per-leg probe row cannot see the
-              // truncation that happens AT A LEG BOUNDARY: when leg `i` returns exactly
-              // `remaining` rows there is no probe row in it, and legs `i+1…n` are then skipped
-              // here without anyone asking whether they had rows — so a genuinely truncated
-              // statement reported `truncated = false`, an empty warning and ZERO cap-hits.
-              // MEASURED on real ES 8.18 over 3-shard 5-document indices: `A UNION ALL B` at quota
-              // 5 returned 5 rows where SQL says 10, silently; for a Community user
-              // (`maxQueryResults = 10000`) that is any `UNION ALL` whose first leg holds 10,000
-              // documents. The flag and the meter agreed with each other AND BOTH LIED, which is
-              // worse than the contradiction it replaced because nothing detects it.
-              //
-              // Reaching this arm means the budget is spent and a leg is being dropped: that IS
-              // the truncation. It over-reports only when every remaining leg happens to be
-              // EMPTY — accepted by the lead as far narrower than the corner it closes, and not
-              // worth a global probe row that would cost an extra leg execution.
-              capBit.set(true)
+            if (remaining <= 0L && capBit.get()) {
+              // Truncation is already an established FACT — a probe could only confirm it, so the
+              // remaining legs are dropped without costing a request.
               Future.successful(ElasticResult.success(acc))
-            } else if (leg.returnsRows && leg.limit.isEmpty)
+            } else if (remaining > 0L && leg.returnsRows && leg.limit.isEmpty)
               client
                 .scroll(leg, client.defaultScrollConfig.copy(maxDocuments = Some(probe)))
                 .map(_._1)
                 .runWith(Sink.seq)
                 .map(rows => ElasticResult.success(keep(rows)))
             else
-              client.dqlExecutor.execute(leg).flatMap {
+              client.dqlExecutor.execute(existenceProbeIfSpent(leg, remaining)).flatMap {
                 case ElasticSuccess(q: QueryStructured) =>
                   Future.successful(ElasticResult.success(keep(q.response.results)))
                 case ElasticSuccess(q: QueryRows) =>
@@ -466,6 +477,41 @@ class CoreDqlExtension extends ExtensionSpi {
       }
       .map(_.map(rows => (rows, capBit.get())))
   }
+
+  /** Issue #355 — a leg the budget cannot pay for, bounded so that "is this statement TRUNCATED?"
+    * is answered by a fact rather than by the assumption that a dropped leg had rows.
+    *
+    * 🔴 The rewrite is gated on the SAME predicate `SearchExecutor` routes on (`limit.isDefined ||
+    * fields.isEmpty`), not on a proxy for it, because its whole job is to keep the probe off the
+    * scroll path — a leg the budget cannot pay for must never be SCROLLED, which is what "never
+    * paged, never materialised beyond a row" means here. So exactly the shape that would otherwise
+    * scroll — no `LIMIT` of its own, fields projected — is given `LIMIT 1` and becomes a one-shot
+    * `"size": 1` request. That covers a plain row leg AND the aggregation-BEARING-but-not-grouped
+    * shape (`SELECT amount, MAX(amount) AS m FROM y`, whose `fields` is `List(amount)` because
+    * `fields` drops the aggregates), which `SearchExecutor` answers as `QueryStream(api.scroll(…))`
+    * — MEASURED: a `returnsRows` gate left it SCROLLED.
+    *
+    * Everything else is executed AS ITSELF, and neither case reaches a scroll:
+    *
+    *   - a leg with its OWN `LIMIT` — rewriting it would DISCARD that bound and make the probe lie.
+    *     `LIMIT 0` contributes nothing by construction, yet a `LIMIT 1` probe finds a row in it and
+    *     reports a truncation nothing truncated — the very over-report this method exists to close,
+    *     needing no empty index at all; an `OFFSET` past the matching documents does the same. The
+    *     leg is bounded by what the analyst wrote, so running it costs what it always would.
+    *   - an un-`LIMIT`ed GROUP BY / windowed leg (`fields.isEmpty`) — `searchAsync` answers it
+    *     one-shot because `returnsRows` is false for a grouped statement. Its rows are BUCKETS,
+    *     `hits.total` says nothing about how many it has, and the only test for "does it produce a
+    *     row" is running it. A `LIMIT` would be wrong as well as useless: on an aggregation the
+    *     limit is the `terms` bucket size, fixed up by `Bucket.update` at parse time and not by a
+    *     `copy` after it.
+    *
+    * `copy` without `update()` is safe for the shape it applies to: the only derived state reading
+    * `limit` is that bucket size (excluded above), the inner-hits `size` (a `def`) and the `sql`
+    * renders (lazy vals on the new instance).
+    */
+  private def existenceProbeIfSpent(leg: SingleSearch, remaining: Long): SingleSearch =
+    if (remaining > 0L || leg.limit.isDefined || leg.fields.isEmpty) leg
+    else leg.copy(limit = Some(Limit(1, None)))
 
   /** Apply the single-index result-boundary rule (ADR D4) at the (licensed) quota.
     *   - explicit LIMIT > finite quota → 402 reject (intentional asymmetry)

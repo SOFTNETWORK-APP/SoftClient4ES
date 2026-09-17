@@ -123,7 +123,8 @@ trait ElasticConversion {
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
     retainDocumentId: Boolean = false,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] = {
     var json = results
     if (json.has("responses")) {
@@ -139,7 +140,8 @@ trait ElasticConversion {
         nestedHits,
         explodeNested,
         retainDocumentId,
-        rowInvariants
+        rowInvariants,
+        legProjections
       )
     } else {
       // Single search response
@@ -166,7 +168,8 @@ trait ElasticConversion {
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
     retainDocumentId: Boolean = false,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit context: ConversionContext): Try[Seq[ListMap[String, Any]]] =
     Try {
       val responses = jsonArray.elements().asScala.toList
@@ -178,6 +181,14 @@ trait ElasticConversion {
       require(
         rowInvariants.isEmpty || rowInvariants.size == responses.size,
         s"rowInvariants must carry one entry per response (got ${rowInvariants.size} " +
+        s"for ${responses.size} responses)"
+      )
+
+      // Same contract, same reason (issue #354): a short list would silently give the unmatched
+      // legs ANOTHER leg's projection, which is the defect the per-leg projections exist to close.
+      require(
+        legProjections.isEmpty || legProjections.size == responses.size,
+        s"legProjections must carry one entry per response (got ${legProjections.size} " +
         s"for ${responses.size} responses)"
       )
 
@@ -200,15 +211,23 @@ trait ElasticConversion {
         // which is also why the legs being concatenated afterwards costs nothing.
         val allRows = responses.zipWithIndex.flatMap { case (response, leg) =>
           if (!response.has("error")) {
+            // 🔴 Issue #354 — a leg builds its rows from ITS OWN projection, then column `i`
+            // takes the name the FIRST branch gave column `i` (SQL-92 §7.10). Handing every leg
+            // the first branch's names and aliases was the defect: `multiple.fieldAliases` merges
+            // the branches' maps keyed by SOURCE field, so `SELECT id AS x … UNION ALL SELECT id
+            // AS y …` kept ONE of the two and BOTH branches' rows came back as `y`, with the `x`
+            // the analyst asked for null-filled — branch 1's own rows included.
+            val leg0 = legProjections.lift(leg)
             jsonToRows(
               response,
-              fieldAliases,
+              leg0.map(_.fieldAliases).getOrElse(fieldAliases),
               aggregations,
-              fields,
-              nestedHits,
+              leg0.map(_.fields).getOrElse(fields),
+              leg0.map(_.nestedHits).getOrElse(nestedHits),
               explodeNested,
               retainDocumentId,
-              rowInvariants.lift(leg).getOrElse(ListMap.empty)
+              rowInvariants.lift(leg).getOrElse(ListMap.empty),
+              outputFields = leg0.map(_ => fields).getOrElse(Seq.empty)
             )
           } else {
             Seq.empty
@@ -310,7 +329,8 @@ trait ElasticConversion {
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
     explodeNested: Boolean = true,
     retainDocumentId: Boolean = false,
-    rowInvariants: ListMap[String, Any] = ListMap.empty
+    rowInvariants: ListMap[String, Any] = ListMap.empty,
+    outputFields: Seq[String] = Seq.empty
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -360,10 +380,16 @@ trait ElasticConversion {
     }
 
     // Normalize all rows at the end, after all transformations (flattening, aggregation merging)
-    // Filter out "*" from fields — it is an artifact of COUNT(*) and not a real column
-    val effectiveFields = fields.filterNot(_ == "*")
-    if (effectiveFields.isEmpty) rows
-    else rows.map(rowNormalizer(effectiveFields))
+    // Filter out "*" from fields — it is an artifact of COUNT(*) and not a real column.
+    // `outputFields` (issue #354) renames column `i` to what the result calls it; the "*" filter
+    // runs on the PAIRS so a dropped source name takes its target with it and the two lists cannot
+    // drift out of alignment.
+    val pairs =
+      if (outputFields.size == fields.size) fields.zip(outputFields)
+      else fields.map(f => (f, f))
+    val effective = pairs.filterNot(_._1 == "*")
+    if (effective.isEmpty) rows
+    else rows.map(rowProjector(effective.map(_._1), effective.map(_._2)))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
@@ -463,28 +489,127 @@ trait ElasticConversion {
     */
   protected def rowNormalizer(
     requestedFields: Seq[String]
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
+    rowProjector(requestedFields, requestedFields)
+
+  /** [[rowNormalizer]] with the OUTPUT names decoupled from the names LOOKED UP in the row — the
+    * mechanism SQL-92 §7.10 positional matching needs (issue #354).
+    *
+    * `sourceFields` is the projection the rows were BUILT from (the branch's own declared SELECT
+    * list); `targetFields` is what column `i` is called in the result (the FIRST branch's names).
+    * Column `i` of the output is therefore whatever column `i` of the branch produced, whatever
+    * either side called it — which is what `SELECT a, b FROM x UNION ALL SELECT b, a FROM y` asks
+    * for, and what a by-name lookup answered with a NULL.
+    *
+    * 🔴 "Position" here means the index into the branch's DECLARED projection, NEVER an index into
+    * whatever order the row map happens to enumerate. The two are the same word and only one is
+    * correct: a re-key derived from `row.keys` put values under the wrong column names on real ES
+    * 8.18, HTTP 200, and is strictly harder to detect than the raggedness it replaced. That is why
+    * the caller passes a name list and this walks the row looking those names up.
+    *
+    * When the two lists are equal — every branch naming its columns the same way, which is the
+    * overwhelmingly common case and every shape any captured BI workload emits — this IS
+    * [[rowNormalizer]], including its "already shaped, return the same instance" fast path, and
+    * every guard below is inert by construction. Renaming disables that fast path: a row that is
+    * already in order under its own names still has to be rebuilt under the result's.
+    *
+    * Two things a row MAP cannot express, decided once per stream rather than per row (see
+    * `outFirst` / `targetNames` in the body): a result column name repeated at two positions keeps
+    * the FIRST, and an unrequested row entry that happens to carry a result column's name is
+    * dropped rather than appended over it.
+    */
+  protected def rowProjector(
+    sourceFields: Seq[String],
+    targetFields: Seq[String]
   )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] = {
-    if (requestedFields.isEmpty) identity
+    if (sourceFields.isEmpty) identity
     else {
-      val fieldArr: Array[String] = requestedFields.toArray
+      val fieldArr: Array[String] = sourceFields.toArray
       val len = fieldArr.length
+      // A target list of a different length cannot be matched positionally against this one, so
+      // the projection degrades to a plain normalization rather than guessing an alignment.
+      val outArr: Array[String] =
+        if (targetFields.size == len) targetFields.toArray else fieldArr
+      var renames = false
+      var k = 0
+      while (k < len && !renames) {
+        renames = fieldArr(k) != outArr(k)
+        k += 1
+      }
       val fieldIndex = new java.util.HashMap[String, Integer](len * 2)
       var i = 0
       while (i < len) {
         fieldIndex.putIfAbsent(fieldArr(i), i)
         i += 1
       }
-      if (fieldIndex.size() != len) {
-        // Duplicate output names cannot hold distinct positions in a row map — keep the
-        // legacy per-row semantics for this degenerate shape, name set hoisted per stream
-        val requestedSet = requestedFields.toSet
-        row => normalizeRowOrdered(row, requestedFields, requestedSet)
-      } else {
-        val nullFillMissing = context match {
-          case EntityContext => false
-          case _             => true
+      // 🔴 TWO hazards that only exist once the two name lists differ, both decided ONCE per
+      // stream so the row loop pays nothing for them.
+      //
+      //   * `outFirst` — a row map cannot hold the SAME column name twice, so when the FIRST
+      //     branch projects one name at two positions (`SELECT amount, amount`) only the first
+      //     position can be emitted. Without this the builder wrote both and the LAST won, so
+      //     column 1 displayed column 2's value; it also diverged across cross-builds, because
+      //     2.13's `ListMap` builder replaces a duplicate key in place while 2.12's removes and
+      //     re-appends it.
+      //   * `targetNames` — an entry the row carries that is NOT one of this branch's columns
+      //     but IS the name of a result column. Before the lists could differ such a key was
+      //     always found by `fieldIndex` and could never become an "extra"; now it can, and
+      //     appending it CLOBBERED the column the projection had just filled. Reachable, and not
+      //     exotically: the parent object of a dotted path (`addr` beside `addr.city -> city`),
+      //     `_id` when the document-id column is on, and the internal aggregation keys a metric
+      //     leaves behind. The declared column wins and the stray entry is dropped — it is not
+      //     that column, it only shares its name.
+      val outFirst: Array[Boolean] = new Array[Boolean](len)
+      if (renames) {
+        val emitted = new java.util.HashSet[String](len * 2)
+        var j = 0
+        while (j < len) {
+          outFirst(j) = emitted.add(outArr(j))
+          j += 1
         }
-        row => {
+      } else java.util.Arrays.fill(outFirst, true)
+      val targetNames: java.util.HashSet[String] =
+        if (renames) new java.util.HashSet[String](java.util.Arrays.asList(outArr: _*))
+        else null
+      val nullFillMissing = context match {
+        case EntityContext => false
+        case _             => true
+      }
+      if (fieldIndex.size() != len) {
+        // Duplicate SOURCE names cannot hold distinct positions in a row map.
+        //   * without a rename this is the historical degenerate shape — keep the exact legacy
+        //     per-row semantics, name set hoisted per stream;
+        //   * WITH a rename the duplicates are well defined after all: `SELECT amount, amount`
+        //     feeding a result whose columns are called `a, b` means both read `amount`. The
+        //     index cannot express that (it maps a name to its FIRST position), so this shape
+        //     walks the target list instead — `O(cols x row)` per row, on a shape nothing but a
+        //     hand-written duplicate projection reaches.
+        if (!renames) {
+          val requestedSet = sourceFields.toSet
+          row => normalizeRowOrdered(row, sourceFields, requestedSet)
+        } else {
+          val sourceSet = sourceFields.toSet
+          row => {
+            val builder = ListMap.newBuilder[String, Any]
+            var j = 0
+            while (j < len) {
+              if (outFirst(j)) {
+                row.get(fieldArr(j)) match {
+                  case Some(v) => builder += outArr(j) -> v
+                  case None    => if (nullFillMissing) builder += outArr(j) -> null
+                }
+              }
+              j += 1
+            }
+            row.foreach { entry =>
+              if (!sourceSet.contains(entry._1) && !targetNames.contains(entry._1))
+                builder += entry
+            }
+            builder.result()
+          }
+        }
+      } else { row =>
+        {
           val values = new Array[Any](len)
           val seen = new Array[Boolean](len)
           var extras: ListBuffer[(String, Any)] = null
@@ -498,8 +623,14 @@ trait ElasticConversion {
               values(p) = entry._2
               seen(p) = true
               p += 1
-              // All requested fields matched in order: whatever the iterator still holds are
-              // extras already in their final position — the row IS its normalized form
+              // Every source field matched in order. Without a rename the row IS its normalized
+              // form and whatever the iterator still holds are extras already in their final
+              // position; WITH one the row still has to be rebuilt, and those trailing entries are
+              // drained below instead. 🔴 Leaving the loop either way is what keeps this condition
+              // — the only one on the per-ENTRY path — identical to the pre-#354 one: a `p < len`
+              // guard here MEASURED +3.6% on the commonest shape of all, a five-column projection
+              // Elasticsearch returns in SELECT order, which is a tax on every row of every query
+              // for a case only a `UNION ALL` can reach.
               if (p == len) passthrough = true
             } else {
               inOrder = false
@@ -507,20 +638,36 @@ trait ElasticConversion {
               if (idx ne null) {
                 values(idx.intValue) = entry._2
                 seen(idx.intValue) = true
+              } else if (renames && targetNames.contains(entry._1)) {
+                // a stray entry wearing a result column's name — dropped, see `targetNames`
               } else {
                 if (extras eq null) extras = new ListBuffer[(String, Any)]
                 extras += entry
               }
             }
           }
+          // Under a rename the loop may have stopped on `passthrough` with entries still to come;
+          // none of them can be a source name (a row map's keys are unique and all `len` of them
+          // were just consumed), so they are extras — subject to the same `targetNames` rule.
+          if (renames) {
+            while (it.hasNext) {
+              val entry = it.next()
+              if (!targetNames.contains(entry._1)) {
+                if (extras eq null) extras = new ListBuffer[(String, Any)]
+                extras += entry
+              }
+            }
+          }
           // An in-order strict prefix needs no rebuild either when missing fields are skipped
-          if (passthrough || (inOrder && !nullFillMissing)) row
+          if (!renames && (passthrough || (inOrder && !nullFillMissing))) row
           else {
             val builder = ListMap.newBuilder[String, Any]
             var j = 0
             while (j < len) {
-              if (seen(j)) builder += fieldArr(j) -> values(j)
-              else if (nullFillMissing) builder += fieldArr(j) -> null
+              if (outFirst(j)) {
+                if (seen(j)) builder += outArr(j) -> values(j)
+                else if (nullFillMissing) builder += outArr(j) -> null
+              }
               j += 1
             }
             if (extras ne null) extras.foreach(builder += _)
