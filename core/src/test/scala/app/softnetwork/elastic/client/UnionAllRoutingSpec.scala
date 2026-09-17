@@ -109,12 +109,47 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     )(implicit ec: ExecutionContext): scala.concurrent.Future[ElasticResult[Option[JsonNode]]] =
       scala.concurrent.Future.successful(emptyResponse)
 
+    /** The `_msearch` answer: ONE response per leg, each carrying a single hit whose `_source` is
+      * keyed by THAT leg's SOURCE field names and valued `"<source field>@<leg>"`.
+      *
+      * 🔴 `_source`, not output names, and that is what makes the alias mapping load-bearing: the
+      * rename from `id` to `x` is `jsonNodeToMap`'s, driven by the leg's `fieldAliases`. A stub
+      * that answered `{"x": …}` directly would be green whichever alias map the parse used, which
+      * is exactly the defect issue #354 case 2 reports. The leg's SQL is recovered from the body
+      * the stub itself rendered above, so this needs no out-of-band channel.
+      */
+    private def legHitsResponse(elasticQueries: ElasticQueries): ElasticResult[Option[JsonNode]] = {
+      val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+      val root = mapper.createObjectNode()
+      val responses = root.putArray("responses")
+      elasticQueries.queries.zipWithIndex.foreach { case (q, i) =>
+        val leg = i + 1
+        val sql = mapper.readTree(q.query).path("sql").asText()
+        val sourceNames: Seq[String] =
+          app.softnetwork.elastic.sql.parser.Parser(sql) match {
+            case Right(sel: SingleSearch) =>
+              val fields = sel.select.fieldsWithComputedAliases
+              if (fields.size == 1 && fields.head.identifier.identifierName == "*")
+                Seq("id", "category", "tag", "amount")
+              else fields.map(_.identifier.identifierName)
+            case _ => Seq(s"leg$leg")
+          }
+        val response = responses.addObject()
+        val hits = response.putObject("hits")
+        hits.putObject("total").put("value", sourceNames.size)
+        val hitsArray = hits.putArray("hits")
+        val source = hitsArray.addObject().putObject("_source")
+        sourceNames.foreach(n => source.put(n, s"$n@$leg"))
+      }
+      ElasticResult.success(Some(root))
+    }
+
     override private[client] def executeMultiSearch(
       elasticQueries: ElasticQueries
     ): ElasticResult[Option[JsonNode]] = {
       msearchCalls.incrementAndGet()
       lastMultiQuery = Some(elasticQueries)
-      emptyResponse
+      legHitsResponse(elasticQueries)
     }
 
     // `searchAsync` reaches the ASYNC seam, never the sync one — a counter on `executeMultiSearch`
@@ -125,7 +160,7 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
       scala.concurrent.Future.successful {
         msearchCalls.incrementAndGet()
         lastMultiQuery = Some(elasticQueries)
-        emptyResponse
+        legHitsResponse(elasticQueries)
       }
 
     override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
@@ -155,6 +190,21 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
       }
       val row = ListMap(names.map(k => k -> (s"$k@$n": Any)): _*)
       Source.single((row, ScrollMetrics()))
+    }
+  }
+
+  /** Counts how many times the per-statement `SingleSearch` seam is entered (issue #355). The
+    * `MultiSearch` seam resolves every leg once; anything beyond that is the per-leg fold resolving
+    * what it was already handed.
+    */
+  private class ResolveCountingClient extends RecordingClient {
+    val singleResolutions = new AtomicInteger(0)
+
+    override private[client] def resolveWithSchema(
+      single: SingleSearch
+    ): ElasticResult[SingleSearch] = {
+      singleResolutions.incrementAndGet()
+      super.resolveWithSchema(single)
     }
   }
 
@@ -248,17 +298,24 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
   }
 
   /** 🔴 THE ROW CONTRACT. The routes must agree, or the presence of a `LIMIT` decides what a caller
-    * gets — and the first attempt at making them agree was itself a wrong answer.
+    * gets — and they must agree on what SQL says, which is where issue #354 comes in.
     *
-    * The contract is [[ElasticConversion.rowNormalizer]] over the FIRST branch's output names: a
-    * BY-NAME lookup that null-fills a miss and appends an extra. It is the function the one-shot
-    * `_msearch` path already applies, and the lead's ruling for this story.
+    * SQL-92 §7.10 matches set-operation branches BY ORDINAL POSITION: same degree, i-th column
+    * type-compatible with i-th column, and the result takes the FIRST branch's names. Names play no
+    * part in the matching. `CORRESPONDING` — the optional clause that asks for name-based matching
+    * — is the proof, because nobody adds an opt-in for the behaviour they already have.
     *
-    * An earlier draft re-keyed POSITIONALLY. The two rows below are the shapes that exposed it,
-    * both measured on real ES 8.18 by the independent review — and note that neither is exotic: one
-    * is the same two columns written in a different order, the other is `SELECT *`.
+    * Story 22.6 shipped one BY-NAME contract for all three routes, which made them agree with each
+    * other but not with SQL; #354 is the remaining half, and the rows below are its three measured
+    * shapes. Every value NAMES ITS OWN COLUMN (`tag@2`), so the oracle is independent of the
+    * mapping under test: a value that lands under the wrong name says so.
+    *
+    * 🔴 The trap the fix had to avoid, recorded because a 22.6 draft fell into it: "position" means
+    * the index into the branch's DECLARED projection, never an index into whatever order the row
+    * map enumerates. Deriving it from `row.keys` put values under the wrong column names on real ES
+    * 8.18 — HTTP 200, and harder to detect than the raggedness it replaced.
     */
-  "The per-leg route" should "bind every value to its own column when a branch REORDERS the projection" in {
+  "The per-leg route" should "match a REORDERED branch POSITIONALLY, as SQL-92 does" in {
     val client = new RecordingClient
     val response = client.search(
       SelectStatement("SELECT category, tag FROM l UNION ALL SELECT tag, category FROM r")
@@ -270,10 +327,11 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     response.results should have size 2
     // Every row keyed by the first branch's names, in its order …
     response.results.map(_.keys.toSeq) shouldBe Seq(Seq("category", "tag"), Seq("category", "tag"))
-    // 🔴 … and each VALUE under the column it names. A positional re-key reads
-    // `category -> tag@2` here: same keys, same order, opposite binding, HTTP 200.
-    response.results.map(_("category")) shouldBe Seq("category@1", "category@2")
-    response.results.map(_("tag")) shouldBe Seq("tag@1", "tag@2")
+    // … and column i holds column i OF ITS OWN BRANCH. Branch 2 declared `tag` first, so `tag@2`
+    // is what the result's FIRST column holds — reordering the projection is how an analyst aligns
+    // two differently-named schemas, and a by-name lookup silently undid it.
+    response.results.map(_("category")) shouldBe Seq("category@1", "tag@2")
+    response.results.map(_("tag")) shouldBe Seq("tag@1", "category@2")
   }
 
   it should "not mis-key or DROP columns when a branch is an opaque SELECT *" in {
@@ -288,9 +346,10 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     response.results should have size 2
     val starRow = response.results(1)
     // 🔴 `MultiSearch.declared` is `None` for `SELECT *` — arity and type checks exempt it on
-    // purpose — so the leg's own names are unknown to `extractOutputFieldNames` and its row
-    // arrives in `_source` order. A positional re-key put the ID under `category` and TRUNCATED
-    // the row to the first branch's width, losing two columns. HTTP 200 both ways.
+    // purpose — so the leg DECLARES no projection and there is no position to match. Its row
+    // arrives in `_source` order; a positional `zip` over that order put the ID under `category`
+    // and TRUNCATED the row to the first branch's width, losing two columns. HTTP 200 both ways.
+    // An opaque branch therefore keeps the by-name match, which is the only one it admits.
     starRow("category") shouldBe "category@2"
     starRow("tag") shouldBe "tag@2"
     starRow("id") shouldBe "id@2"
@@ -299,7 +358,11 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     starRow.keys.toSeq.take(2) shouldBe Seq("category", "tag")
   }
 
-  it should "null-fill a column a branch does not declare" in {
+  /** Issue #354, the shape the analyst sees most: an alias per branch. The first branch names the
+    * result, so branch 2's single column becomes `x` — where a by-name lookup answered `{x -> null,
+    * y -> …}` and, on the one-shot route, did it to branch 1's OWN rows too.
+    */
+  it should "give a branch that aliases its column differently the FIRST branch's name" in {
     val client = new RecordingClient
     val response = client.search(
       SelectStatement("SELECT a AS x FROM t UNION ALL SELECT b AS y FROM u")
@@ -311,21 +374,125 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     client.scrollCalls.get() shouldBe 2
     response.results should have size 2
     response.results.head shouldBe ListMap[String, Any]("x" -> "x@1")
-    // 🔴 Recorded rather than asserted-away, and MEASURED on real ES 8.18 rather than assumed:
-    // where the branches AGREE on a column name every route gives the same answer (the two rows
-    // above), and where they disagree — an alias per branch — this route null-fills the missing
-    // name and keeps the branch's own column as an extra:
-    //
-    //   SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r
-    //     one-shot : {x -> null, y -> L_id_1} … {x -> null, y -> R_id_2}
-    //     per-leg  : {x -> L_id_1}            … {x -> null, y -> R_id_2}
-    //
-    // The routes therefore still differ on BRANCH 1 of this one shape, because the one-shot
-    // `_msearch` route never applies a leg's own alias mapping and loses branch 1's value under
-    // its own declared name. That is PRE-EXISTING and outside this story (the review recorded it
-    // as an observation); the per-leg answer is the better of the two, and propagating the
-    // one-shot defect to make the two agree would be aligning to a bug.
-    response.results(1) shouldBe ListMap[String, Any]("x" -> null, "y" -> "y@2")
+    // 🔴 not `{x -> null, y -> "y@2"}`: the column the analyst asked for holds branch 2's value,
+    // and the branch's own alias does not leak into the result as a second column.
+    response.results(1) shouldBe ListMap[String, Any]("x" -> "y@2")
+  }
+
+  /** Issue #354 case 1 — the shape BOTH parse-time guards admit (same degree, same types) and that
+    * still came back with a NULL: a branch may project the same column twice, and positionally that
+    * is perfectly well defined. A row map cannot hold two `a` keys, so the leg's row carries one —
+    * and both result columns read it.
+    */
+  it should "feed BOTH result columns from a branch that projects one column twice" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement("SELECT a, b FROM x UNION ALL SELECT a, a FROM y")
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.scrollCalls.get() shouldBe 2
+    response.results should have size 2
+    response.results.head shouldBe ListMap[String, Any]("a" -> "a@1", "b" -> "b@1")
+    // column 2 was NULL before #354 — branch 2 never names a column `b`, and nothing looked at
+    // what it DID name column 2.
+    response.results(1) shouldBe ListMap[String, Any]("a" -> "a@2", "b" -> "a@2")
+  }
+
+  /** 🔴 THE OTHER ROUTE, on the shape that exposed it. A bounded `UNION ALL` is ONE `_msearch`, and
+    * every leg of its response used to be parsed with the FIRST branch's alias map — but
+    * `MultiSearch.fieldAliases` merges the branches' maps keyed by SOURCE field, so `id AS x` and
+    * `id AS y` collapse to ONE entry and the survivor renames BOTH legs' `id`. MEASURED on real ES
+    * 8.18: every row, branch 1's own included, came back `{x -> null, y -> …}`.
+    *
+    * The fixture is the mechanism: the stub answers each leg with a `_source` keyed by that leg's
+    * SOURCE field, valued `"<source>@<leg>"`, which is exactly what Elasticsearch returns and what
+    * makes the alias mapping load-bearing. A stub that answered output names would have been green
+    * against the defect.
+    */
+  "The one-shot _msearch route" should "apply each leg's OWN alias map, then the first branch's names" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement("SELECT id AS x FROM l LIMIT 5 UNION ALL SELECT id AS y FROM r LIMIT 5")
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.msearchCalls.get() shouldBe 1
+    client.scrollCalls.get() shouldBe 0
+    response.results shouldBe Seq(
+      ListMap[String, Any]("x" -> "id@1"),
+      ListMap[String, Any]("x" -> "id@2")
+    )
+  }
+
+  it should "match a REORDERED branch positionally too — the routes agree" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement(
+        "SELECT category, tag FROM l LIMIT 5 UNION ALL SELECT tag, category FROM r LIMIT 5"
+      )
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.msearchCalls.get() shouldBe 1
+    response.results shouldBe Seq(
+      ListMap[String, Any]("category" -> "category@1", "tag" -> "tag@1"),
+      ListMap[String, Any]("category" -> "tag@2", "tag"      -> "category@2")
+    )
+  }
+
+  /** 🔴 #354 case 2 SURVIVING BEHIND AN OPAQUE FIRST BRANCH. With no names to match against there
+    * is nothing to RENAME to — but that is not a licence to hand every leg the MERGED alias map,
+    * which is keyed by the SOURCE field and therefore keeps ONE of `x`/`y` and renames both later
+    * legs with it. Each leg keeps its OWN projection, which is exactly what it would answer alone,
+    * so the one-shot route and the per-leg route agree here too.
+    */
+  it should "still give each leg its OWN alias map when the FIRST branch is SELECT *" in {
+    val client = new RecordingClient
+    val response = client.search(
+      SelectStatement(
+        "SELECT * FROM t LIMIT 5 UNION ALL SELECT id AS x FROM l LIMIT 5 " +
+        "UNION ALL SELECT id AS y FROM r LIMIT 5"
+      )
+    ) match {
+      case ElasticSuccess(r)     => r
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.msearchCalls.get() shouldBe 1
+    response.results should have size 3
+    // the opaque branch keeps what Elasticsearch returned …
+    response.results.head.keys.toSeq shouldBe Seq("id", "category", "tag", "amount")
+    // … and each aliasing branch keeps ITS OWN column, not the other's. Before the fix both read
+    // `{y -> …}` (or both `{x -> …}`, whichever alias the merge happened to keep).
+    response.results(1) shouldBe ListMap[String, Any]("x" -> "id@2")
+    response.results(2) shouldBe ListMap[String, Any]("y" -> "id@3")
+  }
+
+  /** Issue #355 — the per-leg route re-entered `search(leg)`, which resolves the leg a SECOND time.
+    * `resolveWithSchema` is not a pure check: a leg carrying a WHERE subquery has its inner
+    * statement EXECUTED by `SubqueryResolver`, uncached.
+    *
+    * 🔴 Counting inner searches would be VACUOUS here: phase one rewrites the subquery into
+    * literals, so the second pass finds nothing left to execute and the count stays at 1 either
+    * way. The assertion is therefore on the mechanism — how many times the per-statement seam was
+    * entered at all (measured: reinstating `search(leg)` makes it 5).
+    */
+  "A UNION ALL executed per leg" should "resolve each leg ONCE — the seam's resolution is reused" in {
+    val client = new ResolveCountingClient
+    client.search(
+      SelectStatement("SELECT a FROM x WHERE a IN (SELECT b FROM y) UNION ALL SELECT a FROM z")
+    ) match {
+      case ElasticSuccess(_)     => ()
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.scrollCalls.get() shouldBe 2
+    // TWO from the `MultiSearch` seam (one per leg) plus ONE for the inner statement
+    // `SubqueryResolver` executes — and NONE from the fold. Re-entering `search(leg)` makes it 5
+    // (measured), which is the whole of issue #355's second half.
+    client.singleResolutions.get() shouldBe 3
   }
 
   // ── the seam guard runs FIRST ──────────────────────────────────────────────────────────────

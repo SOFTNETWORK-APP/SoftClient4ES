@@ -29,6 +29,7 @@ import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
 
 /** Story 22.6 AD-6 — issue #209's family, one venue over.
@@ -115,10 +116,12 @@ trait UnionAllCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit
   /** `client.search(SelectStatement(...))` and NOT `searchAs`: the macro types a `UNION ALL` from
     * the FIRST leg, which is a separate concern from row completeness.
     */
-  private def rowCountOf(sql: String): Int = {
+  private def rowCountOf(sql: String): Int = rowsOf(sql).size
+
+  private def rowsOf(sql: String): Seq[ListMap[String, Any]] = {
     implicit val ctx: ConversionContext = NativeContext
     client.search(SelectStatement(sql)) match {
-      case ElasticSuccess(response) => response.results.size
+      case ElasticSuccess(response) => response.results
       case ElasticFailure(error)    => fail(s"[$sql] failed: ${error.message}")
     }
   }
@@ -149,6 +152,68 @@ trait UnionAllCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit
       s"SELECT category, COUNT(*) AS n FROM $leftIndex GROUP BY category " +
       s"UNION ALL SELECT category, COUNT(*) AS n FROM $rightIndex GROUP BY category"
     ) shouldBe (leftCategories + rightCategories)
+  }
+
+  // ── issue #354: SQL-92 §7.10 matches branches BY POSITION, on EVERY route ─────────────────
+
+  /** The result's column NAMES come from the first branch and the branches are matched by ORDINAL
+    * POSITION — names play no part in it (`CORRESPONDING` is the opt-in for name matching, and its
+    * existence is the proof). The engine used to look the first branch's names up IN THE LEG'S ROW,
+    * which answered NULL for a column the branch names differently.
+    *
+    * `cat_01` exists only in `union_left` and `cat_13` only in `union_right`, so each branch
+    * contributes a set of `id`s that names its own index — an oracle independent of the mapping
+    * under test. Row ORDER within a leg is not guaranteed on a 3-shard index, so the assertions are
+    * on SETS.
+    */
+  "UNION ALL with an alias per branch" should "take the FIRST branch's column name, one-shot" in {
+    val rows = rowsOf(
+      s"SELECT id AS x FROM $leftIndex WHERE category = 'cat_01' LIMIT 5 " +
+      s"UNION ALL SELECT id AS y FROM $rightIndex WHERE category = 'cat_13' LIMIT 5"
+    )
+    rows should have size (2 * docsPerCategory).toLong
+    // 🔴 ONE column, called `x`, on EVERY row — branch 1's own included. Before the fix
+    // `MultiSearch.fieldAliases` merged the two aliases keyed by the SOURCE field `id`, one
+    // survived, and every row came back `{x -> null, y -> …}`.
+    rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("x"))
+    rows.map(_("x")).toSet shouldBe
+    ((1 to docsPerCategory).map(d => s"${leftIndex}_cat_01_$d") ++
+    (1 to docsPerCategory).map(d => s"${rightIndex}_cat_13_$d")).toSet
+  }
+
+  it should "answer identically when the legs are paged per leg" in {
+    val rows = rowsOf(
+      s"SELECT id AS x FROM $leftIndex WHERE category = 'cat_01' " +
+      s"UNION ALL SELECT id AS y FROM $rightIndex WHERE category = 'cat_13'"
+    )
+    rows should have size (2 * docsPerCategory).toLong
+    rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("x"))
+    rows.map(_("x")).toSet shouldBe
+    ((1 to docsPerCategory).map(d => s"${leftIndex}_cat_01_$d") ++
+    (1 to docsPerCategory).map(d => s"${rightIndex}_cat_13_$d")).toSet
+  }
+
+  /** Reordering the projection is how an analyst aligns two differently-shaped sources, and a
+    * by-name lookup silently undid it: column 1 held branch 2's `category` because that is what
+    * branch 1 called column 1.
+    */
+  "UNION ALL with a REORDERED second branch" should "bind column i to column i of that branch" in {
+    val rows = rowsOf(
+      s"SELECT category, id FROM $leftIndex WHERE category = 'cat_01' LIMIT 5 " +
+      s"UNION ALL SELECT id, category FROM $rightIndex WHERE category = 'cat_13' LIMIT 5"
+    )
+    rows should have size (2 * docsPerCategory).toLong
+    rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("category", "id"))
+    val (left, right) = rows.splitAt(docsPerCategory)
+    left.map(_("category")).toSet shouldBe Set("cat_01")
+    left.map(_("id")).toSet shouldBe (1 to docsPerCategory)
+      .map(d => s"${leftIndex}_cat_01_$d")
+      .toSet
+    // 🔴 branch 2 declared `id` FIRST, so the result's first column — the one branch 1 called
+    // `category` — holds branch 2's ids, and `id` holds its category.
+    right.map(_("category")).toSet shouldBe
+    (1 to docsPerCategory).map(d => s"${rightIndex}_cat_13_$d").toSet
+    right.map(_("id")).toSet shouldBe Set("cat_13")
   }
 
   "A distinct UNION on the plain client" should

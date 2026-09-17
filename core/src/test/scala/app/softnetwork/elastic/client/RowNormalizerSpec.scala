@@ -150,4 +150,115 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
       legacy(row, duplicated)(EntityContext).toList
     }
   }
+
+  // ── rowProjector: the same walk with the OUTPUT names decoupled (issue #354) ───────────────
+
+  private def project(
+    row: ListMap[String, Any],
+    source: Seq[String],
+    target: Seq[String]
+  )(implicit ctx: ConversionContext): ListMap[String, Any] =
+    rowProjector(source, target)(ctx)(row)
+
+  "rowProjector" should "be rowNormalizer exactly when the two name lists are equal" in {
+    val row = ListMap[String, Any]("a" -> 1, "b" -> 2, "c" -> 3, "_id" -> "42")
+    // including the fast path: an already-shaped row comes back as the SAME instance
+    project(row, fields, fields)(NativeContext) should be theSameInstanceAs row
+    project(ListMap[String, Any]("c" -> 3), fields, fields)(NativeContext).toList shouldBe
+    normalize(ListMap[String, Any]("c" -> 3))(NativeContext).toList
+  }
+
+  it should "rename column i to target i, whatever either side calls it" in {
+    // the reordered-branch shape: the row is keyed by the BRANCH's names, in the BRANCH's order
+    val row = ListMap[String, Any]("tag" -> "t", "category" -> "c")
+    project(row, Seq("tag", "category"), Seq("category", "tag"))(NativeContext).toList shouldBe
+    List("category" -> "t", "tag" -> "c")
+  }
+
+  it should "rebuild even when the row is already in source order" in {
+    // 🔴 the fast path MUST be off under a rename: the row IS in order under its own names, and
+    // returning it unchanged would answer with the branch's names instead of the result's.
+    val row = ListMap[String, Any]("y" -> 9)
+    project(row, Seq("y"), Seq("x"))(NativeContext).toList shouldBe List("x" -> 9)
+  }
+
+  it should "null-fill a target whose source the row does not carry, and append extras" in {
+    val row = ListMap[String, Any]("q" -> 1, "extra" -> true)
+    project(row, Seq("p", "q"), Seq("a", "b"))(NativeContext).toList shouldBe
+    List("a" -> null, "b" -> 1, "extra" -> true)
+    // …and EntityContext skips the missing one rather than null-filling it, as it always has
+    project(row, Seq("p", "q"), Seq("a", "b"))(EntityContext).toList shouldBe
+    List("b" -> 1, "extra" -> true)
+  }
+
+  /** 🔴 A hazard that exists ONLY once the two lists differ: before, a row key equal to a requested
+    * name was always found by the name index and could never become an "extra". Now it can, and
+    * appending it CLOBBERED the column the projection had just filled — the declared column read
+    * back as a raw nested object, or as Elasticsearch's `_id` instead of the branch's own.
+    *
+    * Reachable shapes, all measured on this engine: the PARENT of a dotted path (`parseSimpleHits`
+    * re-adds `addr.city` as `city` while `addr` survives from `_source`), `_id` when the
+    * document-id column is on, and the internal aggregation key a metric leaves behind.
+    */
+  it should "not let a stray row entry clobber a result column that shares its name" in {
+    val row = ListMap[String, Any]("profileId" -> "P", "profiles" -> ListMap("city" -> "Paris"))
+    project(row, Seq("profileId", "profiles.city"), Seq("profileId", "profiles"))(
+      NativeContext
+    ).toList shouldBe List("profileId" -> "P", "profiles" -> null)
+
+    val withCity = ListMap[String, Any](
+      "profileId" -> "P",
+      "profiles"  -> ListMap("city" -> "Paris"),
+      "city"      -> "Paris"
+    )
+    project(withCity, Seq("profileId", "city"), Seq("profileId", "profiles"))(
+      NativeContext
+    ).toList shouldBe List("profileId" -> "P", "profiles" -> "Paris")
+
+    // the `_id` shape: the branch's own `id` is what column 1 holds, not the document id
+    val withDocId = ListMap[String, Any]("id" -> "biz-7", "_id" -> "esdoc-123")
+    project(withDocId, Seq("id"), Seq("_id"))(NativeContext).toList shouldBe
+    List("_id" -> "biz-7")
+  }
+
+  /** …and the same guard in the duplicate-source arm, which builds by walking the TARGET list. */
+  it should "not let a stray row entry clobber a result column under a duplicate projection" in {
+    val row = ListMap[String, Any]("a" -> 7, "e" -> 1)
+    project(row, Seq("a", "a"), Seq("x", "e"))(NativeContext).toList shouldBe
+    List("x" -> 7, "e" -> 7)
+  }
+
+  /** 🔴 A result column name repeated at two positions: a row MAP cannot hold it twice, so the
+    * FIRST position is the one that survives. Emitting both let the SECOND win, so column 1
+    * displayed column 2's value — and it diverged across cross-builds, because 2.13's `ListMap`
+    * builder replaces a duplicate key in place while 2.12's removes and re-appends it.
+    */
+  it should "keep the FIRST position when the target names repeat" in {
+    val row = ListMap[String, Any]("amount" -> "A", "m" -> "M")
+    project(row, Seq("amount", "m"), Seq("amount", "amount"))(NativeContext).toList shouldBe
+    List("amount" -> "A")
+    // …including when the first position has no value to supply
+    project(ListMap[String, Any]("m" -> "M"), Seq("amount", "m"), Seq("amount", "amount"))(
+      NativeContext
+    ).toList shouldBe List("amount" -> null)
+  }
+
+  it should "feed every target that names the same source under a duplicate projection" in {
+    // `SELECT a, a` renamed onto `(x, y)`: a row map holds ONE `a`, and both columns read it
+    val row = ListMap[String, Any]("a" -> 7, "extra" -> true)
+    project(row, Seq("a", "a"), Seq("x", "y"))(NativeContext).toList shouldBe
+    List("x" -> 7, "y" -> 7, "extra" -> true)
+  }
+
+  it should "degrade to a plain normalization when the target list has a different length" in {
+    // no positional alignment exists, so nothing is guessed
+    val row = ListMap[String, Any]("b" -> 2)
+    project(row, fields, Seq("x"))(NativeContext).toList shouldBe
+    normalize(row)(NativeContext).toList
+  }
+
+  it should "be identity when there is no source projection to match" in {
+    val row = ListMap[String, Any]("whatever" -> 1)
+    project(row, Seq.empty, Seq("a"))(NativeContext) should be theSameInstanceAs row
+  }
 }

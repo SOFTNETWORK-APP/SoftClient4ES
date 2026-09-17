@@ -490,36 +490,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         }
       case parsed: SingleSearch =>
         // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
-        val single = resolveWithSchema(parsed) match {
-          case ElasticSuccess(resolved) => resolved
-          case ElasticFailure(error)    => return ElasticResult.failure(error)
-        }
-        val elasticQuery = ElasticQuery(
-          single,
-          collection.immutable.Seq(single.sources: _*),
-          sql = Some(query),
-          explodeNested = single.explodeNested
-        )
-        this match {
-          case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
-            // A row query is data-bound, not time-bound: every page request below
-            // carries its own timeout, so the stream always terminates.
-            Await.result(
-              scrollRows(scrollApi, single, elasticQuery),
-              Duration.Inf
-            )
-          case _ =>
-            if (single.windowRowQuery)
-              searchWithWindowEnrichment(single)
-            else
-              singleSearch(
-                elasticQuery,
-                single.fieldAliases,
-                single.sqlAggregations,
-                extractOutputFieldNames(single),
-                single.nestedHitsMappings,
-                rowInvariantsOf(single)
-              )
+        resolveWithSchema(parsed) match {
+          case ElasticSuccess(single) => searchResolved(single, query)
+          case ElasticFailure(error)  => ElasticResult.failure(error)
         }
 
       case parsed: MultiSearch =>
@@ -552,12 +525,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           elasticQueries,
           multiple.fieldAliases,
           multiple.sqlAggregations,
-          // ⚠️ Pre-existing simplification, untouched: the output NAMES come from the FIRST leg
-          // only. The row-invariant CONSTANTS below are per-leg, because each leg may declare its
-          // own (#253 FOLD-IN 1).
-          multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty),
+          // The result's column NAMES come from the FIRST leg (SQL-92 §7.10). Everything a leg
+          // needs to build its OWN rows — aliases, projection, nested-hits mapping — travels
+          // per leg below, as do the row-invariant CONSTANTS (#253 FOLD-IN 1).
+          unionAllOutputFieldNames(multiple),
           multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
-          multiple.requests.map(rowInvariantsOf)
+          multiple.requests.map(rowInvariantsOf),
+          unionAllLegProjections(multiple)
         )
 
       case _ =>
@@ -755,7 +729,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
     elasticQueries.queries.flatMap { elasticQuery =>
       validateJson("search", elasticQuery.query).map(error =>
@@ -797,7 +772,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             fields,
             nestedHits,
             elasticQueries.explodeNested,
-            rowInvariants = rowInvariants
+            rowInvariants = rowInvariants,
+            legProjections = legProjections
           )
         ) match {
           case success @ ElasticSuccess(_) =>
@@ -884,29 +860,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
       case parsed: SingleSearch =>
         // #276 -- resolve temporal literals against the mapped `date` columns BEFORE rendering
-        val single = resolveWithSchema(parsed) match {
-          case ElasticSuccess(resolved) => resolved
-          case ElasticFailure(error)    => return Future.successful(ElasticResult.failure(error))
-        }
-        val elasticQuery = ElasticQuery(
-          single,
-          collection.immutable.Seq(single.sources: _*)
-        )
-        this match {
-          case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
-            scrollRows(scrollApi, single, elasticQuery)
-          case _ =>
-            if (single.windowRowQuery)
-              Future.successful(searchWithWindowEnrichment(single))
-            else
-              singleSearchAsync(
-                elasticQuery,
-                single.fieldAliases,
-                single.sqlAggregations,
-                extractOutputFieldNames(single),
-                single.nestedHitsMappings,
-                rowInvariantsOf(single)
-              )
+        resolveWithSchema(parsed) match {
+          case ElasticSuccess(single) => searchResolvedAsync(single)
+          case ElasticFailure(error)  => Future.successful(ElasticResult.failure(error))
         }
 
       case parsed: MultiSearch =>
@@ -929,11 +885,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           elasticQueries,
           multiple.fieldAliases,
           multiple.sqlAggregations,
-          // ⚠️ Pre-existing simplification, untouched: the output NAMES come from the FIRST leg
-          // only. The row-invariant CONSTANTS below are per-leg (#253 FOLD-IN 1).
-          multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty),
+          // See `search`'s arm: first leg names the columns, every leg builds its own rows.
+          unionAllOutputFieldNames(multiple),
           multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
-          multiple.requests.map(rowInvariantsOf)
+          multiple.requests.map(rowInvariantsOf),
+          unionAllLegProjections(multiple)
         )
 
       case _ =>
@@ -1088,7 +1044,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     aggregations: ListMap[String, SQLAggregation],
     fields: Seq[String] = Seq.empty,
     nestedHits: Map[String, Seq[(String, String)]] = Map.empty,
-    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty
+    rowInvariants: Seq[ListMap[String, Any]] = Seq.empty,
+    legProjections: Seq[LegProjection] = Seq.empty
   )(implicit
     ec: ExecutionContext,
     context: ConversionContext
@@ -1113,7 +1070,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
               fields,
               nestedHits,
               elasticQueries.explodeNested,
-              rowInvariants = rowInvariants
+              rowInvariants = rowInvariants,
+              legProjections = legProjections
             )
           ) match {
             case success @ ElasticSuccess(_) =>
@@ -2269,13 +2227,87 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     multiple.requests
       .foldLeft(zero) {
         case (ElasticSuccess(acc), leg) =>
-          search(leg) match {
+          // 🔴 [[searchResolved]], not `search` — the legs arrive ALREADY resolved from the seam
+          // in `search`, and `resolveWithSchema` is not a pure check: a leg carrying a WHERE
+          // subquery has its inner statement EXECUTED against Elasticsearch by
+          // `SubqueryResolver`, uncached. Re-entering `search` here resolved every leg a second
+          // time (issue #355); the licensed cap path was repaired the same way in story 22.6 and
+          // this route still had it.
+          searchResolved(leg, leg.sql) match {
             case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
             case ElasticFailure(error) => ElasticResult.failure(error)
           }
         case (failure, _) => failure
       }
       .map(mergeLegResponses(multiple, sql, _))
+  }
+
+  /** Execute a SingleSearch whose schema and temporal literals are ALREADY resolved.
+    *
+    * The body `search`'s `SingleSearch` arm used to inline, lifted so that a caller holding a
+    * resolved statement can execute it without paying for — or re-running — the resolution (issue
+    * #355). `search` reaches it through `resolveWithSchema`; `unionAllByLeg` reaches it with the
+    * legs that seam already resolved.
+    */
+  private def searchResolved(single: SingleSearch, sql: String)(implicit
+    context: ConversionContext
+  ): ElasticResult[ElasticResponse] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
+    val elasticQuery = ElasticQuery(
+      single,
+      collection.immutable.Seq(single.sources: _*),
+      sql = Some(sql),
+      explodeNested = single.explodeNested
+    )
+    this match {
+      case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
+        // A row query is data-bound, not time-bound: every page request below
+        // carries its own timeout, so the stream always terminates.
+        Await.result(
+          scrollRows(scrollApi, single, elasticQuery),
+          Duration.Inf
+        )
+      case _ =>
+        if (single.windowRowQuery)
+          searchWithWindowEnrichment(single)
+        else
+          singleSearch(
+            elasticQuery,
+            single.fieldAliases,
+            single.sqlAggregations,
+            extractOutputFieldNames(single),
+            single.nestedHitsMappings,
+            rowInvariantsOf(single)
+          )
+    }
+  }
+
+  /** The async twin of [[searchResolved]]. */
+  private def searchResolvedAsync(single: SingleSearch)(implicit
+    ec: ExecutionContext,
+    context: ConversionContext
+  ): Future[ElasticResult[ElasticResponse]] = {
+    implicit def timestamp: Long = System.currentTimeMillis()
+    val elasticQuery = ElasticQuery(
+      single,
+      collection.immutable.Seq(single.sources: _*)
+    )
+    this match {
+      case scrollApi: ScrollApi if single.returnsRows && requiresScrollPaging(single.limit) =>
+        scrollRows(scrollApi, single, elasticQuery)
+      case _ =>
+        if (single.windowRowQuery)
+          Future.successful(searchWithWindowEnrichment(single))
+        else
+          singleSearchAsync(
+            elasticQuery,
+            single.fieldAliases,
+            single.sqlAggregations,
+            extractOutputFieldNames(single),
+            single.nestedHitsMappings,
+            rowInvariantsOf(single)
+          )
+    }
   }
 
   /** The async twin. Sequential futures — same shape, same memory argument. */
@@ -2289,7 +2321,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       .foldLeft(zero) { (accF, leg) =>
         accF.flatMap {
           case ElasticSuccess(acc) =>
-            searchAsync(leg).map {
+            // Already resolved by the seam — see `unionAllByLeg` (issue #355).
+            searchResolvedAsync(leg).map {
               case ElasticSuccess(r)     => ElasticResult.success(acc :+ r)
               case ElasticFailure(error) => ElasticResult.failure(error)
             }
@@ -2301,54 +2334,110 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
   /** THE row contract of a `UNION ALL`, in one place, for every route that concatenates legs.
     *
-    * A `UNION ALL` has three execution routes — the one-shot `_msearch`, the per-leg route below,
+    * A `UNION ALL` has three execution routes — the one-shot `_msearch`, the per-leg route above,
     * and `CoreDqlExtension`'s licensed cap fold — and a caller must not be able to tell them apart
-    * from the rows. The contract is the one the ONE-SHOT path already implements, because that is
-    * the route every bounded statement has always taken: [[ElasticConversion.rowNormalizer]] over
-    * the FIRST branch's output names.
+    * from the rows.
     *
-    * 🔴 BY NAME, not by position, and the difference is a wrong answer rather than a cosmetic one.
-    * An earlier draft of this story re-keyed positionally "because that is what the one-shot path
-    * does" — it is not: `multiSearch` hands `requests.head`'s names to `parseResponseTree`, which
-    * applies `rowNormalizer`, a name-keyed lookup that null-fills a miss and appends an extra.
-    * MEASURED by the independent review on real ES 8.18, `SELECT category, tag FROM l UNION ALL
-    * SELECT tag, category FROM r` (legal — same arity, same type) came back from the positional
-    * re-key with `category` holding the TAG and `tag` holding the CATEGORY, HTTP 200, while the
-    * one-shot route bound each value to its own name. A `SELECT *` leg was worse: its own names are
-    * unknown to `extractOutputFieldNames`, so `zip` put the id under `category` and DROPPED the
-    * columns past the first branch's width.
+    * 🔴 SQL-92 §7.10 matches set-operation branches BY ORDINAL POSITION, never by name: the
+    * branches must agree on DEGREE and on the type of the i-th column, and the result takes the
+    * FIRST branch's names. `CORRESPONDING` — the optional clause that asks for name-based matching
+    * — is the proof, because nobody adds an opt-in for the behaviour they already have (almost
+    * nobody implements it; DuckDB went the other way and added a non-standard `UNION BY NAME`).
     *
-    * The returned function hoists every stream-constant decision (the name array, the index, the
-    * context) ONCE per statement; it is applied per row on the un-LIMITed extraction path, where
-    * "per row" can mean millions (`feedback_no_per_row_hot_path_work`).
+    * Every route used to look the first branch's names up IN THE LEG'S ROW, which is the path of
+    * least resistance from a wire format that is a name → value map — and a wrong answer with HTTP
+    * 200 (issue #354). MEASURED on real ES 8.18:
     *
-    * A first branch of `SELECT *` yields NO names — `rowNormalizer` is then `identity` and every
-    * leg keeps what Elasticsearch returned, which is the only honest answer for an opaque
-    * projection.
+    *   - `SELECT a, b FROM x UNION ALL SELECT a, a FROM y` — both parse-time guards admit it (same
+    *     degree, same types) and column 2 of branch 2 came back NULL;
+    *   - `SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r` — `MultiSearch.fieldAliases`
+    *     merges the branches' maps keyed by SOURCE field, so one of `x`/`y` survived and EVERY row,
+    *     branch 1's own included, answered `{x -> null, y -> …}`.
     *
-    * ⚠️ One shape where the routes still differ, measured on real ES 8.18 rather than assumed:
-    * `SELECT id AS x FROM l UNION ALL SELECT id AS y FROM r` — the one-shot route answers `{x ->
-    * null, y -> …}` for EVERY row including branch 1's own, because it never applies a leg's own
-    * alias mapping; the per-leg routes answer `{x -> …}` for branch 1. That is a PRE-EXISTING
-    * defect of the one-shot path, and the better of the two answers is the one the routes here give
-    * — propagating it to make the three agree would be aligning to a bug.
+    * 🔴 The trap in the fix, and the reason this takes a NAME LIST rather than a row: "position"
+    * means the index into the branch's DECLARED projection, never an index into whatever order the
+    * row map happens to enumerate. A story-22.6 draft derived it from `row.keys` and put values
+    * under the wrong column names — HTTP 200 again, and strictly harder to detect than the
+    * raggedness it replaced, because the column names looked right.
+    *
+    * Two shapes are therefore left matched BY NAME on purpose, not by omission:
+    *
+    *   - a FIRST branch of `SELECT *` yields no names, so there is nothing to match against and
+    *     every leg keeps its OWN projection (its own names, its own aliases — never the merged map,
+    *     see [[unionAllLegProjections]]), which is what that leg would answer on its own;
+    *   - an OPAQUE leg (`SELECT *` past the first branch) declares no projection of its own —
+    *     `MultiSearch.declared` is `None` for it and the arity/type guards exempt it — so its rows
+    *     arrive in `_source` order and a positional `zip` would put the id under the first branch's
+    *     first column and DROP everything past its width. It keeps the first branch's names, looked
+    *     up by name, which is the only matching an opaque projection admits.
+    *
+    * The returned functions hoist every stream-constant decision (the name arrays, the index, the
+    * context) ONCE per statement; one is applied per row on the un-LIMITed extraction path, where
+    * "per row" can mean millions (`feedback_no_per_row_hot_path_work`). Where the branches agree on
+    * their column names — the overwhelmingly common case — every mapper is `rowNormalizer` itself,
+    * fast path and all, so a `UNION ALL` of homogeneous branches pays exactly what it paid before.
+    *
+    * @return
+    *   ONE mapper per leg, in leg order.
     */
-  private[client] def unionAllRowNormalizer(
+  private[client] def unionAllRowMappers(
     multiple: MultiSearch
-  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
-    rowNormalizer(multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty))
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any] => ListMap[String, Any]] = {
+    val outputFields = unionAllOutputFieldNames(multiple)
+    if (outputFields.isEmpty) multiple.requests.map(_ => identity[ListMap[String, Any]] _)
+    else
+      multiple.requests.map { leg =>
+        rowProjector(unionAllLegFieldNames(leg, outputFields), outputFields)
+      }
+  }
 
-  /** ONE merge, two callers; the row contract is [[unionAllRowNormalizer]]'s. */
+  /** The names the result's columns take: the FIRST branch's, SQL-92 §7.10. */
+  private def unionAllOutputFieldNames(multiple: MultiSearch): Seq[String] =
+    multiple.requests.headOption.map(extractOutputFieldNames).getOrElse(Seq.empty)
+
+  /** The projection a leg's rows are BUILT from — its own, or the result's names when the leg is an
+    * opaque `SELECT *` that declares none (see [[unionAllRowMappers]]).
+    */
+  private def unionAllLegFieldNames(leg: SingleSearch, outputFields: Seq[String]): Seq[String] = {
+    val own = extractOutputFieldNames(leg)
+    if (own.isEmpty) outputFields else own
+  }
+
+  /** Everything each leg of a one-shot `_msearch` needs to build ITS OWN rows (issue #354).
+    *
+    * 🔴 Emitted even when the FIRST branch declares no projection, and that is not cosmetic: with
+    * no projections `parseMultiSearchResponse` falls back to `multiple.fieldAliases`, which merges
+    * the branches' maps keyed by the SOURCE field — so `SELECT * FROM t UNION ALL SELECT id AS x
+    * FROM l UNION ALL SELECT id AS y FROM r` kept ONE of `x`/`y` and renamed BOTH later legs with
+    * it. That is #354 case 2's exact mechanism, surviving behind an opaque first branch. There is
+    * still nothing to RENAME to (the result has no declared names), so each leg simply keeps its
+    * own — which is precisely what `search(leg)` gives the per-leg route, so the two agree.
+    */
+  private def unionAllLegProjections(multiple: MultiSearch): Seq[LegProjection] = {
+    val outputFields = unionAllOutputFieldNames(multiple)
+    multiple.requests.map { leg =>
+      LegProjection(
+        leg.fieldAliases,
+        unionAllLegFieldNames(leg, outputFields),
+        leg.nestedHitsMappings
+      )
+    }
+  }
+
+  /** ONE merge, two callers; the row contract is [[unionAllRowMappers]]'s. */
   private def mergeLegResponses(
     multiple: MultiSearch,
     sql: String,
     responses: Seq[ElasticResponse]
   )(implicit context: ConversionContext): ElasticResponse = {
-    val normalise = unionAllRowNormalizer(multiple)
+    val mappers = unionAllRowMappers(multiple)
     ElasticResponse(
       Some(sql),
       responses.map(_.query).mkString("\n"),
-      responses.flatMap(_.results.map(normalise)),
+      responses.zipWithIndex.flatMap { case (response, leg) =>
+        val normalise = mappers.applyOrElse(leg, (_: Int) => identity[ListMap[String, Any]] _)
+        response.results.map(normalise)
+      },
       multiple.fieldAliases,
       toClientAggregations(multiple.sqlAggregations)
     )
