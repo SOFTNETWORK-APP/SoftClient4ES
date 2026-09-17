@@ -30,6 +30,8 @@ DQL supports:
 - [ORDER BY](#order-by)
 - [LIMIT / OFFSET](#limit--offset)
 - [Set operators](#set-operators)
+- [Subqueries and derived tables](#subqueries-and-derived-tables)
+- [Common table expressions](#common-table-expressions)
 - [JOIN UNNEST](#join-unnest)
 - [Aggregations](#aggregations)
 - [Parent-Level Aggregations on Nested Arrays](#parent-level-aggregations-on-nested-arrays)
@@ -196,9 +198,9 @@ spelling, and may carry a qualifier:
 ```sql
 SELECT category FROM `bi_events`;
 SELECT category FROM "bi_events";
-SELECT category FROM `elastic`.`bi_events` `bi_events`;
-SELECT category FROM "elastic"."bi_events" AS e;
-SELECT o.id FROM `elastic`.`orders` o JOIN `elastic`.`customers` c ON o.cid = c.id;
+SELECT category FROM `prod_eu`.`bi_events` `bi_events`;
+SELECT category FROM "prod_eu"."bi_events" AS e;
+SELECT o.id FROM `prod_eu`.`orders` o JOIN `prod_eu`.`customers` c ON o.cid = c.id;
 ```
 
 ### Quoting is what makes a dot a qualifier
@@ -210,11 +212,11 @@ dot; the index name is everything after that run.** Nothing else separates the t
 | Written | Index read | Qualifier |
 | ------- | ---------- | --------- |
 | `FROM bi_events` | `bi_events` | — |
-| `FROM elastic.bi_events` | `elastic.bi_events` | — (a bare dot is part of the name) |
+| `FROM prod_eu.bi_events` | `prod_eu.bi_events` | — (a bare dot is part of the name) |
 | `FROM logs-2025.03` | `logs-2025.03` | — |
-| `FROM "elastic".bi_events` | `bi_events` | `elastic` |
-| ``FROM `elastic`.bi_events`` | `bi_events` | `elastic` |
-| `FROM "elastic"."bi_events"` | `bi_events` | `elastic` |
+| `FROM "prod_eu".bi_events` | `bi_events` | `prod_eu` |
+| ``FROM `prod_eu`.bi_events`` | `bi_events` | `prod_eu` |
+| `FROM "prod_eu"."bi_events"` | `bi_events` | `prod_eu` |
 | `FROM "logs-2025.03"` | `logs-2025.03` | — (the dot is *inside* the quotes) |
 | `FROM "elasticsearch"."prod-cluster"."bi_events"` | `bi_events` | `elasticsearch`, `prod-cluster` |
 
@@ -255,9 +257,9 @@ Qualifiers used to be dropped from the re-rendered SQL. They are not any more �
 statement carries the qualifier the original had, canonicalised to the ANSI double quote:
 
 ```sql
-SELECT category FROM `elastic`.`bi_events`
+SELECT category FROM `prod_eu`.`bi_events`
 -- renders as
-SELECT category FROM "elastic"."bi_events"
+SELECT category FROM "prod_eu"."bi_events"
 ```
 
 Unlike a column name, a table name is quoted as **one lexeme** — `FROM "logs-2025.03"`, never
@@ -745,6 +747,249 @@ own nested query, so the whole statement routes there.
   drop the catalog prefix.
 - **`CORRESPONDING` / `CORRESPONDING BY`** — SQL's opt-in for name-based matching. Not implemented;
   positional matching is the only mode.
+
+---
+
+## Subqueries and derived tables
+
+*Since engine `0.24.0`.* A subquery is a `SELECT` nested inside another statement. Two positions are
+accepted, and they behave very differently — one runs on Elasticsearch, the other on the relational
+engine:
+
+| Position | Spelling | Where it runs |
+| --- | --- | --- |
+| `FROM` / `JOIN` — a **derived table** | `FROM (SELECT …) AS d`, `JOIN (SELECT …) AS d ON …` | relational engine (arrow-extensions `0.3.4`) |
+| `WHERE`, **uncorrelated** | `IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified | **Elasticsearch**, in two phases — every venue, the plain REPL included |
+| `WHERE`, **correlated** (the body reads an outer alias) | the same spellings | relational engine |
+
+That middle row is the one worth remembering: *"subqueries are supported"* is true everywhere for the
+uncorrelated `WHERE` forms and only at an engine venue for the other two. See
+[Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine) for the
+per-venue table.
+
+### Derived tables
+
+A derived table is a `SELECT` in `FROM` or `JOIN` position. **The alias is mandatory** — SQL-92 calls
+it a correlation name — and leaving it off is refused by name rather than guessed at:
+
+```sql
+SELECT d.country, d.total
+FROM (SELECT country, SUM(amount) AS total FROM orders GROUP BY country) AS d
+WHERE d.total > 1000;
+```
+
+`AS` is optional (`… ) d` is the same thing), so the SQL the BI tools generate on their own —
+Tableau's connection and row-count probes, Superset's series limit — is accepted as written.
+
+```sql
+-- in JOIN position
+SELECT o.id, d.total
+FROM orders o
+JOIN (SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id) AS d
+  ON o.customer_id = d.customer_id;
+```
+
+Bodies **nest to any depth**, and a body may itself carry a `JOIN`, a `GROUP BY`, its own `ORDER BY`
+/ `LIMIT`, or a set operation:
+
+```sql
+-- a set operation grouped by a derived table, the spelling that replaces parentheses
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g;
+
+-- the body's LIMIT bounds the body; the outer statement is ordered and limited separately
+SELECT d.total FROM (SELECT SUM(amount) AS total FROM orders GROUP BY country) AS d
+ORDER BY d.total DESC LIMIT 5;
+```
+
+A body written as `SELECT *` is **opaque**: it declares no column list, so the engine cannot know its
+width until the index mapping is read. That is legal and is exactly what the BI probes emit:
+
+```sql
+SELECT MAX(1) AS TblMax FROM (SELECT * FROM orders) t;
+```
+
+#### How an unqualified name resolves — a deliberate deviation from SQL-92
+
+When a name in the outer query is **not** qualified with an alias, it resolves to the sole plain
+index in the `FROM` clause, **not** to the derived table — even though the derived table is also in
+scope:
+
+```sql
+SELECT country, SUM(amount) AS total
+FROM orders
+JOIN (SELECT country AS c2 FROM orders GROUP BY country) AS d ON country = c2
+GROUP BY country;
+-- `country` and `amount` resolve against `orders`; `c2` is the only name `d` projects.
+```
+
+Strict SQL-92 would call `country` ambiguous. Resolving it this way is what makes Superset's
+series-limit query — which projects renamed columns from its inner query precisely so the outer names
+stay unambiguous — run as written. **Qualify the name** (`orders.country`, `d.c2`) whenever you want
+to be explicit; a qualified name always wins.
+
+#### Column aliases on the derived table itself
+
+`FROM (SELECT id FROM orders) AS d (x)` — a column list on the correlation name — is **not
+supported**. Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`.
+
+### Subqueries in `WHERE`
+
+Six spellings, all accepted in a `SELECT`, a `DELETE` and an `UPDATE`:
+
+```sql
+SELECT name FROM employees WHERE department_id IN     (SELECT id FROM departments WHERE region = 'EU');
+SELECT name FROM employees WHERE department_id NOT IN (SELECT id FROM departments WHERE region = 'EU');
+SELECT name FROM customers c WHERE EXISTS     (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+SELECT name FROM employees WHERE salary > (SELECT AVG(salary) FROM employees);
+SELECT name FROM employees WHERE department_id = ANY  (SELECT id FROM departments);
+SELECT name FROM employees WHERE department_id <> ALL (SELECT id FROM departments);
+```
+
+`SOME` is a synonym for `ANY`. The ordering quantifiers (`> ALL`, `>= ANY`, `< ALL`, `<= SOME`, …) are
+accepted too and are reduced against the value list rather than sent to Elasticsearch as such.
+
+```sql
+DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+UPDATE orders SET status = 'eu' WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+```
+
+#### The comparison must be written subquery-on-the-right
+
+A scalar or quantified subquery is accepted only on the **right-hand side** of the comparison.
+`WHERE (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) > 5` is rejected — and the message
+it produces (`Unbalanced parentheses`) does not say why. Flip the comparison:
+
+```sql
+-- rejected
+-- SELECT c.name FROM customers c WHERE (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) > 5;
+
+-- accepted, same meaning
+SELECT c.name FROM customers c WHERE 5 < (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id);
+```
+
+#### How an uncorrelated `WHERE` subquery executes
+
+In **two phases**, both on Elasticsearch, which is why these forms work at every venue including the
+plain REPL:
+
+1. The inner query runs first, and its distinct values are collected.
+2. Those values are injected into the outer query as a literal `terms` filter, and the outer query
+   runs as an ordinary search.
+
+The inner result set is therefore **bounded**: past `index.max_terms_count` (65,536 by default) the
+statement fails loudly rather than truncating silently. Narrow the inner query, or raise the index
+setting.
+
+Elasticsearch's own `terms` lookup is not what this uses and could not be: it reads **one document by
+id**, and cannot express a query.
+
+#### `NOT IN` and `NULL`
+
+Standard SQL three-valued logic applies. If the inner query returns **any** `NULL`, `x NOT IN
+(SELECT …)` is UNKNOWN for every row and the statement returns nothing. That is correct SQL and a
+frequent surprise — add `WHERE <col> IS NOT NULL` to the inner query when the column is nullable.
+
+> **One carve-out, and it fails the other way.** The engine detects the `NULL` by re-running the
+> inner query with an `IS NULL` filter. When the inner query carries a `GROUP BY`, that probe is a
+> grouped query too, and Elasticsearch's `terms` aggregation **drops the missing-value group** — so
+> a `NULL` in a `GROUP BY` body is invisible and `NOT IN` returns rows the rule above says it
+> should not. Filter the `NULL` out explicitly in that body rather than relying on the detection.
+
+### Correlated subqueries
+
+A subquery whose body reads a column from the enclosing query is **correlated**, and it runs on the
+relational engine:
+
+```sql
+SELECT c.name FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+```
+
+Two rules the engine enforces, both by name:
+
+- **The outer reference must be qualified, and unquoted.** Inside a body, a bare name is read as the
+  body's own column — `… WHERE o.customer_id = id` correlates nothing and quietly means something
+  else — so the outer alias is required.
+- **The body must be a single Elasticsearch source.** Its own `JOIN`, a comma-separated `FROM`, a
+  `JOIN UNNEST`, a derived table or a window function inside the body are refused; move the construct
+  to the outer `FROM` and correlate against it.
+
+A correlated subquery costs one relational operation against your plan's `maxJoins` allowance; a
+derived table costs nothing on its own. See
+[Known Limitations & Roadmap](known_limitations.md#licensing).
+
+### What is not supported
+
+- **A subquery in the `SELECT` list** — `SELECT (SELECT MAX(amount) FROM orders) AS m …` does not
+  parse.
+- **A subquery in `HAVING`** — any subquery, correlated or not, refused by name. Compute the value
+  separately or move the condition to `WHERE`.
+- **`LATERAL`** — a derived table that reads an alias from the enclosing `FROM`. Refused by name, with
+  the rewrite in the message.
+- **A set-operation body** — `IN (SELECT … UNION ALL SELECT …)`. Write one subquery per branch.
+- **A `FROM`-less body** — `IN (SELECT 1)`. Write the literal list.
+- **More than one projected column** in an `IN` / quantified / scalar body.
+
+---
+
+## Common table expressions
+
+*Since engine `0.24.0`.* A `WITH` clause names one or more subqueries at the top of a `SELECT`:
+
+```sql
+WITH monthly AS (SELECT category, SUM(amount) AS total FROM orders GROUP BY category)
+SELECT category, total FROM monthly;
+```
+
+A CTE reference **is** a derived table — the same construct under a name — so a statement carrying a
+`WITH` runs where derived tables run: on the relational engine, at a venue that has it.
+
+### Scope is left to right
+
+Each CTE may reference the CTEs declared **before** it, never itself and never a later one:
+
+```sql
+WITH a AS (SELECT id FROM orders),
+     b AS (SELECT id FROM a)
+SELECT id FROM b;
+```
+
+A CTE may be referenced wherever the statement reads a table — in `FROM` and in a `JOIN`:
+
+```sql
+WITH eu AS (SELECT id FROM departments WHERE region = 'EU')
+SELECT e.name FROM employees e JOIN eu ON e.department_id = eu.id;
+```
+
+Naming a CTE inside a **`WHERE` subquery body** parses, but a subquery body must be a single
+Elasticsearch source, so whether the engine accepts a CTE reference there is not something this page
+states. Read the CTE in `FROM` or `JOIN` instead.
+
+### A CTE referenced twice is executed twice
+
+The semantics are **inline**, not materialised: naming a CTE does not cache it. A CTE referenced
+twice runs twice, which costs twice and — on a changing index — may not return identical rows both
+times.
+
+```sql
+WITH m AS (SELECT category, SUM(amount) AS total FROM orders GROUP BY category)
+SELECT l.category, l.total, r.total AS again FROM m l JOIN m r ON l.category = r.category;
+```
+
+### What is not supported
+
+- **`WITH RECURSIVE`** — refused by name. There is no rewrite that recovers arbitrary-depth
+  recursion; flatten the hierarchy at index time (store a path or a level on each document), or run
+  one statement per level.
+- **CTE column lists** — `WITH a (x, y) AS (…)`. Alias the columns in the CTE's own `SELECT` list.
+- **A body that names the CTE itself** — `WITH orders AS (SELECT … FROM orders)` is refused, with a
+  rename suggested in the message. PostgreSQL binds such a name to the base table; this engine does
+  not guess. Give the CTE a different name.
+- **`WITH` anywhere but the top of a `SELECT`** — not in a subquery body, not in `CREATE TABLE … AS
+  SELECT`, not in `INSERT … SELECT`, not in a materialized view.
+
+A column or alias genuinely named `recursive` still works — quote it (`WITH "recursive" AS (…)`).
 
 ---
 
@@ -1436,8 +1681,8 @@ For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
-- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements and the residual limits. Set operators — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported too; see [Set operators](#set-operators). Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a set operation used as a subquery body.
-- **Since engine `0.24.0`**, non-recursive CTEs (`WITH name AS (SELECT …)`) are supported at the top of a `SELECT`, each one able to reference the CTEs declared before it. Still not supported: `WITH RECURSIVE`, CTE column lists (`WITH a (x, y) AS …`), a CTE body that names the CTE itself, and a `WITH` clause anywhere other than the top of a `SELECT` (not in a subquery body, CTAS, `INSERT … SELECT` or a materialized view).
+- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Subqueries and derived tables](#subqueries-and-derived-tables) for the reference and [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements. Set operators — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported too; see [Set operators](#set-operators). Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a set operation used as a subquery body.
+- **Since engine `0.24.0`**, non-recursive CTEs (`WITH name AS (SELECT …)`) are supported at the top of a `SELECT`, each one able to reference the CTEs declared before it — see [Common table expressions](#common-table-expressions). Still not supported: `WITH RECURSIVE`, CTE column lists (`WITH a (x, y) AS …`), a CTE body that names the CTE itself, and a `WITH` clause anywhere other than the top of a `SELECT` (not in a subquery body, CTAS, `INSERT … SELECT` or a materialized view).
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`
 - No explicit window frame clauses (`ROWS BETWEEN ...`)

@@ -26,12 +26,14 @@ Two different things can stop a BI tool here, and it is worth separating them.
 - **Looker** — Looker connects only through drivers it maintains itself, and it allowlists JDBC parameters
   per dialect, so a customer-supplied driver cannot be introduced. This gap is **structural, not
   commercial** — a licence would not close it.
+- **dbt** — dbt requires a dedicated adapter plugin per platform. There is no generic JDBC or ODBC adapter,
+  and no SoftClient4ES adapter.
 
-Neither is a gap we can close from our side: each needs either a change by the vendor or a driver plugin
-that nobody has written.
+None of these is a gap we can close from our side: each one needs either a change by the vendor or a driver
+or adapter plugin that nobody has written.
 
-*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query
-and Looker — on 2026-08-31 and 2026-09-01.)*
+*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query,
+Looker and dbt — on 2026-08-31 and 2026-09-01.)*
 
 ### Tools that generate nested SQL for you
 
@@ -167,6 +169,12 @@ Each of these is rejected by name, never silently mis-executed:
 - **A correlated body that is not a single Elasticsearch source** — its own `JOIN`, comma-separated `FROM`,
   `JOIN UNNEST`, derived table or window function. Move the construct to the outer `FROM` and correlate
   against it.
+- **A scalar or quantified subquery on the LEFT of the comparison.** `WHERE (SELECT COUNT(*) FROM orders o
+  WHERE o.customer_id = c.id) > 5` is rejected, and the message it produces (`Unbalanced parentheses`) does
+  not say why. Flip the comparison — `WHERE 5 < (SELECT COUNT(*) …)` means the same thing and is accepted.
+  The subquery must be the right-hand operand.
+- **A column list on the derived table's correlation name** — `FROM (SELECT id FROM orders) AS d (x)`.
+  Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`.
 
 ### Licensing
 
@@ -257,10 +265,10 @@ they do **not** cover yet:
   `FROM "logs-2025.03"` — or leave it bare (`FROM logs-2025.03`). All three read the index
   `logs-2025.03`.
 
-- **A qualifier must be quoted from the FIRST part.** `FROM elastic."bi_events"` mixes the
+- **A qualifier must be quoted from the FIRST part.** `FROM prod_eu."bi_events"` mixes the
   spellings, so the leading run of quoted parts is empty and the whole operand is read as ONE index
-  name, `elastic.bi_events`. Quote the first part too (`FROM "elastic"."bi_events"`) if you meant
-  `elastic` as a qualifier, or leave both bare if you meant the dotted index name.
+  name, `prod_eu.bi_events`. Quote the first part too (`FROM "prod_eu"."bi_events"`) if you meant
+  `prod_eu` as a qualifier, or leave both bare if you meant the dotted index name.
 
 - **A dot inside a quoted COLUMN name is still a qualifier.** `` SELECT `a.b` FROM t `` is read as
   the column `b` qualified by `a`, exactly as `SELECT a.b` is — there is no way to address an
@@ -271,7 +279,7 @@ they do **not** cover yet:
   qualified name; `SELECT a . b` is rejected, and so is a name left with a trailing dot
   (`ORDER BY b. DESC`). This is deliberate: when the dot was allowed to float, `ORDER BY b. DESC`
   silently parsed as a column named `b.DESC` sorted *ascending*. A **table**-name qualifier is
-  deliberately more tolerant (`FROM "elastic" . bi_events` is accepted), because that spelling has
+  deliberately more tolerant (`FROM "prod_eu" . bi_events` is accepted), because that spelling has
   always been accepted there and tightening it would have moved which index the statement reads.
 
 - **A qualifier shares a namespace with a real dotted index name.** When one `FROM` names the same
@@ -293,6 +301,7 @@ they do **not** cover yet:
 
 - **Recursive CTEs** (`WITH RECURSIVE …`) and **CTE column lists** (`WITH a (x, y) AS …`), both refused by name. Plain non-recursive CTEs work since engine `0.24.0`, with two further limits: a `WITH` clause is accepted only at the top of a `SELECT` (not inside a subquery body, CTAS, `INSERT … SELECT` or a materialized view), and a CTE body may not name the CTE itself — unlike PostgreSQL, which binds such a name to the base table, this engine rejects it.
 - **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
+- **MySQL's null-safe equality operator `<=>`** (`a <=> b`, i.e. `a = b OR (a IS NULL AND b IS NULL)`). A BI tool set to a MySQL dialect can emit it in a `JOIN … ON`. Write the expansion, or `=` when neither side is nullable.
 
 When they arrive they will be a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
 
