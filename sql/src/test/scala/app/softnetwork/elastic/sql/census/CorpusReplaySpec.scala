@@ -188,13 +188,20 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       if (!Scores.contains(a.scored)) {
         sys.error(s"scored '${a.scored}' is not one of ${Scores.toList.sorted.mkString(", ")}")
       }
-      // Story 22.7 widened this from `owner == "epic21"` to the two SHIPPED epics. It stays an
-      // IMPLICATION, not a biconditional: `epic22` legitimately owns a row that parses and is NOT
-      // scored (see `Epic22UnmeasuredIds`), which is the state PD-3 exists to make representable.
-      if (a.scored == "fixed" && !Set("epic21", "epic22").contains(a.owner)) {
+      // Story 22.7 widened this from `owner == "epic21"` to the two SHIPPED epics, plus ONE
+      // enumerated exception (lead ruling 2026-09-17, `Issue328FixedIds`). It stays an IMPLICATION,
+      // not a biconditional: `epic22` legitimately owns a row that parses and is NOT scored (see
+      // `Epic22UnmeasuredIds`), which is the state PD-3 exists to make representable.
+      if (
+        a.scored == "fixed" && !Set("epic21", "epic22").contains(a.owner) &&
+        !Issue328FixedIds.contains(a.captureId)
+      ) {
         sys.error(
           s"scored=fixed requires owner=epic21 or owner=epic22, not '${a.owner}' -- an " +
-          "issue-owned or capability-open row that merely PARSES is not a fix (PD-3)"
+          "issue-owned or capability-open row that merely PARSES is not a fix (PD-3). The ONE " +
+          "exception is enumerated in CorpusReplay.Issue328FixedIds and is not a predicate you " +
+          "may widen: add an id there only with a merged suite asserting that statement's " +
+          "CORRECTNESS, named in its note"
         )
       }
       if (a.scored == "fixed" && a.expected != "parses") {
@@ -378,10 +385,28 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       "the number of SCORED FIXES moved -- if that is intended, move this pin too, and say " +
       "so in the PR: it is the published headline. "
     ) {
-      attribution.values.count(_.scored == "fixed") shouldBe 52
+      attribution.values.count(_.scored == "fixed") shouldBe 56
     }
     withClue("the published headline moved: ") {
-      tallyOf(outcomes, attribution).scoredOf99 shouldBe 64
+      tallyOf(outcomes, attribution).scoredOf99 shouldBe 68
+    }
+    // The ONE enumerated exception to "fixed belongs to a shipped epic" (lead ruling 2026-09-17),
+    // checked in BOTH directions: an id the CODE excepts that the table no longer scores is a
+    // silently DEAD exception, and a row the table scores whose id the CODE does not except is
+    // caught by G7 -- this half names it instead of leaving the diagnosis to G7's message.
+    Issue328FixedIds should have size 4
+    checkAll(Issue328FixedIds.toList.sorted, "the issue:328 scoring exception")(identity) { id =>
+      val a = attributionOf(attribution, id)
+      if (a.scored != "fixed") {
+        sys.error(
+          "the CODE excepts this id so it may score `fixed`, but the table scores it " +
+          s"'${a.scored}'. A dead exception is worse than none: either restore the score, or " +
+          "DELETE the id from Issue328FixedIds."
+        )
+      }
+      if (a.owner != "issue:328") {
+        sys.error(s"owner moved to '${a.owner}' -- the exception is keyed on issue:328's rows")
+      }
     }
     // The owner check is done per OWNER, not per set: `epic22` owns two sets (fixed + unmeasured),
     // so comparing the table's `epic22` rows against either set alone reports the other set's rows
@@ -796,6 +821,32 @@ object CorpusReplay {
     * here is a loud failure.
     */
   val RejectedByDesignIds: Set[String] = Set("tableau.sql92.wx.012")
+
+  /** LEAD RULING 2026-09-17 - the ONE exception to "`scored = fixed` belongs to a shipped epic".
+    *
+    * These four Tableau statements (its per-data-source row-existence probe) carried two defects
+    * recorded under `issue:328`, and BOTH are fixed: `COUNT(<literal>)` emitted an aggregation with
+    * neither `field` nor `script`, and a `HAVING` with no `GROUP BY` was SILENTLY DISCARDED. Their
+    * correctness - not their parse - is asserted by a merged, five-client suite against real
+    * Elasticsearch: `GroupByCompletenessSpec`, *"corpus shape: HAVING with no GROUP BY"* (PR #327),
+    * one row for a true predicate and ZERO rows for a false one. That is exactly story 22.7 AD-10's
+    * bar, so the rows are scored.
+    *
+    * 🔴 It is a COMPILED SINGLETON, never a loosened predicate and never
+    * `owner.startsWith("issue:")`. G7 exists so that `fixed` cannot quietly come to mean "it
+    * parsed"; a widened predicate would hand that meaning to every future `issue:` owner in
+    * silence. An exception a reader can ENUMERATE keeps the rule a rule. The published sentence is
+    * about what the engine ANSWERS, not about which epic earned it.
+    *
+    * If this exception is ever wrong, the fix is to re-score the rows `residual` and DELETE the id
+    * from this set - not to widen the set, and not to edit the attribution table alone.
+    */
+  val Issue328FixedIds: Set[String] = Set(
+    "tableau.mysql.w1.023",
+    "tableau.mysql.w7.048",
+    "tableau.mysql.w7.051",
+    "tableau.sql92.wx.015"
+  )
 
   /** Rejected by a blocker Epic 22 does not own: the MySQL null-safe equality operator `<=>` in the
     * JOIN `ON`. The derived table itself parses (story 22.1's control asserts the `=` spelling of

@@ -126,12 +126,28 @@ guard. It is acceptable only because the verdicts themselves are pinned independ
 against `epic-21-attribution.csv`, and by **G4 / G4b / G4c** against ids COMPILED into
 `CorpusReplay` — so a silent scoreboard move is impossible without also moving an attribution row
 those gates police — **and, since the published total itself is pinned in `CorpusReplay` (G4c
-asserts 52 `fixed` rows and a `scoredOf99` of 64), a headline move reddens in code even for the 50
+asserts 56 `fixed` rows and a `scoredOf99` of 68), a headline move reddens in code even for the 46
 rows that belong to no id set.** Without that pin a two-cell edit to this CSV — re-owning one
 `issue:`/`local:` row to `epic21`/`fixed` — passed every gate but G8, the one gate this file says
 can never be the guard. G8's whole job is to stop the series and the run drifting apart: when the
 scoreboard moves, **append a row, never edit the head**. The gate can police the head; it cannot
 police history.
+
+🔴 **The one case where the head IS edited, and why it is not a loophole.** Append-only exists so
+that a merge which flips a verdict cannot be hidden by moving the expectation. That reasoning has
+three preconditions, and when all three hold it points the other way:
+
+1. **nothing has merged** — the branch has no PR, so no reader has seen the number;
+2. **the number was never published** anywhere outside the branch;
+3. **what changed is the SCORING POLICY, not the tree.**
+
+A series row is one per measured TREE, and the file has no column that could tell two policies on
+one commit apart. Appending a second row for `7187c7d9` would therefore read, to anyone later, as a
+contradiction — it would manufacture a history of a measurement nobody ever took. So the head row is
+edited, and G8 going red until it moves is the mechanism working, not something to route around.
+This happened exactly once: the lead ruling of 2026-09-17 admitted the four `issue:328` rows to
+`fixed` and took the head from 64 to 68 before either number left the branch. **A change to the TREE
+never qualifies** — that is an append, every time.
 
 What the gate does check mechanically, for each historical row: `parses_raw` and `rejected` equal
 the committed baseline that row belongs to, and `scored_of_99 ≤ parses_raw`. The historical
@@ -171,6 +187,15 @@ we are not calling that a fix" unrepresentable.
 Story 22.7 retired `epic22a_derived_table` and `epic22b_cte`: Epic 22 shipped, so an owner meaning
 "needs an epic that has not landed" would own no row, and an owner with no rows is an allow-list
 nobody exercises (G5 would go vacuous on it).
+
+**`issue:328` is the one owner outside a shipped epic whose rows are scored `fixed`** — four Tableau
+row-existence probes, admitted by the lead on 2026-09-17 because a merged five-client suite
+(`GroupByCompletenessSpec`, *"corpus shape: HAVING with no GROUP BY"*, PR #327) asserts their
+CORRECTNESS against real Elasticsearch, which is the bar. 🔴 The admission is an **enumerated set in
+code** (`CorpusReplay.Issue328FixedIds`), never a widened predicate: G7 exists so that `fixed` cannot
+quietly come to mean "it parsed", and `owner.startsWith("issue:")` would hand that meaning to every
+future issue owner in silence. An exception a reader can enumerate keeps the rule a rule. To add
+one, bring a merged suite that asserts the statement's correctness and name it in the `note`.
 
 🔴 **`epic22` + `fixed` is a DECLARATION whose evidence lives in another repository**, and the rule
 that keeps it honest is story 22.7 AD-10's: *a `fixed` row NAMES, in its `note`, the merged suite
@@ -223,6 +248,7 @@ and each gate's failure message says what you are doing:
 | `PreEpicParsesIds` (12) | the pre-Epic-21 no-regression set, so a baseline cell edit cannot shrink it | AC-5 |
 | `DerivedTableParsesIds` (9) / `DerivedTableRejectedIds` (2) / `CteParsesIds` (1) | the SHAPE partition of Epic 22's twelve, and their measured verdicts | G4 |
 | `Epic22FixedIds` (8) / `Epic22UnmeasuredIds` (2) / `RejectedByDesignIds` (1) / `NullSafeEqualityIds` (1) | the SCORING partition of the same twelve — exact (disjoint, union = the twelve) and agreeing with this table in both directions | G4c |
+| `Issue328FixedIds` (4) | the ONE enumerated exception to "`fixed` belongs to a shipped epic" (lead ruling 2026-09-17), checked both ways so a dead exception cannot survive | G4c + G7 |
 | `epic22Texts()` (12) | the statements READ from story 22.1's own `DerivedTableCorpusSpec.rows` (11) plus the CTE witness story 22.5 owns (1): two files, two authors, one TEXT — compared after whitespace collapse, not byte for byte | G9 |
 
 Shape and score are **different questions**, which is why they get different sets — the same reason
@@ -241,8 +267,8 @@ failing gate never leaves the operator blind. (Story 22.7 renamed the directory 
 
 🔴 **The published verb is "SCORES", never "parses"** (lead ruling, 2026-09-13). `N` counts `scored`,
 so a sentence saying the engine *parses* `N` is false on its face whenever any statement parses without
-being counted — and 27 of them do. The summary line reads *"SCORES 64/99 (was 56 after Epic 21, 12
-before it) … 91 PARSE — the 27-row difference is never counted"*, and the raw parse count is stated in
+being counted — and 23 of them do. The summary line reads *"SCORES 68/99 (was 56 after Epic 21, 12
+before it) … 91 PARSE — the 23-row difference is never counted"*, and the raw parse count is stated in
 the same breath so neither number can be quoted alone. The spec's PD-1 writes the verb as "parses";
 that wording is superseded and must not be "corrected" back.
 
