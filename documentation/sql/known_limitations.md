@@ -71,6 +71,8 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 - **Analytical SQL**: `ROW_NUMBER` / `RANK` / `DENSE_RANK`; the `STDDEV` / `VARIANCE` family (`STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`); `PERCENTILE_CONT` / `PERCENTILE_DISC`; window aggregates and `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` over `OVER (PARTITION BY …)`.
 - **Conditionals & null handling**: `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` / `ISNULL` / `ISNOTNULL`.
 - `ORDER BY … NULLS FIRST | NULLS LAST`.
+- **Non-recursive CTEs** — *since engine `0.24.0`*: `WITH name AS (SELECT …)` at the top of a `SELECT`,
+  chained left to right. A CTE reference *is* a derived table, so it runs where derived tables run.
 - **Set operators** — *since engine `0.24.0`*: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` /
   `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. See [Set operators](#set-operators) below.
 - `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It removes *columns*; the `EXCEPT` **set operator** removes *rows*. Both work, and they are unrelated.
@@ -125,6 +127,9 @@ This is the distinction worth knowing before you plan around it.
 | **Uncorrelated** `WHERE` subquery — `IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified | Elasticsearch, in two phases: the inner statement is executed first, then the outer one is rewritten against its values | **No** — works at every venue, including a plain REPL with no extensions |
 | **Correlated** `WHERE` subquery (the body reads an outer alias) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
 | **Derived table** in `FROM` or `JOIN` | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| **Non-recursive CTE** (`WITH name AS (SELECT …)`) | The relational engine — a CTE reference *is* a derived table | **Yes** — arrow-extensions `0.3.4` |
+| **`UNION ALL`** | Elasticsearch, one `_msearch`, branches concatenated in order | **No** — works at every venue |
+| **`UNION` / `INTERSECT` / `EXCEPT`** (with or without `ALL`) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
 
 A venue without that jar does not guess: it refuses the statement with an HTTP 400 naming the construct and
 the jar, rather than executing it against the first index the statement mentions. The JDBC driver, the ADBC
