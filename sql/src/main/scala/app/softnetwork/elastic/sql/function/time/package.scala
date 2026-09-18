@@ -335,8 +335,23 @@ package object time {
     }
   }
 
-  case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript {
-    override def painless(context: Option[PainlessContext]): String = ".get"
+  /** The `EXTRACT` token. It is NOT a `PainlessScript`: the accessor an extraction reads its field
+    * with is decided per FIELD by `TimeField.accessor` and emitted through `FieldAccessor` below
+    * (issue #368). A `.get` here would be a second, silently divergent copy of that decision --
+    * which is the shape of the defect, not a leftover.
+    */
+  case object Extract extends Expr("EXTRACT") with TokenRegex
+
+  /** The Painless accessor an `Extract` reads its field with.
+    *
+    * It is looked up on the FIELD (`TimeField.accessor`) rather than fixed here, because the choice
+    * between `.get` and `.getLong` is decided by the field's value RANGE -- see the scaladoc on
+    * `TimeField.accessor` and issue #368.
+    */
+  case class FieldAccessor(field: TimeField) extends PainlessScript {
+    override def painless(context: Option[PainlessContext]): String = field.accessor
+    override def nullable: Boolean = false
+    override def sql: String = field.sql
   }
 
   case class Extract(field: TimeField)
@@ -345,7 +360,7 @@ package object time {
 
     override val sql: String = Extract.sql
 
-    override def fun: Option[PainlessScript] = Some(Extract)
+    override def fun: Option[PainlessScript] = Some(FieldAccessor(field))
 
     override def args: List[PainlessScript] = List(field)
 
@@ -381,7 +396,9 @@ package object time {
     ): String = {
       callArgs match {
         case arg :: Nil =>
-          s"($arg.get(${field.painless(context)}) + 6) % 7"
+          // Through `field.accessor`, not a literal `.get`, so this hand-written call cannot
+          // disagree with the one `toPainlessCall` assembles for every other field (#368).
+          s"($arg${field.accessor}(${field.painless(context)}) + 6) % 7"
         case _ => throw new IllegalArgumentException("DayOfWeek requires exactly one argument")
       }
     }
@@ -413,7 +430,26 @@ package object time {
   class WeekOfWeekBasedYear extends TimeFieldExtract(WEEK_OF_WEEK_BASED_YEAR)
 
   case object LastDayOfMonth extends Expr("LAST_DAY") with TokenRegex with PainlessScript {
-    override def painless(context: Option[PainlessContext]): String = ".withDayOfMonth"
+
+    /** 🔴 `.with(TemporalAdjusters.lastDayOfMonth())`, and NOT the arithmetic
+      * `.withDayOfMonth(<operand>.lengthOfMonth())` this emitted before issue #368.
+      *
+      * `lengthOfMonth()` exists on `LocalDate` and NOT on `ZonedDateTime`, which is what
+      * `doc['<date field>'].value` actually is -- so `LAST_DAY(<date column>)` failed the whole
+      * query on every supported Elasticsearch and had never worked. It is not enough to insert a
+      * `.toLocalDate()`: the operand reaching here is a `ZonedDateTime` for a bare column but
+      * ALREADY a `LocalDate` wherever a cast or a `SQLTypes.Date` coercion ran first
+      * (`LAST_DAY(CAST(d AS DATE))`, `LAST_DAY(CURRENT_DATE)`, `LAST_DAY(CURRENT_TIMESTAMP)`, and
+      * the whole no-schema path), and `LocalDate` has no `toLocalDate()` -- MEASURED, that swaps
+      * one broken receiver for another.
+      *
+      * `with(TemporalAdjusters.lastDayOfMonth())` is defined on `Temporal`, so it needs no
+      * knowledge of the receiver at all and returns the receiver's own type. Executed on real
+      * Elasticsearch 6.8.23, 7.17.29, 8.18.3 and 9.0.3 over `ZonedDateTime`, `LocalDate` and
+      * `LocalDateTime` receivers -- see `DateDocValueEmissionSpec` for what the emission is pinned
+      * against.
+      */
+    override def painless(context: Option[PainlessContext]): String = ".with"
     override lazy val words: List[String] = List(sql, "LASTDAY")
   }
 
@@ -439,7 +475,8 @@ package object time {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case arg :: Nil => s"$arg${LastDayOfMonth.painless(context)}($arg.lengthOfMonth())"
+        case arg :: Nil =>
+          s"$arg${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
         case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
       }
     }

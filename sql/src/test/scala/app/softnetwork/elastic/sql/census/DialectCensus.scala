@@ -1577,7 +1577,7 @@ object DialectCensus {
       "EXTRACT",
       "EXTRACT",
       FT,
-      """case object Extract extends Expr("EXTRACT") with TokenRegex with PainlessScript""",
+      """case object Extract extends Expr("EXTRACT") with TokenRegex""",
       "SELECT EXTRACT(YEAR FROM created_at) AS y FROM events",
       "2",
       AnsiAdjacent,
@@ -1610,8 +1610,8 @@ object DialectCensus {
       "SELECT LASTDAY(created_at) AS d FROM events",
       "1",
       EsSpecific,
-      "ES painless withDayOfMonth(lengthOfMonth); the LASTDAY spelling exists in no PD-3 trio " +
-      "engine (T1)",
+      "ES painless with(TemporalAdjusters.lastDayOfMonth()); the LASTDAY spelling exists in no " +
+      "PD-3 trio engine (T1)",
       PainlessField
     )
   )

@@ -2615,7 +2615,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).getLong(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
@@ -3231,7 +3231,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate().withDayOfMonth(param1.toLocalDate().lengthOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28",
+        |              "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')); param1.toLocalDate().with(TemporalAdjusters.lastDayOfMonth()).get(ChronoField.DAY_OF_MONTH) > 28",
         |              "params": {
         |                "__now__": 1767139200000
         |              }
@@ -3245,7 +3245,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "ld": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); (param1 == null) ? null : param1.withDayOfMonth(param1.lengthOfMonth())"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); (param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth())"
         |      }
         |    }
         |  },
@@ -3373,7 +3373,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "epoch": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.EPOCH_DAY)); param1"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).getLong(ChronoField.EPOCH_DAY)); param1"
         |      }
         |    },
         |    "off": {
@@ -3587,7 +3587,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                "script": {
         |                  "script": {
         |                    "lang": "painless",
-        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-11\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())) == false)"
+        |                    "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-11\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.with(TemporalAdjusters.lastDayOfMonth())) == false)"
         |                  }
         |                }
         |              },
@@ -3685,7 +3685,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                        "script": {
         |                          "script": {
         |                            "lang": "painless",
-        |                            "source": "def param1 = (doc['comments.replies.lastUpdated'].size() == 0 ? null : doc['comments.replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
+        |                            "source": "def param1 = (doc['comments.replies.lastUpdated'].size() == 0 ? null : doc['comments.replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.with(TemporalAdjusters.lastDayOfMonth())))"
         |                          }
         |                        }
         |                      }
@@ -3790,7 +3790,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |                    "script": {
         |                      "script": {
         |                        "lang": "painless",
-        |                        "source": "def param1 = (doc['replies.lastUpdated'].size() == 0 ? null : doc['replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.withDayOfMonth(param2.lengthOfMonth())))"
+        |                        "source": "def param1 = (doc['replies.lastUpdated'].size() == 0 ? null : doc['replies.lastUpdated'].value.toLocalDate()); def param2 = LocalDate.parse((\"2025-09-10\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); param1 == null ? false : (param1.isBefore(param2.with(TemporalAdjusters.lastDayOfMonth())))"
         |                      }
         |                    }
         |                  },
