@@ -1663,6 +1663,10 @@ Notes:
 | Basic SELECT                   | ✔   | ✔   | ✔   | ✔   |
 | Nested fields                  | ✔   | ✔   | ✔   | ✔   |
 | Set operators                  | ✔   | ✔   | ✔   | ✔   |
+| Derived tables                 | ✔   | ✔   | ✔   | ✔   |
+| `WHERE` subqueries             | ✔   | ✔   | ✔   | ✔   |
+| Correlated subqueries          | ✔   | ✔   | ✔   | ✔   |
+| CTEs (non-recursive)           | ✔   | ✔   | ✔   | ✔   |
 | Cross-index JOINs              | ✔   | ✔   | ✔   | ✔   |
 | JOIN UNNEST                    | ✔   | ✔   | ✔   | ✔   |
 | Aggregations                   | ✔   | ✔   | ✔   | ✔   |
@@ -1671,6 +1675,12 @@ Notes:
 | Geospatial functions           | ✔   | ✔   | ✔   | ✔   |
 | Date/time functions            | ✔   | ✔   | ✔   | ✔   |
 | String / math functions        | ✔   | ✔   | ✔   | ✔   |
+
+A ✔ here means the Elasticsearch major does not stand in the way — every row was executed against
+that version. It is not a statement about the venue: derived tables, CTEs, correlated subqueries and
+the set operators other than `UNION ALL` need the relational engine wherever they run, on every one
+of these versions alike. See
+[Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine).
 
 ---
 
