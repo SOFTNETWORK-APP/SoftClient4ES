@@ -353,7 +353,6 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
   it should "partition the twelve Epic 22 rows by score, exactly, in code" in {
     val parts = List(
       ("epic22/fixed", Epic22FixedIds, "epic22", "fixed"),
-      ("epic22/residual (UNMEASURED)", Epic22UnmeasuredIds, "epic22", "residual"),
       ("rejected_by_design", RejectedByDesignIds, "rejected_by_design", "rejected_by_design"),
       (
         "local:mysql-null-safe-equality",
@@ -374,8 +373,8 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     }
     // 🔴 The literal count pin story BIDC-10a proved is worth having on top of a cross-repo
     // convention: owned by NEITHER side, so a coordinated add/delete still reddens locally.
-    Epic22FixedIds should have size 8
-    Epic22UnmeasuredIds should have size 2
+    Epic22FixedIds should have size 10
+    Epic22UnmeasuredIds shouldBe empty
     NullSafeEqualityIds should have size 1
     // 🔴 The PUBLISHED TOTAL, pinned HERE and not in the CSV. Without this, 50 of the 99 rows (the
     // 44 `epic21` and the 6 issue:/local: ones) appear in no compiled set, so re-owning one of them
@@ -385,10 +384,10 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       "the number of SCORED FIXES moved -- if that is intended, move this pin too, and say " +
       "so in the PR: it is the published headline. "
     ) {
-      attribution.values.count(_.scored == "fixed") shouldBe 56
+      attribution.values.count(_.scored == "fixed") shouldBe 58
     }
     withClue("the published headline moved: ") {
-      tallyOf(outcomes, attribution).scoredOf99 shouldBe 68
+      tallyOf(outcomes, attribution).scoredOf99 shouldBe 70
     }
     // The ONE enumerated exception to "fixed belongs to a shipped epic" (lead ruling 2026-09-17),
     // checked in BOTH directions: an id the CODE excepts that the table no longer scores is a
@@ -780,31 +779,23 @@ object CorpusReplay {
     "tableau.mysql.w7.044",
     "superset.flightsql.w5.005",
     "superset.flightsql.w7.007",
-    "superset.flightsql.w6.006"
-  )
-
-  /** Parses, owned by `epic22`, scored `residual` - because NOBODY HAS RUN IT YET.
-    *
-    * Both statements wrap a FULLY-QUOTED qualifier inside the derived body (`"<cluster>"."<index>"`
-    * / the backticked twin). The grammar keeps the qualifier in `Table.parts` and the bare last
-    * part as `Table.name` (`FromParser`), so the read is EXPECTED to reach the bare index - but
-    * "expected" is a prediction, and the merged sibling suites all execute a BARE index name, so no
-    * measurement anywhere covers this spelling.
-    *
-    * 🔴 They are NOT `fixed` (that would be a declaration whose only evidence is an unrun test) and
-    * NOT a `local:` defect slug (that would publish a failure nobody has seen). `residual` under
-    * `epic22` says exactly what is true: Epic 22 owns them, they parse, and the headline does not
-    * count them. The `parses - scored` gap in the summary states it out loud, which is what that
-    * gap is for.
-    *
-    * WHEN THE MEASUREMENT LANDS: move these two to `Epic22FixedIds` if they execute, or to a
-    * `local:` owner with the record if they are refused. Do NOT resolve a red here by editing the
-    * attribution table.
-    */
-  val Epic22UnmeasuredIds: Set[String] = Set(
+    "superset.flightsql.w6.006",
+    // Story 22.7 pass 2 — MEASURED (rows E5a/E5b/E5c + corpus E5-jdbc), not predicted.
     "tableau.mysql.w1.019",
     "tableau.sql92.wx.009"
   )
+
+  /** Story 22.7 pass 2 RETIRED this set: it held the two rows nobody had run, and they have now
+    * been run. Kept as an EMPTY set with its history rather than deleted, because the shape is the
+    * one to reuse the next time a row parses before anyone has executed it — `epic22` / `residual`
+    * behind a code pin, never `fixed` on an unrun test and never a `local:` defect slug for a
+    * question nobody has measured.
+    *
+    * What settled it: acceptance rows E5a / E5b / E5c in softclient4es-arrow's
+    * `JoinExtensionIntegrationSpec` and `corpus E5-jdbc` in the jdbc testkit, green on real
+    * Elasticsearch 6.8 / 7.17 / 8.18 / 9.0. Both ids moved to `Epic22FixedIds`.
+    */
+  val Epic22UnmeasuredIds: Set[String] = Set.empty
 
   /** Story 22.7 G4b - rejected ON PURPOSE by the epic's own scope, permanently, pinned in CODE.
     *

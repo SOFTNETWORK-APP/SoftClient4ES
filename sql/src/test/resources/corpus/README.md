@@ -126,7 +126,7 @@ guard. It is acceptable only because the verdicts themselves are pinned independ
 against `epic-21-attribution.csv`, and by **G4 / G4b / G4c** against ids COMPILED into
 `CorpusReplay` — so a silent scoreboard move is impossible without also moving an attribution row
 those gates police — **and, since the published total itself is pinned in `CorpusReplay` (G4c
-asserts 56 `fixed` rows and a `scoredOf99` of 68), a headline move reddens in code even for the 46
+asserts 58 `fixed` rows and a `scoredOf99` of 70), a headline move reddens in code even for the 46
 rows that belong to no id set.** Without that pin a two-cell edit to this CSV — re-owning one
 `issue:`/`local:` row to `epic21`/`fixed` — passed every gate but G8, the one gate this file says
 can never be the guard. G8's whole job is to stop the series and the run drifting apart: when the
@@ -145,9 +145,12 @@ A series row is one per measured TREE, and the file has no column that could tel
 one commit apart. Appending a second row for `7187c7d9` would therefore read, to anyone later, as a
 contradiction — it would manufacture a history of a measurement nobody ever took. So the head row is
 edited, and G8 going red until it moves is the mechanism working, not something to route around.
-This happened exactly once: the lead ruling of 2026-09-17 admitted the four `issue:328` rows to
-`fixed` and took the head from 64 to 68 before either number left the branch. **A change to the TREE
-never qualifies** — that is an append, every time.
+This has happened twice, both before anything merged and both on the same unpublished branch: the
+lead ruling of 2026-09-17 admitted the four `issue:328` rows to `fixed` (64 → 68), and pass 2's E5
+measurement admitted two more (68 → 70). Neither moved the TREE — the grammar at `7187c7d9` is the
+same in all three readings; what moved was first a scoring policy and then the EVIDENCE available
+about rows that already parsed. **A change to the TREE never qualifies** — that is an append, every
+time.
 
 What the gate does check mechanically, for each historical row: `parses_raw` and `rejected` equal
 the committed baseline that row belongs to, and `scored_of_99 ≤ parses_raw`. The historical
@@ -213,12 +216,15 @@ row when it exercises the thing that could go wrong.** Quoting is Epic 21's and 
 new run. A **qualifier** is different in kind: it can move which index is read, and no merged witness
 executes one. That, and nothing about the quoting, is why two rows are held back.
 
-**Two rows are `epic22` + `residual` on purpose**: `tableau.mysql.w1.019` and
-`tableau.sql92.wx.009` wrap a fully-quoted qualifier inside the derived body, every merged witness
-executes a bare index name, and nobody has run that spelling. They are not `fixed` (a declaration
-whose only evidence is an unrun test) and not a `local:` defect slug (that would publish a failure
-nobody has seen). The `parses − scored` gap in the summary line states it out loud, which is what
-that gap is for.
+**Two rows were `epic22` + `residual` for one pass, and the reason is worth keeping.**
+`tableau.mysql.w1.019` and `tableau.sql92.wx.009` wrap a fully-quoted qualifier inside the derived
+body; every merged witness executed a bare index name, so nobody had run that spelling. They were
+not `fixed` (a declaration whose only evidence is an unrun test) and not a `local:` defect slug
+(that would publish a failure nobody had seen) — they were `residual` behind a code pin, and the
+`parses − scored` gap said so out loud. Pass 2 RAN them: acceptance rows E5a/E5b/E5c in
+softclient4es-arrow and `corpus E5-jdbc` in the jdbc testkit, green on real Elasticsearch 6.8 /
+7.17 / 8.18 / 9.0, so both are now `fixed`. `Epic22UnmeasuredIds` is kept as an EMPTY set with its
+history: that shape is the one to reuse the next time a row parses before anyone has executed it.
 
 Three owners leave `expected` free, and that is the point: it is how "it parses; we are not calling
 that a fix" and "it parses; the capability question is not ours to answer" are recorded honestly.
@@ -247,7 +253,7 @@ and each gate's failure message says what you are doing:
 | `RejectedPendingPolicyIds` (3) / `CapabilityOpenIds` (21) | the 24 temp-table probes: the 3 must stay rejected, none of the 24 may ever be scored as a win | G4 |
 | `PreEpicParsesIds` (12) | the pre-Epic-21 no-regression set, so a baseline cell edit cannot shrink it | AC-5 |
 | `DerivedTableParsesIds` (9) / `DerivedTableRejectedIds` (2) / `CteParsesIds` (1) | the SHAPE partition of Epic 22's twelve, and their measured verdicts | G4 |
-| `Epic22FixedIds` (8) / `Epic22UnmeasuredIds` (2) / `RejectedByDesignIds` (1) / `NullSafeEqualityIds` (1) | the SCORING partition of the same twelve — exact (disjoint, union = the twelve) and agreeing with this table in both directions | G4c |
+| `Epic22FixedIds` (10) / `Epic22UnmeasuredIds` (now EMPTY) / `RejectedByDesignIds` (1) / `NullSafeEqualityIds` (1) | the SCORING partition of the same twelve — exact (disjoint, union = the twelve) and agreeing with this table in both directions | G4c |
 | `Issue328FixedIds` (4) | the ONE enumerated exception to "`fixed` belongs to a shipped epic" (lead ruling 2026-09-17), checked both ways so a dead exception cannot survive | G4c + G7 |
 | `epic22Texts()` (12) | the statements READ from story 22.1's own `DerivedTableCorpusSpec.rows` (11) plus the CTE witness story 22.5 owns (1): two files, two authors, one TEXT — compared after whitespace collapse, not byte for byte | G9 |
 
@@ -267,8 +273,9 @@ failing gate never leaves the operator blind. (Story 22.7 renamed the directory 
 
 🔴 **The published verb is "SCORES", never "parses"** (lead ruling, 2026-09-13). `N` counts `scored`,
 so a sentence saying the engine *parses* `N` is false on its face whenever any statement parses without
-being counted — and 23 of them do. The summary line reads *"SCORES 68/99 (was 56 after Epic 21, 12
-before it) … 91 PARSE — the 23-row difference is never counted"*, and the raw parse count is stated in
+being counted — and 21 of them do, every one a temp-table capability probe. The summary line reads
+*"SCORES 70/99 (was 56 after Epic 21, 12 before it) … 91 PARSE — the 21-row difference is never
+counted"*, and the raw parse count is stated in
 the same breath so neither number can be quoted alone. The spec's PD-1 writes the verb as "parses";
 that wording is superseded and must not be "corrected" back.
 
