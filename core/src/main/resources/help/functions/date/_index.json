@@ -9,6 +9,7 @@
   "date_sub.json",
   "datetime_sub.json",
   "date_diff.json",
+  "datediff.json",
   "date_format.json",
   "datetime_format.json",
   "date_parse.json",

@@ -4,9 +4,10 @@
   "shortDescription": "Calculate difference between dates",
   "syntax": [
     "DATE_DIFF(date1, date2, unit)",
-    "DATE_DIFF(unit, date1, date2)"
+    "DATE_DIFF(unit, date1, date2)",
+    "TIMESTAMPDIFF(unit, date1, date2)"
   ],
-  "description": "Returns the difference between two dates in the specified unit.",
+  "description": "Returns the difference between two dates in the specified unit, as date2 - date1: the first argument is the START and the second is the END.",
   "parameters": [
     {
       "name": "date1",
@@ -49,9 +50,17 @@
     }
   ],
   "notes": [
-    "Returns negative value if date2 is before date1",
-    "Truncates to whole units (no fractions)"
+    "Returns a negative value if date2 is before date1",
+    "Truncates to whole units (no fractions)",
+    "DATEDIFF is NOT an alias of this function. It is MySQL's, and subtracts the other way round (expr1 - expr2). See HELP DATEDIFF.",
+    "TIMESTAMPDIFF is the ODBC/JDBC spelling and takes the unit first; MySQL defines it as dt2 - dt1, which is what this function already computes."
   ],
-  "seeAlso": ["DATE_ADD", "DATE_SUB"],
-  "aliases": ["DATEDIFF"]
+  "seeAlso": [
+    "DATEDIFF",
+    "DATE_ADD",
+    "DATE_SUB"
+  ],
+  "aliases": [
+    "TIMESTAMPDIFF"
+  ]
 }

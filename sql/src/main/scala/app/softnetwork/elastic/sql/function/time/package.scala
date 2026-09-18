@@ -451,14 +451,52 @@ package object time {
 
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".between"
-    override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")
+    override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF")
+  }
+
+  /** MySQL's `DATEDIFF`, which is a DIFFERENT function from the one above and needs its own token
+    * so the parser can tell them apart (issue #363).
+    *
+    * MySQL 8.4 defines `DATEDIFF(expr1, expr2)` as `expr1 - expr2`; `DATE_DIFF(start, end, unit)`
+    * is BigQuery's and is `end - start`. While `DATEDIFF` was merely a WORD of the token above it
+    * inherited BigQuery's order, so it returned the opposite sign from the function it is named
+    * after — MySQL's own documented `DATEDIFF('2007-12-31','2007-12-30') -> 1` answered `-1` here.
+    *
+    * 🔴 Neither spelling is a prefix of the other (`DATE_DIFF` has an underscore where `DATEDIFF`
+    * has a `D`), so the two regexes cannot shadow one another whatever order they are tried in.
+    */
+  case object MySqlDateDiff extends Expr("DATEDIFF") with TokenRegex
+
+  /** Which spelling a `DateDiff` was written as. It decides the RENDER and nothing else — the node
+    * itself always means `end - start`, so every consumer (`args`, `left`/`right`, the Painless
+    * emission, validation, `update`) has exactly ONE encoding of the decision to read.
+    *
+    * A `Boolean` cannot carry three forms, and silently widening one is how the old `transactSql`
+    * flag would have rotted; being sealed, the compiler now forces every render arm.
+    */
+  sealed trait DateDiffSpelling
+  object DateDiffSpelling {
+
+    /** `DATE_DIFF(start, end, unit)` — BigQuery's order, this engine's canonical render. */
+    case object DateFirst extends DateDiffSpelling
+
+    /** `DATE_DIFF(unit, start, end)` / `TIMESTAMPDIFF(unit, start, end)` — the ODBC/T-SQL and MySQL
+      * `TIMESTAMPDIFF` order. MySQL defines that one as `dt2 - dt1`, which is what this engine
+      * already computed, so it needed no change.
+      */
+    case object UnitFirst extends DateDiffSpelling
+
+    /** `DATEDIFF(expr1, expr2)` — MySQL's, `expr1 - expr2`, days only. The parser stores it with
+      * `start`/`end` SWAPPED, so the node still means `end - start`; the render swaps them back.
+      */
+    case object MySql extends DateDiffSpelling
   }
 
   case class DateDiff(
     start: PainlessScript,
     end: PainlessScript,
     unit: TimeUnit,
-    transactSql: Boolean = false
+    spelling: DateDiffSpelling = DateDiffSpelling.DateFirst
   ) extends DateTimeFunction
       with BinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
       with PainlessScript {
@@ -472,9 +510,27 @@ package object time {
 
     override def sql: String = DateDiff.sql
 
-    override def toSQL(base: String): String =
-      if (transactSql) s"$sql(${unit.sql}, ${start.sql}, ${end.sql})"
-      else s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
+    /** The render must RE-PARSE to this same node, and it is not cosmetic that it does:
+      * `MaterializedViewExtension` persists this text and re-runs `client.run(alter.sql)`, `SHOW
+      * CREATE MATERIALIZED VIEW` echoes it, and `SCRIPT AS` stores it beside the Painless.
+      *
+      * 🔴 Keeping the `DATEDIFF` spelling is a READABILITY choice, not a correctness one, and the
+      * distinction is worth stating because the opposite claim is easy to reach for. Because the
+      * parser already stored MySQL's operands swapped, rendering this node as `DATE_DIFF(start,
+      * end, unit)` would ALSO re-parse to the same node and mean the same thing — a mutation that
+      * does exactly that reddens one assertion here, and it is the spelling one. What the swap
+      * protects against is the OTHER design, the one where the node keeps the operands as written
+      * and reverses them at emission: there the canonical render really does flip the sign of a
+      * stored statement on its next round trip (issue #363).
+      *
+      * The spelling is preserved so that `SHOW CREATE …` hands back what was written, rather than
+      * the same statement with its two arguments visibly exchanged.
+      */
+    override def toSQL(base: String): String = spelling match {
+      case DateDiffSpelling.UnitFirst => s"$sql(${unit.sql}, ${start.sql}, ${end.sql})"
+      case DateDiffSpelling.MySql     => s"${MySqlDateDiff.sql}(${end.sql}, ${start.sql})"
+      case DateDiffSpelling.DateFirst => s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
+    }
 
     override def in: SQLType = SQLTypes.Date
 
