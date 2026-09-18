@@ -75,6 +75,39 @@ class DateDiffSignSpec extends AnyFlatSpec with Matchers {
     d.spelling shouldBe DateDiffSpelling.UnitFirst
   }
 
+  /** 🔴 The regression an independent review caught, and the reason it is pinned here.
+    *
+    * `DATEDIFF(unit, start, end)` is T-SQL's and DuckDB's spelling — what a BI tool set to a SQL
+    * Server or DuckDB dialect emits — and both define it as `end - start`, which is what this
+    * engine already computed. Moving `DATEDIFF` onto its own token for the MySQL form silently took
+    * the unit-first spelling with it, because `date_diff_transact_sql` keyed on `DateDiff.regex`
+    * alone. It parsed on `main` and stopped parsing here.
+    *
+    * 🔴 `GrammarDiffProbe` did NOT catch it: its corpus contains no `DATEDIFF(unit, a, b)` input.
+    * That is the second time that probe has returned a clean differential over a real narrowing, so
+    * it is necessary and not sufficient — a spelling removed from a `words` list needs its own
+    * assertion, not a corpus sweep.
+    */
+  "DATEDIFF with the unit first" should "keep T-SQL's and DuckDB's spelling, and their order" in {
+    Seq("DAY", "MONTH", "YEAR").foreach { unit =>
+      withClue(s"[DATEDIFF($unit, a, b)] ") {
+        val d = dateDiffOf(s"DATEDIFF($unit, a, b)")
+        d.start.sql shouldBe "a"
+        d.end.sql shouldBe "b"
+        d.spelling shouldBe DateDiffSpelling.UnitFirst
+      }
+    }
+  }
+
+  it should "still let the two-argument MySQL form through, which follows it in the alternation" in {
+    // `time_unit` fails on a plain column, so `DATEDIFF(a, b)` falls past the unit-first
+    // production to the MySQL one. If that ordering ever breaks, this goes red rather than the
+    // sign silently reverting.
+    val d = dateDiffOf("DATEDIFF(a, b)")
+    d.spelling shouldBe DateDiffSpelling.MySql
+    (d.start.sql, d.end.sql) shouldBe (("b", "a"))
+  }
+
   /** 🔴 The lead ruling, pinned BOTH WAYS so it stays deliberate: on this one spelling, adding a
     * unit changes the sign, because the 3-argument form is this engine's own extension and is not
     * MySQL. If either half of this ever moves, it should move on purpose.

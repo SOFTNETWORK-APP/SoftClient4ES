@@ -4,7 +4,8 @@
   "shortDescription": "MySQL day difference: expr1 - expr2",
   "syntax": [
     "DATEDIFF(date1, date2)",
-    "DATEDIFF(date1, date2, unit)"
+    "DATEDIFF(date1, date2, unit)",
+    "DATEDIFF(unit, date1, date2)"
   ],
   "description": "MySQL's day-difference function. DATEDIFF(date1, date2) returns date1 - date2 in DAYS, which is the opposite subtraction from DATE_DIFF. They are different functions with similar names.",
   "parameters": [
@@ -34,8 +35,8 @@
   "examples": [
     {
       "title": "MySQL's own documented example",
-      "description": "Returns 1, as MySQL does",
-      "sql": "SELECT DATEDIFF(shipped_at, ordered_at) as days FROM orders"
+      "description": "Returns 1, exactly as MySQL does",
+      "sql": "SELECT DATEDIFF('2007-12-31'::DATE, '2007-12-30'::DATE) as days FROM orders"
     },
     {
       "title": "Days until a deadline",
@@ -51,6 +52,7 @@
   "notes": [
     "WARNING: the two-argument and three-argument forms subtract in OPPOSITE directions. DATEDIFF(a, b) is a - b (MySQL, days only); DATEDIFF(a, b, unit) is b - a (this engine's own extension). Adding a unit reverses the sign.",
     "If you want a unit, prefer DATE_DIFF(start, end, unit) or TIMESTAMPDIFF(unit, start, end), where one rule holds at every arity.",
+    "DATEDIFF(unit, date1, date2) - the unit FIRST - is T-SQL's and DuckDB's spelling and means date2 - date1, like TIMESTAMPDIFF. Only the two-argument form is MySQL's.",
     "Before engine 0.24.0 this name was an alias of DATE_DIFF and returned the opposite sign. Statements written against the old behaviour need their arguments swapped."
   ],
   "seeAlso": [

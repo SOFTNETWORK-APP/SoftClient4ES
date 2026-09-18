@@ -213,8 +213,17 @@ package object time {
           )
       }
 
+    /** 🔴 BOTH names. `DATEDIFF(unit, start, end)` is T-SQL's and DuckDB's spelling — what a BI
+      * tool set to a SQL Server or DuckDB dialect emits — and it is `end - start` in both, which is
+      * exactly what this production binds. Issue #363 moved `DATEDIFF` onto its own token to give
+      * the TWO-argument MySQL form its own meaning, and keying this production on `DateDiff.regex`
+      * alone silently dropped the unit-first spelling with it.
+      *
+      * Ordering is safe: this production is tried BEFORE `mysql_date_diff`, and `time_unit` fails
+      * on a plain column, so `DATEDIFF(a, b)` still falls through to the MySQL form.
+      */
     lazy val date_diff_transact_sql: PackratParser[BinaryFunction[_, _, _]] =
-      DateDiff.regex ~ start ~> time_unit ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) <~ end ^^ {
+      (DateDiff.regex | MySqlDateDiff.regex) ~ start ~> time_unit ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) <~ end ^^ {
         case u ~ _ ~ d1 ~ _ ~ d2 =>
           DateDiff(d1, d2, u, DateDiffSpelling.UnitFirst)
       }
@@ -331,6 +340,7 @@ package object time {
       datetime_function |
       date_diff |
       date_diff_transact_sql |
+      mysql_date_diff |
       date_trunc |
       date_trunc_transact_sql |
       extractor_function
