@@ -216,7 +216,8 @@ two readings apart by what follows.
 These five words introduce the subquery predicates. `= ANY` and `= SOME` mean `IN`, and `<> ALL` means
 `NOT IN` — the engine normalises them, so `WHERE customer_id = ANY (SELECT id FROM customers)` is stored
 and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The ordering quantifiers
-(`> ALL`, `>= ANY`, `< ALL`, …) keep their own spelling. See
+(`> ALL`, `>= ANY`, `< ALL`, …) keep their operator, but **`SOME` always normalises to `ANY`** — a
+statement written `<= SOME (…)` is stored and re-rendered as `<= ANY (…)`. See
 [Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
 
 ## Logical operators

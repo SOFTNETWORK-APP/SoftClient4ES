@@ -44,8 +44,9 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
   JOINs are all available; everything in **Works in this release** below applies.
 - **Tableau** — connecting, browsing, previewing, aggregating, filtering and sorting work. Drag-and-drop
   worksheets quote and fully qualify every identifier (backticks under the MySQL dialect,
-  `"schema"."table"` under Generic SQL-92) and wrap the query in a derived table; since `0.24.0` both
-  forms parse. Tableau's **Custom SQL** wraps your statement too — it documents that it *"must wrap the custom
+  `"schema"."table"` under Generic SQL-92) and wrap the query in a derived table; **both quoted forms
+  parse since engine `0.23.0`, and since `0.24.0` the derived-table wrapper also EXECUTES**, on the
+  relational engine. Tableau's **Custom SQL** wraps your statement too — it documents that it *"must wrap the custom
   SQL statement within a select statement"* (Tableau's Custom SQL documentation, checked 2026-09-01) — and
   that wrapper is a derived table, which now runs. **Extract** mode remains **untested** against
   SoftClient4ES. See [Tableau](../client/bi_tools.md).
@@ -53,9 +54,10 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 > **One thing to check before you rely on it:** a derived table runs on the relational engine — **since
 > engine `0.24.0` with arrow-extensions `0.3.4`** — so the venue executing your SQL must carry the
 > `softclient4es-arrow-extensions` jar as well as the engine. See
-> [Which forms need the relational engine](#which-forms-need-the-relational-engine) below. The JDBC driver,
-> the ADBC driver and the Arrow Flight SQL sidecar ship with it; a REPL installed with `--no-extensions`
-> does not.
+> [Which forms need the relational engine](#which-forms-need-the-relational-engine) below. **You almost
+> certainly have it already**: the JDBC driver, the ADBC driver and the Arrow Flight SQL sidecar all ship
+> with it, and `install.sh` installs it with the REPL by default. Only a REPL installed explicitly with
+> `--no-extensions` lacks it.
 
 **Apache Superset** (dedicated dialect), **DBeaver**, and **Grafana** (via Arrow Flight SQL) are **Tested**.
 **Tableau** is **Compatible** — the connection path works, but it is not yet in our formal regression suite.
@@ -81,8 +83,10 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
 
 ## Subqueries and derived tables
 
-**Since engine `0.24.0`.** Earlier releases reject every form below at the parser, so check your engine
-version before planning around them.
+**Since engine `0.24.0`.** Earlier releases refuse every form below, so check your engine version
+before planning around them. (Where they refuse it varies by release and by form — `0.23.0`, for
+instance, parses a derived table and refuses it in the engine — so do not rely on the error you get,
+only on the version.)
 
 An **uncorrelated** `WHERE` subquery needs nothing but the engine: it executes on Elasticsearch itself, at
 every venue. **Correlated subqueries and derived tables additionally need the relational engine — since
@@ -134,8 +138,9 @@ This is the distinction worth knowing before you plan around it.
 | **`UNION` / `INTERSECT` / `EXCEPT`** (with or without `ALL`) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
 
 A venue without that jar does not guess: it refuses the statement with an HTTP 400 naming the construct and
-the jar, rather than executing it against the first index the statement mentions. The JDBC driver, the ADBC
-driver and the Arrow Flight SQL sidecar ship the engine; a REPL installed with `--no-extensions` does not.
+the jar, rather than executing it against the first index the statement mentions. **The default install has
+the engine** — the JDBC driver, the ADBC driver and the Arrow Flight SQL sidecar all bundle it, and
+`install.sh` installs it alongside the REPL unless you pass `--no-extensions`.
 
 ### The bound on an uncorrelated subquery
 
@@ -148,13 +153,30 @@ already distinct and `DISTINCT` buys nothing.
 `NULL` follows ANSI: `IN` ignores NULLs in the inner values, `NOT IN` over a set containing a NULL matches no
 rows, and an `EXISTS` over an empty body is false while `NOT EXISTS` over one is true.
 
+> ⚠️ **`NOT IN` has one carve-out, and it fails the other way.** The engine detects the `NULL` by
+> re-running the inner query with an `IS NULL` filter. When that inner query carries a `GROUP BY`,
+> the probe is a grouped query too, and Elasticsearch's `terms` aggregation **drops the
+> missing-value group** — so a `NULL` in a `GROUP BY` body is invisible and `NOT IN` returns rows
+> the rule above says it should not. Filter the `NULL` out explicitly in that body
+> (`… WHERE <col> IS NOT NULL GROUP BY …`) rather than relying on the detection.
+
+`DELETE` and `UPDATE` take the same `WHERE` subqueries as `SELECT`, with the same venue rules:
+
+```sql
+DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+UPDATE orders SET status = 'eu' WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+```
+
 ### Subquery forms that are still refused
 
-Each of these is rejected by name, never silently mis-executed:
+Each of these is refused, never silently mis-executed. Most are refused **by name**, with the rewrite
+in the message; where the refusal is a bare `end of input expected` instead, it is said so, because a
+message that names nothing is the one you will need this page for:
 
 - **`LATERAL`** — a derived table that reads an alias from the enclosing `FROM`
   (`FROM orders o, (SELECT id FROM customers WHERE id = o.customer_id) d`). Move the condition to the outer
-  `WHERE`, or write it as a correlated `WHERE` subquery.
+  `WHERE`, or write it as a correlated `WHERE` subquery. *Named only in that comma-`FROM` spelling: the
+  `LATERAL` keyword itself (`FROM o, LATERAL (…)`, `JOIN LATERAL …`) is a bare syntax error.*
 - **A subquery in `HAVING`** — any subquery, correlated or not. Compute the value separately, or move the
   condition to `WHERE`.
 - **A subquery in the `SELECT` list** — `SELECT (SELECT MAX(amount) FROM orders) AS m …` does not parse.
@@ -162,10 +184,8 @@ Each of these is rejected by name, never silently mis-executed:
 - **A `FROM`-less body** — `IN (SELECT 1)`. Write the literal list instead.
 - **More than one projected column** — an `IN` / quantified / scalar body must project exactly one column, so
   `IN (SELECT * FROM customers)` is refused.
-- **An unqualified outer reference.** Inside a subquery body a bare column name is read as the body's own
-  column, so a correlated reference must carry the outer alias: write
-  `WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`, not `… WHERE o.customer_id = id`. The
-  outer reference must also be **unquoted**.
+- **A QUOTED outer reference** — `WHERE o.customer_id = "c"."id"`. Write it unquoted; the engine rewrites
+  an outer reference onto the extracted leg, and a quoted identifier is not rewritten.
 - **A correlated body that is not a single Elasticsearch source** — its own `JOIN`, comma-separated `FROM`,
   `JOIN UNNEST`, derived table or window function. Move the construct to the outer `FROM` and correlate
   against it.
@@ -174,7 +194,28 @@ Each of these is rejected by name, never silently mis-executed:
   not say why. Flip the comparison — `WHERE 5 < (SELECT COUNT(*) …)` means the same thing and is accepted.
   The subquery must be the right-hand operand.
 - **A column list on the derived table's correlation name** — `FROM (SELECT id FROM orders) AS d (x)`.
-  Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`.
+  Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`. *Syntax error, not
+  a named refusal.*
+- **A subquery in a `CASE WHEN` condition** — refused by name, with the rewrite: filter in `WHERE`, or
+  compute the flag in a separate query.
+- **A subquery in a `JOIN … ON` clause.** ⚠️ Its message names neither subqueries nor a rewrite — it
+  reads *"ON clause … must use either equality operator or AND predicate"*. Join on a plain equality
+  and move the subquery to `WHERE`.
+- **A `WHERE` subquery in a `CREATE MATERIALIZED VIEW`** — refused by name: an Elasticsearch transform
+  cannot run the inner query. Resolve the subquery into the view's own source, or keep it in the
+  queries you run against the view.
+- **A `FROM`-less `SELECT` as a set-operation branch** — `SELECT 1 UNION ALL SELECT id FROM orders`.
+  *Syntax error, not a named refusal.* Note this is the one place the connection-handshake idiom
+  `SELECT 1` does not compose.
+
+> ⚠️ **One mistake in this family is NOT refused, and it is the easiest one to make.** An
+> **unqualified** outer reference — `WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = id)`
+> instead of `… = c.id` — is a perfectly legal statement, so nothing can reject it. The bare `id`
+> binds to the subquery's OWN table, the statement stops being correlated, and it runs as an
+> ordinary uncorrelated subquery: **HTTP 200, and different rows from the ones you meant.** It is
+> the only item here that fails silently rather than loudly.
+>
+> Always qualify the outer reference with the outer query's alias, and leave it unquoted.
 
 ### Licensing
 
@@ -247,7 +288,7 @@ JOINs and correlated subqueries *inside* the branches that count, at any nesting
 
 Quoted column names, aliases and **table names** work in both spellings — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers) and
-[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Five things
+[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Six things
 they do **not** cover yet:
 
 - **`INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` names are not quotable.**
@@ -328,12 +369,18 @@ requirement:
 
 ```sql
 WITH eu_departments AS (SELECT id FROM departments WHERE region = 'EU')
-SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu_departments);
+SELECT e.name FROM employees e JOIN eu_departments d ON e.department_id = d.id;
 
 SELECT customer_id FROM orders_q1
 INTERSECT
 SELECT customer_id FROM orders_q2;
 ```
+
+> ⚠️ **A CTE cannot be named inside a `WHERE` subquery body.**
+> `WITH eu AS (…) SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu)` parses, but
+> the reference inside the body is not resolved: the body reaches Elasticsearch asking for an index
+> called `eu`, and the statement fails with a `404 index_not_found_exception` naming it. Loud, never
+> silent. Read the CTE in `FROM` or `JOIN`, as above.
 
 ## Temporary tables are not supported
 

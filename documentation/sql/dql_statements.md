@@ -731,7 +731,7 @@ no operation for, so the statement runs on the **relational engine** — engine 
 arrow-extensions `0.3.4`, the same engine that executes cross-index JOINs and derived tables. Each
 branch is executed as its own Elasticsearch query and the set operation is applied to the results. A
 venue without that engine refuses the statement with a clear error rather than answering from one
-branch. See [Known Limitations & Roadmap](known_limitations.md#subqueries-derived-tables-ctes-and-set-operators).
+branch. See [Known Limitations & Roadmap](known_limitations.md#set-operators).
 
 A branch may carry anything a `SELECT` can carry — `GROUP BY`, a `JOIN`, a derived table, a CTE, a
 correlated subquery. A branch that needs the relational engine on its own account is planned as its
@@ -906,11 +906,15 @@ SELECT c.name FROM customers c
 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
 ```
 
-Two rules the engine enforces, both by name:
+One rule the engine enforces by name, and one convention nothing can enforce for you:
 
-- **The outer reference must be qualified, and unquoted.** Inside a body, a bare name is read as the
-  body's own column — `… WHERE o.customer_id = id` correlates nothing and quietly means something
-  else — so the outer alias is required.
+- ⚠️ **The outer reference must be QUALIFIED — and this one is not refused.** A bare name inside the
+  body is read as the body's own column, which is a perfectly legal statement, so nothing rejects it:
+  `… WHERE o.customer_id = id` stops being correlated and runs as an ordinary uncorrelated subquery,
+  returning **different rows with HTTP 200**. It is the only mistake in this family that fails
+  silently. Always write the outer alias — `… WHERE o.customer_id = c.id`.
+- **The outer reference must be UNQUOTED** — `"c"."id"` is refused by name. The engine rewrites an
+  outer reference onto the extracted leg, and a quoted identifier is not rewritten.
 - **The body must be a single Elasticsearch source.** Its own `JOIN`, a comma-separated `FROM`, a
   `JOIN UNNEST`, a derived table or a window function inside the body are refused; move the construct
   to the outer `FROM` and correlate against it.
@@ -930,6 +934,17 @@ derived table costs nothing on its own. See
 - **A set-operation body** — `IN (SELECT … UNION ALL SELECT …)`. Write one subquery per branch.
 - **A `FROM`-less body** — `IN (SELECT 1)`. Write the literal list.
 - **More than one projected column** in an `IN` / quantified / scalar body.
+- **A subquery in a `CASE WHEN` condition** — refused by name; filter in `WHERE`, or compute the flag
+  in a separate query.
+- **A subquery in a `JOIN … ON` clause.** ⚠️ Its message names neither subqueries nor a rewrite — it
+  reads *"ON clause … must use either equality operator or AND predicate"*. Join on a plain equality
+  and move the subquery to `WHERE`.
+- **A `WHERE` subquery inside `CREATE MATERIALIZED VIEW`** — refused by name: an Elasticsearch
+  transform cannot run the inner query. Resolve it into the view's source, or keep it in the queries
+  you run against the view.
+- **A `FROM`-less `SELECT` used as a set-operation branch** — `SELECT 1 UNION ALL SELECT id FROM t`
+  is a syntax error. Worth knowing because `SELECT 1` is the connection-handshake idiom; it does not
+  compose into a set operation.
 
 ---
 
@@ -962,9 +977,10 @@ WITH eu AS (SELECT id FROM departments WHERE region = 'EU')
 SELECT e.name FROM employees e JOIN eu ON e.department_id = eu.id;
 ```
 
-Naming a CTE inside a **`WHERE` subquery body** parses, but a subquery body must be a single
-Elasticsearch source, so whether the engine accepts a CTE reference there is not something this page
-states. Read the CTE in `FROM` or `JOIN` instead.
+Naming a CTE inside a **`WHERE` subquery body** parses but does **not** run: the reference inside the
+body is never resolved, so the body reaches Elasticsearch asking for an index with the CTE's name and
+the statement fails with a `404 index_not_found_exception` naming it. Loud, never silent. Read the
+CTE in `FROM` or `JOIN` instead.
 
 ### A CTE referenced twice is executed twice
 
@@ -1686,7 +1702,7 @@ of these versions alike. See
 
 ## Limitations
 
-For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool workarounds, see [Known Limitations & Roadmap](known_limitations.md).
+For the full picture of what works in this release, what is refused and why, and BI-tool notes, see [Known Limitations & Roadmap](known_limitations.md).
 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 

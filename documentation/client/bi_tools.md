@@ -38,7 +38,9 @@ Tableau's own connector documentation says that when the temp-table capabilities
 
 The probe therefore costs one failed round trip per connection and is not itself a problem. What
 follows it is Tableau's alternative for a source without temporary tables, which uses **subqueries** —
-and **since engine `0.24.0`** subqueries and derived tables are accepted. Tableau's own documentation warns
+and **since engine `0.24.0`** subqueries and derived tables are accepted. (The quoted,
+fully-qualified identifiers Tableau emits alongside them have parsed since `0.23.0`; what `0.24.0`
+added is executing the derived-table wrapper.) Tableau's own documentation warns
 that the subquery path *"can be poor, particularly with large datasets"*, so it is a performance
 characteristic to watch rather than a refusal. Note that a derived table runs on the relational engine —
 since engine `0.24.0` with arrow-extensions `0.3.4` — and the JDBC driver ships it, so a Tableau
