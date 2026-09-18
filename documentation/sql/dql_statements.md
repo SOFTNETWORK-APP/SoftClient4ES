@@ -608,6 +608,31 @@ ORDER BY age DESC
 LIMIT 10 OFFSET 20;
 ```
 
+### SELECT TOP n — the same bound, spelled the T-SQL way
+
+`SELECT TOP n` is accepted as a **spelling of `LIMIT n`**, because it is what BI tools emit in their
+SQL-92 dialect. It is not a second row bound: the parser folds it into the statement's `LIMIT`, so
+the two statements below are the same statement, and the engine renders both as `LIMIT`.
+
+```sql
+SELECT TOP 10 id, name FROM dql_users ORDER BY age DESC;
+SELECT TOP (10) id, name FROM dql_users ORDER BY age DESC;   -- parenthesised, also T-SQL
+SELECT id, name FROM dql_users ORDER BY age DESC LIMIT 10;   -- identical to both
+```
+
+Four things to know:
+
+- **`TOP` is not reserved.** `SELECT top FROM t` still selects a column called `top`, and
+  `SELECT top - 1 AS x FROM t` still computes it.
+- **`TOP` and `LIMIT` together are refused by name.** They are two spellings of one bound, and
+  guessing a precedence would be worse than saying so.
+- **`TOP` carries no `OFFSET`.** For paging, use `LIMIT n OFFSET m`.
+- **`TOP n PERCENT` and `TOP n WITH TIES` are refused by name** — they are real T-SQL that this
+  engine does not implement. See [Known limitations](known_limitations.md).
+
+`SELECT DISTINCT TOP n` is **not** accepted (write `SELECT DISTINCT … LIMIT n`); the order
+`SELECT TOP n DISTINCT` happens to parse but is not valid T-SQL, so do not rely on it.
+
 ---
 
 ## Set operators

@@ -226,19 +226,33 @@ SELECT DATE_SUB('2025-01-10'::DATE, INTERVAL 1 QUARTER) AS last_quarter;
 
 ---
 
-#### DATETIME_ADD / DATETIMEADD
+#### DATETIME_ADD / DATETIMEADD / TIMESTAMPADD
 
 Adds interval to `DATETIME` / `TIMESTAMP`.
+
+Two argument orders are accepted, and they mean the same thing. The second — **unit first, with a
+plain count instead of an `INTERVAL`** — is the ODBC/JDBC and T-SQL order, which is what a BI tool
+emits. `TIMESTAMPADD` is the ODBC name for it.
 
 **Syntax:**
 ```sql
 DATETIME_ADD(datetime_expr, INTERVAL n UNIT)
 DATETIMEADD(datetime_expr, INTERVAL n UNIT)
+
+DATETIME_ADD(UNIT, n, datetime_expr)
+TIMESTAMPADD(UNIT, n, datetime_expr)
 ```
 
 **Inputs:**
 - `datetime_expr` - `DATETIME` or `TIMESTAMP`
 - `INTERVAL n UNIT` - where `UNIT` is one of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
+- In the unit-first form, `n` is a plain integer and may be **negative**; the ODBC interval names
+  `SQL_TSI_YEAR`, `SQL_TSI_QUARTER`, `SQL_TSI_MONTH`, `SQL_TSI_WEEK`, `SQL_TSI_DAY`, `SQL_TSI_HOUR`,
+  `SQL_TSI_MINUTE` and `SQL_TSI_SECOND` are accepted as spellings of the units above
+
+> There is **no `TIMESTAMPSUB`** — it exists in neither ODBC nor MySQL. Subtract by passing a
+> negative count: `TIMESTAMPADD(DAY, -89, CURRENT_DATE)`. (`DATETIME_SUB` is available for the
+> `INTERVAL` form.)
 
 **Output:**
 - `DATETIME`
@@ -248,6 +262,15 @@ DATETIMEADD(datetime_expr, INTERVAL n UNIT)
 -- Add 1 day
 SELECT DATETIME_ADD('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 DAY) AS tomorrow;
 -- Result: 2025-01-11T12:00:00Z
+
+-- The same thing in the ODBC unit-first order
+SELECT TIMESTAMPADD(DAY, 1, '2025-01-10T12:00:00Z'::TIMESTAMP) AS tomorrow;
+-- Result: 2025-01-11T12:00:00Z
+
+-- ODBC interval name, and a negative count instead of a subtraction
+SELECT TIMESTAMPADD(SQL_TSI_DAY, 1, '2025-01-10T12:00:00Z'::TIMESTAMP) AS tomorrow;
+-- Result: 2025-01-11T12:00:00Z
+SELECT TIMESTAMPADD(DAY, -89, CURRENT_DATE) AS ninety_days_ago;
 
 -- Add 2 hours
 SELECT DATETIME_ADD('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 2 HOUR) AS later;
@@ -316,9 +339,20 @@ SELECT DATETIME_SUB('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 MONTH) AS last
 
 ### Date/Time Difference Functions
 
-#### DATEDIFF / DATE_DIFF
+#### DATEDIFF / DATE_DIFF / TIMESTAMPDIFF
 
-Difference between 2 dates (date1 - date2) in the specified time unit.
+Difference between 2 dates, in the specified time unit.
+
+> ⚠️ **The result is `date2 - date1`, not `date1 - date2`.** The FIRST argument is the start and the
+> second is the end, so `DATEDIFF('2025-01-10', '2025-01-01')` is **-9**, not 9. This is what makes
+> `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` an age rather than a negative one, and it agrees with
+> MySQL's `TIMESTAMPDIFF(unit, dt1, dt2)`, which is also defined as `dt2 - dt1`.
+>
+> Earlier revisions of this page said `date1 - date2` and published eight examples with the
+> arguments the other way round. Every example below has been executed against Elasticsearch and
+> shows its real result.
+
+`TIMESTAMPDIFF` is the ODBC/JDBC spelling and takes the **unit first**, like MySQL.
 
 **Syntax:**
 ```sql
@@ -326,50 +360,70 @@ DATEDIFF(date1, date2)
 DATEDIFF(date1, date2, unit)
 DATE_DIFF(date1, date2)
 DATE_DIFF(date1, date2, unit)
+
+DATE_DIFF(unit, date1, date2)
+TIMESTAMPDIFF(unit, date1, date2)
 ```
 
+> The unit-first form is the one the engine **renders back**, so `TIMESTAMPDIFF(DAY, a, b)` reads
+> as `DATE_DIFF(DAY, a, b)` wherever a statement is echoed to you.
+
 **Inputs:**
-- `date1` - `DATE` or `DATETIME`
-- `date2` - `DATE` or `DATETIME`
-- `unit` (optional) - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
+- `date1` - `DATE` or `DATETIME` — the **start**
+- `date2` - `DATE` or `DATETIME` — the **end**
+- `unit` (optional in the first form) - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
   - Default: `DAY`
+  - The ODBC `SQL_TSI_*` spellings are accepted here too
 
 **Output:**
-- `BIGINT`
+- `BIGINT` — negative when `date2` is earlier than `date1`
 
 **Examples:**
 ```sql
 -- Difference in days (default)
-SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS diff;
+SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE) AS diff;
 -- Result: 9
 
 -- Difference in days (explicit)
-SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff_days;
+SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE, DAY) AS diff_days;
 -- Result: 9
 
+-- Reverse the arguments and the sign reverses
+SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff_days;
+-- Result: -9
+
 -- Difference in weeks
-SELECT DATE_DIFF('2025-01-31'::DATE, '2025-01-01'::DATE, WEEK) AS diff_weeks;
+SELECT DATE_DIFF('2025-01-01'::DATE, '2025-01-31'::DATE, WEEK) AS diff_weeks;
 -- Result: 4
 
 -- Difference in months
-SELECT DATEDIFF('2025-06-01'::DATE, '2025-01-01'::DATE, MONTH) AS diff_months;
+SELECT DATEDIFF('2025-01-01'::DATE, '2025-06-01'::DATE, MONTH) AS diff_months;
 -- Result: 5
 
 -- Difference in years
-SELECT DATEDIFF('2027-01-01'::DATE, '2025-01-01'::DATE, YEAR) AS diff_years;
+SELECT DATEDIFF('2025-01-01'::DATE, '2027-01-01'::DATE, YEAR) AS diff_years;
 -- Result: 2
 
 -- Difference in hours (with timestamps)
-SELECT DATEDIFF('2025-01-10T14:00:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T14:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
 -- Result: 2
 
 -- Difference in minutes
-SELECT DATEDIFF('2025-01-10T12:30:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:30:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
 -- Result: 30
 
 -- Difference in seconds
-SELECT DATEDIFF('2025-01-10T12:00:45Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, SECOND) AS diff_seconds;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:00:45Z'::TIMESTAMP, SECOND) AS diff_seconds;
 -- Result: 45
+
+-- The ODBC spelling, unit first — same answer, same sign
+SELECT TIMESTAMPDIFF(DAY, '2025-01-01'::DATE, '2025-01-10'::DATE) AS diff_days;
+-- Result: 9
+SELECT TIMESTAMPDIFF(MONTH, '2025-01-01'::DATE, '2025-06-01'::DATE) AS diff_months;
+-- Result: 5
+
+-- Age: start = birthdate, end = today
+SELECT DATE_DIFF(birthdate, CURRENT_DATE, YEAR) AS age FROM users;
 ```
 
 ---

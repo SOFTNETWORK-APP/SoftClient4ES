@@ -13,7 +13,12 @@ you name a column:
 reserved**, so `SELECT any, some FROM t WHERE any = 1` parses as columns — even though `x = ANY (SELECT …)`
 is real grammar. The same split runs through the set-operator and CTE words: `UNION`, `INTERSECT`, `EXCEPT`,
 `ALL` and `DISTINCT` are reserved, while `WITH` and `RECURSIVE` are not — `SELECT a AS recursive FROM t`
-parses, `SELECT a AS intersect FROM t` does not. If you have a column whose name collides with a reserved word, **quote it** rather than
+parses, `SELECT a AS intersect FROM t` does not. `TOP` is recognised (`SELECT TOP 10 id FROM t` bounds the rows) and **deliberately not reserved**, so
+`SELECT top FROM t` still selects a column called `top`. `PERCENT` is recognised only so that
+`SELECT TOP n PERCENT` can be refused *by name* — see
+[Known limitations](known_limitations.md).
+
+If you have a column whose name collides with a reserved word, **quote it** rather than
 renaming it: `SELECT "exists" FROM t` works, and so does the backtick spelling — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers).
 
@@ -38,6 +43,8 @@ NULLS FIRST
 NULLS LAST  
 OFFSET  
 LIMIT
+TOP
+PERCENT
 ON
 CONFLICT
 DO
@@ -101,6 +108,8 @@ TRIM
 LTRIM  
 RTRIM  
 LENGTH  
+CHAR_LENGTH  
+CHARACTER_LENGTH  
 SUBSTRING  
 SUBSTR  
 CONCAT  
@@ -178,10 +187,12 @@ DATE_SUB
 DATESUB  
 DATETIME_ADD  
 DATETIMEADD  
+TIMESTAMPADD  
 DATETIME_SUB  
 DATETIMESUB  
 DATE_DIFF  
 DATEDIFF  
+TIMESTAMPDIFF  
 DATE_FORMAT  
 DATE_PARSE  
 DATETIME_FORMAT  

@@ -79,6 +79,10 @@ Some BI tools auto-generate nested SQL (subqueries / derived tables) even when y
   chained left to right. A CTE reference *is* a derived table, so it runs where derived tables run.
 - **Set operators** — *since engine `0.24.0`*: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` /
   `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. See [Set operators](#set-operators) below.
+- **BI dialect spellings** — *since engine `0.24.0`*: `CHAR_LENGTH` / `CHARACTER_LENGTH` (for
+  `LENGTH`), `TIMESTAMPADD` (for `DATETIME_ADD`) and `TIMESTAMPDIFF` (for `DATE_DIFF`) including the
+  ODBC unit-first argument order and the `SQL_TSI_*` interval names, and `SELECT TOP n` (for
+  `LIMIT n`). These are spellings, not new behaviour — each renders as the canonical form.
 - `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It removes *columns*; the `EXCEPT` **set operator** removes *rows*. Both work, and they are unrelated.
 
 ## Subqueries and derived tables
@@ -342,6 +346,17 @@ they do **not** cover yet:
 
 - **Recursive CTEs** (`WITH RECURSIVE …`) and **CTE column lists** (`WITH a (x, y) AS …`), both refused by name. Plain non-recursive CTEs work since engine `0.24.0`, with two further limits: a `WITH` clause is accepted only at the top of a `SELECT` (not inside a subquery body, CTAS, `INSERT … SELECT` or a materialized view), and a CTE body may not name the CTE itself — unlike PostgreSQL, which binds such a name to the base table, this engine rejects it.
 - **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
+- **`SELECT TOP n PERCENT` and `SELECT TOP n WITH TIES`**, both refused *by name*. `TOP n` itself
+  works and is a spelling of `LIMIT n`. Take the plain row count, or compute the percentage
+  yourself. ⚠️ Because `PERCENT` is recognised in that position, a column of that name cannot be the
+  sole select item directly after `TOP n` — write `SELECT TOP 5 t.percent FROM t AS t`, or quote it.
+- **`SELECT DISTINCT TOP n`** — rejected. Write `SELECT DISTINCT … LIMIT n`. (The reverse order,
+  `SELECT TOP n DISTINCT`, happens to parse, but it is not valid T-SQL and is not a supported
+  spelling.)
+- **The ODBC/JDBC escape sequences** — `{fn …}`, `{d '…'}`, `{ts '…'}`, `{oj …}`, `{escape '…'}`.
+  A tool that emits `{fn TIMESTAMPADD(SQL_TSI_DAY, -89, CURRENT_DATE)}` is refused, even though the
+  `TIMESTAMPADD(…)` inside it is now accepted on its own. Turn escape processing off in the client,
+  or write the call without the braces.
 - **MySQL's null-safe equality operator `<=>`** (`a <=> b`, i.e. `a = b OR (a IS NULL AND b IS NULL)`). A BI tool set to a MySQL dialect can emit it in a `JOIN … ON`. Write the expansion, or `=` when neither side is nullable.
 
 When they arrive they will be a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
