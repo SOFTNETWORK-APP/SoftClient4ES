@@ -108,6 +108,7 @@ import app.softnetwork.elastic.sql.function.time.{
   DateTrunc,
   Extract,
   LastDayOfMonth,
+  MySqlDateDiff,
   Now,
   Today
 }
@@ -333,6 +334,7 @@ object SQLKeywords {
     Extract,
     LastDayOfMonth,
     DateDiff,
+    MySqlDateDiff,
     DateAdd,
     DateSub,
     DateParse,

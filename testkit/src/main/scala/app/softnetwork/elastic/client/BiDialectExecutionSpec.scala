@@ -196,6 +196,78 @@ trait BiDialectExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
 
   // ─────────────────────────── TIMESTAMPADD / CHAR_LENGTH round trip ───────────────────────────
 
+  // ───────────────────────────── DATEDIFF's sign (issue #363) ─────────────────────────────
+
+  /** MySQL 8.4 documents exactly these two calls and their results. Before #363 this engine
+    * answered `-1` and `31` — the opposite sign — because `DATEDIFF` was merely an alias word on
+    * the `DATE_DIFF` token and inherited BigQuery's `end - start` order.
+    *
+    * These are ORACLES taken from the vendor's own reference, not values read back off our
+    * implementation, which is the only way this assertion can disagree with the code.
+    */
+  "DATEDIFF" should "return MySQL's sign, on MySQL's own documented examples" in {
+    longAt(
+      rowsOf(
+        s"SELECT DATEDIFF('2007-12-31'::DATE, '2007-12-30'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    ) shouldBe 1L
+    longAt(
+      rowsOf(
+        s"SELECT DATEDIFF('2010-11-30'::DATE, '2010-12-31'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    ) shouldBe -31L
+  }
+
+  it should "stay the opposite of DATE_DIFF, which keeps BigQuery's order" in {
+    val mysql = longAt(
+      rowsOf(
+        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    )
+    val bigQuery = longAt(
+      rowsOf(
+        s"SELECT DATE_DIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    )
+    mysql shouldBe 9L
+    bigQuery shouldBe -9L
+    mysql shouldBe -bigQuery
+  }
+
+  it should "agree with TIMESTAMPDIFF, which MySQL defines as dt2 - dt1" in {
+    // MySQL is itself asymmetric here, and we match it on BOTH names.
+    longAt(
+      rowsOf(
+        s"SELECT TIMESTAMPDIFF(DAY, '2025-01-01'::DATE, '2025-01-10'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    ) shouldBe 9L
+  }
+
+  /** The lead ruling, executed: on this ONE spelling the arity changes the sign, because the
+    * 3-argument form is this engine's own extension and is not MySQL.
+    */
+  it should "keep this engine's order in the three-argument form, unlike the two-argument one" in {
+    val two = longAt(
+      rowsOf(
+        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    )
+    val three = longAt(
+      rowsOf(
+        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    )
+    two shouldBe 9L
+    three shouldBe -9L
+  }
+
   "TIMESTAMPADD" should "execute as DATETIME_ADD does, on the same statement" in {
     val viaAlias = rowsOf(
       s"SELECT TIMESTAMPADD(DAY, 1, CURRENT_DATE) AS d FROM $index WHERE name = 'padding' LIMIT 1"

@@ -1654,7 +1654,7 @@ object DialectCensus {
       "DATE_DIFF",
       "TIMESTAMPDIFF",
       FT,
-      """override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")""",
+      """override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF")""",
       "SELECT TIMESTAMPDIFF(MONTH, start_date, end_date) AS d FROM projects",
       "3",
       EsSpecific,
@@ -1666,19 +1666,23 @@ object DialectCensus {
       "alias spelling of DATE_DIFF, unit-first form only"
     ),
     e(
-      "fn.time.date-diff.datediff-alias",
+      "fn.time.mysql-datediff",
       Fn,
-      "DATE_DIFF",
+      "DATEDIFF",
       "DATEDIFF",
       FT,
-      """override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")""",
+      """case object MySqlDateDiff extends Expr("DATEDIFF") with TokenRegex""",
       "SELECT DATEDIFF(start_date, end_date) AS d FROM projects",
       "2..3",
       EsSpecific,
-      "ES painless ChronoUnit.between with the DAY default; 2-arg DATEDIFF(d1, d2) matches " +
-      "MySQL's day-difference form, one trio engine (T1)",
+      "ES painless ChronoUnit.between. Its own TOKEN since issue #363, not a word of DATE_DIFF: " +
+      "MySQL 8.4 defines DATEDIFF(expr1, expr2) as expr1 - expr2 while DATE_DIFF is BigQuery's " +
+      "end - start, so while it was an alias it returned the OPPOSITE sign from the function it " +
+      "is named after (T1)",
       PainlessField,
-      "alias spelling; MySQL DATEDIFF returns days, which is this form's default unit"
+      "2-arg = MySQL, expr1 - expr2, days only; the parser stores the operands SWAPPED so the " +
+      "node keeps one meaning. The 3-arg DATEDIFF(a, b, unit) is this engine's OWN extension " +
+      "and keeps end - start, so on this spelling the ARITY CHANGES THE SIGN (lead ruling)"
     ),
     e(
       "fn.time.date-add",

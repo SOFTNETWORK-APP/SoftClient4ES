@@ -314,7 +314,8 @@ class DialectCensusSpec extends AnyFlatSpec with Matchers {
     // scraped census cannot reach 149 - which makes this number the tooling-choice guard as
     // well as the alias one.
     withClue("SQLKeywords.functionTokens changed size - 19.3's estimate base moved (F-1)\n") {
-      SQLKeywords.functionTokens.size shouldBe 95
+      // 95 -> 96: MySqlDateDiff became its own token (issue #363).
+      SQLKeywords.functionTokens.size shouldBe 96
     }
     withClue(
       "two function tokens now share a `sql` literal. AC-1's coverage diff is SET-based and " +
@@ -323,7 +324,7 @@ class DialectCensusSpec extends AnyFlatSpec with Matchers {
       "vs MONTHS, DAY_OF_MONTH vs DAYS, string LeftOp vs query LeftJoin - all " +
       "Expr(\"HOUR\"/\"MONTH\"/\"DAY\"/\"LEFT\")); one such pair landing INSIDE functionTokens " +
       "breaks the diff.\n"
-    ) { SQLKeywords.functionTokens.map(_.sql.toUpperCase).toSet.size shouldBe 95 }
+    ) { SQLKeywords.functionTokens.map(_.sql.toUpperCase).toSet.size shouldBe 96 }
 
     val registryWords: Set[String] =
       SQLKeywords.functionTokens.flatMap(SQLKeywords.wordsOf).toSet

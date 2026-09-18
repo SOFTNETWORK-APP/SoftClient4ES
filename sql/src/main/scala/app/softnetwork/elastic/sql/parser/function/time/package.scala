@@ -216,11 +216,32 @@ package object time {
     lazy val date_diff_transact_sql: PackratParser[BinaryFunction[_, _, _]] =
       DateDiff.regex ~ start ~> time_unit ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) <~ end ^^ {
         case u ~ _ ~ d1 ~ _ ~ d2 =>
-          DateDiff(d1, d2, u, transactSql = true)
+          DateDiff(d1, d2, u, DateDiffSpelling.UnitFirst)
+      }
+
+    /** MySQL's `DATEDIFF` (issue #363), which is NOT the function `date_diff` above parses.
+      *
+      * Two arguments — the shape MySQL actually defines — means `expr1 - expr2`, so the operands
+      * are stored SWAPPED and the node keeps its single meaning of `end - start`. The dialect lives
+      * here and in `toSQL`, nowhere else.
+      *
+      * 🔴 The THREE-argument `DATEDIFF(a, b, unit)` is NOT MySQL — MySQL's is days-only — it is
+      * this engine's own extension, and a lead ruling keeps it exactly as it behaved before: `end -
+      * start`, rendered as `DATE_DIFF`. So on this ONE spelling the arity changes the sign, and
+      * `DateDiffSignSpec` pins both readings side by side so that stays deliberate and visible
+      * rather than discovered.
+      */
+    lazy val mysql_date_diff: PackratParser[BinaryFunction[_, _, _]] =
+      MySqlDateDiff.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ (separator ~ time_unit).? ~ end ^^ {
+        case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
+          u match {
+            case Some(_ ~ unit) => DateDiff(d1, d2, unit, DateDiffSpelling.DateFirst)
+            case None           => DateDiff(d2, d1, TimeUnit.DAYS, DateDiffSpelling.MySql)
+          }
       }
 
     lazy val date_diff_identifier: PackratParser[Identifier] =
-      (date_diff | date_diff_transact_sql) ^^ { dd =>
+      (date_diff | date_diff_transact_sql | mysql_date_diff) ^^ { dd =>
         Identifier(dd)
       }
 
