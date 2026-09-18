@@ -31,8 +31,9 @@
     "SELECT ... UNION [ALL | DISTINCT] SELECT ...",
     "SELECT ... INTERSECT [ALL] SELECT ...",
     "SELECT ... EXCEPT [ALL] SELECT ...",
-    "-- ORDER BY / LIMIT after the last branch belong to that branch; to order or limit",
-    "-- the whole result, wrap the set operation in a derived table:",
+    "-- For UNION ALL, a trailing ORDER BY / LIMIT belongs to the LAST branch. For UNION,",
+    "-- INTERSECT and EXCEPT it is REJECTED -- parenthesise the branch to keep it there, or",
+    "-- wrap the whole set operation in a derived table to order or limit the result:",
     "SELECT * FROM (SELECT ... UNION SELECT ...) AS s ORDER BY ... LIMIT n"
   ],
   "description": "The SELECT statement retrieves rows from Elasticsearch indices. It supports most standard SQL features including joins, aggregations, and subqueries.",
