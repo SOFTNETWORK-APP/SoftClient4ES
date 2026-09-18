@@ -194,12 +194,13 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       // `Epic22UnmeasuredIds`), which is the state PD-3 exists to make representable.
       if (
         a.scored == "fixed" && !Set("epic21", "epic22").contains(a.owner) &&
-        !Issue328FixedIds.contains(a.captureId)
+        !Issue328FixedIds.contains(a.captureId) && !Issue361FixedIds.contains(a.captureId)
       ) {
         sys.error(
           s"scored=fixed requires owner=epic21 or owner=epic22, not '${a.owner}' -- an " +
           "issue-owned or capability-open row that merely PARSES is not a fix (PD-3). The ONE " +
-          "exception is enumerated in CorpusReplay.Issue328FixedIds and is not a predicate you " +
+          "exceptions are enumerated in CorpusReplay.Issue328FixedIds / Issue361FixedIds and " +
+          "are not a predicate you " +
           "may widen: add an id there only with a merged suite asserting that statement's " +
           "CORRECTNESS, named in its note"
         )
@@ -384,10 +385,10 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       "the number of SCORED FIXES moved -- if that is intended, move this pin too, and say " +
       "so in the PR: it is the published headline. "
     ) {
-      attribution.values.count(_.scored == "fixed") shouldBe 58
+      attribution.values.count(_.scored == "fixed") shouldBe 60
     }
     withClue("the published headline moved: ") {
-      tallyOf(outcomes, attribution).scoredOf99 shouldBe 70
+      tallyOf(outcomes, attribution).scoredOf99 shouldBe 72
     }
     // The ONE enumerated exception to "fixed belongs to a shipped epic" (lead ruling 2026-09-17),
     // checked in BOTH directions: an id the CODE excepts that the table no longer scores is a
@@ -405,6 +406,20 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       }
       if (a.owner != "issue:328") {
         sys.error(s"owner moved to '${a.owner}' -- the exception is keyed on issue:328's rows")
+      }
+    }
+
+    Issue361FixedIds should have size 2
+    checkAll(Issue361FixedIds.toList.sorted, "the issue:361 scoring exception")(identity) { id =>
+      val a = attributionOf(attribution, id)
+      if (a.scored != "fixed") {
+        sys.error(
+          s"the code excepts '$id' from G7 but the table scores it '${a.scored}' -- a DEAD " +
+          "exception. Delete the id from Issue361FixedIds, or score the row."
+        )
+      }
+      if (a.owner != "issue:361") {
+        sys.error(s"expected owner 'issue:361' for '$id', found '${a.owner}'")
       }
     }
     // The owner check is done per OWNER, not per set: `epic22` owns two sets (fixed + unmeasured),
@@ -837,6 +852,28 @@ object CorpusReplay {
     "tableau.mysql.w7.048",
     "tableau.mysql.w7.051",
     "tableau.sql92.wx.015"
+  )
+
+  /** The SECOND enumerated exception, same bar and same shape as `Issue328FixedIds` (issue #361).
+    *
+    * Two Tableau statements rejected for a DIALECT SPELLING rather than a missing capability: a
+    * `SUM(CHAR_LENGTH(name))` and a `SELECT TOP 1 *`. Their correctness — not their parse — is
+    * asserted by a merged, five-client suite against real Elasticsearch, `BiDialectExecutionSpec`:
+    * `CHAR_LENGTH` is measured against a MULTI-BYTE string (`海豚` is 2 characters and 6 UTF-8 bytes,
+    * so a byte-counting implementation reddens), and `TOP n` is asserted on row COUNT and row SET
+    * against the `LIMIT n` spelling over an index holding more documents than `n`.
+    *
+    * 🔴 The integration mutation was run and recorded: removing the fold of `TOP` into the
+    * statement's `LIMIT` — while leaving `TOP` parsing — reddens exactly the three `TOP` execution
+    * rows and leaves the `CHAR_LENGTH` rows green. A suite that stayed green under that mutation
+    * would not have met the bar, whatever its name.
+    *
+    * Same rule as above: a COMPILED SINGLETON, never `owner.startsWith("issue:")`. If it is ever
+    * wrong, re-score the rows `residual` and DELETE the ids — do not widen the set.
+    */
+  val Issue361FixedIds: Set[String] = Set(
+    "tableau.sql92.w8.032",
+    "tableau.sql92.wx.010"
   )
 
   /** Rejected by a blocker Epic 22 does not own: the MySQL null-safe equality operator `<=>` in the
