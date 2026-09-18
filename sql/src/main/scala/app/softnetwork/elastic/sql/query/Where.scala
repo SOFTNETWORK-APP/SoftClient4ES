@@ -1237,12 +1237,30 @@ case class InExpr[R, +T <: Value[R]](
   override def negated: Option[Criteria] =
     Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
 
-  private[this] lazy val id = functions.headOption match {
-    case Some(f) => s"$f($identifier)"
-    case _       => s"$identifier"
-  }
+  /** 🔴 `$identifier`, NOT a re-application of its head function (issue #365).
+    *
+    * `Identifier.sql` ALREADY renders the function chain — `Identifier` is sealed with a single
+    * implementation that never overrides `sql`, and `Expression.functions` IS
+    * `identifier.functions` — so wrapping it again emitted the operand twice. How that looked
+    * depended on the function's own `toString`: one that carries its operand gave the malformed
+    * `ABS(a)(ABS(a))`, a bare token gave `YEAR(YEAR(a))`.
+    *
+    * ⚠️ MEASURED, because the obvious reading of that second case is wrong. `YEAR(YEAR(a))` is
+    * legal SQL, but it does NOT execute differently: the temporal emission collapses a repeated
+    * extractor, so its Painless is byte-identical to `YEAR(a)`, across every statement whose render
+    * moved. The extractors rendered wrongly and still ANSWERED correctly; the functions that broke
+    * LOUDLY are the ones that cost something.
+    *
+    * And the loud half does not self-heal. It is not cosmetic: `MaterializedViewExtension` PERSISTS
+    * this render and re-runs `client.run(alter.sql)`, `SHOW CREATE MATERIALIZED VIEW` echoes it and
+    * `SCRIPT AS` stores it beside the Painless — so a view authored before this fix still holds
+    * `ABS(a)(ABS(a)) IN (…)` and keeps failing until it is re-created.
+    *
+    * Every sibling render here already did the right thing — the comparison arm and `BETWEEN` both
+    * interpolate `$identifier` — so this is a return to the house form, not a new convention.
+    */
   override def sql =
-    s"$id $notAsString$operator $values"
+    s"$identifier $notAsString$operator $values"
   override def operator: Operator = IN
   override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
