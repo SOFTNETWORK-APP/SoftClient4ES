@@ -1,10 +1,16 @@
 # The Epic 19 BI corpus, as a tracked test resource
 
-Three CSV files read by `CorpusReplaySpec`
-(`sql/src/test/scala/app/softnetwork/elastic/sql/census/CorpusReplaySpec.scala`), the Epic 21
-scoreboard. All three are inputs to a **gate**, not documentation: every one of the 99 statements is
-replayed through the real `Parser` on every `sql/test` run and its verdict is asserted against the
+Five CSV files read by `CorpusReplaySpec`
+(`sql/src/test/scala/app/softnetwork/elastic/sql/census/CorpusReplaySpec.scala`), the corpus
+scoreboard. All of them are inputs to a **gate**, not documentation: every one of the 99 statements
+is replayed through the real `Parser` on every `sql/test` run and its verdict is asserted against the
 declared expectation.
+
+Story 21.6 built this for Epic 21 with three files; story 22.7 added two —
+`baseline-pre-epic22.csv` (a second historical tree) and `series.csv` (one row per measured tree) —
+and with them the scoreboard stopped being one epic's report and became a **series** that Epic 23
+appends to. It was extended, never forked: two scoreboards over one corpus is the "one key, two
+derivations" failure this project has already paid for.
 
 They are test resources only. sbt publishes no test artifacts by default and this build sets no
 `Test / publishArtifact`, so nothing here reaches a published jar; the files' only reach is the test
@@ -94,6 +100,71 @@ this file. The widely-quoted `5/94` baseline is **stale**: it was captured 2026-
 Epic 20's +7 (`superset.flightsql.w1.009`, `w1.010`, `tableau.mysql.wx.004`, `w1.015`, `w7.040`,
 `tableau.sql92.wx.004`, `w4.024`).
 
+## `baseline-pre-epic22.csv` — what parsed AFTER Epic 21 and BEFORE Epic 22
+
+Same shape and same rule as the file above, measured by running `CorpusReplaySpec` in a separate
+checkout of **`40c8c63e`** — the first parent of the first Epic-22 merge (PR #331, `feature/22.1`),
+verified both ways: it is an ancestor of that merge, and `grep -c derivedTable` over its
+`FromParser.scala` is **0**. Measured 2026-09-17: **81 parses / 18 rejected**, with all twelve
+Epic-22 statements rejected.
+
+🔴 **Do not "refresh" this file either.** It is the anchor of Epic 22's diff. A re-measurement on a
+later tree is a new row of `series.csv`.
+
+## `series.csv` — the scoreboard as a SERIES, one row per measured tree
+
+`label,commit,measured_at,scored_of_99,scored_of_75,parses_raw,rejected`, **append-only by
+convention**. Story 21.6 deferred this ("one data point is not a series"); story 22.7 had three, so
+it started the file. Epic 23 appends a row per matrix run and re-uses `CorpusReplay.tallyOf` /
+`summaryLine` rather than writing a second scoreboard.
+
+🔴 **G8 — the gate over this file — is BOOKKEEPING, not safety, and it is written down here because
+anyone who reads it as the guard has mis-read it.** Ask the standing question of it: *what is the
+smallest edit to a data file that makes it pass while the thing it guards is broken?* Answer: **edit
+the head row.** Its expectation lives in the very file the dev maintains, so it can never be the
+guard. It is acceptable only because the verdicts themselves are pinned independently — by **G2**
+against `epic-21-attribution.csv`, and by **G4 / G4b / G4c** against ids COMPILED into
+`CorpusReplay` — so a silent scoreboard move is impossible without also moving an attribution row
+those gates police — **and, since the published total itself is pinned in `CorpusReplay` (G4c
+asserts 58 `fixed` rows and a `scoredOf99` of 70), a headline move reddens in code even for the 46
+rows that belong to no id set.** Without that pin a two-cell edit to this CSV — re-owning one
+`issue:`/`local:` row to `epic21`/`fixed` — passed every gate but G8, the one gate this file says
+can never be the guard. G8's whole job is to stop the series and the run drifting apart: when the
+scoreboard moves, **append a row, never edit the head**. The gate can police the head; it cannot
+police history.
+
+🔴 **The one case where the head IS edited, and why it is not a loophole.** Append-only exists so
+that a merge which flips a verdict cannot be hidden by moving the expectation. That reasoning has
+three preconditions, and when all three hold it points the other way:
+
+1. **nothing has merged** — the branch has no PR, so no reader has seen the number;
+2. **the number was never published** anywhere outside the branch;
+3. **what changed is the SCORING POLICY, not the tree.**
+
+A series row is one per measured TREE, and the file has no column that could tell two policies on
+one commit apart. Appending a second row for `7187c7d9` would therefore read, to anyone later, as a
+contradiction — it would manufacture a history of a measurement nobody ever took. So the head row is
+edited, and G8 going red until it moves is the mechanism working, not something to route around.
+This has happened twice, both before anything merged and both on the same unpublished branch: the
+lead ruling of 2026-09-17 admitted the four `issue:328` rows to `fixed` (64 → 68), and pass 2's E5
+measurement admitted two more (68 → 70). Neither moved the TREE — the grammar at `7187c7d9` is the
+same in all three readings; what moved was first a scoring policy and then the EVIDENCE available
+about rows that already parsed. **A change to the TREE never qualifies** — that is an append, every
+time.
+
+What the gate does check mechanically, for each historical row: `parses_raw` and `rejected` equal
+the committed baseline that row belongs to, and `scored_of_99 ≤ parses_raw`. The historical
+`scored_*` columns themselves are the **published headline of their epoch** — a fact of record, not
+a re-derivation, because a baseline file carries verdicts and no verdict file can say what was
+scored. The head row's `commit` is the tree whose `Parser` produced the verdicts, re-stamped at
+merge.
+
+⚠️ That distinction is not academic: the summary line used to derive "was B before Epic 21" by
+counting non-probe `parses` rows in the baseline, and story 21.6's own comment recorded why that was
+fragile. It has since diverged — 81 statements parsed at the pre-Epic-22 tree, 60 of them non-probe,
+while the published Epic-21 headline was **56**, because four parse and answer wrongly. The summary
+now reads its historical numbers from this file and says so.
+
 ## `epic-21-attribution.csv` — the declared expectation, per statement
 
 `capture_id,expected,scored,owner,note`. **Two facts, two columns, on purpose**: `expected` says what
@@ -102,18 +173,58 @@ published headline and is asserted by G7. Deriving one from the other makes the 
 we are not calling that a fix" unrepresentable.
 
 `expected` ∈ `parses` | `rejected`.
-`scored` ∈ `fixed` | `pre_epic21` | `residual` | `rejected_pending_policy` | `capability_open`.
+`scored` ∈ `fixed` | `pre_epic21` | `residual` | `rejected_pending_policy` | `capability_open` |
+`rejected_by_design`.
 
 | `owner` | meaning | `expected` | `scored` |
 |---|---|---|---|
 | `epic21` | Epic 21 fixed it and its family's correctness assertion passes | `parses` | `fixed` |
+| `epic22` | Epic 22 owns it and it parses. `fixed` **only** when a merged suite executes its shape against real Elasticsearch with an exact oracle; `residual` while that measurement is missing | `parses` | `fixed` or `residual` |
 | `pre_epic21` | already parsed before Epic 21 | `parses` | `pre_epic21` |
 | `rejected_pending_policy` | temp-table probe still rejected on grammar; **must STAY rejected** | `rejected` | `rejected_pending_policy` |
 | `capability_open` | temp-table probe whose acceptance is an open product decision | either | `capability_open` |
-| `epic22a_derived_table` | needs derived tables | `rejected` | `residual` |
-| `epic22b_cte` | needs CTEs | `rejected` | `residual` |
+| `rejected_by_design` | refused on purpose, permanently, by an epic's own scope; **must STAY rejected** | `rejected` | `rejected_by_design` |
 | `issue:<N>` | a remotely filed issue; still rejected, **or** parsing and answering wrong | either | `residual` |
 | `local:<slug>` | a defect recorded in the team's own issue notes, which live outside this repository; the slug IS the record's identity, and it becomes `issue:<N>` when a fixing story files it remotely | either | `residual` |
+
+Story 22.7 retired `epic22a_derived_table` and `epic22b_cte`: Epic 22 shipped, so an owner meaning
+"needs an epic that has not landed" would own no row, and an owner with no rows is an allow-list
+nobody exercises (G5 would go vacuous on it).
+
+**`issue:328` is the one owner outside a shipped epic whose rows are scored `fixed`** — four Tableau
+row-existence probes, admitted by the lead on 2026-09-17 because a merged five-client suite
+(`GroupByCompletenessSpec`, *"corpus shape: HAVING with no GROUP BY"*, PR #327) asserts their
+CORRECTNESS against real Elasticsearch, which is the bar. 🔴 The admission is an **enumerated set in
+code** (`CorpusReplay.Issue328FixedIds`), never a widened predicate: G7 exists so that `fixed` cannot
+quietly come to mean "it parsed", and `owner.startsWith("issue:")` would hand that meaning to every
+future issue owner in silence. An exception a reader can enumerate keeps the rule a rule. To add
+one, bring a merged suite that asserts the statement's correctness and name it in the `note`.
+
+🔴 **`epic22` + `fixed` is a DECLARATION whose evidence lives in another repository**, and the rule
+that keeps it honest is story 22.7 AD-10's: *a `fixed` row NAMES, in its `note`, the merged suite
+that asserts its CORRECTNESS — not merely its parse — and a row with no such suite takes `residual`.*
+The witnesses are `softclient4es-arrow`'s `JoinExtensionIntegrationSpec` (the story-22.4
+derived-table behaviour and the story-22.5 CTE rows), green on real Elasticsearch 6.8 / 7.17 / 8.18 /
+9.0. The `sql` test classpath carries no Elasticsearch client, so this is a **convention checked by
+review, never a build interlock**. What the convention is worth is the literal count pin in
+`CorpusReplay` (`Epic22FixedIds should have size 8`, and the same for each of the four scoring sets),
+owned by neither side, so a coordinated add or delete still reddens locally.
+
+The principle behind the cut, stated once so it is not re-argued per row: **a witness discharges a
+row when it exercises the thing that could go wrong.** Quoting is Epic 21's and round-trips (21.1 /
+21.2's merged pins), so a backticked or ANSI-quoted spelling of an already-witnessed shape needs no
+new run. A **qualifier** is different in kind: it can move which index is read, and no merged witness
+executes one. That, and nothing about the quoting, is why two rows are held back.
+
+**Two rows were `epic22` + `residual` for one pass, and the reason is worth keeping.**
+`tableau.mysql.w1.019` and `tableau.sql92.wx.009` wrap a fully-quoted qualifier inside the derived
+body; every merged witness executed a bare index name, so nobody had run that spelling. They were
+not `fixed` (a declaration whose only evidence is an unrun test) and not a `local:` defect slug
+(that would publish a failure nobody had seen) — they were `residual` behind a code pin, and the
+`parses − scored` gap said so out loud. Pass 2 RAN them: acceptance rows E5a/E5b/E5c in
+softclient4es-arrow and `corpus E5-jdbc` in the jdbc testkit, green on real Elasticsearch 6.8 /
+7.17 / 8.18 / 9.0, so both are now `fixed`. `Epic22UnmeasuredIds` is kept as an EMPTY set with its
+history: that shape is the one to reuse the next time a row parses before anyone has executed it.
 
 Three owners leave `expected` free, and that is the point: it is how "it parses; we are not calling
 that a fix" and "it parses; the capability question is not ours to answer" are recorded honestly.
@@ -133,24 +244,47 @@ round-trips — it resolves as an ordinary identifier — so it is not a blocker
 consequence is worse than a rejection. Taking a second-hand claim on trust is the same failure as
 reading the error message; a `note` that names a blocker must name one somebody ran.
 
-🔴 **The 24 temp-table probe ids are pinned in COMPILED code**
-(`CorpusReplay.RejectedPendingPolicyIds` / `CapabilityOpenIds`), not here — a gate whose
-expectations live in the file it guards can be silenced by editing that file. Editing this CSV cannot
-move them, and G4's failure message says what you are doing.
+🔴 **The load-bearing id sets are pinned in COMPILED code, not here** — a gate whose expectations
+live in the file it guards can be silenced by editing that file. Editing this CSV cannot move them,
+and each gate's failure message says what you are doing:
+
+| set in `CorpusReplay` | guards | gate |
+|---|---|---|
+| `RejectedPendingPolicyIds` (3) / `CapabilityOpenIds` (21) | the 24 temp-table probes: the 3 must stay rejected, none of the 24 may ever be scored as a win | G4 |
+| `PreEpicParsesIds` (12) | the pre-Epic-21 no-regression set, so a baseline cell edit cannot shrink it | AC-5 |
+| `DerivedTableParsesIds` (9) / `DerivedTableRejectedIds` (2) / `CteParsesIds` (1) | the SHAPE partition of Epic 22's twelve, and their measured verdicts | G4 |
+| `Epic22FixedIds` (10) / `Epic22UnmeasuredIds` (now EMPTY) / `RejectedByDesignIds` (1) / `NullSafeEqualityIds` (1) | the SCORING partition of the same twelve — exact (disjoint, union = the twelve) and agreeing with this table in both directions | G4c |
+| `Issue328FixedIds` (4) | the ONE enumerated exception to "`fixed` belongs to a shipped epic" (lead ruling 2026-09-17), checked both ways so a dead exception cannot survive | G4c + G7 |
+| `epic22Texts()` (12) | the statements READ from story 22.1's own `DerivedTableCorpusSpec.rows` (11) plus the CTE witness story 22.5 owns (1): two files, two authors, one TEXT — compared after whitespace collapse, not byte for byte | G9 |
+
+Shape and score are **different questions**, which is why they get different sets — the same reason
+`expected` and `scored` are different columns. G9 compares the TEXT rather than id membership on
+purpose: a set check cannot see the drift that gate exists to catch, two authors typing one
+statement two ways. It reads 22.1's literals rather than a third transcription for the same reason —
+a copy kept beside the gate would only ever agree with itself.
 
 ## Output
 
-The suite writes `sql/target/epic-21/corpus-replay.csv` and `corpus-replay.md` (per-tool,
+The suite writes `sql/target/corpus-replay/corpus-replay.csv` and `corpus-replay.md` (per-tool,
 per-dialect, per-workload and per-authorship tallies, the residuals by owner, and the informational
 message families) and prints a one-line summary. The artefacts are emitted BEFORE any assertion, so a
-failing gate never leaves the operator blind.
+failing gate never leaves the operator blind. (Story 22.7 renamed the directory from
+`sql/target/epic-21/`: the scoreboard spans epics now.)
 
 🔴 **The published verb is "SCORES", never "parses"** (lead ruling, 2026-09-13). `N` counts `scored`,
 so a sentence saying the engine *parses* `N` is false on its face whenever any statement parses without
-being counted — and 25 of them do. The summary line therefore reads *"SCORES 56/99 … 81 PARSE — the
-25-row difference is never counted"*, and the raw parse count is stated in the same breath so neither
-number can be quoted alone. The spec's PD-1 writes the verb as "parses"; that wording is superseded and
-must not be "corrected" back.
+being counted — and 21 of them do, every one a temp-table capability probe. The summary line reads
+*"SCORES 70/99 (was 56 after Epic 21, 12 before it) … 91 PARSE — the 21-row difference is never
+counted"*, and the raw parse count is stated in
+the same breath so neither number can be quoted alone. The spec's PD-1 writes the verb as "parses";
+that wording is superseded and must not be "corrected" back.
+
+Both denominators, always: `scored/99` is everything captured, and `scored/75` is
+`99 − 24 temp-table capability probes` — the statements we intend to answer. Neither is quoted alone.
+The line also names the three Epic-22 stories whose corpus credit is a measured **zero** (22.2
+uncorrelated `WHERE` subqueries, 22.3 correlated, 22.6 set operators): no captured BI statement uses
+those constructs, their evidence is the exact-oracle and DuckDB-oracle suites, and saying so in the
+headline is what stops a reader apportioning the delta to them.
 
 ---
 

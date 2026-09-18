@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.census
 
-import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.parser.{DerivedTableCorpusSpec, Parser}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -27,7 +27,12 @@ import scala.collection.immutable.ListMap
 import scala.io.Source
 import scala.util.control.NonFatal
 
-/** Story 21.6 - the Epic 21 scoreboard.
+/** Stories 21.6 and 22.7 - the corpus scoreboard.
+  *
+  * Story 21.6 built it for Epic 21; story 22.7 extended it (it did not fork it) into a SERIES that
+  * spans epics: a second baseline (`baseline-pre-epic22.csv`), the `epic22` / `rejected_by_design`
+  * owners, the code-pinned Epic-22 scoring partition, and `series.csv` with one row per measured
+  * tree. Epic 23 appends a row; it does not write a second scoreboard.
   *
   * Replays the 99 BI-emitted statements captured in Epic 19 (Tableau 2026.2.2 over JDBC, both its
   * MySQL and SQL-92 dialects; Apache Superset 6.0.1 over Flight SQL) against the real `Parser` and
@@ -50,14 +55,16 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
   import CorpusReplay._
 
   private val corpus: List[CorpusRow] = loadCorpus()
-  private val baseline: Map[String, String] = loadBaseline()
+  private val baseline: Map[String, String] = loadBaseline(BaselinePre21)
+  private val pre22: Map[String, String] = loadBaseline(BaselinePre22)
   private val attribution: Map[String, Attribution] = loadAttribution()
+  private val series: List[SeriesRow] = loadSeries()
   private val outcomes: List[Outcome] = replayAll(corpus)
   private val byId: Map[String, Outcome] = outcomes.map(o => o.row.captureId -> o).toMap
 
   // Emit the artefacts BEFORE any assertion: a failing gate must not leave the operator blind.
-  writeArtefacts(outcomes, attribution, baseline)
-  println(summaryLine(outcomes, attribution, baseline))
+  writeArtefacts(outcomes, attribution, baseline, pre22, series)
+  println(summaryLine(outcomes, attribution, series))
 
   /** Report EVERY offending row, not just the first (the `DialectCensusSpec` house idiom). */
   private def checkAll[A](items: Seq[A], what: String)(label: A => String)(
@@ -82,8 +89,9 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     corpus.count(_.statement.trim.nonEmpty) shouldBe 99
   }
 
-  it should "carry a baseline and an attribution row for every capture id" in {
+  it should "carry both baselines and an attribution row for every capture id" in {
     baseline should have size 99
+    pre22 should have size 99
     attribution should have size 99
   }
 
@@ -93,13 +101,17 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     owners should contain("pre_epic21")
     owners should contain("rejected_pending_policy")
     owners should contain("capability_open")
-    owners should contain("epic22a_derived_table")
+    // Story 22.7 RETARGETED this line from `epic22a_derived_table`, which now owns no row. A gate
+    // that never observes a vocabulary member does not guard it.
+    owners should contain("epic22")
+    owners should contain("rejected_by_design")
     val scores = attribution.values.map(_.scored).toSet
     scores should contain("fixed")
     scores should contain("pre_epic21")
     scores should contain("residual")
     scores should contain("rejected_pending_policy")
     scores should contain("capability_open")
+    scores should contain("rejected_by_design")
   }
 
   // ---- G1: two-way coverage, corpus vs attribution vs baseline ------------------------------
@@ -117,6 +129,12 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     }
     withClue("baseline rows naming a capture id the corpus does not hold: ") {
       (baseline.keySet -- corpusIds) shouldBe empty
+    }
+    withClue("capture ids in the corpus with no pre-epic22 baseline row: ") {
+      (corpusIds -- pre22.keySet) shouldBe empty
+    }
+    withClue("pre-epic22 baseline rows naming a capture id the corpus does not hold: ") {
+      (pre22.keySet -- corpusIds) shouldBe empty
     }
   }
 
@@ -170,10 +188,20 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       if (!Scores.contains(a.scored)) {
         sys.error(s"scored '${a.scored}' is not one of ${Scores.toList.sorted.mkString(", ")}")
       }
-      if (a.scored == "fixed" && a.owner != "epic21") {
+      // Story 22.7 widened this from `owner == "epic21"` to the two SHIPPED epics, plus ONE
+      // enumerated exception (lead ruling 2026-09-17, `Issue328FixedIds`). It stays an IMPLICATION,
+      // not a biconditional: `epic22` legitimately owns a row that parses and is NOT scored (see
+      // `Epic22UnmeasuredIds`), which is the state PD-3 exists to make representable.
+      if (
+        a.scored == "fixed" && !Set("epic21", "epic22").contains(a.owner) &&
+        !Issue328FixedIds.contains(a.captureId)
+      ) {
         sys.error(
-          s"scored=fixed requires owner=epic21, not '${a.owner}' -- an issue-owned or " +
-          "capability-open row that merely PARSES is not a fix (PD-3)"
+          s"scored=fixed requires owner=epic21 or owner=epic22, not '${a.owner}' -- an " +
+          "issue-owned or capability-open row that merely PARSES is not a fix (PD-3). The ONE " +
+          "exception is enumerated in CorpusReplay.Issue328FixedIds and is not a predicate you " +
+          "may widen: add an id there only with a merged suite asserting that statement's " +
+          "CORRECTNESS, named in its note"
         )
       }
       if (a.scored == "fixed" && a.expected != "parses") {
@@ -195,15 +223,24 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
       // it an `epic21` row could be `residual`, which cannot INFLATE the headline (it counts
       // `scored`) but can silently DEFLATE it, and a number that is quietly too low is still a
       // number nobody can reproduce.
-      if ((a.owner == "epic21") != (a.scored == "fixed")) {
+      // Story 22.7 added the sixth member to BOTH vocabularies, so it gets its biconditional in the
+      // SAME commit. Without it a row could be `scored = rejected_by_design` under owner `epic21`,
+      // where G4b -- which filters on the OWNER -- would never see it. State it as the rule: every
+      // value added to `Scores` needs its biconditional here.
+      if ((a.scored == "rejected_by_design") != (a.owner == "rejected_by_design")) {
         sys.error(
-          s"owner '${a.owner}' and scored '${a.scored}' disagree: owner=epic21 and scored=fixed " +
-          "imply each other. A row Epic 21 fixed is scored; a row it did not fix takes an " +
-          "epic22*/issue:/local: owner and scores residual."
+          s"scored '${a.scored}' and owner '${a.owner}' disagree about rejected_by_design"
         )
       }
-      if (a.owner.startsWith("epic22") && a.scored != "residual") {
-        sys.error(s"owner '${a.owner}' must score residual, not '${a.scored}'")
+      // The `epic21` half of 21.6's biconditional, kept as an IMPLICATION. Its reverse direction is
+      // now carried by the widened `fixed => owner in {epic21, epic22}` clause above. Dropping it
+      // would let an `epic21` row score `residual`, which cannot INFLATE the headline but can
+      // silently DEFLATE it, and a number that is quietly too low is still irreproducible.
+      if (a.owner == "epic21" && a.scored != "fixed") {
+        sys.error(
+          s"owner=epic21 must score fixed, not '${a.scored}'. A row Epic 21 fixed is scored; a row " +
+          "it did not fix takes an epic22/issue:/local: owner."
+        )
       }
     }
   }
@@ -238,49 +275,21 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     }
     TempTableProbeIds should have size 24
     RejectedPendingPolicyIds should have size 3
-    // Story 22.1 — the derived-table partition, pinned in code and checked both ways.
+    // Stories 22.1 / 22.5 — the SHAPE partition of the twelve Epic-22 statements, pinned in code.
+    // Story 22.7 kept the VERDICT pins here (the safety half) and moved the owner/score checks into
+    // the scoring gate below, because the two owners these were keyed on (`epic22a_derived_table`,
+    // `epic22b_cte`) are retired with the epic.
     DerivedTableParsesIds should have size 9
     DerivedTableRejectedIds should have size 2
-    val derivedDeclared =
-      attribution.values.filter(_.owner == "epic22a_derived_table").map(_.captureId).toSet
-    withClue("rows the table owns as epic22a_derived_table that the CODE does not partition: ") {
-      (derivedDeclared -- DerivedTableParsesIds -- DerivedTableRejectedIds) shouldBe empty
-    }
-    withClue("derived-table rows the CODE pins that the table no longer owns: ") {
-      (DerivedTableParsesIds ++ DerivedTableRejectedIds -- derivedDeclared) shouldBe empty
-    }
+    CteParsesIds should have size 1
+    Epic22Ids should have size 12
     checkAll(
-      (DerivedTableParsesIds ++ DerivedTableRejectedIds).toList.sorted,
-      "derived-table verdicts (pinned in code, never in the table)"
+      Epic22Ids.toList.sorted,
+      "Epic 22 verdicts (pinned in code, never in the table)"
     )(identity) { id =>
-      val want = if (DerivedTableParsesIds.contains(id)) "parses" else "rejected"
+      val want = if (DerivedTableRejectedIds.contains(id)) "rejected" else "parses"
       if (byId(id).verdict != want) {
         sys.error(s"expected $want, measured ${byId(id).verdict}")
-      }
-      if (attributionOf(attribution, id).scored != "residual") {
-        sys.error("a derived-table row must score residual — Epic 21 did not fix it")
-      }
-    }
-    // Story 22.5 — the CTE partition, checked BOTH ways against the table exactly as the
-    // derived-table one is.
-    CteParsesIds should have size 1
-    val cteDeclared =
-      attribution.values.filter(_.owner == "epic22b_cte").map(_.captureId).toSet
-    withClue("rows the table owns as epic22b_cte that the CODE does not pin: ") {
-      (cteDeclared -- CteParsesIds) shouldBe empty
-    }
-    withClue("CTE rows the CODE pins that the table no longer owns: ") {
-      (CteParsesIds -- cteDeclared) shouldBe empty
-    }
-    checkAll(
-      CteParsesIds.toList.sorted,
-      "CTE verdicts (pinned in code, never in the table)"
-    )(identity) { id =>
-      if (byId(id).verdict != "parses") {
-        sys.error(s"expected parses, measured ${byId(id).verdict}")
-      }
-      if (attributionOf(attribution, id).scored != "residual") {
-        sys.error("the CTE row must score residual — Epic 21 did not fix it")
       }
     }
     CapabilityOpenIds should have size 21
@@ -305,6 +314,152 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
           "honouring temp tables is an OPEN product decision tracked outside Epic 21. " +
           "It must never enter the headline numerator.\n" +
           s"      SQL: ${firstLine(row.statement)}"
+        )
+      }
+    }
+  }
+
+  // ---- G4b: rejected BY DESIGN — pinned in code, must STAY rejected (story 22.7) -------------
+
+  it should "keep the by-design rejections rejected (pinned ids, never the table)" in {
+    val declared =
+      attribution.values.filter(_.owner == "rejected_by_design").map(_.captureId).toSet
+    withClue("rows the table calls rejected_by_design that the CODE does not: ") {
+      (declared -- RejectedByDesignIds) shouldBe empty
+    }
+    withClue("by-design ids the CODE pins that the table no longer holds: ") {
+      (RejectedByDesignIds -- declared) shouldBe empty
+    }
+    RejectedByDesignIds should have size 1
+    checkAll(
+      corpus.filter(r => RejectedByDesignIds.contains(r.captureId)),
+      "rejected-by-design rows"
+    )(_.captureId) { row =>
+      if (byId(row.captureId).verdict == "parses") {
+        sys.error(
+          "this statement now PARSES: a derived table with NO CORRELATION NAME was accepted " +
+          "without the product decision (SQL-92 clause 7.6, story 22.1 PD-1). Note what that " +
+          "costs here: ROWNUM is not a blocker -- it resolves as an ordinary identifier -- so this " +
+          "statement would now range-filter a field that does not exist and return ZERO rows with " +
+          "HTTP 200. Do NOT resolve this by editing the attribution table.\n" +
+          s"      SQL: ${firstLine(row.statement)}"
+        )
+      }
+    }
+  }
+
+  // ---- G4c: the Epic-22 SCORING partition — pinned in code, checked both ways (story 22.7) ---
+
+  it should "partition the twelve Epic 22 rows by score, exactly, in code" in {
+    val parts = List(
+      ("epic22/fixed", Epic22FixedIds, "epic22", "fixed"),
+      ("rejected_by_design", RejectedByDesignIds, "rejected_by_design", "rejected_by_design"),
+      (
+        "local:mysql-null-safe-equality",
+        NullSafeEqualityIds,
+        "local:mysql-null-safe-equality",
+        "residual"
+      )
+    )
+    // The partition is EXACT: disjoint, and its union is the twelve. Without both halves a row
+    // could be dropped from every set and asserted by nothing.
+    val union = parts.flatMap(_._2).toList
+    withClue(s"the four scoring sets overlap: ${union.diff(union.distinct).sorted}: ") {
+      union.distinct should have size union.size.toLong
+    }
+    withClue("Epic 22 rows in no scoring set: ") { (Epic22Ids -- union.toSet) shouldBe empty }
+    withClue("scoring-set ids that are not Epic 22 rows: ") {
+      (union.toSet -- Epic22Ids) shouldBe empty
+    }
+    // 🔴 The literal count pin story BIDC-10a proved is worth having on top of a cross-repo
+    // convention: owned by NEITHER side, so a coordinated add/delete still reddens locally.
+    Epic22FixedIds should have size 10
+    Epic22UnmeasuredIds shouldBe empty
+    NullSafeEqualityIds should have size 1
+    // 🔴 The PUBLISHED TOTAL, pinned HERE and not in the CSV. Without this, 50 of the 99 rows (the
+    // 44 `epic21` and the 6 issue:/local: ones) appear in no compiled set, so re-owning one of them
+    // to `epic21`/`fixed` is a two-cell edit that G2/G3/G4/G4b/G4c/G7 all pass -- leaving only G8,
+    // which the README correctly says can never be the guard. Now the headline is owned by code.
+    withClue(
+      "the number of SCORED FIXES moved -- if that is intended, move this pin too, and say " +
+      "so in the PR: it is the published headline. "
+    ) {
+      attribution.values.count(_.scored == "fixed") shouldBe 58
+    }
+    withClue("the published headline moved: ") {
+      tallyOf(outcomes, attribution).scoredOf99 shouldBe 70
+    }
+    // The ONE enumerated exception to "fixed belongs to a shipped epic" (lead ruling 2026-09-17),
+    // checked in BOTH directions: an id the CODE excepts that the table no longer scores is a
+    // silently DEAD exception, and a row the table scores whose id the CODE does not except is
+    // caught by G7 -- this half names it instead of leaving the diagnosis to G7's message.
+    Issue328FixedIds should have size 4
+    checkAll(Issue328FixedIds.toList.sorted, "the issue:328 scoring exception")(identity) { id =>
+      val a = attributionOf(attribution, id)
+      if (a.scored != "fixed") {
+        sys.error(
+          "the CODE excepts this id so it may score `fixed`, but the table scores it " +
+          s"'${a.scored}'. A dead exception is worse than none: either restore the score, or " +
+          "DELETE the id from Issue328FixedIds."
+        )
+      }
+      if (a.owner != "issue:328") {
+        sys.error(s"owner moved to '${a.owner}' -- the exception is keyed on issue:328's rows")
+      }
+    }
+    // The owner check is done per OWNER, not per set: `epic22` owns two sets (fixed + unmeasured),
+    // so comparing the table's `epic22` rows against either set alone reports the other set's rows
+    // as unpinned.
+    parts.groupBy(_._3).foreach { case (owner, group) =>
+      val pinned = group.flatMap(_._2).toSet
+      val declared = attribution.values.filter(_.owner == owner).map(_.captureId).toSet
+      withClue(s"[$owner] rows the table owns that the CODE does not pin: ") {
+        (declared -- pinned) shouldBe empty
+      }
+      withClue(s"[$owner] ids the CODE pins that the table no longer owns: ") {
+        (pinned -- declared) shouldBe empty
+      }
+    }
+    parts.foreach { case (what, ids, owner, scored) =>
+      checkAll(ids.toList.sorted, s"$what rows")(identity) { id =>
+        val a = attributionOf(attribution, id)
+        if (a.scored != scored) {
+          sys.error(
+            s"expected scored=$scored under owner=$owner, found '${a.scored}'. If you are here " +
+            "because the E5 execution measurement finally landed: move the two ids out of " +
+            "Epic22UnmeasuredIds into Epic22FixedIds (green) or to a local: owner with its record " +
+            "(red). Do not edit the CSV to match."
+          )
+        }
+      }
+    }
+  }
+
+  // ---- G9: two authors, one TEXT — the corpus resource vs story 22.1's literals --------------
+
+  it should "hold every capture id story 22.1 pins, with the same statement after whitespace collapse" in {
+    val ids = corpus.map(_.captureId).toSet
+    val texts = epic22Texts()
+    withClue("22.1 / 22.5 ids absent from the corpus resource: ") {
+      (Epic22Ids -- ids) shouldBe empty
+    }
+    withClue("ids story 22.1 pins that are not Epic 22 rows here: ") {
+      (texts.keySet -- Epic22Ids) shouldBe empty
+    }
+    withClue("Epic 22 rows story 22.1 does not pin: ") {
+      (Epic22Ids -- texts.keySet) shouldBe empty
+    }
+    // An id-membership check plus a size cannot see the drift this gate exists to catch: two
+    // authors typing the same statement two ways. Compare the TEXT, per id, through `checkAll`.
+    checkAll(corpus.filter(r => Epic22Ids.contains(r.captureId)), "Epic 22 statement texts")(
+      _.captureId
+    ) { row =>
+      val mine = collapse(row.statement)
+      val theirs = collapse(texts(row.captureId))
+      if (mine != theirs) {
+        sys.error(
+          "the corpus resource and story 22.1's literal disagree.\n" +
+          s"      corpus: $mine\n      22.1   : $theirs"
         )
       }
     }
@@ -372,6 +527,81 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // ---- AC-5, second baseline: nothing that parsed after Epic 21 regresses (story 22.7) -------
+
+  it should "not regress any statement that parsed before Epic 22" in {
+    val were = corpus.filter(r => pre22.get(r.captureId).contains("parses"))
+    withClue("the pre-epic22 baseline holds no parse - the wrong file was committed: ") {
+      were should not be empty
+    }
+    // The pre-Epic-22 tree parsed 81 of 99. A COUNT alone is not enough: two cell edits (flip the
+    // regressed row to `rejected`, flip an Epic-22 row to `parses`) keep it at 81 and hide the
+    // regression -- and G8's own cross-check counts the SAME edited file. So the real defence is a
+    // CROSS-FILE invariant: every row the attribution table owns `epic21` or `pre_epic21` parsed
+    // before Epic 22 by construction, and those owners are themselves gated by G3 and G7.
+    were should have size 81
+    val settledBefore =
+      attribution.collect { case (id, a) if Set("epic21", "pre_epic21")(a.owner) => id }.toSet
+    withClue(
+      "rows owned epic21/pre_epic21 that the pre-epic22 baseline does not call `parses` -- either " +
+      "the baseline was edited to hide a regression, or an owner is wrong: "
+    ) {
+      (settledBefore -- pre22.collect { case (id, "parses") => id }.toSet) shouldBe empty
+    }
+    settledBefore should have size 56
+    checkAll(were, "pre-epic22 parses")(_.captureId) { row =>
+      if (byId(row.captureId).verdict != "parses") {
+        sys.error(s"parsed before Epic 22, rejected now: ${firstLine(byId(row.captureId).message)}")
+      }
+    }
+  }
+
+  // ---- G8: the series head IS the live run — BOOKKEEPING, not safety (story 22.7 AD-3) -------
+  // 🔴 Read this before trusting it. Ask `feedback_gate_integrity`'s question: what is the
+  // smallest edit to a data file that makes this pass while the thing it guards is broken? Answer:
+  // EDIT THE HEAD ROW. The expectation lives in the very file the dev maintains, so this can never
+  // be the guard. It is acceptable only because the verdicts themselves are pinned independently
+  // by G2 (against the attribution table) and by G4/G4b/G4c (against COMPILED ids), so a silent
+  // scoreboard move is impossible without also moving an attribution row those gates police. G8's
+  // whole job is to stop the series and the run DRIFTING APART.
+
+  "the series" should "end with a row equal to the live run (append a row, never edit the head)" in {
+    series should not be empty
+    val head = series.last
+    val live = tallyOf(outcomes, attribution)
+    withClue(
+      s"series head '${head.label}'@${head.commit} vs the live run -- the scoreboard moved and " +
+      "the series was not extended. APPEND a row; do not edit the head. "
+    ) {
+      (head.scoredOf99, head.scoredOf75, head.parsesRaw, head.rejected) shouldBe
+      (live.scoredOf99, live.scoredOf75, live.parsesRaw, live.rejected)
+    }
+    withClue(
+      s"duplicate series labels: ${series.map(_.label).diff(series.map(_.label).distinct)} "
+    ) {
+      series.map(_.label).distinct should have size series.size.toLong
+    }
+    series.head.label shouldBe "pre-epic21"
+    // The two historical rows are cross-checked against the committed baselines on the two counters
+    // a baseline file can actually produce, so the series cannot be re-written to tell a different
+    // story about the past either. Their `scored_*` columns are the PUBLISHED headline of their
+    // epoch -- a fact of record, not a re-derivation, because a baseline carries verdicts and no
+    // verdict file can say what was scored (the README says so, and the summary line names the
+    // series as its source for exactly this reason).
+    List("pre-epic21" -> baseline, "pre-epic22" -> pre22).foreach { case (label, b) =>
+      val row = series.find(_.label == label).getOrElse(fail(s"the series lost its '$label' row"))
+      withClue(s"[$label] parses_raw vs the committed baseline: ") {
+        row.parsesRaw shouldBe b.values.count(_ == "parses")
+      }
+      withClue(s"[$label] rejected vs the committed baseline: ") {
+        row.rejected shouldBe b.values.count(_ == "rejected")
+      }
+      withClue(s"[$label] scored more statements than parsed: ") {
+        row.scoredOf99 should be <= row.parsesRaw
+      }
+    }
+  }
+
   // ---- AD-6: rendered-TEXT fixed point -- BANNER, NOT a gate ---------------------------------
   // Winston: "I would rather have no check than a check people believe." This REPORTS and does not
   // fail. `alert` is available on AnyFlatSpecLike; `println` guarantees the line reaches a plain
@@ -401,20 +631,42 @@ class CorpusReplaySpec extends AnyFlatSpec with Matchers {
 object CorpusReplay {
 
   val CorpusResource = "corpus/epic-19-bi-corpus.csv"
-  val BaselineResource = "corpus/baseline-pre-epic21.csv"
+  val BaselinePre21 = "corpus/baseline-pre-epic21.csv"
+
+  /** Story 22.7 - the POST-Epic-21 tree, measured in a separate checkout of `40c8c63e` (the first
+    * parent of the first Epic-22 merge, PR #331 / `feature/22.1`). 81 parses / 18 rejected. The
+    * same "do not refresh it" rule as `BaselinePre21`: it is history, and a re-measurement on a
+    * later tree is a new row of the SERIES, never an edit to this file.
+    */
+  val BaselinePre22 = "corpus/baseline-pre-epic22.csv"
   val AttributionResource = "corpus/epic-21-attribution.csv"
 
+  /** Story 22.7 - the scoreboard SERIES. One row per measured tree, append-only. */
+  val SeriesResource = "corpus/series.csv"
+
+  /** Story 22.7: `epic22a_derived_table` / `epic22b_cte` are GONE. Epic 22 shipped, so every row
+    * they owned is now either `epic22` (it parses, and a MERGED suite executes its shape against
+    * real Elasticsearch with an exact oracle) or a residual with a named owner. An owner kept alive
+    * with zero rows is an allow-list nobody exercises, and G5 would go vacuous on it.
+    */
   val Owners: Set[String] = Set(
     "epic21",
+    "epic22",
     "pre_epic21",
     "rejected_pending_policy",
     "capability_open",
-    "epic22a_derived_table",
-    "epic22b_cte"
+    "rejected_by_design"
   )
 
   val Scores: Set[String] =
-    Set("fixed", "pre_epic21", "residual", "rejected_pending_policy", "capability_open")
+    Set(
+      "fixed",
+      "pre_epic21",
+      "residual",
+      "rejected_pending_policy",
+      "capability_open",
+      "rejected_by_design"
+    )
 
   private val IssueOwner = "^issue:[0-9]+$".r
   private val LocalOwner = "^local:[a-z0-9-]+$".r
@@ -435,17 +687,12 @@ object CorpusReplay {
     * unrepresentable in the first draft of this story.
     */
   def expectedFor(owner: String): Option[String] =
-    if (owner == "epic21" || owner == "pre_epic21") Some("parses")
-    // 🔴 Stories 22.1 / 22.5 — each `epic22*` owner stops implying `rejected` ONE AT A TIME, on the
-    // day its story lands, and is replaced by a code-pinned partition below. It is deliberately NOT
-    // `owner.startsWith("epic22")`: an owner whose story has NOT landed must keep implying
-    // `rejected`, or its rows would be asserted by NOTHING — neither an implication nor a code pin
-    // — and the day a grammar change makes them parse by accident the gate would go green and the
-    // 21.6 headline would move in silence. `epic22b_cte` joined the list with story 22.5.
-    else if (
-      isIssueOwner(owner) || isLocalOwner(owner) || owner == "capability_open" ||
-      owner == "epic22a_derived_table" || owner == "epic22b_cte"
-    ) None
+    // Story 22.7: `epic22` implies `parses` for the same reason `epic21` does - an owner that names
+    // a SHIPPED epic is a claim the grammar accepts the statement, and the ten rows it owns were
+    // measured parsing on this tree. The two `epic22*` placeholders 21.6 carried (which implied
+    // NOTHING while their stories were in flight) are retired with the epic.
+    if (owner == "epic21" || owner == "epic22" || owner == "pre_epic21") Some("parses")
+    else if (isIssueOwner(owner) || isLocalOwner(owner) || owner == "capability_open") None
     else Some("rejected")
 
   /** Story 22.1 — the derived-table rows, PINNED IN CODE for the same reason the temp-table probe
@@ -455,8 +702,12 @@ object CorpusReplay {
     * An `epic22*` owner stopped implying `rejected` when story 22.1 landed — an epic in flight may
     * have shipped, and the verdict is MEASURED, not assumed. What replaces the implication is this
     * explicit partition of the eleven derived-table statements, asserted against the attribution
-    * table in BOTH directions. Their `scored` stays `residual`: Epic 21 did not fix them, and the
-    * 21.6 headline (56/99) must not move when a later epic lands.
+    * table in BOTH directions.
+    *
+    * 🔴 Story 22.7 keeps these three sets as the SHAPE partition (which statement needs what) and
+    * adds a separate SCORING partition below (what the headline counts). They are different
+    * questions and 21.6's own `expected`/`scored` split is the precedent: conflating them is how
+    * "it parses" became "it is fixed" in the first draft of the Epic-21 headline.
     */
   val DerivedTableParsesIds: Set[String] = Set(
     "tableau.mysql.wx.003",
@@ -485,12 +736,143 @@ object CorpusReplay {
     * silence it.
     *
     * The corpus carries exactly ONE `WITH` statement, which is also story 22.5's entire corpus
-    * credit. Its `scored` stays `residual`: Epic 21 did not fix it, so the 21.6 headline (56/99)
-    * must not move because a later epic landed.
+    * credit.
     */
   val CteParsesIds: Set[String] = Set(
     "superset.flightsql.w6.006"
   )
+
+  /** The twelve statements Epic 22 owns: eleven derived tables + one CTE.
+    *
+    * 🔴 TWELVE, not the TEN story 21.6's shape census reported. `superset.flightsql.w5.005` and
+    * `tableau.mysql.w8.054` are derived tables in JOIN position, and that census classified with a
+    * first-match-wins regex testing the `FROM ( SELECT` shape ONLY, so it filed both under
+    * "quoting". Epic 21's arithmetic ceiling is therefore `12 + 51 = 63/99`, never 65. *Never
+    * classify a corpus shape with a regex that tests one syntactic position.*
+    */
+  val Epic22Ids: Set[String] = DerivedTableParsesIds ++ DerivedTableRejectedIds ++ CteParsesIds
+
+  // ---- Story 22.7 - the SCORING partition of the twelve, pinned in CODE ----------------------
+  // Each of the four sets below names a (owner, scored) pair, and G4c asserts the partition is
+  // exact (disjoint, union == Epic22Ids) AND agrees with the attribution table in BOTH directions.
+  // The reason is 21.6 G4's: an expectation that lives only in the file it guards can be silenced
+  // by editing that file.
+
+  /** Scored `fixed` under owner `epic22`: the statement parses AND a MERGED sibling suite executes
+    * its shape against real Elasticsearch 6.8 / 7.17 / 8.18 / 9.0 with an exact oracle.
+    *
+    * 🔴 The evidence rule is story 22.7 AD-10's, applied to Epic 22: *a `fixed` row NAMES the
+    * merged suite that asserts its CORRECTNESS, not merely its parse; a row with no such suite
+    * takes `residual`.* The witnesses live in another repository (`softclient4es-arrow`,
+    * `JoinExtensionIntegrationSpec` behaviour *"JoinExtension (derived tables - story 22.4)"* and
+    * story 22.5's CTE rows) and each row's `note` cell in the attribution table names the one that
+    * discharges it. This is a CONVENTION checked by review, never a build interlock - the `sql`
+    * test classpath carries no Elasticsearch client and cannot run a Docker leg. What the
+    * convention is worth is the literal count pin below, owned by neither side, which reddens when
+    * either half is edited without thought.
+    */
+  val Epic22FixedIds: Set[String] = Set(
+    "tableau.mysql.wx.003",
+    "tableau.mysql.w1.018",
+    "tableau.mysql.w7.043",
+    "tableau.sql92.wx.003",
+    "tableau.mysql.w7.044",
+    "superset.flightsql.w5.005",
+    "superset.flightsql.w7.007",
+    "superset.flightsql.w6.006",
+    // Story 22.7 pass 2 — MEASURED (rows E5a/E5b/E5c + corpus E5-jdbc), not predicted.
+    "tableau.mysql.w1.019",
+    "tableau.sql92.wx.009"
+  )
+
+  /** Story 22.7 pass 2 RETIRED this set: it held the two rows nobody had run, and they have now
+    * been run. Kept as an EMPTY set with its history rather than deleted, because the shape is the
+    * one to reuse the next time a row parses before anyone has executed it — `epic22` / `residual`
+    * behind a code pin, never `fixed` on an unrun test and never a `local:` defect slug for a
+    * question nobody has measured.
+    *
+    * What settled it: acceptance rows E5a / E5b / E5c in softclient4es-arrow's
+    * `JoinExtensionIntegrationSpec` and `corpus E5-jdbc` in the jdbc testkit, green on real
+    * Elasticsearch 6.8 / 7.17 / 8.18 / 9.0. Both ids moved to `Epic22FixedIds`.
+    */
+  val Epic22UnmeasuredIds: Set[String] = Set.empty
+
+  /** Story 22.7 G4b - rejected ON PURPOSE by the epic's own scope, permanently, pinned in CODE.
+    *
+    * `tableau.sql92.wx.012` is `SELECT * FROM (SELECT * FROM "c"."bi_events") WHERE ROWNUM <= 1`.
+    * The blocker is that the derived table carries NO CORRELATION NAME: the alias is mandatory
+    * (SQL-92 clause 7.6, story 22.1 PD-1).
+    *
+    * 🔴 `ROWNUM` is NOT the blocker, and saying so is the trap this pin exists to avoid.
+    * Re-measured 2026-09-13 (recorded in the attribution `note`): `ROWNUM` resolves as an ORDINARY
+    * IDENTIFIER and round-trips. That is the HAZARD rather than the refusal - if the
+    * mandatory-alias rule were ever relaxed, this statement would parse and range-filter a field
+    * that does not exist, returning ZERO rows with HTTP 200 (the #205/#209/#224/#253
+    * silent-wrong-answer family). Which is precisely why the row must STAY rejected and why a parse
+    * here is a loud failure.
+    */
+  val RejectedByDesignIds: Set[String] = Set("tableau.sql92.wx.012")
+
+  /** LEAD RULING 2026-09-17 - the ONE exception to "`scored = fixed` belongs to a shipped epic".
+    *
+    * These four Tableau statements (its per-data-source row-existence probe) carried two defects
+    * recorded under `issue:328`, and BOTH are fixed: `COUNT(<literal>)` emitted an aggregation with
+    * neither `field` nor `script`, and a `HAVING` with no `GROUP BY` was SILENTLY DISCARDED. Their
+    * correctness - not their parse - is asserted by a merged, five-client suite against real
+    * Elasticsearch: `GroupByCompletenessSpec`, *"corpus shape: HAVING with no GROUP BY"* (PR #327),
+    * one row for a true predicate and ZERO rows for a false one. That is exactly story 22.7 AD-10's
+    * bar, so the rows are scored.
+    *
+    * 🔴 It is a COMPILED SINGLETON, never a loosened predicate and never
+    * `owner.startsWith("issue:")`. G7 exists so that `fixed` cannot quietly come to mean "it
+    * parsed"; a widened predicate would hand that meaning to every future `issue:` owner in
+    * silence. An exception a reader can ENUMERATE keeps the rule a rule. The published sentence is
+    * about what the engine ANSWERS, not about which epic earned it.
+    *
+    * If this exception is ever wrong, the fix is to re-score the rows `residual` and DELETE the id
+    * from this set - not to widen the set, and not to edit the attribution table alone.
+    */
+  val Issue328FixedIds: Set[String] = Set(
+    "tableau.mysql.w1.023",
+    "tableau.mysql.w7.048",
+    "tableau.mysql.w7.051",
+    "tableau.sql92.wx.015"
+  )
+
+  /** Rejected by a blocker Epic 22 does not own: the MySQL null-safe equality operator `<=>` in the
+    * JOIN `ON`. The derived table itself parses (story 22.1's control asserts the `=` spelling of
+    * the same statement parses, so `<=>` is the only variable).
+    *
+    * Count: 1 of 99, and there is NO SQL-92 twin - the `tableau.sql92.w8.*` slice carries no JOIN
+    * and no derived table at all. So `<=>` blocks the only captured statement of its shape in
+    * EITHER dialect; nothing here may be cited as a cross-dialect witness.
+    */
+  val NullSafeEqualityIds: Set[String] = Set("tableau.mysql.w8.054")
+
+  /** Story 22.7 G9 - the twelve statements, read from the copy that OWNS them.
+    *
+    * Eleven come from story 22.1's `DerivedTableCorpusSpec.rows` (widened to `private[sql]` for
+    * this gate), so G9 really is "two files, two authors, one text". A third hand transcription
+    * living beside the gate would agree with itself and see nothing.
+    *
+    * The twelfth - the CTE witness - is NOT in 22.1's table (that story owns the eleven derived
+    * rows; story 22.5 owns this one and pins it in `CorpusReplay.CteParsesIds` rather than in a
+    * statement table), so it is the one literal written here, and it is written here for that
+    * reason and no other.
+    */
+  val CteWitnessText: String =
+    "WITH monthly AS (SELECT category, SUM(amount) AS total FROM bi_events GROUP BY category) " +
+    "SELECT * FROM monthly"
+
+  def epic22Texts(): Map[String, String] = {
+    // Constructing the spec only builds its `rows` and registers its tests; nothing runs them.
+    val declared = new DerivedTableCorpusSpec().rows.map { case (id, sql, _) => id -> sql }.toMap
+    declared + (CteParsesIds.head -> CteWitnessText)
+  }
+
+  /** The collapse both this suite and story 22.1's spec apply before comparing a statement. */
+  def collapse(s: String): String =
+    s.replaceAll("\\s+", " ").trim.stripSuffix(";").trim
 
   /** The 24 Tableau temp-table capability probes, PINNED HERE and not in the CSV.
     *
@@ -708,11 +1090,63 @@ object CorpusReplay {
     pairs.toMap
   }
 
-  def loadBaseline(): Map[String, String] =
+  /** Story 22.7 widened 21.6's no-argument `loadBaseline()`: there are two baselines now (the
+    * pre-Epic-21 and the pre-Epic-22 trees) and Epic 23 will add more.
+    */
+  def loadBaseline(name: String): Map[String, String] =
     indexBy(
-      rows(BaselineResource).map(m => m.getOrElse("capture_id", "") -> m.getOrElse("verdict", "")),
-      BaselineResource
+      rows(name).map(m => m.getOrElse("capture_id", "") -> m.getOrElse("verdict", "")),
+      name
     )
+
+  /** Story 22.7 AD-3 - one row per measured tree, append-only. */
+  final case class SeriesRow(
+    label: String,
+    commit: String,
+    measuredAt: String,
+    scoredOf99: Int,
+    scoredOf75: Int,
+    parsesRaw: Int,
+    rejected: Int
+  )
+
+  def loadSeries(): List[SeriesRow] =
+    rows(SeriesResource).map { m =>
+      def int(k: String): Int =
+        m.getOrElse(k, "").trim match {
+          case "" => sys.error(s"$SeriesResource: column '$k' is blank")
+          case v =>
+            try v.toInt
+            catch { case _: NumberFormatException => sys.error(s"$SeriesResource: '$k' = '$v'") }
+        }
+      SeriesRow(
+        m.getOrElse("label", "").trim,
+        m.getOrElse("commit", "").trim,
+        m.getOrElse("measured_at", "").trim,
+        int("scored_of_99"),
+        int("scored_of_75"),
+        int("parses_raw"),
+        int("rejected")
+      )
+    }
+
+  /** The four counters G8 compares against the series head. ONE derivation, shared with
+    * `summaryLine` - a second copy is the "one key, two derivations" class story 21.3 paid for.
+    */
+  final case class Tally(scoredOf99: Int, scoredOf75: Int, parsesRaw: Int, rejected: Int)
+
+  def tallyOf(outcomes: List[Outcome], attribution: Map[String, Attribution]): Tally = {
+    def scored(o: Outcome): Boolean = {
+      val s = attributionOf(attribution, o.row.captureId).scored
+      o.verdict == "parses" && (s == "fixed" || s == "pre_epic21")
+    }
+    Tally(
+      scoredOf99 = outcomes.count(scored),
+      scoredOf75 = outcomes.count(o => scored(o) && !TempTableProbeIds.contains(o.row.captureId)),
+      parsesRaw = outcomes.count(_.verdict == "parses"),
+      rejected = outcomes.count(_.verdict == "rejected")
+    )
+  }
 
   def loadAttribution(): Map[String, Attribution] =
     indexBy(
@@ -750,10 +1184,13 @@ object CorpusReplay {
       if (o.verdict == "parses") "UNEXPECTED_parses_pending_policy" else "rejected_pending_policy"
     } else if (a.owner == "capability_open") {
       if (o.verdict == "parses") "parses_capability_open" else "rejected_capability_open"
+    } else if (a.owner == "rejected_by_design") {
+      // Story 22.7: same placement, same reason. A by-design rejection that starts PARSING is an
+      // event a human must see in the artefact, not a silent +1 in the `parses` column.
+      if (o.verdict == "parses") "UNEXPECTED_parses_by_design" else "rejected_by_design"
     } else if (o.verdict == "parses") {
       if (a.scored == "residual") "parses_not_scored" else "parses"
-    } else if (a.owner.startsWith("epic22")) "rejected_epic22"
-    else "rejected_other"
+    } else "rejected_other"
 
   private[census] val BucketOrder =
     List(
@@ -762,9 +1199,10 @@ object CorpusReplay {
       "parses_capability_open",
       "rejected_capability_open",
       "rejected_pending_policy",
-      "rejected_epic22",
+      "rejected_by_design",
       "rejected_other",
-      "UNEXPECTED_parses_pending_policy"
+      "UNEXPECTED_parses_pending_policy",
+      "UNEXPECTED_parses_by_design"
     )
 
   private[census] def tally(
@@ -778,51 +1216,74 @@ object CorpusReplay {
         grouped(k).groupBy(o => bucket(o, attributionOf(attribution, o.row.captureId))).map {
           case (b, os) => b -> os.size
         }
+      // A bucket absent from `BucketOrder` would be silently ZEROED in the artefact below. Story
+      // 22.7 removed one name and added two, which is exactly the edit that gets this wrong.
+      require(
+        (counts.keySet -- BucketOrder.toSet).isEmpty,
+        s"bucket(s) missing from BucketOrder: ${(counts.keySet -- BucketOrder.toSet).mkString(", ")}"
+      )
       k -> ListMap(BucketOrder.map(b => b -> counts.getOrElse(b, 0)): _*)
     }: _*)
   }
 
+  /** The published scoreboard line.
+    *
+    * Story 22.7 added the second baseline and the Epic-22 split; everything else is 21.6's, lead
+    * rulings included.
+    *
+    * The `[22.7]` tag names the story that last MOVED the scoreboard, not the suite: whoever moves
+    * it next re-stamps it (Epic 23 appends a series row and takes the tag with it).
+    *
+    * `scoredAt` DEGRADES rather than throwing when a series row is missing, because the artefacts
+    * are written before any gate and a failing gate must not leave the operator blind. The `??`
+    * string therefore reaches `corpus-replay.md` too -- it is a defect marker, never a measurement,
+    * and G8 reddens in the same run.
+    */
   def summaryLine(
     outcomes: List[Outcome],
     attribution: Map[String, Attribution],
-    baseline: Map[String, String]
+    series: List[SeriesRow]
   ): String = {
-    val parses = outcomes.count(_.verdict == "parses")
-    // Exclude the probes from the BASELINE count too, or the two sides of "N (was B)" are not the
-    // same measurement. Honest today only because none of the pinned 24 parsed at `ac54a079`; a
-    // future baseline holding a parsing probe would diverge silently and no gate would notice.
-    val before =
-      baseline.count { case (id, v) => v == "parses" && !TempTableProbeIds.contains(id) }
+    val t = tallyOf(outcomes, attribution)
+    // 🔴 The historical numbers come from the SERIES, never from a baseline file.
+    //
+    // Story 21.6 derived "was B before Epic 21" by counting non-probe `parses` rows in the baseline
+    // CSV, and its own comment recorded why that was fragile: a baseline holding a statement that
+    // parses WITHOUT being scored makes the two sides of "N (was B)" different measurements. It has
+    // since diverged -- at the pre-Epic-22 tree 81 statements parsed, 60 of them non-probe, but the
+    // published Epic-21 headline was 56, because four parse and answer wrongly. A baseline file
+    // carries VERDICTS and cannot produce a SCORED figure at all. The series row can, which is one
+    // of the reasons it exists; G8 cross-checks each historical row's `parses_raw` against the
+    // baseline it belongs to, so the series cannot be re-written to tell a different story either.
+    def scoredAt(label: String): String =
+      series.find(_.label == label).map(_.scoredOf99.toString).getOrElse(s"?? no '$label' row")
     val probes = TempTableProbeIds.size
     val intended = outcomes.size - probes
-    // PD-3: the PUBLISHED number counts what is SCORED, never the raw parse verdict. A statement
-    // that parses and then answers wrong is `scored = residual`, and a temp-table probe is
-    // `capability_open` / `rejected_pending_policy` -- none of them may inflate the headline.
-    val scoredOk = outcomes.count { o =>
-      val s = attributionOf(attribution, o.row.captureId).scored
-      o.verdict == "parses" && (s == "fixed" || s == "pre_epic21")
-    }
     val probesParsing = outcomes.count { o =>
       o.verdict == "parses" && TempTableProbeIds.contains(o.row.captureId)
     }
-    val scoredOfIntended = outcomes.count { o =>
-      val a = attributionOf(attribution, o.row.captureId)
-      o.verdict == "parses" && (a.scored == "fixed" || a.scored == "pre_epic21") &&
-      !TempTableProbeIds.contains(o.row.captureId)
+    val epic22Fixed = outcomes.count { o =>
+      Epic22Ids.contains(o.row.captureId) &&
+      attributionOf(attribution, o.row.captureId).scored == "fixed"
     }
     // Lead ruling 2 (2026-09-13): the verb is SCORES, not "parses". PD-1 mandates that `N` counts
     // `scored` and then writes "parses"; the lead ruled the verb is the side that is wrong, because a
     // statement that parses and is not counted makes "parses N" false on its face. The raw parse count
     // and the difference follow immediately, so neither number can be quoted without the other.
     val gap =
-      if (parses == scoredOk) ""
+      if (t.parsesRaw == t.scoredOf99) ""
       else
-        s" $parses PARSE -- the ${parses - scoredOk}-row difference is never counted " +
-        s"($probesParsing capability probes + ${parses - scoredOk - probesParsing} that parse but " +
-        "answer wrongly or incompletely, PD-3/G4); see the artefact."
-    s"[21.6] corpus replay: SCORES $scoredOk/${outcomes.size} (was $before before Epic 21); " +
-    s"$scoredOfIntended/$intended of the statements we intend to answer; " +
-    s"$probes capability probes excluded from scoring.$gap"
+        s" ${t.parsesRaw} PARSE -- the ${t.parsesRaw - t.scoredOf99}-row difference is never " +
+        s"counted ($probesParsing capability probes + " +
+        s"${t.parsesRaw - t.scoredOf99 - probesParsing} that parse but answer wrongly, " +
+        "incompletely or UNMEASURED, PD-3/G4/G4c); see the artefact."
+    s"[22.7] corpus replay: SCORES ${t.scoredOf99}/${outcomes.size} " +
+    s"(was ${scoredAt("pre-epic22")} after Epic 21, ${scoredAt("pre-epic21")} before it); " +
+    s"${t.scoredOf75}/$intended of the statements we intend to answer; " +
+    s"$probes capability probes excluded from scoring; " +
+    s"Epic 22 rows: $epic22Fixed of ${Epic22Ids.size} scored fixed; " +
+    "stories 22.2 / 22.3 / 22.6 corpus credit: 0 / 0 / 0 (no captured statement uses their " +
+    s"constructs).$gap"
   }
 
   /** The house idiom, copied from `DialectCensusSpec` (`repoRootCandidates` + a
@@ -838,12 +1299,17 @@ object CorpusReplay {
   def writeArtefacts(
     outcomes: List[Outcome],
     attribution: Map[String, Attribution],
-    baseline: Map[String, String]
+    pre21: Map[String, String],
+    pre22: Map[String, String],
+    series: List[SeriesRow]
   ): Unit = {
-    val dir = new File(repoRoot, "sql/target/epic-21")
+    // Story 22.7 renamed the directory: the scoreboard is a SERIES now, not one epic's report.
+    val dir = new File(repoRoot, "sql/target/corpus-replay")
     dir.mkdirs()
 
     def cell(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
+    // `baseline` keeps its 21.6 meaning (the pre-Epic-21 tree) - a column a downstream reader may
+    // already consume is never re-pointed. `baseline_pre22` is appended beside it.
     val csvHeader = List(
       "capture_id",
       "tool",
@@ -851,6 +1317,7 @@ object CorpusReplay {
       "workload_step",
       "authorship",
       "baseline",
+      "baseline_pre22",
       "measured",
       "expected",
       "scored",
@@ -870,7 +1337,8 @@ object CorpusReplay {
         o.row.dialect,
         o.row.step,
         o.row.authorship,
-        baseline.getOrElse(o.row.captureId, ""),
+        pre21.getOrElse(o.row.captureId, ""),
+        pre22.getOrElse(o.row.captureId, ""),
         o.verdict,
         a.expected,
         a.scored,
@@ -895,8 +1363,8 @@ object CorpusReplay {
     }
 
     val md = new StringBuilder
-    md ++= "# Epic 21 - corpus replay scoreboard\n\n"
-    md ++= summaryLine(outcomes, attribution, baseline) + "\n\n"
+    md ++= "# Corpus replay scoreboard\n\n"
+    md ++= summaryLine(outcomes, attribution, series) + "\n\n"
     // Provenance, because `<module>/target/<dir>` is SHARED across the 2.12 and 2.13 legs of
     // `+ sql/test` and the last leg silently wins. Stamp which one produced the file rather than
     // letting a reader assume.

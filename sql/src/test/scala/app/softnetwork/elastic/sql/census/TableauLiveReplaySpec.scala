@@ -260,13 +260,15 @@ object TableauLiveReplay {
     *   - `works` - parses today, with no known defect behind it.
     *   - `capability_open` - a probe that parses, whose ACCEPTANCE is an open product decision.
     *   - `rejected_by_design` - the rejection is the correct answer, and Tableau reads it as one.
-    *   - `epic22a_derived_table` - needs derived tables (Epic 22).
     *
     * `issue:<N>` and `local:<slug>` are accepted in addition, exactly as in `CorpusReplay`, whose
     * predicates are reused so the two corpora cannot drift on what an owner may look like.
     */
   val Owners: Set[String] =
-    Set("works", "capability_open", "rejected_by_design", "epic22a_derived_table")
+    // Story 22.7 removed `epic22a_derived_table`: Epic 22 SHIPPED, this corpus has zero rows
+    // under that owner, and an owner kept alive with no rows is an allow-list nobody exercises
+    // -- the same reason `CorpusReplay.Owners` retired it.
+    Set("works", "capability_open", "rejected_by_design")
 
   def ownerIsValid(owner: String): Boolean =
     Owners.contains(owner) || CorpusReplay.isIssueOwner(owner) || CorpusReplay.isLocalOwner(owner)
