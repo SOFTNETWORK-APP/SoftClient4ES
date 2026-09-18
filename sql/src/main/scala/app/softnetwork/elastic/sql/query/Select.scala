@@ -151,6 +151,14 @@ case class Field(
 
 case object Except extends Expr("except") with TokenRegex
 
+/** `SELECT TOP n` (T-SQL; Tableau emits it in its SQL-92 dialect, e.g. `SELECT TOP 1 *`).
+  *
+  * It is a SPELLING of the row bound, not a second bound: `SelectParser.select` hands it to
+  * `Parser.single`, which stores it in the statement's `limit` and renders `LIMIT n`. So there is
+  * exactly ONE owner of the row bound in the AST, and the render re-parses.
+  */
+case object Top extends Expr("TOP") with TokenRegex
+
 case class Except(fields: Seq[Field]) extends Updateable {
   override def sql: String = s" $Except(${fields.mkString(",")})"
   def update(request: SingleSearch): Except =

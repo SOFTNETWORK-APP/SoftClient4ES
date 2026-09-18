@@ -1213,7 +1213,7 @@ object DialectCensus {
       "LENGTH",
       "LEN",
       FS,
-      """override lazy val words: List[String] = List(sql, "LEN")""",
+      """override lazy val words: List[String] = List(sql, "CHARACTER_LENGTH", "CHAR_LENGTH", "LEN")""",
       "SELECT LEN(name) AS l FROM emp",
       "1",
       EsSpecific,
@@ -1221,6 +1221,39 @@ object DialectCensus {
       "spells it LEN) (T1)",
       PainlessField,
       "alias spelling of LENGTH"
+    ),
+    e(
+      "fn.string.length.char-length-alias",
+      Fn,
+      "LENGTH",
+      "CHAR_LENGTH",
+      FS,
+      """override lazy val words: List[String] = List(sql, "CHARACTER_LENGTH", "CHAR_LENGTH", "LEN")""",
+      "SELECT CHAR_LENGTH(name) AS l FROM emp",
+      "1",
+      AnsiAdjacent,
+      s"MySQL 8.4: CHAR_LENGTH() 'Return number of characters in argument' - $MyStr ; " +
+      s"PostgreSQL 16: char_length ( text ) -> integer - $PgStr",
+      PainlessField,
+      "alias spelling of LENGTH; the SQL-92 name, and what Tableau emits for its LEN() " +
+      "calculated field. Counts CHARACTERS, which is what LENGTH already does here - MySQL's " +
+      "own LENGTH counts BYTES, so CHAR_LENGTH is the spelling that agrees with us"
+    ),
+    e(
+      "fn.string.length.character-length-alias",
+      Fn,
+      "LENGTH",
+      "CHARACTER_LENGTH",
+      FS,
+      """override lazy val words: List[String] = List(sql, "CHARACTER_LENGTH", "CHAR_LENGTH", "LEN")""",
+      "SELECT CHARACTER_LENGTH(name) AS l FROM emp",
+      "1",
+      AnsiAdjacent,
+      s"MySQL 8.4: CHARACTER_LENGTH() 'Synonym for CHAR_LENGTH()' - $MyStr ; " +
+      s"PostgreSQL 16: character_length ( text ) -> integer - $PgStr",
+      PainlessField,
+      "alias spelling of LENGTH; listed BEFORE CHAR_LENGTH in `words` only as house style " +
+      "(longest first) - neither is a prefix of the other, so the order is not load-bearing here"
     ),
     e(
       "fn.string.replace",
@@ -1616,12 +1649,29 @@ object DialectCensus {
       "page fetched)"
     ),
     e(
+      "fn.time.date-diff.timestampdiff-alias",
+      Fn,
+      "DATE_DIFF",
+      "TIMESTAMPDIFF",
+      FT,
+      """override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")""",
+      "SELECT TIMESTAMPDIFF(MONTH, start_date, end_date) AS d FROM projects",
+      "3",
+      EsSpecific,
+      "ES painless ChronoUnit.between. TIMESTAMPDIFF is the ODBC/JDBC spelling; MySQL 8.4 " +
+      "defines TIMESTAMPDIFF(unit, dt1, dt2) as dt2 - dt1, and date_diff_transact_sql binds " +
+      "(unit, d1, d2) to DateDiff(start = d1, end = d2) = between(d1, d2) - the same answer " +
+      "with the same sign, which is why the MySQL name is safe to accept here (T1)",
+      PainlessField,
+      "alias spelling of DATE_DIFF, unit-first form only"
+    ),
+    e(
       "fn.time.date-diff.datediff-alias",
       Fn,
       "DATE_DIFF",
       "DATEDIFF",
       FT,
-      """override lazy val words: List[String] = List(sql, "DATEDIFF")""",
+      """override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")""",
       "SELECT DATEDIFF(start_date, end_date) AS d FROM projects",
       "2..3",
       EsSpecific,
@@ -1843,13 +1893,30 @@ object DialectCensus {
       "DATETIME_ADD",
       "DATETIMEADD",
       FT,
-      """override lazy val words: List[String] = List(sql, "DATETIMEADD")""",
+      """override lazy val words: List[String] = List(sql, "DATETIMEADD", "TIMESTAMPADD")""",
       "SELECT DATETIMEADD(updated_at, INTERVAL 2 HOUR) AS d FROM events",
       "2",
       EsSpecific,
       "ES date-math / painless plus; the DATETIMEADD spelling exists in no PD-3 trio engine " +
       "(T1)",
       PainlessField
+    ),
+    e(
+      "fn.time.datetime-add.timestampadd-alias",
+      Fn,
+      "DATETIME_ADD",
+      "TIMESTAMPADD",
+      FT,
+      """override lazy val words: List[String] = List(sql, "DATETIMEADD", "TIMESTAMPADD")""",
+      "SELECT TIMESTAMPADD(DAY, -89, updated_at) AS d FROM events",
+      "3",
+      EsSpecific,
+      "ES date-math / painless plus. TIMESTAMPADD is the ODBC/JDBC scalar-function spelling a " +
+      "BI tool emits; MySQL 8.4 documents TIMESTAMPADD(unit, interval, datetime_expr) with the " +
+      "SAME unit-first order this parser already accepted for DATE_ADD/DATETIME_ADD, so the " +
+      "alias adds a name and no semantics (T1)",
+      PainlessField,
+      "alias spelling of DATETIME_ADD, unit-first form only"
     ),
     e(
       "fn.time.datetime-sub",
@@ -3051,6 +3118,23 @@ object DialectCensus {
       RequestShape,
       "maps to size; the standard's FETCH FIRST spelling does not parse here. Above " +
       "max_result_window the engine routes through bounded scroll paging (issue #224)"
+    ),
+    e(
+      "clause.limit.top-n",
+      Clause,
+      "TOP",
+      "TOP",
+      QS,
+      """case object Top extends Expr("TOP") with TokenRegex""",
+      "SELECT TOP 10 id FROM emp",
+      "1",
+      EsSpecific,
+      "maps to the same ES `size` as LIMIT, because the parser folds it into the statement's " +
+      "LIMIT rather than carrying a second row bound. T-SQL's spelling, which Tableau emits in " +
+      "its SQL-92 dialect; no PD-3 trio engine accepts it (T1)",
+      RequestShape,
+      "renders as LIMIT n, never as TOP n. Combining TOP with LIMIT is refused by name. TOP is " +
+      "NOT reserved: `SELECT top FROM t` still reads a column called top"
     ),
     e(
       "clause.limit.offset",

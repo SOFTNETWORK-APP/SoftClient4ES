@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.parser
 
-import app.softnetwork.elastic.sql.query.{Except, Field, Select}
+import app.softnetwork.elastic.sql.query.{Except, Field, Limit, Select, Top}
 
 trait SelectParser {
   self: Parser with WhereParser =>
@@ -40,12 +40,46 @@ trait SelectParser {
       Except(e)
     }
 
-  lazy val select: PackratParser[Select] =
-    Select.regex ~ rep1sep(
+  /** `TOP n` — T-SQL's row bound, which Tableau emits in its SQL-92 dialect. It is returned
+    * ALONGSIDE the `Select` rather than stored on it, so the statement keeps exactly one owner of
+    * its row bound (`Parser.single` folds it into `limit`) and the render normalises to `LIMIT n`.
+    *
+    * 🔴 `TOP` is NOT reserved, and must not become so: `SELECT top FROM t` selects a column named
+    * `top` today. `top.?` is safe because `Top.regex ~> long` FAILS (it does not error) when no
+    * number follows, and `opt` backtracks to the original position, where `field` reads `top` as
+    * the identifier it is. Both readings are pinned in `ParserSpec`.
+    */
+  lazy val top: PackratParser[Limit] =
+    Top.regex ~> (start ~> long <~ end | long) >> { l =>
+      if (l.value < 0 || l.value > Int.MaxValue) {
+        // 🔴 `failure`, NEVER `err`, and the distinction is the whole correctness of `top.?`.
+        // `err` yields an `Error`, and `Parsers.|` does not try another alternative after an
+        // Error — so `opt` could not backtrack and `SELECT top -1 AS x FROM t`, which reads
+        // `top - 1` and parses on main, became a hard rejection. At this position `TOP` is
+        // genuinely ambiguous between the clause and a column called `top`; a `Failure` lets
+        // `field` settle it, which is the only reading that cannot regress.
+        failure(s"TOP takes a row count between 0 and ${Int.MaxValue}")
+      } else {
+        // `TOP n PERCENT` and `TOP n WITH TIES` are real T-SQL that this engine does not
+        // implement. They are refused BY NAME because the alternative is far worse: with `top`
+        // having consumed `TOP 5`, `field` reads `PERCENT a` as the column `PERCENT` aliased to
+        // `a`, so `SELECT TOP 5 PERCENT a FROM t` returned rows for a column the user never
+        // named — a loud rejection turned into a silent wrong answer (#205/#253 family).
+        // An `err` is safe HERE, unlike above: no spelling of `TOP <n> PERCENT` parsed before.
+        (keyword("PERCENT") | (keyword("WITH") ~ keyword("TIES") ^^ (_ => "WITH TIES"))) >> { w =>
+          err(
+            s"SELECT TOP n $w is not supported -- TOP takes a row COUNT. Use TOP n, or LIMIT n"
+          )
+        } | success(Limit(l.value.toInt, None))
+      }
+    }
+
+  lazy val select: PackratParser[(Select, Option[Limit])] =
+    Select.regex ~ top.? ~ rep1sep(
       field,
       separator
-    ) ~ except.? ^^ { case _ ~ fields ~ e =>
-      Select(fields, e)
+    ) ~ except.? ^^ { case _ ~ t ~ fields ~ e =>
+      (Select(fields, e), t)
     }
 
 }

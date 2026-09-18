@@ -451,7 +451,7 @@ package object time {
 
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".between"
-    override lazy val words: List[String] = List(sql, "DATEDIFF")
+    override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF", "DATEDIFF")
   }
 
   case class DateDiff(
@@ -809,8 +809,13 @@ package object time {
     }
   }
 
+  /** `TIMESTAMPADD` is the ODBC/JDBC spelling (`{fn TIMESTAMPADD(SQL_TSI_DAY, -89, …)}`), which BI
+    * tools emit directly. It is an ALIAS, not a second mechanism: the `(unit, count, base)`
+    * argument order it uses is the `transactSql` form this function has always parsed, so the
+    * render normalises to `DATETIME_ADD` and re-parses.
+    */
   case object DateTimeAdd extends Expr("DATETIME_ADD") with TokenRegex {
-    override lazy val words: List[String] = List(sql, "DATETIMEADD")
+    override lazy val words: List[String] = List(sql, "DATETIMEADD", "TIMESTAMPADD")
   }
 
   case class DateTimeAdd(

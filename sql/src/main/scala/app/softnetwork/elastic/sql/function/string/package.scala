@@ -72,8 +72,17 @@ package object string {
   case object LeftOp extends Expr("LEFT") with StringOp
   case object RightOp extends Expr("RIGHT") with StringOp
   case object For extends Expr("FOR") with TokenRegex
+
+  /** `CHAR_LENGTH`/`CHARACTER_LENGTH` are the SQL-92 spellings a BI tool emits for its `LEN()`
+    * calculated field. They are aliases, so the render normalises to `LENGTH` and re-parses.
+    *
+    * Order is NOT load-bearing here, and an earlier draft of this comment claimed it was:
+    * `TokenRegex.regex` appends `\b`, so `LEN` cannot match the prefix of `LENGTH` whatever the
+    * order, and neither `CHAR_LENGTH` nor `CHARACTER_LENGTH` is a prefix of the other. Longest
+    * first is kept as house style only — the real rule lives on `TokenRegex.regex`.
+    */
   case object Length extends Expr("LENGTH") with StringOp {
-    override lazy val words: List[String] = List(sql, "LEN")
+    override lazy val words: List[String] = List(sql, "CHARACTER_LENGTH", "CHAR_LENGTH", "LEN")
   }
   case object Replace extends Expr("REPLACE") with StringOp {
     override lazy val words: List[String] = List(sql, "STR_REPLACE")
