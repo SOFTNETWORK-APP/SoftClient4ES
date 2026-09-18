@@ -63,7 +63,14 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers {
     "CREATE TABLE t (created DATE, c KEYWORD SCRIPT AS (DATE_FORMAT(created, '%Y')))",
     "CREATE TABLE t (created DATE, c INTEGER SCRIPT AS (DATE_DIFF(created, CURRENT_DATE, YEAR)))",
     "CREATE TABLE t (ts TIMESTAMP, c INTEGER SCRIPT AS (YEAR(ts)))",
-    "CREATE TABLE t (ts TIMESTAMP, c TIMESTAMP SCRIPT AS (DATE_TRUNC(ts, MONTH)))"
+    "CREATE TABLE t (ts TIMESTAMP, c TIMESTAMP SCRIPT AS (DATE_TRUNC(ts, MONTH)))",
+    // Issue #368. Both were broken in a processor too -- and that is the venue where it hurts
+    // most, because `ignore_failure: true` swallows the throw and the computed column is simply
+    // ABSENT rather than the query failing loudly. Executed as real ingest pipelines on ES 6.8.23
+    // and 8.18.3: before the fix the column never appeared, after it `LAST_DAY` stores the last
+    // day of the month and `EPOCHDAY` the day count.
+    "CREATE TABLE t (created DATE, c DATE SCRIPT AS (LAST_DAY(created)))",
+    "CREATE TABLE t (created DATE, c BIGINT SCRIPT AS (EPOCHDAY(created)))"
   )
 
   behavior of "a date function over a date column in SCRIPT AS"

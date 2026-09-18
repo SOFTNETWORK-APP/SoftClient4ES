@@ -29,6 +29,20 @@ package object time {
 
     def timeField: String
 
+    /** How this field must be READ off a temporal in Painless.
+      *
+      * `TemporalAccessor.get` returns an `int`, so `java.time` refuses it -- at RUNTIME, with an
+      * `UnsupportedTemporalTypeException` that fails the whole shard -- for any field whose value
+      * RANGE does not fit one. `EPOCH_DAY` is such a field and was read with `.get` (issue #368),
+      * so `EPOCHDAY(<date column>)` had never worked on any supported Elasticsearch.
+      *
+      * 🔴 The accessor belongs to the FIELD and not to `Extract`, because it is the FIELD's value
+      * range that decides it. The next field with that property then gets the right accessor by
+      * construction instead of by someone remembering, and `DateDocValueEmissionSpec` checks every
+      * field's choice against the JDK's own `ChronoField.range()` rather than against a list.
+      */
+    def accessor: String = ".get"
+
     override lazy val words: List[String] =
       List(timeField, timeField.replaceAll("_", ""), sql).distinct
   }
@@ -72,6 +86,9 @@ package object time {
     }
     case object EPOCH_DAY extends Expr("EPOCHDAY") with TimeField {
       override val timeField: String = "EPOCH_DAY"
+
+      /** The only field in this object whose range does not fit an `int` (issue #368). */
+      override val accessor: String = ".getLong"
     }
     case object OFFSET_SECONDS extends Expr("OFFSET_SECONDS") with TimeField {
       override val timeField: String = "OFFSET_SECONDS"
