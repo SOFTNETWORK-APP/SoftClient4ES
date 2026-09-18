@@ -87,10 +87,19 @@ object Parser
     with OrderByParser
     with LimitParser {
 
+  /** 🔴 `TOP n` and `LIMIT n` are two spellings of ONE row bound, so carrying both would need a
+    * precedence rule nobody could guess from the SQL. Combining them is refused by name instead;
+    * `t.orElse(l)` then never has to choose.
+    */
   lazy val single: PackratParser[SingleSearch] = {
-    select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.? ^^ {
-      case s ~ f ~ w ~ g ~ h ~ o ~ l ~ oc =>
-        SingleSearch(s, f, w, g, h, o, l, onConflict = oc).update()
+    select ~ from ~ where.? ~ groupBy.? ~ having.? ~ orderBy.? ~ limit.? ~ onConflict.? >> {
+      case (s, t) ~ f ~ w ~ g ~ h ~ o ~ l ~ oc =>
+        if (t.isDefined && l.isDefined)
+          err(
+            "TOP and LIMIT both bound the number of rows -- use one of them, not both. TOP " +
+            "carries no OFFSET, so paging needs the LIMIT n OFFSET m spelling"
+          )
+        else success(SingleSearch(s, f, w, g, h, o, t.orElse(l), onConflict = oc).update())
     }
   }
 
@@ -178,7 +187,14 @@ object Parser
     * schemaProbeSql rewrites `SELECT 1` into.
     */
   lazy val fromlessSelect: PackratParser[FromlessSelect] =
-    select ~ limit.? ^^ { case s ~ l => FromlessSelect(s, l) }
+    select ~ limit.? >> { case (s, t) ~ l =>
+      if (t.isDefined && l.isDefined)
+        err(
+          "TOP and LIMIT both bound the number of rows -- use one of them, not both. TOP " +
+          "carries no OFFSET, so paging needs the LIMIT n OFFSET m spelling"
+        )
+      else success(FromlessSelect(s, t.orElse(l)))
+    }
 
   lazy val row: PackratParser[List[Value[_]]] =
     lparen ~> repsep(array_of_struct | struct | value, comma) <~ rparen
@@ -957,8 +973,15 @@ object Parser
   lazy val neverWatcherCondition: PackratParser[NeverWatcherCondition.type] =
     keyword("NEVER") ^^ { _ => NeverWatcherCondition }
 
+  /** 🔴 Ordered LONGEST spelling first, and it is load-bearing. These are string literals, not
+    * anchored tokens: `gt` (`>`) matches the first character of `>=` and succeeds, leaving `=` for
+    * the value production, which then fails with *"A value or a date/datetime function must be
+    * provided for comparison"*. `WHEN x >= 0` and `WHEN x <= 0` were rejected for exactly that
+    * reason, while `>`, `<`, `=` and `<>` parsed. `WhereParser.comparisonOp` has always had the
+    * right order; this production had not.
+    */
   private lazy val comparison_operator: PackratParser[ComparisonOperator] =
-    eq | ne | diff | gt | ge | lt | le
+    eq | ne | diff | ge | gt | le | lt
 
   private lazy val dateMathScript
     : PackratParser[DateTimeFunction with FunctionWithIdentifier with DateMathScript] =

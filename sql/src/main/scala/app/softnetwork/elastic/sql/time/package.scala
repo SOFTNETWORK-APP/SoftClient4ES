@@ -99,7 +99,19 @@ package object time {
   }
 
   sealed trait TimeUnit extends PainlessScript with DateMathScript with DateMathRounding {
-    lazy val regex: Regex = s"\\b(?i)$sql(s)?\\b".r
+
+    /** Accepted spellings of this unit, canonical first. The ODBC/JDBC interval names
+      * (`SQL_TSI_DAY`, …) are what a BI tool passes to `TIMESTAMPADD`/`TIMESTAMPDIFF`, so they are
+      * aliases of the units we already have rather than units of their own — the AST carries one
+      * spelling and the render normalises to `sql`.
+      *
+      * 🔴 `SQL_TSI_DAY` could never have matched the previous `\b(?i)DAY(s)?\b`: `_` is a word
+      * character, so there is no word boundary before `DAY` inside it. Adding the alias therefore
+      * cannot change what any existing statement parses to — it can only accept more.
+      */
+    def words: List[String] = List(sql)
+
+    lazy val regex: Regex = s"\\b(?i)(${words.mkString("|")})(s)?\\b".r
 
     def timeUnit: String = sql.toUpperCase() + "S"
 
@@ -129,31 +141,39 @@ package object time {
     }
 
     case object YEARS extends Expr("YEAR") with CalendarUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_YEAR")
       override def script: Option[String] = Some("y")
     }
     case object MONTHS extends Expr("MONTH") with CalendarUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_MONTH")
       override def script: Option[String] = Some("M")
     }
     case object QUARTERS extends Expr("QUARTER") with CalendarUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_QUARTER")
       override def script: Option[String] = throw new IllegalArgumentException(
         "Quarter must be converted to months (value * 3) before creating date-math"
       )
     }
     case object WEEKS extends Expr("WEEK") with CalendarUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_WEEK")
       override def script: Option[String] = Some("w")
     }
 
     case object DAYS extends Expr("DAY") with CalendarUnit with FixedUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_DAY")
       override def script: Option[String] = Some("d")
     }
 
     case object HOURS extends Expr("HOUR") with FixedUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_HOUR")
       override def script: Option[String] = Some("H")
     }
     case object MINUTES extends Expr("MINUTE") with FixedUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_MINUTE")
       override def script: Option[String] = Some("m")
     }
     case object SECONDS extends Expr("SECOND") with FixedUnit {
+      override def words: List[String] = List(sql, "SQL_TSI_SECOND")
       override def script: Option[String] = Some("s")
     }
 

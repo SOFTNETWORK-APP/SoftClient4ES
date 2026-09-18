@@ -157,6 +157,7 @@ import app.softnetwork.elastic.sql.query.{
   OrderBy,
   RightJoin,
   Select,
+  Top,
   Unnest,
   Where
 }
@@ -190,6 +191,10 @@ object SQLKeywords {
   /** Clause, join, operator and CASE syntax keywords (word-bearing TokenRegex objects). */
   val clauseTokens: List[TokenRegex] = List(
     Select,
+    // T-SQL's row bound, accepted as a spelling of LIMIT. Listed here because the `Expr` scan in
+    // `SQLKeywordsSpec` requires every word-bearing TokenRegex object to be registered; it is NOT
+    // reserved, and `SELECT top FROM t` still reads `top` as a column.
+    Top,
     Distinct,
     From,
     Where,
@@ -439,6 +444,7 @@ object SQLKeywords {
     "PARAMS",
     "PARQUET",
     "PARTITION",
+    "PERCENT",
     "PIPELINE",
     "PIPELINES",
     "POLICIES",
@@ -466,6 +472,7 @@ object SQLKeywords {
     "TABLE",
     "TABLES",
     "TEMPORARY",
+    "TIES",
     "TO",
     "TRUE",
     "TRUNCATE",

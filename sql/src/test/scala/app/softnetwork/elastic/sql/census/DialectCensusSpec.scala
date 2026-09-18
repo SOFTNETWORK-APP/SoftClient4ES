@@ -327,8 +327,10 @@ class DialectCensusSpec extends AnyFlatSpec with Matchers {
 
     val registryWords: Set[String] =
       SQLKeywords.functionTokens.flatMap(SQLKeywords.wordsOf).toSet
-    withClue(s"accepted function spellings moved from 149 to ${registryWords.size} (F-2/F-5)\n") {
-      registryWords.size shouldBe 149
+    withClue(s"accepted function spellings moved from 153 to ${registryWords.size} (F-2/F-5)\n") {
+      // 149 -> 153: CHAR_LENGTH + CHARACTER_LENGTH on Length, TIMESTAMPADD on DateTimeAdd,
+      // TIMESTAMPDIFF on DateDiff - the ODBC/SQL-92 spellings a BI tool emits.
+      registryWords.size shouldBe 153
     }
 
     // Three of the nine genuinely un-greppable spellings, named, so a failure says WHAT
