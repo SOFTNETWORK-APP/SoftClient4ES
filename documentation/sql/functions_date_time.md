@@ -339,25 +339,20 @@ SELECT DATETIME_SUB('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 MONTH) AS last
 
 ### Date/Time Difference Functions
 
-#### DATEDIFF / DATE_DIFF / TIMESTAMPDIFF
+#### DATE_DIFF / TIMESTAMPDIFF
 
-Difference between 2 dates, in the specified time unit.
+Difference between 2 dates, in the specified time unit. **The result is `date2 - date1`** — the
+first argument is the START and the second is the END. That is what makes
+`DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` an age rather than a negative one, and it is how MySQL
+defines `TIMESTAMPDIFF(unit, dt1, dt2)` too.
 
-> ⚠️ **The result is `date2 - date1`, not `date1 - date2`.** The FIRST argument is the start and the
-> second is the end, so `DATEDIFF('2025-01-10', '2025-01-01')` is **-9**, not 9. This is what makes
-> `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` an age rather than a negative one, and it agrees with
-> MySQL's `TIMESTAMPDIFF(unit, dt1, dt2)`, which is also defined as `dt2 - dt1`.
->
-> Earlier revisions of this page said `date1 - date2` and published eight examples with the
-> arguments the other way round. Every example below has been executed against Elasticsearch and
-> shows its real result.
+`TIMESTAMPDIFF` is the ODBC/JDBC spelling and takes the **unit first**.
 
-`TIMESTAMPDIFF` is the ODBC/JDBC spelling and takes the **unit first**, like MySQL.
+> ⚠️ **`DATEDIFF` is a different function** — MySQL's — and subtracts the other way round. It has
+> its own entry below. Do not assume the two names are interchangeable.
 
 **Syntax:**
 ```sql
-DATEDIFF(date1, date2)
-DATEDIFF(date1, date2, unit)
 DATE_DIFF(date1, date2)
 DATE_DIFF(date1, date2, unit)
 
@@ -371,7 +366,7 @@ TIMESTAMPDIFF(unit, date1, date2)
 **Inputs:**
 - `date1` - `DATE` or `DATETIME` — the **start**
 - `date2` - `DATE` or `DATETIME` — the **end**
-- `unit` (optional in the first form) - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
+- `unit` (optional in the date-first form) - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
   - Default: `DAY`
   - The ODBC `SQL_TSI_*` spellings are accepted here too
 
@@ -381,50 +376,88 @@ TIMESTAMPDIFF(unit, date1, date2)
 **Examples:**
 ```sql
 -- Difference in days (default)
-SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE) AS diff;
--- Result: 9
-
--- Difference in days (explicit)
-SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE, DAY) AS diff_days;
+SELECT DATE_DIFF('2025-01-01'::DATE, '2025-01-10'::DATE) AS diff;
 -- Result: 9
 
 -- Reverse the arguments and the sign reverses
-SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff_days;
+SELECT DATE_DIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff;
 -- Result: -9
 
--- Difference in weeks
+-- Weeks, months, years
 SELECT DATE_DIFF('2025-01-01'::DATE, '2025-01-31'::DATE, WEEK) AS diff_weeks;
 -- Result: 4
-
--- Difference in months
-SELECT DATEDIFF('2025-01-01'::DATE, '2025-06-01'::DATE, MONTH) AS diff_months;
+SELECT DATE_DIFF('2025-01-01'::DATE, '2025-06-01'::DATE, MONTH) AS diff_months;
 -- Result: 5
-
--- Difference in years
-SELECT DATEDIFF('2025-01-01'::DATE, '2027-01-01'::DATE, YEAR) AS diff_years;
+SELECT DATE_DIFF('2025-01-01'::DATE, '2027-01-01'::DATE, YEAR) AS diff_years;
 -- Result: 2
 
--- Difference in hours (with timestamps)
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T14:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
+-- Hours, minutes, seconds
+SELECT DATE_DIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T14:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
 -- Result: 2
-
--- Difference in minutes
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:30:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
+SELECT DATE_DIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:30:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
 -- Result: 30
-
--- Difference in seconds
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:00:45Z'::TIMESTAMP, SECOND) AS diff_seconds;
+SELECT DATE_DIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:00:45Z'::TIMESTAMP, SECOND) AS diff_seconds;
 -- Result: 45
 
--- The ODBC spelling, unit first — same answer, same sign
+-- The ODBC spelling, unit first - same answer, same sign
 SELECT TIMESTAMPDIFF(DAY, '2025-01-01'::DATE, '2025-01-10'::DATE) AS diff_days;
 -- Result: 9
-SELECT TIMESTAMPDIFF(MONTH, '2025-01-01'::DATE, '2025-06-01'::DATE) AS diff_months;
--- Result: 5
 
 -- Age: start = birthdate, end = today
 SELECT DATE_DIFF(birthdate, CURRENT_DATE, YEAR) AS age FROM users;
 ```
+
+---
+
+#### DATEDIFF
+
+MySQL's day-difference function. **`DATEDIFF(expr1, expr2)` returns `expr1 - expr2`** — the opposite
+subtraction from `DATE_DIFF` above, because that is what MySQL defines and what a statement written
+for MySQL expects.
+
+> 🔴 **The two-argument and three-argument forms subtract in opposite directions, and this is the
+> one place in the dialect where that is true.**
+>
+> | call | result | why |
+> | --- | --- | --- |
+> | `DATEDIFF(a, b)` | `a - b` | MySQL's function, days only — this is the whole of what MySQL defines |
+> | `DATEDIFF(a, b, unit)` | `b - a` | **not MySQL** — this engine's own extension, which follows `DATE_DIFF` |
+>
+> So adding a unit to a two-argument `DATEDIFF` — which looks purely clarifying — **reverses the
+> sign**. If you want a unit, prefer `DATE_DIFF(start, end, unit)` or
+> `TIMESTAMPDIFF(unit, start, end)`, where one rule holds at every arity.
+
+**Syntax:**
+```sql
+DATEDIFF(expr1, expr2)
+DATEDIFF(date1, date2, unit)
+```
+
+**Inputs:**
+- `expr1`, `expr2` - `DATE` or `DATETIME`
+- `unit` (three-argument form only) - as for `DATE_DIFF` above
+
+**Output:**
+- `BIGINT`
+
+**Examples:**
+```sql
+-- MySQL's own two documented examples, and this engine agrees with them
+SELECT DATEDIFF('2007-12-31'::DATE, '2007-12-30'::DATE) AS diff;
+-- Result: 1
+SELECT DATEDIFF('2010-11-30'::DATE, '2010-12-31'::DATE) AS diff;
+-- Result: -31
+
+-- The two arities disagree, on purpose
+SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS diff;
+-- Result: 9
+SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff;
+-- Result: -9
+```
+
+> **Before engine `0.24.0`, `DATEDIFF` returned the opposite sign** — it was an alias of `DATE_DIFF`
+> and inherited its order, so MySQL's `DATEDIFF('2007-12-31','2007-12-30')` answered `-1` here
+> instead of `1`. Statements written against the old behaviour need their arguments swapped.
 
 ---
 
