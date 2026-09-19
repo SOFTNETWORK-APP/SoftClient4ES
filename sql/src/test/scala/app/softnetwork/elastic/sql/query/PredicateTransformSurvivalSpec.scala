@@ -176,14 +176,19 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
     * `DATE_ADD` emitting its methods in the other order. Two parses share no mutable state.
     */
   private def rendered(sql: String): Option[Rendered] =
-    for {
-      operandExpr   <- criteriaOf(sql)
-      predicateExpr <- criteriaOf(sql)
-    } yield {
-      val operandContext = PainlessContext(context = PainlessContextType.Query)
-      val operandBody = operandExpr.identifier.painless(Some(operandContext))
+    criteriaOf(sql).map { predicateExpr =>
+      // 🔴 The PREDICATE is rendered first, and the operand is then rendered from the SAME
+      // expression (issue #370). An operand's rendering depends on how it is used: a comparison
+      // against a DATE literal narrows it to a `LocalDate` on its parameter object, and `DateTrunc`
+      // then omits `truncatedTo` -- a `ZonedDateTime` method the receiver no longer has. Rendering
+      // the operand from a SEPARATE parse, in isolation, produced the un-narrowed
+      // `…withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)` and reported the truncation as a lost
+      // transform, when it is the correct emission for that receiver. The reference is the operand
+      // as it renders IN this predicate, which is the same object once the predicate has run.
       val predicateContext = PainlessContext(context = PainlessContextType.Query)
       val predicateBody = predicateExpr.painless(Some(predicateContext))
+      val operandContext = PainlessContext(context = PainlessContextType.Query)
+      val operandBody = predicateExpr.identifier.painless(Some(operandContext))
       Rendered(
         operand = operandContext.toString + operandBody,
         operandBody = operandBody,
@@ -599,10 +604,17 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
     "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value.toInstant().atZone(ZoneId.of('Z')).getLong(ChronoField.EPOCH_DAY)); " +
     "param1 == null ? false : (param1 == 20129)"
 
+    // 🔴 Issue #370 moved this pin, and the pin it replaces had certified a BROKEN emission:
+    // `…toLocalDate().toInstant()…` (`LocalDate.toInstant/0 not found`, executed on ES 8.18). The
+    // DATE-literal comparison narrows the operand to a `LocalDate` on its parameter object; the
+    // UTC normalisation now goes FIRST (`prependPainlessMethod`), and `DateTrunc` reads the
+    // receiver its parameter renders to (`rendersLocalDate`) instead of the column's type, so
+    // `truncatedTo` -- a `ZonedDateTime` method -- is not emitted onto a `LocalDate`. Executed on
+    // ES 8.18 over a `date` column holding 2025-01-01: one hit.
     predicateOf("SELECT id FROM t WHERE DATE_TRUNC(d, MONTH) = CAST('2025-01-01' AS DATE)") should
     startWith(
-      "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value.toLocalDate().toInstant()" +
-      ".atZone(ZoneId.of('Z')).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS));"
+      "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value.toInstant().atZone(ZoneId.of('Z'))" +
+      ".toLocalDate().withDayOfMonth(1));"
     )
   }
 

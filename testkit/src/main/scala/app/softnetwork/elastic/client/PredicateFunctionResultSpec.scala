@@ -304,18 +304,56 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
     selected("LAST_DAY(d) = d") shouldBe Set.empty[String]
     selected("LAST_DAY(d) > d") shouldBe allIds
 
-    // ⚠️ NOT asserted, and the reason is a defect this fix does NOT own: where the function folds into
-    // the parameter as a METHOD (`DATE_TRUNC`, `YEAR`, …) and the same column is also the right-hand
-    // side, both sides resolve to that ONE parameter — `PainlessParam` identity is the doc-value
-    // string, while the methods live on the parameter object — so `DATE_TRUNC(d, MONTH) < d` emits
-    // `left1.isBefore(param1)` with `left1 = param1` and the truncation folded INTO `param1`:
-    // always false, silently. MEASURED on ES 8.18 before AND after this fix (`Set()` either way), and
-    // independently predicted by review for `DATE_ADD(d, INTERVAL 1 DAY) = d`, which is always true
-    // for the same reason. Repairing it means changing parameter identity, which reaches every
-    // emission that reuses one — its own change, with its own evidence: issue #370. When that lands,
-    // this assertion turns red and the comment says why.
-    selected("DATE_TRUNC(d, MONTH) < d") shouldBe Set
-      .empty[String] // records the defect, not the truth
+    // Issue #370, fixed: the truncation and the column are two parameters now. Every fixture date
+    // is after the first of its month, so the truth is every document; before the fix this was
+    // `left1.isBefore(param1)` with the truncation folded INTO `param1` -- `Set()`, silently.
+    selected("DATE_TRUNC(d, MONTH) < d") shouldBe allIds
+    // ...and the tautology the review predicted, `x == x` after adding a day: `Set()` is the truth.
+    selected("DATE_ADD(d, INTERVAL 1 DAY) = d") shouldBe Set.empty[String]
+    // control: QUARTER binds its own parameter rather than folding, so it was right before the fix
+    // and must stay right (its parameter identity is pinned in `ParameterIdentitySpec`).
+    selected("DATE_TRUNC(d, QUARTER) < d") shouldBe allIds
+  }
+
+  /** A CAST over a column a DATE literal has already narrowed to a `LocalDate` is the identity. The
+    * plain BI filter failed the shard on `main` (`param1.toInstant()` on a `LocalDate`), and the
+    * interval form worked there only because the old fold discarded the CAST's coercion.
+    */
+  "CAST to DATE against a DATE literal" should "not narrow the receiver twice" in {
+    selected("CAST(d AS DATE) = CAST('2025-01-06' AS DATE)") shouldBe Set("d6")
+    selected("CAST(d AS DATE) - INTERVAL 3 DAY = CAST('2025-01-03' AS DATE)") shouldBe Set("d6")
+    selected("CAST(d AS DATE) > CAST('2025-01-10' AS DATE)") shouldBe Set("d11", "d12")
+  }
+
+  it should "not narrow a TIME receiver twice either" in {
+    // Every fixture date is midnight, so `+ 1 HOUR` is 01:00 on each. The narrowing itself
+    // (`.toLocalTime()`) does not exist on ES 6.8's Joda-compatible doc-value -- pre-existing.
+    assume(esMajor >= 7, "a TIME narrowing of a raw date column is unsupported on ES 6.8")
+    selected("CAST(d AS TIME) + INTERVAL 1 HOUR > CAST('00:30:00' AS TIME)") shouldBe allIds
+    // `CAST(d AS TIME) = <literal>` is deliberately NOT here: the identity is right, but `=`
+    // is spelled `isEqual`, which `java.time.LocalTime` does not have (#367's comparison
+    // spelling, loud on `main` too).
+  }
+
+  /** 🔴 Issue #370's LOUD face: two different extractions of one column in ONE expression.
+    * `YEAR(d)` and `MONTH(d)` folded both onto the one parameter --
+    * `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)` -- an `int.get(...)` that failed the
+    * shard (MEASURED on ES 8.18 before the fix, from the request the client logged). Match AND
+    * non-match are asserted, so a fix that made the predicate always-true or always-false cannot
+    * pass.
+    *
+    * ⚠️ The CONJUNCTION `YEAR(d) = 2025 AND MONTH(d) = 1` is NOT that shape on this path: the WHERE
+    * translation emits each `AND` branch as its own `script` filter with its own context, so the
+    * two extractions never met and it worked before the fix. It is kept as the control that says so
+    * -- `ParameterIdentitySpec` pins what the same conjunction renders to as ONE script.
+    */
+  "two different extractions of one column in one expression" should "each read their own parameter" in {
+    selected("YEAR(d) > MONTH(d)") shouldBe allIds
+    selected("MONTH(d) > YEAR(d)") shouldBe Set.empty[String]
+    gatewaySelected("YEAR(d) > MONTH(d)") shouldBe allIds
+    // control: two filters, two contexts, unchanged by the fix
+    selected("YEAR(d) = 2025 AND MONTH(d) = 1") shouldBe allIds
+    selected("YEAR(d) = 2025 AND MONTH(d) = 2") shouldBe Set.empty[String]
   }
 
   /** 🔴 `List.contains` is Java `equals`, which is FALSE across boxed numeric types — so an `IN`

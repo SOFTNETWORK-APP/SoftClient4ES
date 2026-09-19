@@ -2429,7 +2429,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.plus(2, ChronoUnit.DAYS)); def param5 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param4 : param5",
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS); def param3 = param1 == null ? false : (param1.isAfter(param2)); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value); def param5 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toInstant().atZone(ZoneId.of('Z')).plus(2, ChronoUnit.DAYS)); def param6 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); param3 ? param1 : param4 != null ? param5 : param6",
       |        "params": {
       |          "__now__": 1767139200000
       |        }
@@ -2489,7 +2489,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "c": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate().plus(2, ChronoUnit.DAYS)); def param4 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param2 : param1 != null && param1.isEqual(param3) ? param3 : param4",
+      |        "source": "def param1 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(7, ChronoUnit.DAYS); def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); def param3 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate()); def param5 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate().plus(2, ChronoUnit.DAYS)); def param6 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); param1 != null && param1.isEqual(param2) ? param3 : param1 != null && param1.isEqual(param4) ? param5 : param6",
       |        "params": {
       |          "__now__": 1767139200000
       |        }
