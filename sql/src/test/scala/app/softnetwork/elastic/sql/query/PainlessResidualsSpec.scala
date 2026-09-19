@@ -76,6 +76,10 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"[$sql] expected a CreateTable, got $other")
     }
 
+  /** How many times `needle` occurs in `haystack` -- the shape of an "evaluated once" assertion. */
+  protected def countOf(haystack: String, needle: String): Int =
+    haystack.sliding(needle.length).count(_ == needle)
+
   /** The first SELECT field rendered as one script. */
   protected def fieldOf(sql: String, withSchema: Boolean = true): String = {
     val ctx = PainlessContext(PainlessContextType.Query)
@@ -261,5 +265,50 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
     "LocalDate.parse((ctx.d).replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))" +
     ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(ctx.d).atZone(ZoneId.of('Z')))" +
     ".get(ChronoField.YEAR); ctx.c = param1"
+  }
+
+  // -- item 9: a guarded operand is bound once, not rendered twice -------------------------------
+
+  /** `coerce` builds its result by interpolating the operand and then wraps it in a null guard that
+    * tests the operand AGAIN, so a chained operand was rendered TWICE and every function in it ran
+    * twice per document:
+    * {{{
+    * ((param2 == null) ? null : (def)(param2.plus(1, …)) != null
+    *   ? (param2 == null) ? null : (def)(param2.plus(1, …)).atStartOfDay(…) : null)
+    * }}}
+    * 🔴 It is CORRECT -- executed on ES 8.18 before and after, both return the same single row --
+    * so this is COST, not a wrong answer, and the pin is on the count rather than on a value.
+    */
+  "a chained operand under a null guard" should "be rendered once" in {
+    val emitted =
+      predicateOf(
+        "SELECT name FROM t WHERE DATE_ADD(DATE_PARSE(name, 'yyyy-MM-dd'), INTERVAL 1 DAY) > d"
+      )
+    withClue(emitted) {
+      countOf(emitted, "param2.plus(1, ChronoUnit.DAYS)") shouldBe 1
+    }
+  }
+
+  it should "bind the operand of a chained conversion once too" in {
+    val emitted = fieldOf(
+      "SELECT CASE CAST(d AS DATE) WHEN CAST('2025-01-01' AS DATE) THEN YEAR(CAST(d AS DATE)) ELSE 0 END AS c FROM t"
+    )
+    withClue(emitted) {
+      countOf(emitted, "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate()") shouldBe 1
+    }
+  }
+
+  it should "reuse an existing parameter instead of declaring an alias" in {
+    // 🔴 Two earlier versions of this test were VACUOUS -- neither reddened when the binding was
+    // made unconditional -- and that is the finding, not a detail: `addParam` returns the EXISTING
+    // name when the literal it is handed IS one, so a bare-name operand was never going to produce
+    // a duplicate. The redundant guard was removed rather than left as unfalsifiable code, and
+    // what is asserted here is the property that actually holds: no parameter is declared as a
+    // bare alias of another.
+    val emitted =
+      fieldOf("SELECT CASE CAST(d AS DATE) WHEN CAST(ts AS DATE) THEN 1 ELSE 0 END AS c FROM t")
+    withClue(emitted) {
+      """def \w+ = (?:param|left|arg)\d+;""".r.findFirstIn(emitted) shouldBe None
+    }
   }
 }

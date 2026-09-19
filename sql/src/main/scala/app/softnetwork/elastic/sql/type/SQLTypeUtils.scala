@@ -571,8 +571,26 @@ object SQLTypeUtils {
     // literal arms already return references (`LocalDate.parse(...)`, `String.valueOf(...)`) and
     // must stay BYTE-IDENTICAL — a blanket `(def)` moved a bridge pin that was never broken, which
     // is churn, not a correction.
-    if (producesPainlessPrimitive(to)) s"($expr != null ? (def)($ret) : null)"
-    else s"($expr != null ? $ret : null)"
+    //
+    // 🔴 The operand is BOUND ONCE when it is a compound expression (issue #373). `ret` is built
+    // by interpolating `expr`, and this wrapper tests `expr` again, so a chained operand was
+    // rendered TWICE and every function in it ran twice per document:
+    // `DATE_ADD(DATE_PARSE(name, …), INTERVAL 1 DAY) > d` emitted
+    // `((param2 == null) ? null : (def)(param2.plus(1, …)) != null ? (param2 == null) ? null :
+    // (def)(param2.plus(1, …)).atStartOfDay(…) : null)`. It is CORRECT -- executed on ES 8.18, it
+    // returns the right row -- so this is cost, not a wrong answer.
+    //
+    // The substitution is exact rather than textual luck: every occurrence of `expr` inside `ret`
+    // is this operand, because `ret` was interpolated from it. A bare parameter name is left
+    // alone: binding it would declare a second name for one that already exists.
+    // ⚠️ No "is it already a name?" test: `addParam` returns the EXISTING name when the literal
+    // it is given is one (`_values.indexOf`), so binding a bare `param2` is already a no-op. A
+    // guard here would be belt-and-braces that no mutation can redden -- measured.
+    val guardOperand: String =
+      context.flatMap(_.addParam(LiteralParam(expr))).getOrElse(expr)
+    val guarded = if (guardOperand == expr) ret else ret.replace(expr, guardOperand)
+    if (producesPainlessPrimitive(to)) s"($guardOperand != null ? (def)($guarded) : null)"
+    else s"($guardOperand != null ? $guarded : null)"
   }
 
   /** The one normalisation the four `<string> -> <temporal>` arms share, so that a literal written
