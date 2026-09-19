@@ -289,7 +289,11 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
       "def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); " +
       "def param3 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); "
     )
-    emitted should endWith("? param3 : param1 != null && param1.isEqual(param4) ? param5 : param6")
+    // The candidate is guarded too (issue #373): `lastSeen` is a column and a document may not
+    // have it, which was an NPE before.
+    emitted should endWith(
+      "? param3 : param1 != null && param4 != null && param1.isEqual(param4) ? param5 : param6"
+    )
     // Rule 2, normalisation FIRST: the branch's DATE narrowing was appended to this object before
     // the chain rendered; the UTC normalisation must still come first (`LocalDate` has no
     // `toInstant()`).
