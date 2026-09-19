@@ -146,13 +146,22 @@ package object cond {
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case Nil => throw new IllegalArgumentException("COALESCE requires at least one argument")
+        // 🔴 `COALESCE(x)` IS `x`. Without this arm the fold below took `values.length - 1 = 0`
+        // arguments, so the `" : "` join produced nothing and the tail appended a closing paren that
+        // opened nowhere: `String.valueOf( : param1))`, which Painless cannot parse. Degenerate SQL,
+        // legal SQL, and UNREACHABLE until issue #367 stopped predicates from dropping the operand's
+        // transform — `WHERE COALESCE(d) = 'x'` compared the raw column before and emits this now.
+        case single :: Nil => single.trim
+        // 🔴 A RIGHT fold, because the old one opened `values.length - 1` parentheses and closed
+        // exactly ONE: at two arguments that balances by luck, and at three or more it emitted
+        // `(a != null ? a : (b != null ? b : c)` — Painless cannot parse it, so `COALESCE(a, b, c)`
+        // was a shard failure in EVERY venue, SELECT included, and no test had ever looked. Found by
+        // the delimiter check in `PredicateTransformSurvivalSpec`. Byte-identical at two arguments,
+        // which is what every existing fixture pins.
         case _ =>
-          callArgs
-            .take(values.length - 1)
-            .map { arg =>
-              s"(${arg.trim} != null ? ${arg.trim}" // TODO check when value is nullable and has functions
-            }
-            .mkString(" : ") + s" : ${callArgs.last})"
+          callArgs.init.foldRight(callArgs.last.trim) { (arg, rest) =>
+            s"(${arg.trim} != null ? ${arg.trim} : $rest)"
+          }
       }
 
     override def nullable: Boolean = values.forall(_.nullable)

@@ -482,7 +482,9 @@ package object sql {
     private[this] var _locals: Int = 0
 
     /** Every declaration this script emits, in CREATION order: a parameter (rendered from its
-      * `PainlessParam`) or a local bound by [[bindLocal]]. See the B-1 note in `addParam`.
+      * `PainlessParam`) or a local bound by [[bindLocal]] / [[bindLocalWith]], carried as the
+      * `(name, already-rendered declaration)` pair so a local that needs more than `def <name> =
+      * <expr>;` can say so. See the B-1 note in `addParam`.
       */
     private[this] var _declarations
       : collection.mutable.Seq[Either[PainlessParam, (String, String)]] =
@@ -495,10 +497,23 @@ package object sql {
       * BIDC-8, AD-9). Declaring it beside the `param` assignments keeps every operand a pure
       * expression and evaluates it once.
       */
-    def bindLocal(expr: String, prefix: String = "left"): String = {
+    def bindLocal(expr: String, prefix: String = "left"): String =
+      bindLocalWith(prefix)(name => s"def $name = $expr; ")
+
+    /** Bind a local whose value cannot be WRITTEN as an expression, so the caller supplies the
+      * whole declaration and is handed the name this context chose for it.
+      *
+      * 🔴 The one case that needs it (issue #367): Painless has no expression-level `try`/`catch`,
+      * so `TRY_CAST` / `SAFE_CAST` render as a `try { … } catch …` STATEMENT. That is legal as the
+      * tail of a whole script — which is why a `script_fields` projection of it works — and illegal
+      * anywhere an operand goes: `def left1 = try { … };` is a compile error, and a predicate over
+      * a safe cast is exactly that. Hoisted as statements into the prologue, the operand becomes a
+      * name like every other.
+      */
+    def bindLocalWith(prefix: String)(declaration: String => String): String = {
       _locals += 1
       val name = s"$prefix${_locals}"
-      _declarations = _declarations :+ Right(name -> expr)
+      _declarations = _declarations :+ Right(name -> declaration(name))
       name
     }
 
@@ -537,7 +552,9 @@ package object sql {
               case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
               case None    => None // should not happen
             }
-          case Right((name, expr)) => Some(s"def $name = $expr; ")
+          // The local's declaration is already rendered (see `bindLocalWith`): a `TRY_CAST` needs
+          // two statements, not one `def`.
+          case Right((_, declaration)) => Some(declaration)
         }
         .mkString("")
   }
@@ -1410,6 +1427,46 @@ package object sql {
     def originalType: SQLType =
       if (name.trim.nonEmpty) SQLTypes.Any
       else this.baseType
+
+    /** The type of the expression [[painless]] actually RENDERS — which is NOT what [[baseType]]
+      * reports for a function-wrapped column.
+      *
+      * 🔴 Issue #367. A schema-resolved identifier overrides `baseType` with the COLUMN's runtime
+      * type and stops there, so `WEEKDAY(d)` claims to be a `TIMESTAMP` while the string it renders
+      * is the `int` the extraction produced, and `DATE_FORMAT(d, 'yyyy')` claims `TIMESTAMP` while
+      * rendering a `String`. Every `SQLTypeUtils.coerce(in, to, ctx)` call reads the type of the
+      * string it was just handed (see the note on `Criteria.baseType`, which fixed the same lie for
+      * a comparison: *the source type has to be right before `coerce` is called*), so the coercion
+      * inserted a temporal conversion on a value that is no longer temporal.
+      *
+      * The OUTERMOST function's own `out` is that type: the chain is applied innermost-first, so
+      * the last type to be produced is the outermost function's. Reading it is also PURE, which a
+      * fold over `applyType` is not — `IntervalFunction.applyType` calls `cast`, which WRITES
+      * `_out`, so computing this by folding changed `DATE_ADD(d, INTERVAL 1 DAY)`'s own `out` from
+      * DATE to TIMESTAMP and with it the rendering of that expression everywhere else (found by
+      * review). It is also more accurate: that operand renders `…toLocalDate().plus(1,
+      * ChronoUnit.DAYS)`, a `LocalDate`, which is DATE.
+      *
+      * ⚠️ Deliberately a SEPARATE derivation rather than a correction of `baseType`: `baseType`
+      * feeds `out`, and `out` feeds `isTemporal`, which decides whether an identifier renders as
+      * DATE MATH (`d||+1d`) instead of a script. Making `baseType` chain-aware sent `ORDER BY
+      * DATE_PARSE(name, 'x')` down the date-math branch, which assembles its expression from the
+      * COLUMN name and produced the nonsense `name||name||/d` (MEASURED). That branch's real
+      * precondition is that the chain's BASE is temporal, not its output, and repairing it is a
+      * separate change with its own blast radius (sorts, date math, validation, reported column
+      * types) — recorded on #367 rather than smuggled in here.
+      *
+      * ⚠️ An AGGREGATE reports `out`, unchanged: its predicate is rendered context-free as a
+      * bucket-pipeline read of the metric Elasticsearch already computed
+      * (`MetricSelectorScript.metricSelector` calls `painless(None)`, which returns from
+      * `bucketPipelinePainless` before any operand is coerced), so the chain type would describe a
+      * rendering this identifier never produces.
+      */
+    def chainType: SQLType =
+      functions.headOption match {
+        case Some(f) if !isAggregation => f.out
+        case _                         => out
+      }
 
     /** The type the column was DECLARED as, where that differs from what a query hands Painless.
       * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.
