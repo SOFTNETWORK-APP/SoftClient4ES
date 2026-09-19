@@ -414,9 +414,26 @@ package object sql {
 
   }
 
-  case class LiteralParam(literal: String, maybeCheckNotNull: Option[String] = None)
-      extends PainlessParam {
+  /** @param key
+    *   the identity this parameter is deduplicated on, when it differs from the literal.
+    *
+    * 🔴 Issue #373. An identifier registers as a `LiteralParam` in a PROCESSOR or TRANSFORM context
+    * (its operand is `ctx.<field>` / `doc['<alias>'].value`, not a doc-value read), so
+    * `Identifier.contextKey` -- #370's fix -- never applied there and two different chains over one
+    * column collapsed onto a single parameter again: `SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) …)`
+    * emitted `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)` on ONE `ctx.d`.
+    *
+    * ⚠️ Used at ONE site -- the processor's parsed temporal base. Keying the identifier
+    * registrations themselves was measured to fix nothing and to cost a DEAD duplicate declaration,
+    * so it is deliberately not done; see the call site.
+    */
+  case class LiteralParam(
+    literal: String,
+    maybeCheckNotNull: Option[String] = None,
+    key: Option[String] = None
+  ) extends PainlessParam {
     override def param: String = literal
+    override def contextKey: String = key.getOrElse(literal)
     override def sql: String = ""
     override def nullable: Boolean = maybeCheckNotNull.nonEmpty
     override def checkNotNull: String = maybeCheckNotNull.getOrElse("")
@@ -468,14 +485,20 @@ package object sql {
         case identifier: Identifier if isProcessor =>
           if (identifier.name.nonEmpty)
             addParam(
-              LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
+              LiteralParam(
+                identifier.processParamName,
+                None /*identifier.processCheckNotNull*/
+              )
             )
           else
             None
         case identifier: Identifier if isTransform =>
           if (identifier.name.nonEmpty)
             addParam(
-              LiteralParam(identifier.transformParamName, identifier.transformCheckNotNull)
+              LiteralParam(
+                identifier.transformParamName,
+                identifier.transformCheckNotNull
+              )
             )
           else
             None
@@ -510,10 +533,18 @@ package object sql {
     def get(token: Token): Option[String] = {
       token match {
         case identifier: Identifier if isProcessor =>
-          get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
+          get(
+            LiteralParam(
+              identifier.processParamName,
+              None /*identifier.processCheckNotNull*/
+            )
+          )
         case identifier: Identifier if isTransform =>
           get(
-            LiteralParam(identifier.transformParamName, None /*identifier.transformCheckNotNull*/ )
+            LiteralParam(
+              identifier.transformParamName,
+              None /*identifier.transformCheckNotNull*/
+            )
           )
         case param: PainlessParam =>
           // By `contextKey`, not `equals`: see `PainlessParam.contextKey` (issue #370).
@@ -1587,7 +1618,13 @@ package object sql {
         context match {
           case Some(ctx) =>
             processorBase
-              .flatMap(e => ctx.addParam(LiteralParam(e)))
+              // 🔴 Keyed on the CHAIN, like every other registration (issue #373). The parsed
+              // processor base is the SAME literal for every chain over one column, so `YEAR(d)`
+              // and `MONTH(d)` collapsed onto one parameter and both folds landed on it:
+              // `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`, an `int.get(…)` that
+              // throws -- and in an ingest pipeline `ignore_failure: true` swallows it and the
+              // computed column is simply ABSENT.
+              .flatMap(e => ctx.addParam(LiteralParam(e, None, Some(contextKeyOf(e)))))
               .orElse(ctx.addParam(this))
               .getOrElse("")
           case _ =>
@@ -1635,10 +1672,15 @@ package object sql {
       * MONTH)` no longer collapse onto one object, and neither do `YEAR(d)` and `MONTH(d)`, which
       * used to produce `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`.
       */
-    override lazy val contextKey: String =
+    override lazy val contextKey: String = contextKeyOf(paramName)
+
+    /** The same identity rule over an arbitrary operand rendering, so a PROCESSOR (`ctx.<field>`)
+      * or TRANSFORM (`doc['<alias>'].value`) registration keys on its chain too (issue #373).
+      */
+    def contextKeyOf(base: String): String =
       // The folded RENDERINGS, not the SQL spellings: `YEAR(d)` and `EXTRACT(YEAR FROM d)` fold
       // the same `.get(ChronoField.YEAR)` and must share one parameter (review, L1).
-      foldedFunctions.foldLeft(paramName) { (key, f) =>
+      foldedFunctions.foldLeft(base) { (key, f) =>
         key + (f match {
           case ps: PainlessScript => Try(ps.painless(None)).getOrElse(f.toSQL(""))
           case _                  => f.toSQL("")

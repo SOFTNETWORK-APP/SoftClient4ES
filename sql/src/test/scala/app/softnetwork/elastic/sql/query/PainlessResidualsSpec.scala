@@ -62,6 +62,20 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
     s"$ctx$body"
   }
 
+  /** The ingest-processor source of a computed column, through the production seam
+    * (`Table.update()` resolves the processors; the raw parsed column list does not).
+    */
+  protected def processorOf(sql: String, column: String = "c"): String =
+    Parser(sql) match {
+      case Right(ct: CreateTable) =>
+        ct.schema.columns
+          .find(_.name == column)
+          .flatMap(_.script)
+          .map(_.source)
+          .getOrElse(fail(s"no script processor for [$column] in [$sql]"))
+      case other => fail(s"[$sql] expected a CreateTable, got $other")
+    }
+
   /** The first SELECT field rendered as one script. */
   protected def fieldOf(sql: String, withSchema: Boolean = true): String = {
     val ctx = PainlessContext(PainlessContextType.Query)
@@ -211,5 +225,41 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
     fieldOf("SELECT CASE n WHEN 1 THEN 1 ELSE 0 END AS c FROM t") should endWith(
       "def param3 = 1; param2 == param3 ? 1 : 0"
     )
+  }
+
+  // -- item 6: the PROCESSOR and TRANSFORM contexts key on the chain too ------------------------
+
+  /** #370 made one parameter per (column, folded chain) -- but only in a QUERY context. An
+    * identifier registers as a `LiteralParam` in a PROCESSOR (`ctx.<field>`) or TRANSFORM
+    * (`doc['<alias>'].value`) context, so `Identifier.contextKey` never applied and two chains over
+    * one column collapsed onto a single parameter, both folds landing on it:
+    * `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`, an `int.get(…)`.
+    *
+    * ⚠️ This commit fixes the IDENTITY, and the ingest script still does not RUN: the extracted
+    * `int` is handed back to the processor's temporal parse (`param2 instanceof String ? … :
+    * Instant.ofEpochMilli(param2)…`), which is issue #373's item 7 and its own commit. MEASURED on
+    * ES 8.18 as an ingest pipeline over `{"d":"2025-01-10"}`: the computed column is ABSENT before
+    * AND after this commit -- `ignore_failure: true` swallows the throw, which is exactly why the
+    * defect was invisible. The executed proof of the pair lives with the item-7 commit; what is
+    * asserted here is the parameter split, which is what this commit owns.
+    */
+  "two different chains over one column in a PROCESSOR" should "be two parameters" in {
+    val emitted = processorOf(
+      "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END))"
+    )
+    withClue(emitted) {
+      emitted should not include ".get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)"
+      emitted should include(".get(ChronoField.YEAR); ")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR); ")
+    }
+  }
+
+  it should "keep ONE parameter where the chain is the same" in {
+    // The single-chain processor emission must not move: one column, one chain, one parameter.
+    processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d)))") shouldBe
+    "def param1 = (ctx.d instanceof String ? " +
+    "LocalDate.parse((ctx.d).replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))" +
+    ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(ctx.d).atZone(ZoneId.of('Z')))" +
+    ".get(ChronoField.YEAR); ctx.c = param1"
   }
 }
