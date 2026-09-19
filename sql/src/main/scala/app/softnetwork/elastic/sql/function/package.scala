@@ -390,6 +390,17 @@ package object function {
   }
 
   trait TransformFunction[In <: SQLType, Out <: SQLType] extends FunctionN[In, Out] {
+
+    /** Whether `toPainless` FOLDS this function onto its operand's parameter as a `.method(...)`
+      * suffix (`addPainlessMethod`), as opposed to rendering an expression around the operand or
+      * binding a parameter of its own. It is the same `startsWith(".")` test `toPainless` folds on,
+      * taken context-free so it has no side effect; a function whose context-bearing rendering
+      * decides differently overrides it at the site that knows (`DateTrunc` for `QUARTER`). Read by
+      * `Identifier.foldedFunctions` to key parameter identity (issue #370).
+      */
+    def foldsOntoOperand: Boolean =
+      scala.util.Try(painless(None)).toOption.exists(_.startsWith("."))
+
     override def checkIfNullable: Boolean =
       super.checkIfNullable && (this match {
         case f: FunctionWithIdentifier

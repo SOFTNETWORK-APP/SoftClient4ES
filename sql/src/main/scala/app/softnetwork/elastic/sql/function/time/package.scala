@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   LiteralParam,
   PainlessContext,
+  PainlessParam,
   PainlessScript,
   StringValue,
   TokenRegex,
@@ -79,14 +80,28 @@ package object time {
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
-          ctx.last match {
-            case Some(p) =>
-              ctx.find(p) match {
-                case Some(param) =>
-                  param.addPainlessMethod(painless(context))
-                  return p
-                case _ =>
-                  return s"($p != null ? ${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
+          // 🔴 Fold onto the OPERAND's parameter -- `ctx.find(base)`, the way
+          // `TransformFunction.toPainless` does -- and not onto `ctx.last`, "whatever parameter was
+          // created last" (issue #370, found by review). The two coincide only while the operand
+          // is the newest registration; the second occurrence of the same chain in a script, or a
+          // chain whose operand was registered earlier, landed the `.plus(…)` on SOMEONE ELSE's
+          // parameter: `CASE WHEN DATE_ADD(d, INTERVAL 1 DAY) > ts THEN DATE_ADD(d, INTERVAL 1 DAY)
+          // ELSE d END` added the day to `ts` and returned it (silent, HTTP 200); with the ELSE and
+          // THEN swapped it folded onto the boolean CONDITION (compile error); and
+          // `CAST(d AS DATE) - INTERVAL 3 DAY > d` read `x > x`. Measured on the control.
+          ctx.find(base) match {
+            case Some(param) =>
+              param.addPainlessMethod(painless(context))
+              return base
+            case _ if nullable =>
+              // `base` is an EXPRESSION (a guarded ternary from the previous function): bind it,
+              // then apply the interval INSIDE the guard -- 21.8's rule 2, the same shape
+              // `TransformFunction.toPainless` uses.
+              ctx.addParam(LiteralParam(base)) match {
+                case Some(bound) =>
+                  return s"($bound == null) ? null : (def)(${SQLTypeUtils
+                    .coerce(bound, expr.baseType, out, nullable = false, context)}${painless(context)})"
+                case None =>
               }
             case _ =>
           }
@@ -261,6 +276,13 @@ package object time {
       with DateMathRounding { // FIXME check Unit compatibility with inputType
     override def fun: Option[PainlessScript] = Some(DateTrunc)
 
+    /** `QUARTER` is the one unit whose context-bearing rendering does NOT fold: it needs the
+      * operand three times, so it binds a parameter of its own (see `painless` below) and
+      * `toPainless` receives that name. Context-free it still renders a `.withMonth(...)` suffix,
+      * which is what the default test would read -- hence the override (issue #370).
+      */
+    override def foldsOntoOperand: Boolean = unit != TimeUnit.QUARTERS && super.foldsOntoOperand
+
     override def args: List[PainlessScript] = List(unit)
 
     override def inputType: SQLTemporal = SQLTypes.Temporal // par défaut
@@ -292,8 +314,28 @@ package object time {
       // parses `ctx.<field>` into a `ZonedDateTime` whatever the column was declared as, which is
       // the same collapse `SQLTypeUtils.runtimeType` already applies for a query. One rule, one
       // type — an ingest-only arm here would be an "except" with nothing behind it.
-      val truncateTime =
-        if (expr.baseType == SQLTypes.Date) "" else ".truncatedTo(ChronoUnit.DAYS)"
+      //
+      // 🔴 ...and `baseType` is not the whole answer either (issue #370): a comparison against a
+      // DATE literal, a CAST or a CASE NARROWS the operand to a `LocalDate` by appending
+      // `.toLocalDate()` to its parameter object before this chain renders, while `baseType` still
+      // says TIMESTAMP. `DATE_TRUNC(d, MONTH) = CAST('2025-01-01' AS DATE)` then emitted
+      // `…toLocalDate().withDayOfMonth(1).truncatedTo(…)` -- MEASURED on ES 8.18:
+      // `LocalDate.truncatedTo/1 not found`. The receiver is what the parameter's methods have
+      // rendered it into, and the parameter is the thing that knows.
+      //
+      // 🔴 THE REGISTERED parameter, not `expr`'s own object. Two instances of one identifier can
+      // share a parameter (`DATE_FORMAT(DATE_TRUNC(d, MONTH), …)` holds a second `d`), and the
+      // fold appends to the object the context registered -- so the decision is read off that
+      // same object, the way `toPainless` finds it. Reading `expr` gave the two instances
+      // different answers and the shared parameter both renderings
+      // (`…truncatedTo(…).withDayOfMonth(1)`, MEASURED). Context-free -- which is what
+      // `foldsOntoOperand` and the identity key read -- the answer is the TYPE alone: reading
+      // the object's methods there made the key depend on whether a narrowing had ALREADY landed
+      // on the object, i.e. on the order of the predicates in the script (review).
+      val receiver: Option[PainlessParam] =
+        context.flatMap(ctx => ctx.get(expr).flatMap(ctx.find))
+      val receiverIsDateOnly = expr.baseType == SQLTypes.Date || receiver.exists(_.rendersLocalDate)
+      val truncateTime = if (receiverIsDateOnly) "" else ".truncatedTo(ChronoUnit.DAYS)"
       unit match {
         case TimeUnit.YEARS  => s".withDayOfYear(1)$truncateTime"
         case TimeUnit.MONTHS => s".withDayOfMonth(1)$truncateTime"

@@ -346,6 +346,20 @@ package object sql {
   trait PainlessParam extends Token {
     def param: String
     def checkNotNull: String
+
+    /** The identity a `PainlessContext` deduplicates parameters on (issue #370).
+      *
+      * By default the rendered doc access itself, which is also what `equals` compares. An
+      * `Identifier` widens it with its CHAINED function rendering, because the chain is folded onto
+      * the parameter OBJECT (`addPainlessMethod`) while identity was the doc-value STRING alone --
+      * so `DATE_TRUNC(d, MONTH) < d` resolved BOTH sides to the one parameter that by then carried
+      * the truncation, and compared `x < x`. Kept apart from `equals` on purpose:
+      * `GenericIdentifier` is a case class that INHERITS this trait's `equals`, so changing it
+      * would move identifier equality everywhere in the AST; the context's bookkeeping is the only
+      * thing that must tell two transforms of one column apart.
+      */
+    def contextKey: String = param
+
     override def hashCode(): Int = param.hashCode
     override def equals(obj: Any): Boolean = {
       obj match {
@@ -363,7 +377,40 @@ package object sql {
       this
     }
 
+    /** Put `method` FIRST. For the UTC normalisation of a raw doc-value (`toInstant().atZone(…)`),
+      * which must run before any narrowing (`.toLocalDate()`, `.toLocalTime()`) already appended to
+      * this parameter: `LocalDate` has no `toInstant()`, so the other order fails the shard. The
+      * narrowing is appended at coercion time and the normalisation only when the chain renders, so
+      * insertion order is the wrong order -- the FIRST method is the one that decides the receiver.
+      */
+    def prependPainlessMethod(method: String): PainlessParam = {
+      if (!_painlessMethods.contains(method))
+        _painlessMethods = method +: _painlessMethods
+      this
+    }
+
     def painlessMethods: Seq[String] = _painlessMethods.toSeq
+
+    /** Whether the methods appended so far leave this parameter a `java.time.LocalDate`.
+      *
+      * A narrowing (`.toLocalDate()`, alone or as the tail of `painlessUtcLocalDate`) is injected
+      * on the OBJECT by a comparison against a DATE literal, a CAST or a CASE, before the chain
+      * renders -- so the column's type no longer says what the receiver IS. A method that reads the
+      * receiver's type off `baseType` then emits a `ZonedDateTime` call onto a `LocalDate`
+      * (`truncatedTo`, MEASURED: `LocalDate.truncatedTo/1 not found`). Later re-widenings
+      * (`.atZone(…)`, `.atStartOfDay(…)`) flip it back. Read by `DateTrunc` (issue #370).
+      */
+    def rendersLocalDate: Boolean = rendersLocal(".toLocalDate()", ".toLocalTime()")
+
+    /** The `TIME` twin: `.toLocalTime()` leaves the receiver a `java.time.LocalTime`. */
+    def rendersLocalTime: Boolean = rendersLocal(".toLocalTime()", ".toLocalDate()")
+
+    private[this] def rendersLocal(narrowing: String, other: String): Boolean =
+      _painlessMethods.foldLeft(false) { (narrowed, m) =>
+        if (m.endsWith(narrowing)) true
+        else if (m.contains(".atZone(") || m.contains(".atStartOfDay(") || m.endsWith(other)) false
+        else narrowed
+      }
 
   }
 
@@ -469,8 +516,8 @@ package object sql {
             LiteralParam(identifier.transformParamName, None /*identifier.transformCheckNotNull*/ )
           )
         case param: PainlessParam =>
-          if (exists(param)) Try(_values(_keys.indexOf(param))).toOption
-          else None
+          // By `contextKey`, not `equals`: see `PainlessParam.contextKey` (issue #370).
+          Try(_values(_keys.indexWhere(_.contextKey == param.contextKey))).toOption
         case f: FunctionWithIdentifier => get(f.identifier)
         case _                         => None
       }
@@ -519,7 +566,7 @@ package object sql {
 
     def exists(token: Token): Boolean = {
       token match {
-        case param: PainlessParam      => _keys.contains(param)
+        case param: PainlessParam      => _keys.exists(_.contextKey == param.contextKey)
         case f: FunctionWithIdentifier => exists(f.identifier)
         case _                         => false
       }
@@ -1491,8 +1538,12 @@ package object sql {
                 case SQLTypes.Temporal => // the first function to apply required a Temporal as input type
                   context match {
                     case Some(_) =>
-                      // compatible ES6+ -- see `painlessUtcZonedDateTime` for WHY
-                      this.addPainlessMethod(painlessUtcZonedDateTime)
+                      // compatible ES6+ -- see `painlessUtcZonedDateTime` for WHY. PREPENDED
+                      // (issue #370): a `.toLocalDate()` narrowing may already be on this object
+                      // from coercion, and the normalisation applies to the RAW value under it.
+                      // Before #370 the two often sat on DIFFERENT instances of one column and
+                      // the fold landed on whichever was registered, which hid the order.
+                      this.prependPainlessMethod(painlessUtcZonedDateTime)
                       currType = SQLTypes.Timestamp
                     case _ => // do nothing
                   }
@@ -1558,6 +1609,41 @@ package object sql {
     }
 
     override def param: String = paramName
+
+    /** The functions that FOLD onto this identifier's raw parameter as methods, in application
+      * order (issue #370).
+      *
+      * A function folds when its rendering is a `.method(...)` suffix -- `DATE_TRUNC`, the interval
+      * family, the extractors -- and `TransformFunction.toPainless` then appends it to the
+      * parameter OBJECT. A function that renders as an EXPRESSION around its operand does not: one
+      * that takes the identifier as an ARGUMENT (`DATE_FORMAT`, `DATE_PARSE`, `WEEKDAY`,
+      * `LAST_DAY`, the string functions) or a `CAST`, which binds a new parameter. And the run
+      * STOPS at the first of those, because everything after it applies to that expression, not to
+      * the raw parameter: in `YEAR(DATE_PARSE(name, …))` the `YEAR` is read off the parsed value,
+      * so the raw `name` is shared with the argument `DATE_PARSE` holds -- keying it on `YEAR`
+      * split them and declared the raw doc-value twice. The test is
+      * `TransformFunction.foldsOntoOperand`, the same one `toPainless` folds on.
+      */
+    lazy val foldedFunctions: List[Function] =
+      FunctionUtils.transformFunctions(this).reverse.takeWhile {
+        case f: TransformFunction[_, _] => f.foldsOntoOperand
+        case _                          => false
+      }
+
+    /** Issue #370: one parameter per (column, folded rendering), not per column. Two identifiers of
+      * one column share a parameter iff they fold the SAME run onto it; `d` and `DATE_TRUNC(d,
+      * MONTH)` no longer collapse onto one object, and neither do `YEAR(d)` and `MONTH(d)`, which
+      * used to produce `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`.
+      */
+    override lazy val contextKey: String =
+      // The folded RENDERINGS, not the SQL spellings: `YEAR(d)` and `EXTRACT(YEAR FROM d)` fold
+      // the same `.get(ChronoField.YEAR)` and must share one parameter (review, L1).
+      foldedFunctions.foldLeft(paramName) { (key, f) =>
+        key + (f match {
+          case ps: PainlessScript => Try(ps.painless(None)).getOrElse(f.toSQL(""))
+          case _                  => f.toSQL("")
+        })
+      }
 
     private[this] var _nullable =
       this.name.nonEmpty && (!isAggregation || functions.size > 1)
