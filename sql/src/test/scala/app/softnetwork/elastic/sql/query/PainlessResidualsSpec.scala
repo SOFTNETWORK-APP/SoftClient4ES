@@ -22,6 +22,7 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.scalatest.prop.TableDrivenPropertyChecks
 
 /** Issue #373 — the Painless-emission defects surfaced by #370, fixed in one PR, one commit each.
   *
@@ -34,7 +35,7 @@ import org.scalatest.matchers.should.Matchers
   * Every expectation below names the Elasticsearch behaviour it was measured against, and the
   * executed row lives in `PredicateFunctionResultSpec`.
   */
-class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
+class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPropertyChecks {
 
   private val schema: SchemaTable = SchemaTable(
     "t",
@@ -79,6 +80,25 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
   /** How many times `needle` occurs in `haystack` -- the shape of an "evaluated once" assertion. */
   protected def countOf(haystack: String, needle: String): Int =
     haystack.sliding(needle.length).count(_ == needle)
+
+  /** Every `def` in a well-formed emission opens a STATEMENT, so it may only appear at the start of
+    * the script or just after a `; `. This is the rule the first version of item 5's commit broke:
+    * it spliced `def lv0 = …; ` into a slot that must hold a single EXPRESSION, and ES answered
+    * `compile error` for five predicates that had returned rows. Returns the offending fragments.
+    */
+  protected def declarationsOutsideStatementStart(emitted: String): Seq[String] =
+    "def ".r
+      .findAllMatchIn(emitted)
+      .map(_.start)
+      .filterNot(i => i == 0 || emitted.startsWith("; ", i - 2))
+      .map(i => emitted.substring(math.max(0, i - 24), math.min(emitted.length, i + 12)))
+      .toSeq
+
+  /** Names declared more than once -- Painless rejects a redeclaration in the same scope. */
+  protected def duplicateDeclarations(emitted: String): Seq[String] = {
+    val names = "def ([A-Za-z_][A-Za-z0-9_]*) =".r.findAllMatchIn(emitted).map(_.group(1)).toSeq
+    names.groupBy(identity).collect { case (n, xs) if xs.size > 1 => n }.toSeq
+  }
 
   /** The first SELECT field rendered as one script. */
   protected def fieldOf(sql: String, withSchema: Boolean = true): String = {
@@ -309,6 +329,217 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers {
       fieldOf("SELECT CASE CAST(d AS DATE) WHEN CAST(ts AS DATE) THEN 1 ELSE 0 END AS c FROM t")
     withClue(emitted) {
       """def \w+ = (?:param|left|arg)\d+;""".r.findFirstIn(emitted) shouldBe None
+    }
+  }
+
+  // -- item 5: arithmetic renders its operands' chains ------------------------------------------
+
+  /** `ArithmeticExpression.toPainless` read its operands back as parameter NAMES (`ctx.get(left)`)
+    * -- the RAW doc-value -- so the function chain never reached the expression and `YEAR(d) +
+    * MONTH(d)` computed `d + d`. #367's defect one layer up.
+    *
+    * MEASURED as a real ingest pipeline on ES 8.18 over `{"d":"2025-01-10"}` (truth: 2025 + 1):
+    * {{{
+    * YEAR(d) + MONTH(d)          before  c = 1         after  c = 2026
+    * YEAR(d) * 100 + MONTH(d)    before  c = ABSENT    after  c = 202501
+    * }}}
+    * The first is the one that matters: a computed column silently stored a WRONG number, and an
+    * ingest pipeline swallows nothing there -- the value was simply wrong in the index.
+    *
+    * The QUERY half moves only for a SINGLE-chain operand, and that half is now executable.
+    * MEASURED on ES 8.18, index `t` (`d` = 2025-01-01 / 01-05 / 01-09):
+    * {{{
+    * WHERE YEAR(d) + 1 = 2026        before  class_cast (ZonedDateTime + 1)   after  [a, b, c]
+    * }}}
+    * ⚠️ A TWO-chain comparison is NOT fixed here and is not made worse -- before and after, `WHERE
+    * YEAR(d) + MONTH(d) = 2026` fails the shard (`illegal_argument`) and `… * 100 + MONTH(d) =
+    * 202501` fails to compile, for two PRE-EXISTING reasons this commit does not own: the
+    * arithmetic node's own type reports its COLUMN's (so the comparison coerces `TIMESTAMP ->
+    * BIGINT` and emits `.toInstant()` on an `int`), and a NESTED arithmetic renders a statement
+    * sequence (#367's open family). Correcting the node's type means making `baseType` chain-aware,
+    * which #367 measured and recorded as a trap: it sends `ORDER BY DATE_PARSE(name, …)` down the
+    * date-math branch.
+    *
+    * 🔴 The first version of this commit dropped the parameter shortcut for EVERY operand, not just
+    * a chained one, and that regressed five working predicates from rows to `compile error` --
+    * found by review, MEASURED, and now guarded below by a rule rather than by bytes.
+    */
+  "arithmetic over date functions in a PROCESSOR" should "render each operand's chain" in {
+    val emitted = processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) + MONTH(d)))")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR)")
+    }
+  }
+
+  it should "render each chain in a nested expression too" in {
+    val emitted =
+      processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR)")
+      // the fingerprint of the collapse: one parameter compared with itself in the null guard
+      emitted should not include "(param1 == null || param1 == null)"
+    }
+  }
+
+  it should "leave plain numeric arithmetic alone" in {
+    val emitted = processorOf("CREATE TABLE t (n INTEGER, c INTEGER SCRIPT AS (n * 2 + 1))")
+    withClue(emitted) {
+      emitted should not include "ChronoField"
+      emitted should not include "instanceof String"
+    }
+  }
+
+  /** The QUERY context, which the three cases above do not reach -- and where the first version of
+    * this commit did its damage. These five predicates and one script field returned rows before it
+    * and `compile error` after it, MEASURED on ES 8.18 index `t` (n = 1, 5, 9):
+    * {{{
+    * WHERE n + 1 > 2      [b, c]      WHERE n / 2 > 1          [b, c]
+    * WHERE n - 1 < 9   [a, b, c]      SELECT (n+1)*(n+2)   [6, 42, 110]
+    * WHERE n * 2 = 10        [b]
+    * }}}
+    * The rule, not the bytes, is what is asserted: an operand with no chain to drop keeps its
+    * parameter name, so nothing needs a statement and no statement can land in an expression slot.
+    */
+  it should "keep every arithmetic operand placeable in a PREDICATE" in {
+    forAll(
+      Table(
+        "predicate",
+        "SELECT name FROM t WHERE n + 1 > 2",
+        "SELECT name FROM t WHERE n - 1 < 9",
+        "SELECT name FROM t WHERE n * 2 = 10",
+        "SELECT name FROM t WHERE n / 2 > 1",
+        // 🔴 A CAST operand HAS a function, so it takes the RENDER path -- the family the
+        // chainless shortcut does NOT cover, and the one the second version of this commit broke.
+        // Every row below returned rows before this commit and `compile error` with it.
+        "SELECT name FROM t WHERE CAST(n AS BIGINT) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS DOUBLE) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS INTEGER) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS BIGINT) * 2 > 2",
+        "SELECT name FROM t WHERE 1 + CAST(n AS BIGINT) > 2",
+        // nested arithmetic: `compile error` BEFORE this commit as well as after the second
+        // version of it -- the hoist is what makes these emit at all
+        "SELECT name FROM t WHERE n * 2 + 1 > 2",
+        "SELECT name FROM t WHERE (n + 1) * (n + 2) > 2"
+      )
+    ) { sql =>
+      val emitted = predicateOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+        // no cast of a null-guarded ternary: `(long) (x != null ? … : null)` does not compile,
+        // and it is what asking for a numeric conversion here used to emit
+        emitted should not include "(long) ("
+      }
+    }
+  }
+
+  it should "declare each local ONCE in a nested numeric expression" in {
+    forAll(
+      Table(
+        "projection",
+        "SELECT (n + 1) * (n + 2) AS c FROM t",
+        // one nesting level deeper: declared `lv1` TWICE before the hoist, in every venue
+        "SELECT (n * 2 + 1) * (n * 3 + 1) AS c FROM t",
+        "SELECT (CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2) AS c FROM t"
+      )
+    ) { sql =>
+      val emitted = fieldOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** 🔴 The coercion of a NON-nullable operand is load-bearing and must survive: a literal carries
+    * no null guard, and its `((double) 2)` is the only thing that makes the division
+    * floating-point. Skipping it turned `CAST(n AS DOUBLE) / 2` into INTEGER division with HTTP 200
+    * -- found by review. MEASURED on ES 8.18 over n = 1/5/9, on the schema-LESS rendering path
+    * (what production renders whenever `resolveWithSchema` declines -- a wildcard or multi-index
+    * FROM, a JOIN, an unloadable mapping):
+    * {{{
+    * SELECT CAST(n AS DOUBLE)/2    [0.5, 2.5, 4.5]  became  [0, 2, 4]
+    * GROUP BY CAST(n AS DOUBLE)/2  keys '0.5','2.5','4.5'   became '0','2','4'
+    * WHERE CAST(n AS DOUBLE)/2 > 2 [b, c]           became  [c]      -- a row VANISHED
+    * }}}
+    * With a schema attached the same shape is now CORRECT where the parent was not: the parent
+    * emitted integer division there too (`[0, 2, 4]`, `WHERE … > 2` -> `[c]`), and it is `[0.5,
+    * 2.5, 4.5]` / `[b, c]` after this commit.
+    */
+  it should "keep the coercion of a NON-nullable operand" in {
+    // The two paths carry the DOUBLE on different sides, so each is pinned where it lives: with NO
+    // schema the CAST chain is dropped and the LITERAL's cast is the only carrier; with a schema
+    // the left operand renders it. What must hold in BOTH is that a `(double)` exists at all --
+    // without one the operands are two integers and Painless divides as integers.
+    forAll(
+      Table(
+        ("sql", "schema", "carrier"),
+        ("SELECT name FROM t WHERE CAST(n AS DOUBLE) / 2 > 2", false, "((double) 2)"),
+        ("SELECT name FROM t WHERE CAST(n AS DOUBLE) / 2 > 2", true, "(double) param1")
+      )
+    ) { (sql, withSchema, carrier) =>
+      val emitted = predicateOf(sql, withSchema)
+      withClue(emitted) {
+        emitted should include(carrier)
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** The scanner's TRUE positive: `TRY_CAST` renders a `try`/`catch` STATEMENT (Painless has no
+    * expression-level `try`), so the operand must fall back to its parameter. If the scan stopped
+    * seeing `try`, that statement would be spliced back in and ES would reject the pipeline --
+    * MEASURED: `def lv1 = String.valueOf(try { … } catch …);` is a `compile error`. The chain is
+    * still dropped, which is the residual, and the emission is byte-identical to the parent.
+    */
+  it should "fall back to the parameter when a rendering is a STATEMENT" in {
+    val emitted =
+      processorOf(
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT) + 1))"
+      )
+    withClue(emitted) {
+      emitted should not include "try "
+      declarationsOutsideStatementStart(emitted) shouldBe empty
+    }
+  }
+
+  it should "keep it in a projection too" in {
+    val emitted = fieldOf("SELECT CAST(n AS DOUBLE) / 2 AS c FROM t", withSchema = false)
+    withClue(emitted)(emitted should include("((double) 2)"))
+  }
+
+  /** The DDL venue of the same rule: an ingest processor persists its script, so an unplaceable
+    * declaration there is stored in the customer's cluster.
+    */
+  it should "keep a computed column's arithmetic placeable too" in {
+    forAll(
+      Table(
+        "computed column",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS ((CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2)))",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS (n * 2 + 1))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))"
+      )
+    ) { sql =>
+      val emitted = processorOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** The query half this commit DOES move: one chain, one operand. Before it the chain was dropped
+    * and ES compared a `ZonedDateTime` with an `int` -- a `class_cast` shard failure, not a wrong
+    * row; after it, `[a, b, c]` (MEASURED, ES 8.18, all three `d` in 2025).
+    */
+  it should "render a single operand's chain in a PREDICATE too" in {
+    val emitted = predicateOf("SELECT name FROM t WHERE YEAR(d) + 1 = 2026")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      declarationsOutsideStatementStart(emitted) shouldBe empty
+      duplicateDeclarations(emitted) shouldBe empty
     }
   }
 }

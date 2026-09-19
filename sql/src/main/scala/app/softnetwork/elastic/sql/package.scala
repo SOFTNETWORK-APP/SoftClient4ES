@@ -447,6 +447,69 @@ package object sql {
     case object Transform extends PainlessContextType
   }
 
+  /** Is a rendered Painless fragment a single EXPRESSION, i.e. may it be placed where an operand
+    * goes? [[PainlessOperandForm.placeable]] is the one owner of that rule.
+    *
+    * A `def x = …;` and a `try { … } catch { … }` are STATEMENTS: Painless allows them as the tail
+    * of a whole script -- which is why a `script_fields` projection of a safe cast works -- and
+    * NOWHERE an operand may go. [[PainlessContext.bindLocal]] hoists the first kind into the
+    * prologue; the second kind cannot be hoisted as an expression at all (see
+    * [[PainlessContext.bindLocalWith]]) and its caller must fall back to a parameter.
+    *
+    * 🔴 The scan SKIPS string literals, which is the whole reason it is not a `contains`. A `;` a
+    * user put in a format or a pattern (`DATE_FORMAT(d, 'yyyy;MM')`) must not be read as a
+    * statement separator: a caller that demotes on it drops the operand's function chain, a SILENT
+    * wrong answer.
+    *
+    * 🔴 THE ASYMMETRY IS DELIBERATE -- when in doubt, prefer the LOUD direction. Answering
+    * "statement" about an expression loses a chain silently; answering "expression" about a
+    * statement splices it into an operand slot and Elasticsearch says `compile error`. Every
+    * limitation below therefore sits on the loud side.
+    *
+    * Invariants the cases in `PainlessExpressionFormSpec` pin, each for a reason:
+    *   - ONE `quote` character, not two booleans: an apostrophe inside a double-quoted pattern
+    *     (`"it's;ok"`) or a quote inside a single-quoted one (`'say "hi";'`) would corrupt a
+    *     two-flag reading. What matters is WHICH delimiter opened the literal.
+    *   - `\` consumes the backslash AND the next character. An escaped BACKSLASH therefore CLOSES
+    *     the literal, so `foo("a\\") ; x` really does contain a separator. A scanner that only
+    *     special-cased `\"` would read the closing quote as escaped, swallow the rest of the
+    *     script, miss that `;` and splice a statement.
+    *   - `try` counts only on a word boundary: `entry `, `retry`, `a_try ` and `registry` all
+    *     contain it.
+    *
+    * Accepted limitations, all LOUD-direction, pinned as characterisation so nobody "fixes" one
+    * silently: the `try` arm keys on the spelling `try `, so `try{ x }` and a bare `try` are not
+    * matched; and an unterminated literal swallows a following real `;` -- in a script
+    * Elasticsearch rejects anyway. Bounds-safe: the escape step may run past the end, which the
+    * loop guard catches.
+    */
+  private[sql] object PainlessOperandForm {
+
+    /** Where the first statement boundary is, or `None` for a pure expression. Callers that only
+      * decide use [[placeable]]; this variant exists so a diagnostic can NAME the offending spot.
+      */
+    def firstStatementAt(rendered: String): Option[Int] = {
+      var i = 0
+      var quote = '\u0000'
+      var found = -1
+      while (i < rendered.length && found < 0) {
+        val c = rendered.charAt(i)
+        if (quote != '\u0000') {
+          if (c == '\\') i += 1 else if (c == quote) quote = '\u0000'
+        } else if (c == '\'' || c == '"') quote = c
+        else if (c == ';') found = i
+        else if (
+          rendered.startsWith("try ", i) &&
+          (i == 0 || !(rendered.charAt(i - 1).isLetterOrDigit || rendered.charAt(i - 1) == '_'))
+        ) found = i
+        i += 1
+      }
+      if (found < 0) None else Some(found)
+    }
+
+    def placeable(rendered: String): Boolean = firstStatementAt(rendered).isEmpty
+  }
+
   /** Context for painless scripts
     * @param context
     *   the context type
