@@ -32,7 +32,8 @@
   ],
   "notes": [
     "Uses MySQL-style Date/Time Patterns",
-    "Common patterns: %Y (year 4 digits), %m (month), %d (day)"
+    "Common patterns: %Y (year 4 digits), %m (month), %d (day)",
+    "Elasticsearch 6.8: a BARE date column is not supported (the doc-value reaches the script as a JodaCompatibleZonedDateTime). Wrap it — DATE_FORMAT(CAST(col AS DATE), ...) or DATE_FORMAT(DATE_TRUNC(col, DAY), ...) — or use Elasticsearch 7+. A literal or cast operand works on every release. See issue #371."
   ],
   "seeAlso": ["DATE_PARSE", "DATETIME_PARSE"],
   "aliases": ["FORMAT", "DATE_FORMAT"]
