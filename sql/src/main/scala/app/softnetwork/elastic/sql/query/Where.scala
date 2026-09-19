@@ -886,7 +886,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     }
     val coerced =
       context match {
-        case Some(ctx) if identifier.originalType == SQLTypes.Any && ctx.isProcessor =>
+        // 🔴 `originalType == Any` says this identifier NAMES a column -- it does NOT say the
+        // operand still RENDERS that column (issue #373, item 7). Where the chain has already
+        // produced something else, the processor's own parse was applied to it a SECOND time:
+        // `SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) …)` emitted
+        // `(param2 instanceof String ? LocalDate.parse(param2 …) : Instant.ofEpochMilli(param2)…)`
+        // with `param2` an extracted `int`. That is what kept item 6's split from RUNNING.
+        // `chainType` (#367) is what says whether the rendering is still a temporal.
+        case Some(ctx)
+            if identifier.originalType == SQLTypes.Any && ctx.isProcessor &&
+              (identifier.chainType == SQLTypes.Any ||
+              identifier.chainType.isInstanceOf[SQLTemporal]) =>
           SQLTypeUtils
             .processorTemporal(chain, identifier.declaredType)
             .getOrElse(

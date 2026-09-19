@@ -243,7 +243,11 @@ object SQLTypeUtils {
                     identifier.addPainlessMethod(".toLocalTime()")
                   case _ => // do nothing
                 }
-              case SQLTypes.Any if ctx.isProcessor =>
+              // Same rule as the two other `processorTemporal` sites (issue #373, item 7): the
+              // operand may no longer RENDER the column `originalType` names.
+              case SQLTypes.Any
+                  if ctx.isProcessor && (identifier.chainType == SQLTypes.Any ||
+                  identifier.chainType.isInstanceOf[SQLTemporal]) =>
                 processorTemporal(identifier.painless(context), identifier.declaredType) match {
                   case Some(parsed) => return parsed
                   case None         => // do nothing

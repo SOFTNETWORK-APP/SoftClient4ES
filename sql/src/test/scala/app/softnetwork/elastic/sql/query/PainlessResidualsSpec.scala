@@ -542,4 +542,92 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPr
       duplicateDeclarations(emitted) shouldBe empty
     }
   }
+  // -- item 7: a processor re-parse must not be applied to an already-extracted value ------------
+
+  /** Every `instanceof String ? …parse(…) : Instant.ofEpochMilli(…)` a PROCESSOR emits exists to
+    * turn the RAW `ctx.<field>` into a temporal. Applying it to anything else means the operand had
+    * already been through a chain -- and the value it re-parses is no longer a date. Returns the
+    * operands re-parsed that are not a raw `ctx.` access.
+    */
+  protected def reparsedNonSourceOperands(emitted: String): Seq[String] = {
+    // 🔴 A parameter that ALIASES the source field is a legitimate operand: the prologue binds
+    // `def param1 = ctx.d;` and the branches then parse `param1`. Found by review -- the first
+    // version of this rule called those offenders, so adding the (correct) shape
+    // `CASE WHEN YEAR(d) > 2000 THEN d ELSE d END` to the table below would have REDDENED a correct
+    // emission. A test that mandates a defect is worse than no test.
+    val sourceAliases =
+      "def ([A-Za-z0-9_]+) = (ctx[.?][A-Za-z0-9_.?\\[\\]']*);".r
+        .findAllMatchIn(emitted)
+        .map(_.group(1))
+        .toSet
+    // 🔴 `?` is IN the class: a nested path renders `ctx.meta?.when`, and without it the regex
+    // matched nothing at all, so this rule was BLIND to the nested venue (also found by review).
+    "\\(([A-Za-z0-9_.?\\[\\]']+) instanceof String \\?".r
+      .findAllMatchIn(emitted)
+      .map(_.group(1))
+      .filterNot(operand => operand.startsWith("ctx.") || sourceAliases.contains(operand))
+      .toSeq
+  }
+
+  /** `originalType == Any` says the identifier NAMES a column; it does not say the operand still
+    * RENDERS one. `YEAR(d)` renders an `int`, and the processor handed that `int` back to its own
+    * date parse.
+    *
+    * 🔴 Why the guard admits `chainType == Any` and that is SAFE: `processorTemporal` emits a parse
+    * only when the column's `declaredType` is a temporal and answers `None` otherwise, so the
+    * DECLARED TYPE is a second gate and admitting `Any` cannot conjure a parse over a non-date
+    * column. MEASURED (review): `SCRIPT AS (YEAR(unknown))` over an UNDECLARED column is exactly
+    * the reachable `chainType == Any` case, and it emits ZERO parses; so does a `VARCHAR` column.
+    * ⚠️ That gate is what the guard leans on -- anything that loosens `processorTemporal` to emit a
+    * parse for a wider set of declared types removes this safety net silently. MEASURED as a real
+    * ingest pipeline on ES 8.18 over `{"d":"2025-01-10","n":1}`:
+    * {{{
+    * CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END  before  script_exception   after  c = 1
+    * GREATEST(YEAR(d), MONTH(d))                     before  script_exception   after  c = 2025
+    * CASE WHEN n > 0 THEN YEAR(d) ELSE MONTH(d) END  before  "1970-01-01T…2.025Z" after c = 2025
+    * }}}
+    * 🔴 The third is the dangerous one: it did not fail, it STORED the year 2025 read as epoch
+    * MILLIS. A computed column held a 1970 timestamp and nothing anywhere said so.
+    *
+    * ⚠️ Not owned here, PRE-EXISTING and unchanged: `GREATEST` renders `Math.max` over `def`, so
+    * Painless picks the `double` overload and `_source` carries `2025.0` for an INTEGER column (the
+    * indexed value is 2025). It reproduces with NO date function -- `GREATEST(n, m)` over two INT
+    * columns stores `7.0` -- so it is a `GREATEST` residual, not this commit's.
+    */
+  "a chained operand in a PROCESSOR" should "not be handed back to the processor's date parse" in {
+    forAll(
+      Table(
+        "computed column",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (GREATEST(YEAR(d), MONTH(d))))",
+        "CREATE TABLE t (d DATE, n INTEGER, c INTEGER SCRIPT AS (CASE WHEN n > 0 THEN YEAR(d) ELSE MONTH(d) END))",
+        // review's COALESCE/NULLIF pair -- also silent 1970 garbage before, so this is not a
+        // CASE-only fix
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (COALESCE(YEAR(d), 0)))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (NULLIF(YEAR(d), 0)))",
+        // 🔴 the shape that would have reddened the FIRST version of the rule: the branches return
+        // the date column itself, so parsing `param1` (which aliases `ctx.d`) is CORRECT here.
+        // MEASURED: c = '2025-01-10T00:00:00.000Z'
+        "CREATE TABLE t (d DATE, c DATE SCRIPT AS (CASE WHEN YEAR(d) > 2000 THEN d ELSE d END))",
+        // the second reachable shape review found for the same false positive
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(CASE WHEN 1 = 1 THEN d ELSE d END)))"
+      )
+    ) { sql =>
+      val emitted = processorOf(sql)
+      withClue(emitted)(reparsedNonSourceOperands(emitted) shouldBe empty)
+    }
+  }
+
+  /** The guard must not disable the parse where it IS needed: a bare date column in a processor is
+    * still `ctx.d`, and without the parse every date function in an ingest script breaks again
+    * (21.8 Part C, PR #315).
+    */
+  it should "still parse the raw source field it was written for" in {
+    val emitted = processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d)))")
+    withClue(emitted) {
+      emitted should include("ctx.d instanceof String")
+      emitted should include(".get(ChronoField.YEAR)")
+    }
+  }
+
 }
