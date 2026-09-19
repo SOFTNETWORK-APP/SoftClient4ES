@@ -186,6 +186,14 @@ package object cond {
 
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
+    /** Whether the value `expr1` RENDERS is a `java.time.LocalTime`. `out` and `expr1.out` both
+      * report the column's type; `Identifier.chainType` reports the chain's (#367).
+      */
+    private[this] def receiverIsTime: Boolean = expr1 match {
+      case i: Identifier => i.chainType == SQLTypes.Time
+      case other         => other.out == SQLTypes.Time
+    }
+
     private[this] def checkIfExpressionNullable(expr: PainlessScript): Boolean = expr match {
       case f: FunctionChain if f.functions.nonEmpty => true
       case _                                        => false
@@ -203,6 +211,14 @@ package object cond {
           val expr =
             out match {
               case SQLTypes.Varchar =>
+                s"$arg0 == null || $arg0.compareTo($arg1) == 0 ? null : $arg0"
+              // 🔴 Keyed on what the RECEIVER's chain RENDERS, not on `out` (issue #373).
+              // `LocalTime` has no `isEqual`, and MEASURED on ES 8.18 before this,
+              // `NULLIF(CAST(d AS TIME), CAST('00:00:00' AS TIME))` failed the shard in a real
+              // `script_fields`. Neither `out` nor `expr1.out` says so: both are TIMESTAMP, the
+              // COLUMN's type -- `chainType` is the derivation that describes the rendering
+              // (#367), and it answers TIME. Two wrong keys were tried before measuring it.
+              case _: SQLTemporal if receiverIsTime =>
                 s"$arg0 == null || $arg0.compareTo($arg1) == 0 ? null : $arg0"
               case _: SQLTemporal => s"$arg0 == null || $arg0.isEqual($arg1) ? null : $arg0"
               case _              => s"$arg0 == $arg1 ? null : $arg0"

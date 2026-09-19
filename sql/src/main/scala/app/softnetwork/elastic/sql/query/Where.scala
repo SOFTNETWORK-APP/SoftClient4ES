@@ -959,7 +959,22 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             }
           case EQ =>
             valueType match {
-              case SQLTypes.Varchar =>
+              // 🔴 `java.time.LocalTime` is the ONE temporal with no `isEqual` (issue #373): the
+              // other three have it -- `LocalDate` and `LocalDateTime` declare it, `ZonedDateTime`
+              // inherits it from `ChronoZonedDateTime`. MEASURED on ES 8.18: `CAST(d AS TIME) =
+              // CAST('00:00:00' AS TIME)` answered `dynamic method [java.time.LocalTime,
+              // isEqual/1] not found`, a shard failure.
+              //
+              // 🔴 `compareTo(…) == 0` and NOT `equals`, and the difference is the whole point.
+              // This dispatch reads `valueType`, the type of the RIGHT operand, while the receiver
+              // is the LEFT one -- so a mismatched pair reaches here too (`WHERE name =
+              // CAST('00:00:00' AS TIME)` inside a CASE, a `String` receiver). `equals` takes an
+              // `Object` and answers FALSE for a mismatch: a loud shard failure would have become
+              // a silent wrong answer, and `<>` would have matched every document. MEASURED on ES
+              // 8.18, all three: `equals` -> `[false,false,false]`; `compareTo` ->
+              // `class_cast_exception`; `isEqual` (main) -> `dynamic method … not found`. The two
+              // spellings are otherwise identical for a `LocalTime`, nanoseconds included.
+              case SQLTypes.Varchar | SQLTypes.Time =>
                 return s"$param.compareTo($value) == 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isEqual($value)"
@@ -967,7 +982,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             }
           case NE | DIFF =>
             valueType match {
-              case SQLTypes.Varchar =>
+              case SQLTypes.Varchar | SQLTypes.Time =>
                 return s"$param.compareTo($value) != 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
                 return s"$param.isEqual($value) == false"

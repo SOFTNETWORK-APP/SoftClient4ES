@@ -330,9 +330,12 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
     // (`.toLocalTime()`) does not exist on ES 6.8's Joda-compatible doc-value -- pre-existing.
     assume(esMajor >= 7, "a TIME narrowing of a raw date column is unsupported on ES 6.8")
     selected("CAST(d AS TIME) + INTERVAL 1 HOUR > CAST('00:30:00' AS TIME)") shouldBe allIds
-    // `CAST(d AS TIME) = <literal>` is deliberately NOT here: the identity is right, but `=`
-    // is spelled `isEqual`, which `java.time.LocalTime` does not have (#367's comparison
-    // spelling, loud on `main` too).
+    // `=` over a TIME receiver EXECUTES since issue #373: it was spelled `isEqual`, which
+    // `java.time.LocalTime` does not have, and it is spelled `compareTo(…) == 0` now. Every
+    // fixture date is midnight, so all of them match and none matches 00:30.
+    selected("CAST(d AS TIME) = CAST('00:00:00' AS TIME)") shouldBe allIds
+    selected("CAST(d AS TIME) = CAST('00:30:00' AS TIME)") shouldBe Set.empty[String]
+    selected("CAST(d AS TIME) <> CAST('00:30:00' AS TIME)") shouldBe allIds
   }
 
   /** 🔴 Issue #370's LOUD face: two different extractions of one column in ONE expression.
