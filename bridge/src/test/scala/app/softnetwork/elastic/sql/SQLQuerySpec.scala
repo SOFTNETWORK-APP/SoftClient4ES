@@ -2313,6 +2313,18 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     query should include("Math.max(0, param1)")
   }
 
+  /** ⚠️ Issue #367 moved this expectation: a safe cast's `try`/`catch` is now HOISTED into the
+    * script prologue (`def safe1 = null; try { safe1 = …; } catch … safe1`) so that it can also be
+    * used as a predicate operand, where a statement is a compile error. Same semantics — a failed
+    * safe cast is NULL — and the hoisted form is EXECUTED on real ES 6.8 / 7.17 / 8.18 / 9.0 by
+    * `PredicateFunctionResultSpec`.
+    *
+    * 🔴 Worth knowing before trusting this fixture: the script it pins is REFUSED by Elasticsearch,
+    * before AND after, and for a reason of its own — `param3` compares a `ZonedDateTime` doc-value
+    * with `isEqual(LocalDate)` and ES 8.18.3 answers `class_cast_exception: Cannot cast
+    * java.time.LocalDate to java.time.chrono.ChronoZonedDateTime`. MEASURED on both forms; the
+    * hoist changes nothing about it. A byte pin proves the bytes did not move, not that they RUN.
+    */
   it should "handle cast function as script field" in {
     val select: ElasticSearchRequest =
       SelectStatement(conversion)
@@ -2327,7 +2339,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); try { (param3 != null ? param3 : param4) } catch (Exception e) { return null; }",
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || param1.isEqual(param2) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); def safe1 = null; try { safe1 = (param3 != null ? param3 : param4); } catch (Exception e) {} safe1",
         |        "params": {
         |          "__now__": 1767139200000
         |        }
@@ -2411,6 +2423,12 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("} catch", " } catch")
       .replaceAll(";\\(param", "; (param")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
+      // The three rules the hoisted safe cast needs, in this chain's own idiom: the chain strips ALL
+      // whitespace from the expectation and then puts back the spaces it wants, so a new emission
+      // pays for every space it introduces.
+      .replaceAll("defsafe1=null", "def safe1 = null")
+      .replaceAll("\\{\\}safe1", "{} safe1")
+      .replaceAll(";\\s\\s", "; ")
   }
 
   it should "handle case function as script field" in { // 40

@@ -186,6 +186,32 @@ unmaintained, so the fix cannot reach it; until this rule, the query silently re
 of the **raw** field. Aggregate over a raw field there, or use Elasticsearch 7+. That refusal is
 permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
 
+## `DATE_FORMAT` / `DATETIME_FORMAT` over a bare date column — Elasticsearch 6.8 refuses it
+
+`DATE_FORMAT(created_at, '%Y-%m-%d')` and `DATETIME_FORMAT(ts, '%Y-%m-%d %H:%i:%s')` — the operand a
+**bare `date` column** — work on **Elasticsearch 7, 8 and 9** and are refused on **Elasticsearch 6.8**
+with a script error. On that release a `date` doc-value reaches Painless as a
+`JodaCompatibleZonedDateTime`, while `DateTimeFormatter.format` requires a `java.time.TemporalAccessor`.
+
+Everything else in the family is unaffected on 6.8, which makes the workaround a small edit:
+
+| Operand | 6.8 |
+|---------|-----|
+| A literal or a cast — `DATE_FORMAT('2025-01-10'::DATE, …)`, `DATE_FORMAT(CAST(created_at AS DATE), …)` | Works |
+| A column wrapped in a date function — `DATE_FORMAT(DATE_TRUNC(created_at, DAY), …)` | Works |
+| A bare date column — `DATE_FORMAT(created_at, …)` | **Refused** |
+
+So on 6.8, write `DATE_FORMAT(CAST(created_at AS DATE), '%Y-%m-%d')` or
+`DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m-%d')`; both return exactly what the bare column
+returns on 7+. Every formatting example in the reference already uses a cast, so none of them is
+affected.
+
+This is not permanent: the fix is understood and tracked as issue #371, together with the parameter
+identity defect (#370) it shares a cause with. It is not in this release because the change moves the
+emission of the whole date-format family in every venue, and that needs its own verification pass.
+See [DATE_FORMAT](functions_date_time.md#date_format) and
+[DATETIME_FORMAT](functions_date_time.md#datetime_format).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).

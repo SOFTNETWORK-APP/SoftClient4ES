@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.{
   SQLAny,
   SQLArray,
+  SQLNumeric,
   SQLTemporal,
   SQLType,
   SQLTypeUtils,
@@ -714,18 +715,130 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       }
     }*/
 
-  protected def left(context: Option[PainlessContext]): String = {
+  /** True when the right-hand side READS A DOCUMENT FIELD, i.e. renders a doc-value rather than a
+    * literal.
+    *
+    * 🔴 It decides whether the narrowing below may fire. `.toLocalDate()` exists so that a
+    * comparison against a DATE LITERAL types: the literal renders as `LocalDate.parse(…)`, so the
+    * doc-value has to be narrowed to meet it. A date COLUMN on the other side renders a
+    * `ZonedDateTime` and gets no such step, so narrowing only the left operand made the two sides
+    * different Java types — MEASURED on ES 8.18, `WHERE LAST_DAY(d) = LAST_DAY(ts)` answered
+    * `class_cast_exception: Cannot cast java.time.ZonedDateTime to
+    * java.time.chrono.ChronoLocalDate`. Both sides or neither; a document field on the right means
+    * neither.
+    */
+  protected def valueReadsDocumentField: Boolean =
+    maybeValue.exists {
+      case id: Identifier => id.name.trim.nonEmpty
+      case _              => false
+    }
+
+  /** The type of the value the RIGHT-hand side RENDERS — the same question `Identifier.chainType`
+    * answers for the left operand, asked on the right.
+    *
+    * 🔴 Issue #367, second half. `out` on a function-wrapped identifier is its COLUMN's type, so a
+    * predicate with a function on BOTH sides chose its comparison from the wrong one and coerced
+    * the left operand towards the wrong target. MEASURED on ES 8.18:
+    *
+    *   - `WHERE YEAR(d) = YEAR(ts)` emitted `left1.isEqual(param2)` over two `int`s and answered
+    *     `dynamic method [java.lang.Integer, isEqual/1] not found`;
+    *   - `WHERE DATE_FORMAT(d,'yyyy') = DATE_FORMAT(ts,'yyyy')` did the same over two `String`s;
+    *   - `WHERE CAST(num AS INT) = CAST(other AS INT)` wrapped the LEFT in `String.valueOf(…)` —
+    *     because the common supertype of INT and the right-hand COLUMN's KEYWORD is a string — and
+    *     compared `"7"` with `7`: zero rows, HTTP 200, for documents that match.
+    *
+    * The fix that made the left operand honest is the fix here, at the two places that read the
+    * right-hand type: this predicate's target type, and `check`'s per-type dispatch.
+    */
+  protected def valueType: SQLType =
+    maybeValue match {
+      case Some(id: Identifier)    => id.chainType
+      case Some(v: PainlessScript) => v.out
+      case Some(other)             => other.out
+      case None                    => SQLTypes.Any
+    }
+
+  /** Can the doc-value of this identifier be a TEMPORAL at run time? `Any` means the column's type
+    * is UNKNOWN — no schema was attached — and the narrowing below has always been applied there,
+    * which the no-schema bridge fixtures pin; only a column KNOWN to be something else may skip it.
+    * Issue #367: "not known to be temporal" and "known not to be temporal" are different answers,
+    * and confusing them dropped `.toLocalDate()` from three fixtures that need it.
+    */
+  private def mayBeTemporal(identifier: Identifier): Boolean =
+    identifier.baseType == SQLTypes.Any || identifier.baseType.isInstanceOf[SQLTemporal]
+
+  /** The operand of this criterion, rendered ONCE, as `(chain, coerced)` — see the note at the
+    * bottom of the method.
+    */
+  protected def leftOperand(context: Option[PainlessContext]): (String, String) = {
+    // 🔴 Issue #367 — BOTH the target and the source of the coercion are read from the type the
+    // operand's rendering really has (`Identifier.chainType`), not from the column's. With
+    // `identifier.out` here, `WEEKDAY(d) = 0` asked for the common supertype of TIMESTAMP and
+    // BIGINT and then converted the extracted `int` as though it were a date.
+    val chainType = identifier.chainType
+    val targetedFromChain =
+      if (maybeValue.isEmpty) chainType
+      else if (chainType.isInstanceOf[SQLNumeric] && valueType.isInstanceOf[SQLNumeric]) chainType
+      else SQLTypeUtils.leastCommonSuperType(List(chainType, valueType))
+
+    /** 🔴 The coercion arms are keyed on the JAVA type of the string that was rendered, and a
+      * TEMPORAL chain over a TEMPORAL column does not change it: `doc['d'].value` is a
+      * `ZonedDateTime` and every adjuster in the family returns the RECEIVER's own type
+      * (`with(TemporalAdjusters…)`, `truncatedTo`, `plus`) — #368's rule, restated. So the chain's
+      * SQL type can say DATE while the value is still a `ZonedDateTime`, and coercing DATE ->
+      * TIMESTAMP then emits `.atStartOfDay(…)`, which is declared on `LocalDate` alone. MEASURED on
+      * ES 8.18: `WHERE LAST_DAY(d) = ts` answered `dynamic method [java.time.ZonedDateTime,
+      * atStartOfDay/1] not found`, where the same query WORKED before this fix — found by review,
+      * and pinned below by `PredicateTransformSurvivalSpec` plus an executed row in
+      * `PredicateFunctionResultSpec`.
+      *
+      * The exception is the narrowing the block below injects: when the target really is DATE (or
+      * TIME) the operand is given `.toLocalDate()` / `.toLocalTime()` first, so the two types agree
+      * again and `chainType` is the right source.
+      *
+      * A chain whose BASE is not temporal is untouched by any of this: `DATE_PARSE(name, …)`
+      * renders `LocalDate.parse(…)`, a genuine `LocalDate`, so DATE -> TIMESTAMP is correct there —
+      * one of the conversions this fix repairs.
+      */
+    val operandType =
+      if (
+        chainType.isInstanceOf[SQLTemporal] && identifier.baseType.isInstanceOf[SQLTemporal] &&
+        targetedFromChain != SQLTypes.Date && targetedFromChain != SQLTypes.Time
+      ) identifier.baseType
+      else chainType
+
     val targetedType = maybeValue match {
-      case Some(v) => SQLTypeUtils.leastCommonSuperType(List(identifier.out, v.out))
-      case None    => identifier.out
+      // 🔴 Two numbers are compared as numbers, with NO widening. Painless compares boxed numerics
+      // numerically (MEASURED on ES 8.18 for `==`, `>`, `contains` and a BETWEEN pair, across
+      // Integer/long/double mixes), and the parameter shortcut below has always emitted the
+      // comparison with no conversion at all — so skipping it here is what keeps the two paths
+      // agreeing rather than a shortcut of its own.
+      //
+      // It is also the difference between working and a 400: a widening renders as the PRIMITIVE
+      // cast `((long) <operand>)`, and the operand of a function chain is a null-guarded ternary,
+      // which Painless types as `Object` — `CAST(num AS INT) = 9` compiled to
+      // `(def)(((long) (param1 != null ? … : null)))` and Elasticsearch answered `script_exception:
+      // compile error` (MEASURED). That is the same unification rule as story 21.8's
+      // method-inside-the-guard: a conversion may not wrap a guarded ternary.
+      case Some(_) if operandType.isInstanceOf[SQLNumeric] && valueType.isInstanceOf[SQLNumeric] =>
+        operandType
+      case Some(_) => SQLTypeUtils.leastCommonSuperType(List(operandType, valueType))
+      case None    => operandType
     }
     context match {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
           case Some(_) =>
             identifier.originalType match {
-              case SQLTypes.Any => // in painless context, Any is ZonedDateTime
-                maybeValue.map(_.out).getOrElse(SQLTypes.Any) match {
+              // 🔴 `originalType == Any` means "this identifier NAMES a column", NOT "that column is
+              // temporal" — so this narrowing fired for any column at all, and `DATE_PARSE(iso,
+              // 'yyyy-MM-dd') = CAST('2025-01-06' AS DATE)` over a KEYWORD column emitted
+              // `doc['iso'].value.toLocalDate()`: `.toLocalDate()` on a `String`, which fails the
+              // shard. MEASURED on ES 8.18, before and after this fix — the narrowing predates it —
+              // and it is the last reason a `DATE_PARSE` predicate could not work. The doc-value is a
+              // temporal only when the COLUMN is, which `baseType` is the thing that knows.
+              case SQLTypes.Any if mayBeTemporal(identifier) && !valueReadsDocumentField =>
+                valueType match {
                   case SQLTypes.Date =>
                     identifier.addPainlessMethod(".toLocalDate()")
                   case SQLTypes.Time =>
@@ -738,8 +851,58 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         }
       case _ => // do nothing
     }
-    SQLTypeUtils.coerce(identifier, targetedType, context)
+    // 🔴 ONE render, and the pair is what the caller needs (issue #367): `chain` is the operand as its
+    // function chain renders it, `coerced` is that with the target-type conversion on top. The
+    // shortcut in `painless` is sound exactly when the parameter IS the chain, so it must compare
+    // against `chain` and not against `coerced` — a numeric widening is not a chain that failed to
+    // fold.
+    //
+    // 🔴 It is ONE render because a render is not idempotent, MEASURED twice: a repeat render after
+    // the right-hand side registered its parameter RE-RESOLVES onto it (`DATE_ADD(d, INTERVAL 1 DAY)
+    // = CAST(…)` appended `.plus(1, ChronoUnit.DAYS)` to the LITERAL, adding a day to both sides),
+    // and a repeat render of a `TRY_CAST` hoists a SECOND `safe` local, leaving the first one dead
+    // and the predicate reading the wrong name. Both are pinned in
+    // `PredicateTransformSurvivalSpec`.
+    //
+    // Calling the STRING form of `coerce` is what makes one render possible, so the two things its
+    // identifier form does first are done here instead: the `Any` method injection (for the TARGET
+    // type as well as the value's — `coerce` keyed on the first, this method on the second, and both
+    // ran before) and, in a PROCESSOR context, the temporal parse it returns in place of a coercion.
+    val chain: String = {
+      context match {
+        // The same temporal guard as the injection above, and for the same measured reason: a
+        // `.toLocalDate()` on a KEYWORD column's doc-value is a `String` receiver and fails the shard.
+        case Some(ctx)
+            if identifier.originalType == SQLTypes.Any && !ctx.isProcessor &&
+              mayBeTemporal(identifier) && !valueReadsDocumentField =>
+          targetedType match {
+            case SQLTypes.Date => identifier.addPainlessMethod(".toLocalDate()")
+            case SQLTypes.Time => identifier.addPainlessMethod(".toLocalTime()")
+            case _             =>
+          }
+        case _ =>
+      }
+      identifier.painless(context)
+    }
+    val coerced =
+      context match {
+        case Some(ctx) if identifier.originalType == SQLTypes.Any && ctx.isProcessor =>
+          SQLTypeUtils
+            .processorTemporal(chain, identifier.declaredType)
+            .getOrElse(
+              SQLTypeUtils
+                .coerce(chain, operandType, targetedType, identifier.nullable, context)
+            )
+        case _ =>
+          SQLTypeUtils.coerce(chain, operandType, targetedType, identifier.nullable, context)
+      }
+    (chain, coerced)
   }
+
+  /** The operand with its target-type coercion — [[leftOperand]] 's second element, for the callers
+    * that do not need the chain rendering apart from it.
+    */
+  protected def left(context: Option[PainlessContext]): String = leftOperand(context)._2
 
   protected def check(context: Option[PainlessContext], param: String): String =
     check(context, param, painlessValue(context))
@@ -779,7 +942,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case LT =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) < 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -787,7 +950,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case GT =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) > 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -795,7 +958,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case EQ =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) == 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -803,7 +966,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case NE | DIFF =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) != 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -811,7 +974,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case GE =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) >= 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -819,7 +982,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               case _ =>
             }
           case LE =>
-            maybeValue.map(v => v.out).getOrElse(SQLTypes.Any) match {
+            valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) <= 0"
               case _: SQLTemporal if !isAggregation && !hasBucket =>
@@ -890,7 +1053,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   override def painless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
     if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
-    val innerLeft = left(context)
+    val (chainRendering, innerLeft) = leftOperand(context)
+
     // The right-hand side is rendered ONCE: `painlessValue` can register a parameter on the context,
     // so calling it twice would declare it twice (review H-4).
     val innerRight = painlessValue(context)
@@ -959,7 +1123,36 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     context match {
       case Some(ctx) =>
         ctx.get(identifier) match {
-          case Some(p) if !rightNullable =>
+          // 🔴 Issue #367 — the shortcut compares the PARAMETER NAME, so it is correct ONLY where
+          // the parameter IS the whole operand, i.e. where the function chain folded entirely into
+          // the parameter's own declaration (`YEAR(d)` becomes `def param1 = doc['d']…
+          // .get(ChronoField.YEAR)` and `innerLeft` is then literally `param1`). Whenever the chain
+          // renders as an EXPRESSION instead -- `WEEKDAY(d)` is `(param1 == null) ? null :
+          // (param1.get(ChronoField.DAY_OF_WEEK) + 6) % 7`, because arithmetic cannot be appended to
+          // a parameter as a method -- the parameter holds the UNTRANSFORMED doc value, and
+          // comparing it here SILENTLY DROPPED the function: `WHERE WEEKDAY(d) = 0` emitted
+          // `param1 == null ? false : (param1 == 0)`, a `ZonedDateTime` against an `int`.
+          //
+          // MEASURED on real Elasticsearch 8.18: that comparison is not an error, it is FALSE, so
+          // `=` and `IN` answered ZERO rows with HTTP 200 and `NOT IN` answered EVERY row (the
+          // #205 / #253 silent-wrong-answer family), while `>` / `BETWEEN` / a string `compareTo`
+          // failed the shard loudly. The SELECT list was correct all along -- a `script_field`
+          // renders the operand itself and never enters this method -- which is why it survived.
+          //
+          // The population is every function whose Painless is not a suffix method chain, and it is
+          // wider than the six the issue names: `WEEKDAY`/`DAYOFWEEK`, `LAST_DAY`, `DATE_FORMAT`,
+          // `DATETIME_FORMAT`, `DATE_PARSE`, `DATETIME_PARSE` (with their aliases), plus every
+          // `CAST`/`CONVERT`/`TRY_CAST`/`SAFE_CAST` and `ISNULL`/`ISNOTNULL`. Guarded by
+          // `PredicateTransformSurvivalSpec`, which derives that population from
+          // `SQLKeywords.functionWords` rather than listing it.
+          //
+          // ⚠️ The test is deliberately `p == chainRendering` and not `identifier.functions.isEmpty`
+          // or a per-function property: what makes the shortcut sound is that the parameter and the
+          // chain are the SAME STRING, and asking exactly that keeps every already-correct emission
+          // byte-identical while sending everything else to the general path below, which binds the
+          // operand to a local (`bindLocal`) and guards it -- the machinery `UPPER(status)` and
+          // `ABS(amount)` already used, and the reason those were never affected.
+          case Some(p) if !rightNullable && p == chainRendering =>
             if (identifier.nullable)
               return s"$p == null ? false : $painlessNot(${check(context, p, innerRight)})"
             else
@@ -1328,7 +1521,25 @@ case class InExpr[R, +T <: Value[R]](
     param: String,
     value: String,
     op: Operator
-  ): String = s"$value.contains($param)"
+  ): String =
+    // 🔴 A NUMERIC list is compared with `==`, exactly as [[bucketPipelineCheck]] already does, and
+    // for the same measured reason: `List.contains` is Java `equals`, which is FALSE across boxed
+    // numeric types. MEASURED on ES 8.18 over a keyword column holding "6"/"9"/"12":
+    // `[9,12].contains(<Integer>)` matched, `[9,12].contains(<Long>)` and
+    // `[9,12].contains(<Double>)` both returned ZERO rows, while `== 9` matched in all three. So
+    // `CAST(num AS BIGINT) IN (9, 12)` and `EPOCHDAY(d) IN (…)` (which renders `getLong`) answered
+    // nothing, silently — the #205 family again. `==` promotes numerics, and issue #367 is what
+    // makes these operands reach a document at all: before it, the conversion was dropped.
+    //
+    // A non-numeric list keeps `contains`: for strings `equals` is what IN means, and the rendering
+    // is one term rather than N.
+    if (numericList)
+      values.values.map(v => s"$param == ${v.painless(context)}").mkString("(", " || ", ")")
+    else s"$value.contains($param)"
+
+  /** True when every element of the list is a number — the case `List.contains` gets wrong. */
+  private def numericList: Boolean =
+    values.values.nonEmpty && values.values.forall(_.out.isInstanceOf[SQLNumeric])
 
   // `params.<metric> == v1 || params.<metric> == v2` -- the guarded bucket form of
   // `<aggregate> IN (v1, v2)`. NOT `[v1,v2].contains(p)`: a buckets_path value arrives as a boxed
