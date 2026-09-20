@@ -25,13 +25,19 @@ import org.scalatest.prop.TableDrivenPropertyChecks
   * goes. `ArithmeticExpression` falls back to a parameter when it answers false (issue #373, item
   * 5), and `PainlessOperandFormSpec` uses it as the tree-wide guard over rendered criteria.
   *
-  * 🔴 WHY THIS SPEC EXISTS. At the emission sites the predicate is INERT today: no reachable SQL
+  * 🔴 WHY THIS SPEC EXISTS. At the ARITHMETIC operand site the predicate is inert: no reachable SQL
   * shape renders an operand carrying a `;` inside a string literal, and the `try` arm never decides
   * anything either, because both Painless `try` emitters (`function/convert/package.scala`) always
   * emit a `;` as well -- so the `;` arm disqualifies first. Review PROVED that by mutation:
   * blinding the literal handling, and separately blinding the `try` arm, left every other spec
   * green. A guard nothing can see is not a guard, so the rule is exercised HERE, one case per arm,
   * with the inputs review actually falsified.
+  *
+  * 🔴 CORRECTED: the literal handling is NO LONGER inert anywhere. `splitStatements` shares this
+  * scanner and `ScriptProcessor.fromScript` cuts an ingest script with it, where `UPPER('a;b')` IS
+  * a reachable shape and a quote-blind split silently dropped the computed column (issue #373 --
+  * see `ScriptProcessorAssemblySpec`). The `try` arm remains inert and stays pinned here as
+  * characterisation.
   *
   * 🔴 The two wrong answers are NOT symmetric, and every accepted limitation sits on the safe side
   * of that. Answering "statement" about an expression demotes the operand and drops its function
@@ -157,5 +163,77 @@ class PainlessExpressionFormSpec extends AnyFlatSpec with Matchers with TableDri
     PainlessOperandForm.firstStatementAt("""param1 + 1""") shouldBe None
     PainlessOperandForm.firstStatementAt("""def lv0 = x; y""") shouldBe Some(11)
     PainlessOperandForm.firstStatementAt("""try { x }""") shouldBe Some(0)
+  }
+
+  /** `splitStatements` is the same scanner used to CUT rather than to decide -- it is what
+    * `ScriptProcessor.fromScript` splits an ingest script on. Two claims, and the second is the one
+    * that carries the defect: it must agree with `String.split(";")` wherever no literal is
+    * involved (so no existing emission moves), and it must not cut inside a literal.
+    */
+  private def split(rendered: String): List[String] =
+    PainlessOperandForm.splitStatements(rendered).toList
+
+  "splitting statements" should "agree with String.split where no literal is involved" in {
+    forAll(
+      Table(
+        "rendered",
+        "def a = 1; b",
+        "def a = 1; def b = 2; c",
+        "a",
+        "",
+        "a;",
+        "a;;b",
+        ";a",
+        ";",
+        ";;"
+      )
+    )(r => withClue(s"[$r]")(split(r) shouldBe r.split(";").toList))
+  }
+
+  it should "not cut inside a string literal" in {
+    forAll(
+      Table(
+        ("rendered", "parts"),
+        (
+          """def a = ctx.n; "x;y".toUpperCase()""",
+          List("""def a = ctx.n""", """ "x;y".toUpperCase()""")
+        ),
+        (""""a;b"""", List(""""a;b"""")),
+        ("""'a;b'""", List("""'a;b'""")),
+        ("""f("a;b"); g""", List("""f("a;b")""", """ g""")),
+        ("""f("a\\"); x""", List("""f("a\\")""", """ x"""))
+      )
+    )((r, expected) => withClue(s"[$r]")(split(r) shouldBe expected))
+  }
+
+  /** The literal-bearing rows above are the ones a bare `split(";")` gets wrong; this states the
+    * difference explicitly so the spec says WHY it exists, not merely what it expects.
+    */
+  it should "differ from String.split exactly where a literal holds the separator" in {
+    val rendered = """def a = ctx.n; "x;y".toUpperCase()"""
+    rendered.split(";").toList should have size 3
+    split(rendered) should have size 2
+  }
+
+  /** `withoutLiterals` is the third user of the shared scanner. `ScriptTarget.of` recovers which
+    * column an ingest script feeds by matching the LAST `ctx.<name> = `, and a literal is allowed
+    * to CONTAIN that text, so the match has to run on code alone. Offsets and length must survive
+    * the blanking, or the captured name would not be the one that was matched.
+    */
+  "blanking literals" should "erase their content and keep every offset" in {
+    forAll(
+      Table(
+        ("rendered", "blanked"),
+        ("""ctx.c = "; ctx.d = 1"""", "ctx.c = " + " " * 13),
+        ("""a'b;c'd""", "a" + " " * 5 + "d"),
+        ("""plain code""", """plain code"""),
+        ("", "")
+      )
+    ) { (r, expected) =>
+      withClue(s"[$r]") {
+        PainlessOperandForm.withoutLiterals(r) shouldBe expected
+        PainlessOperandForm.withoutLiterals(r).length shouldBe r.length
+      }
+    }
   }
 }
