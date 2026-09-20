@@ -22,7 +22,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 // `++ 2.12.20 sql/Test/compile` sees it — no CI job compiles sql test sources on 2.12.
 import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
-import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
+import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType, PainlessOperandForm}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -95,28 +95,27 @@ class PainlessOperandFormSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"[$sql] expected a SingleSearch, got $other")
     }
 
-  /** A `;` that is NOT inside a string literal. Parentheses are irrelevant — Painless has no
-    * bracketed statement sequence that could legitimately appear in an operand.
+  /** The offending fragment, or `None` when the rendering is a pure expression.
+    *
+    * 🔴 The rule has ONE owner in MAIN code: [[PainlessOperandForm]]. This spec used to
+    * re-implement it as a count of `;` outside a DOUBLE-quoted literal, which is strictly weaker --
+    * it did not understand single-quoted literals (so a `;` in a `'yyyy;MM'` pattern counted as a
+    * separator) and it did not know a `try`/`catch` is a statement too. #373's item 5 needed the
+    * same predicate at an emission site, so the copy is gone and both callers share it;
+    * `PainlessExpressionFormSpec` drives its edge cases directly.
+    *
+    * 🔴 Keeps the DIAGNOSTIC that count gave, and sharpens it: the offending spot is NAMED, so a
+    * failure says WHERE the statement starts rather than how many separators there were.
     */
-  private def statementSeparators(rendered: String): Int = {
-    var inString = false
-    var i = 0
-    var count = 0
-    while (i < rendered.length) {
-      val c = rendered.charAt(i)
-      if (inString) {
-        if (c == '\\') i += 1
-        else if (c == '"') inString = false
-      } else if (c == '"') inString = true
-      else if (c == ';') count += 1
-      i += 1
-    }
-    count
-  }
+  private def statementFragment(rendered: String): Option[String] =
+    PainlessOperandForm
+      .firstStatementAt(rendered)
+      .map(at => rendered.substring(math.max(0, at - 24), math.min(rendered.length, at + 16)))
 
   "a criteria rendered with a PainlessContext" should "be a single expression, never a statement sequence" in {
     val offenders = shapes.map(sql => sql -> renderedOf(sql)).collect {
-      case (sql, rendered) if statementSeparators(rendered) > 0 => s"$sql\n    => $rendered"
+      case (sql, rendered) if statementFragment(rendered).isDefined =>
+        s"$sql\n    at [...${statementFragment(rendered).get}...]\n    => $rendered"
     }
     withClue(
       s"${offenders.size} criteria rendered a STATEMENT SEQUENCE under a context; a `def x = …;` " +

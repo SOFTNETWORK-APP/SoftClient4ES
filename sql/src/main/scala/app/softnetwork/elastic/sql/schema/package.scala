@@ -642,10 +642,17 @@ package object schema {
       * `ctx.<path>` on the RIGHT of the `=`, never on the left, so anchoring on the assignment and
       * taking the last match cannot pick one of them up.
       */
-    def of(source: String): Option[String] = source match {
-      case Assignment(column) => Some(column)
-      case _                  => None
-    }
+    def of(source: String): Option[String] =
+      // 🔴 On the literals-blanked source, never the raw one. A string literal may legitimately
+      // CONTAIN `ctx.<name> = ` -- `CONCAT(name, '; ctx.d = 1')` is ordinary SQL -- and the greedy
+      // match then took the one inside the literal, reporting this processor as another column's.
+      // `IngestPipeline.diff` keys processors by this, and a `Map` drops the loser of a collision
+      // (issue #373). Blanking preserves offsets and length, so the captured name is unchanged
+      // wherever no literal is involved.
+      PainlessOperandForm.withoutLiterals(source) match {
+        case Assignment(column) => Some(column)
+        case _                  => None
+      }
 
     private val Assignment = """(?s).*(?:^|;)\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
   }
@@ -661,7 +668,7 @@ package object schema {
       val ctx = PainlessContext(PainlessContextType.Processor)
       val scr = script.painless(Some(ctx))
       val painless = s"$ctx$scr"
-      val source = painless.split(";") match {
+      val source = PainlessOperandForm.splitStatements(painless) match {
         case Array(single) if single.trim.startsWith("return ") =>
           val stripped = single.trim.stripPrefix("return ").trim
           ScriptTarget.assign(column, stripped)

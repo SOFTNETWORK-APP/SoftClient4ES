@@ -1,0 +1,633 @@
+/*
+ * Copyright 2025 SOFTNETWORK
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package app.softnetwork.elastic.sql.query
+
+import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+import org.scalatest.prop.TableDrivenPropertyChecks
+
+/** Issue #373 — the Painless-emission defects surfaced by #370, fixed in one PR, one commit each.
+  *
+  * All nine are PRE-EXISTING: each was found by EXECUTING the emission of a #370 shape on real
+  * Elasticsearch and comparing it with a control at `main`. They share one theme — the emitted
+  * script must match the RECEIVER the pipeline really hands it, and the chain that produced it —
+  * but each has its own decision point, so each gets its own commit and its own test here.
+  *
+  * 🔴 What a byte pin in this file can and cannot say: it fixes the emission, not its validity.
+  * Every expectation below names the Elasticsearch behaviour it was measured against, and the
+  * executed row lives in `PredicateFunctionResultSpec`.
+  */
+class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPropertyChecks {
+
+  private val schema: SchemaTable = SchemaTable(
+    "t",
+    columns = List(
+      Column("d", SQLTypes.Date),
+      Column("ts", SQLTypes.Timestamp),
+      Column("name", SQLTypes.Keyword),
+      Column("n", SQLTypes.Int)
+    )
+  )
+
+  private def single(sql: String, withSchema: Boolean = true): SingleSearch =
+    Parser(sql) match {
+      case Right(ss: SingleSearch) => if (withSchema) ss.update(Some(schema)) else ss.update()
+      case other                   => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+
+  /** The WHERE criteria rendered as ONE script, prologue included. */
+  protected def predicateOf(sql: String, withSchema: Boolean = true): String = {
+    val ctx = PainlessContext(PainlessContextType.Query)
+    val body = single(sql, withSchema).where
+      .flatMap(_.criteria)
+      .map(_.painless(Some(ctx)))
+      .getOrElse(fail(s"[$sql] has no WHERE"))
+    s"$ctx$body"
+  }
+
+  /** The ingest-processor source of a computed column, through the production seam
+    * (`Table.update()` resolves the processors; the raw parsed column list does not).
+    */
+  protected def processorOf(sql: String, column: String = "c"): String =
+    Parser(sql) match {
+      case Right(ct: CreateTable) =>
+        ct.schema.columns
+          .find(_.name == column)
+          .flatMap(_.script)
+          .map(_.source)
+          .getOrElse(fail(s"no script processor for [$column] in [$sql]"))
+      case other => fail(s"[$sql] expected a CreateTable, got $other")
+    }
+
+  /** How many times `needle` occurs in `haystack` -- the shape of an "evaluated once" assertion. */
+  protected def countOf(haystack: String, needle: String): Int =
+    haystack.sliding(needle.length).count(_ == needle)
+
+  /** Every `def` in a well-formed emission opens a STATEMENT, so it may only appear at the start of
+    * the script or just after a `; `. This is the rule the first version of item 5's commit broke:
+    * it spliced `def lv0 = …; ` into a slot that must hold a single EXPRESSION, and ES answered
+    * `compile error` for five predicates that had returned rows. Returns the offending fragments.
+    */
+  protected def declarationsOutsideStatementStart(emitted: String): Seq[String] =
+    "def ".r
+      .findAllMatchIn(emitted)
+      .map(_.start)
+      .filterNot(i => i == 0 || emitted.startsWith("; ", i - 2))
+      .map(i => emitted.substring(math.max(0, i - 24), math.min(emitted.length, i + 12)))
+      .toSeq
+
+  /** Names declared more than once -- Painless rejects a redeclaration in the same scope. */
+  protected def duplicateDeclarations(emitted: String): Seq[String] = {
+    val names = "def ([A-Za-z_][A-Za-z0-9_]*) =".r.findAllMatchIn(emitted).map(_.group(1)).toSeq
+    names.groupBy(identity).collect { case (n, xs) if xs.size > 1 => n }.toSeq
+  }
+
+  /** The first SELECT field rendered as one script. */
+  protected def fieldOf(sql: String, withSchema: Boolean = true): String = {
+    val ctx = PainlessContext(PainlessContextType.Query)
+    // 🔴 The body is rendered FIRST and bound: it is what REGISTERS the parameters, and a string
+    // interpolation evaluates `ctx.toString` before the call beside it, so an inline
+    // `s"$ctx${…painless(ctx)}"` prints an EMPTY prologue. Caught by this spec's own NULLIF pin.
+    val body = single(sql, withSchema).select.fields.head.painless(Some(ctx))
+    s"$ctx$body"
+  }
+
+  // -- item 2: the comparison spelling must exist on the receiver --------------------------------
+
+  /** `java.time.LocalTime` is the only temporal without `isEqual`: `LocalDate` and `LocalDateTime`
+    * declare it and `ZonedDateTime` inherits it from `ChronoZonedDateTime` (checked with `javap`).
+    * MEASURED on ES 8.18 before this commit: `dynamic method [java.time.LocalTime, isEqual/1] not
+    * found` — a shard failure on `main`, and the reason #370 could pin the TIME identity but not
+    * execute it.
+    */
+  "a TIME comparison" should "use a spelling LocalTime has" in {
+    predicateOf("SELECT name FROM t WHERE CAST(d AS TIME) = CAST('00:00:00' AS TIME)") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value.toLocalTime()); " +
+    "def param2 = LocalTime.parse(\"00:00:00\", DateTimeFormatter.ISO_LOCAL_TIME); " +
+    "param1 == null ? false : (param1.compareTo(param2) == 0)"
+    predicateOf("SELECT name FROM t WHERE CAST(d AS TIME) <> CAST('00:00:00' AS TIME)") should
+    endWith("param1 == null ? false : (param1.compareTo(param2) != 0)")
+  }
+
+  it should "leave every other temporal on isEqual" in {
+    // `isEqual` is instant equality for a `ZonedDateTime` and is NOT `equals` (which compares the
+    // zone too), so this arm must not be widened: DATE and TIMESTAMP keep their spelling.
+    predicateOf("SELECT name FROM t WHERE CAST(d AS DATE) = CAST('2025-01-05' AS DATE)") should
+    endWith("param1 == null ? false : (param1.isEqual(param2))")
+    predicateOf("SELECT name FROM t WHERE ts = CAST('2025-01-05T00:00:00' AS TIMESTAMP)") should
+    endWith("param1 == null ? false : (param1.isEqual(param2))")
+  }
+
+  /** 🔴 The dispatch reads `valueType` -- the type of the RIGHT operand -- while the receiver is
+    * the LEFT one, so a MISMATCHED pair reaches this arm too (`name` is a keyword column; the
+    * statement is accepted because a bare column is `Any` at parse time). `equals` takes an
+    * `Object` and would answer FALSE for that, turning a loud shard failure into a silent wrong
+    * answer -- and `<>` into "every document". `compareTo` keeps it loud. MEASURED on ES 8.18, all
+    * three on a `String` receiver: `equals` -> `[false,false,false]`; `compareTo` ->
+    * `class_cast_exception`; `isEqual` (main) -> `dynamic method … not found`.
+    *
+    * Found by review of this commit; the shape is reachable today through a CASE, and the item-4
+    * commit routes the bare `WHERE name = CAST(… AS TIME)` here too.
+    */
+  it should "stay LOUD when the receiver is not a LocalTime" in {
+    predicateOf(
+      "SELECT name FROM t WHERE CASE WHEN name = CAST('00:00:00' AS TIME) THEN 1 ELSE 0 END = 1"
+    ) should include("param1.compareTo(param2) == 0")
+  }
+
+  /** `NULLIF` had the same hole at its own site. 🔴 Neither `out` nor `expr1.out` could key it:
+    * both report TIMESTAMP, the COLUMN's type, even though both arguments are TIME --
+    * `Identifier.chainType` (#367) is the derivation that describes the RENDERING, and two wrong
+    * keys were tried before that was measured. Executed on ES 8.18 over midnight dates: before,
+    * `dynamic method [java.time.LocalTime, isEqual/1] not found`; after, `null` on every row (they
+    * all equal 00:00:00, which is what NULLIF returns null for).
+    */
+  "NULLIF over a TIME receiver" should "use the same spelling" in {
+    fieldOf("SELECT NULLIF(CAST(d AS TIME), CAST('00:00:00' AS TIME)) AS c FROM t") should
+    include("param2 == null || (param3 != null && param2.compareTo(param3) == 0) ? null : param2")
+  }
+
+  it should "leave the ordering comparisons alone" in {
+    // `isBefore` / `isAfter` DO exist on `LocalTime`, so only `=` and `<>` moved.
+    predicateOf("SELECT name FROM t WHERE CAST(d AS TIME) > CAST('00:30:00' AS TIME)") should
+    endWith("(param1.isAfter(param2))")
+  }
+
+  // -- item 3: a CASE candidate that can be null must be guarded ---------------------------------
+
+  /** `checkCase` emitted `e != null && e.isEqual(c) ? v` and called the comparison with a `null`
+    * candidate for any document missing the WHEN column. MEASURED on ES 8.18 over the very shape
+    * the bridge fixture pins, with a document lacking `lastSeen`:
+    * {{{
+    * before: null_pointer_exception: Cannot invoke "ChronoLocalDate.toEpochDay()" because "other" is null
+    * after : d -> 2025-01-03 (lastSeen + 2)   e -> 2025-01-04 (lastUpdated)   g -> 2024-10-01 (ELSE)
+    * }}}
+    * So the published `CASE … WHEN <column> …` failed the whole query on any index where that
+    * column is not set on every document.
+    */
+  "a CASE candidate that can be null" should "be guarded before the comparison" in {
+    fieldOf("SELECT CASE ts WHEN d THEN d ELSE ts END AS c FROM t") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "param1 != null && param2 != null && param1.isEqual(param2) ? param2 : param1"
+  }
+
+  /** 🔴 The TIME spelling must follow the RECEIVER, not `out`. Found by review: an arm keyed on
+    * `out` -- the CASE's RESULT type, the least common supertype of expression, conditions and
+    * results -- was DEAD, because `out` reports TIMESTAMP for a CASE whose operands are both
+    * `LocalTime`. MEASURED on ES 8.18 before this: `dynamic method [java.time.LocalTime, isEqual/1]
+    * not found`, the very failure this PR's first commit exists to remove. `Identifier.chainType`
+    * (#367) is the derivation that describes the rendering -- the same key `NULLIF` needed, and not
+    * carrying it across is what left the arm dead.
+    */
+  it should "spell a TIME comparison from the receiver, not from the CASE's result type" in {
+    val emitted = fieldOf(
+      "SELECT CASE CAST(d AS TIME) WHEN CAST(ts AS TIME) " +
+      "THEN CAST('01:00:00' AS TIME) ELSE CAST('02:00:00' AS TIME) END AS c FROM t"
+    )
+    withClue(emitted) {
+      emitted should include("param2 != null && param5 != null && param2.compareTo(param5) == 0")
+      emitted should not include "isEqual"
+    }
+  }
+
+  /** 🔴 `NULLIF` had the same hole one method up in the same file, and shipping the CASE half alone
+    * would have made this commit's own claim -- that the sites cannot drift -- false again by the
+    * next release (found by review). MEASURED on ES 8.18 over a document with no `ts`: before,
+    * `null_pointer_exception: Cannot read field "hour" because "other" is null`; after, that
+    * document yields its OWN time.
+    *
+    * 🔴 The guard means NOT-EQUAL, not null: SQL says `NULLIF(a, b)` is NULL when `a = b`, and with
+    * `b` NULL the comparison is UNKNOWN, so the answer is `a`. Short-circuiting `b == null` to the
+    * NULL branch would have inverted it -- executed, the document without `ts` correctly returns
+    * `00:00:00` rather than null.
+    */
+  it should "guard NULLIF's second argument, without inverting its semantics" in {
+    fieldOf("SELECT NULLIF(CAST(d AS TIME), CAST(ts AS TIME)) AS c FROM t") should include(
+      "def param5 = param3 == null || (param4 != null && param3.compareTo(param4) == 0) ? null : param3"
+    )
+  }
+
+  it should "guard a candidate whose NULLABILITY the AST does not report" in {
+    // 🔴 Found by review. The first version asked `cond.nullable`, and MEASURED that is FALSE for
+    // a function-wrapped column: `UPPER(other)` reports `nullable = false` while rendering
+    // `(param3 == null) ? null : param3.toUpperCase()`, so the candidate was neither bound nor
+    // guarded and `CASE UPPER(name) WHEN UPPER(other) …` threw
+    // `null_pointer_exception: Cannot read field "value"` on ES 8.18 for a document missing the
+    // column. None of the three structural predicates I measured can see it -- the wrapper's
+    // `name` is EMPTY, its `nullable` is false, and its function is not a `FunctionWithIdentifier`
+    // -- so the candidate is now ALWAYS bound and ALWAYS guarded, which is provably safe:
+    // binding is a no-op when it is already a name, and a redundant `!= null` cannot change an
+    // answer.
+    val emitted = fieldOf("SELECT CASE UPPER(name) WHEN UPPER(other) THEN 1 ELSE 0 END AS c FROM t")
+    withClue(emitted) {
+      emitted should include("param2 != null && param4 != null && param2.compareTo(param4) == 0")
+    }
+  }
+
+  it should "leave a non-temporal CASE on the null-safe ==" in {
+    // `==` is null-safe in Painless, so a numeric candidate needs no `!= null` guard -- only the
+    // binding, which is what keeps a chain from being rendered twice.
+    fieldOf("SELECT CASE n WHEN 1 THEN 1 ELSE 0 END AS c FROM t") should endWith(
+      "def param3 = 1; param2 == param3 ? 1 : 0"
+    )
+  }
+
+  // -- item 6: the PROCESSOR and TRANSFORM contexts key on the chain too ------------------------
+
+  /** #370 made one parameter per (column, folded chain) -- but only in a QUERY context. An
+    * identifier registers as a `LiteralParam` in a PROCESSOR (`ctx.<field>`) or TRANSFORM
+    * (`doc['<alias>'].value`) context, so `Identifier.contextKey` never applied and two chains over
+    * one column collapsed onto a single parameter, both folds landing on it:
+    * `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`, an `int.get(…)`.
+    *
+    * ⚠️ This commit fixes the IDENTITY, and the ingest script still does not RUN: the extracted
+    * `int` is handed back to the processor's temporal parse (`param2 instanceof String ? … :
+    * Instant.ofEpochMilli(param2)…`), which is issue #373's item 7 and its own commit. MEASURED on
+    * ES 8.18 as an ingest pipeline over `{"d":"2025-01-10"}`: the computed column is ABSENT before
+    * AND after this commit -- `ignore_failure: true` swallows the throw, which is exactly why the
+    * defect was invisible. The executed proof of the pair lives with the item-7 commit; what is
+    * asserted here is the parameter split, which is what this commit owns.
+    */
+  "two different chains over one column in a PROCESSOR" should "be two parameters" in {
+    val emitted = processorOf(
+      "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END))"
+    )
+    withClue(emitted) {
+      emitted should not include ".get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)"
+      emitted should include(".get(ChronoField.YEAR); ")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR); ")
+    }
+  }
+
+  it should "keep ONE parameter where the chain is the same" in {
+    // The single-chain processor emission must not move: one column, one chain, one parameter.
+    processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d)))") shouldBe
+    "def param1 = (ctx.d instanceof String ? " +
+    "LocalDate.parse((ctx.d).replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))" +
+    ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(ctx.d).atZone(ZoneId.of('Z')))" +
+    ".get(ChronoField.YEAR); ctx.c = param1"
+  }
+
+  // -- item 9: a guarded operand is bound once, not rendered twice -------------------------------
+
+  /** `coerce` builds its result by interpolating the operand and then wraps it in a null guard that
+    * tests the operand AGAIN, so a chained operand was rendered TWICE and every function in it ran
+    * twice per document:
+    * {{{
+    * ((param2 == null) ? null : (def)(param2.plus(1, …)) != null
+    *   ? (param2 == null) ? null : (def)(param2.plus(1, …)).atStartOfDay(…) : null)
+    * }}}
+    * 🔴 It is CORRECT -- executed on ES 8.18 before and after, both return the same single row --
+    * so this is COST, not a wrong answer, and the pin is on the count rather than on a value.
+    */
+  "a chained operand under a null guard" should "be rendered once" in {
+    val emitted =
+      predicateOf(
+        "SELECT name FROM t WHERE DATE_ADD(DATE_PARSE(name, 'yyyy-MM-dd'), INTERVAL 1 DAY) > d"
+      )
+    withClue(emitted) {
+      countOf(emitted, "param2.plus(1, ChronoUnit.DAYS)") shouldBe 1
+    }
+  }
+
+  it should "bind the operand of a chained conversion once too" in {
+    val emitted = fieldOf(
+      "SELECT CASE CAST(d AS DATE) WHEN CAST('2025-01-01' AS DATE) THEN YEAR(CAST(d AS DATE)) ELSE 0 END AS c FROM t"
+    )
+    withClue(emitted) {
+      countOf(emitted, "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate()") shouldBe 1
+    }
+  }
+
+  it should "reuse an existing parameter instead of declaring an alias" in {
+    // 🔴 Two earlier versions of this test were VACUOUS -- neither reddened when the binding was
+    // made unconditional -- and that is the finding, not a detail: `addParam` returns the EXISTING
+    // name when the literal it is handed IS one, so a bare-name operand was never going to produce
+    // a duplicate. The redundant guard was removed rather than left as unfalsifiable code, and
+    // what is asserted here is the property that actually holds: no parameter is declared as a
+    // bare alias of another.
+    val emitted =
+      fieldOf("SELECT CASE CAST(d AS DATE) WHEN CAST(ts AS DATE) THEN 1 ELSE 0 END AS c FROM t")
+    withClue(emitted) {
+      """def \w+ = (?:param|left|arg)\d+;""".r.findFirstIn(emitted) shouldBe None
+    }
+  }
+
+  // -- item 5: arithmetic renders its operands' chains ------------------------------------------
+
+  /** `ArithmeticExpression.toPainless` read its operands back as parameter NAMES (`ctx.get(left)`)
+    * -- the RAW doc-value -- so the function chain never reached the expression and `YEAR(d) +
+    * MONTH(d)` computed `d + d`. #367's defect one layer up.
+    *
+    * MEASURED as a real ingest pipeline on ES 8.18 over `{"d":"2025-01-10"}` (truth: 2025 + 1):
+    * {{{
+    * YEAR(d) + MONTH(d)          before  c = 1         after  c = 2026
+    * YEAR(d) * 100 + MONTH(d)    before  c = ABSENT    after  c = 202501
+    * }}}
+    * The first is the one that matters: a computed column silently stored a WRONG number, and an
+    * ingest pipeline swallows nothing there -- the value was simply wrong in the index.
+    *
+    * The QUERY half moves only for a SINGLE-chain operand, and that half is now executable.
+    * MEASURED on ES 8.18, index `t` (`d` = 2025-01-01 / 01-05 / 01-09):
+    * {{{
+    * WHERE YEAR(d) + 1 = 2026        before  class_cast (ZonedDateTime + 1)   after  [a, b, c]
+    * }}}
+    * ⚠️ A TWO-chain comparison is NOT fixed here and is not made worse -- before and after, `WHERE
+    * YEAR(d) + MONTH(d) = 2026` fails the shard (`illegal_argument`) and `… * 100 + MONTH(d) =
+    * 202501` fails to compile, for two PRE-EXISTING reasons this commit does not own: the
+    * arithmetic node's own type reports its COLUMN's (so the comparison coerces `TIMESTAMP ->
+    * BIGINT` and emits `.toInstant()` on an `int`), and a NESTED arithmetic renders a statement
+    * sequence (#367's open family). Correcting the node's type means making `baseType` chain-aware,
+    * which #367 measured and recorded as a trap: it sends `ORDER BY DATE_PARSE(name, …)` down the
+    * date-math branch.
+    *
+    * 🔴 The first version of this commit dropped the parameter shortcut for EVERY operand, not just
+    * a chained one, and that regressed five working predicates from rows to `compile error` --
+    * found by review, MEASURED, and now guarded below by a rule rather than by bytes.
+    */
+  "arithmetic over date functions in a PROCESSOR" should "render each operand's chain" in {
+    val emitted = processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) + MONTH(d)))")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR)")
+    }
+  }
+
+  it should "render each chain in a nested expression too" in {
+    val emitted =
+      processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      emitted should include(".get(ChronoField.MONTH_OF_YEAR)")
+      // the fingerprint of the collapse: one parameter compared with itself in the null guard
+      emitted should not include "(param1 == null || param1 == null)"
+    }
+  }
+
+  it should "leave plain numeric arithmetic alone" in {
+    val emitted = processorOf("CREATE TABLE t (n INTEGER, c INTEGER SCRIPT AS (n * 2 + 1))")
+    withClue(emitted) {
+      emitted should not include "ChronoField"
+      emitted should not include "instanceof String"
+    }
+  }
+
+  /** The QUERY context, which the three cases above do not reach -- and where the first version of
+    * this commit did its damage. These five predicates and one script field returned rows before it
+    * and `compile error` after it, MEASURED on ES 8.18 index `t` (n = 1, 5, 9):
+    * {{{
+    * WHERE n + 1 > 2      [b, c]      WHERE n / 2 > 1          [b, c]
+    * WHERE n - 1 < 9   [a, b, c]      SELECT (n+1)*(n+2)   [6, 42, 110]
+    * WHERE n * 2 = 10        [b]
+    * }}}
+    * The rule, not the bytes, is what is asserted: an operand with no chain to drop keeps its
+    * parameter name, so nothing needs a statement and no statement can land in an expression slot.
+    */
+  it should "keep every arithmetic operand placeable in a PREDICATE" in {
+    forAll(
+      Table(
+        "predicate",
+        "SELECT name FROM t WHERE n + 1 > 2",
+        "SELECT name FROM t WHERE n - 1 < 9",
+        "SELECT name FROM t WHERE n * 2 = 10",
+        "SELECT name FROM t WHERE n / 2 > 1",
+        // 🔴 A CAST operand HAS a function, so it takes the RENDER path -- the family the
+        // chainless shortcut does NOT cover, and the one the second version of this commit broke.
+        // Every row below returned rows before this commit and `compile error` with it.
+        "SELECT name FROM t WHERE CAST(n AS BIGINT) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS DOUBLE) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS INTEGER) + 1 > 2",
+        "SELECT name FROM t WHERE CAST(n AS BIGINT) * 2 > 2",
+        "SELECT name FROM t WHERE 1 + CAST(n AS BIGINT) > 2",
+        // nested arithmetic: `compile error` BEFORE this commit as well as after the second
+        // version of it -- the hoist is what makes these emit at all
+        "SELECT name FROM t WHERE n * 2 + 1 > 2",
+        "SELECT name FROM t WHERE (n + 1) * (n + 2) > 2"
+      )
+    ) { sql =>
+      val emitted = predicateOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+        // no cast of a null-guarded ternary: `(long) (x != null ? … : null)` does not compile,
+        // and it is what asking for a numeric conversion here used to emit
+        emitted should not include "(long) ("
+      }
+    }
+  }
+
+  it should "declare each local ONCE in a nested numeric expression" in {
+    forAll(
+      Table(
+        "projection",
+        "SELECT (n + 1) * (n + 2) AS c FROM t",
+        // one nesting level deeper: declared `lv1` TWICE before the hoist, in every venue
+        "SELECT (n * 2 + 1) * (n * 3 + 1) AS c FROM t",
+        "SELECT (CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2) AS c FROM t"
+      )
+    ) { sql =>
+      val emitted = fieldOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** 🔴 The coercion of a NON-nullable operand is load-bearing and must survive: a literal carries
+    * no null guard, and its `((double) 2)` is the only thing that makes the division
+    * floating-point. Skipping it turned `CAST(n AS DOUBLE) / 2` into INTEGER division with HTTP 200
+    * -- found by review. MEASURED on ES 8.18 over n = 1/5/9, on the schema-LESS rendering path
+    * (what production renders whenever `resolveWithSchema` declines -- a wildcard or multi-index
+    * FROM, a JOIN, an unloadable mapping):
+    * {{{
+    * SELECT CAST(n AS DOUBLE)/2    [0.5, 2.5, 4.5]  became  [0, 2, 4]
+    * GROUP BY CAST(n AS DOUBLE)/2  keys '0.5','2.5','4.5'   became '0','2','4'
+    * WHERE CAST(n AS DOUBLE)/2 > 2 [b, c]           became  [c]      -- a row VANISHED
+    * }}}
+    * With a schema attached the same shape is now CORRECT where the parent was not: the parent
+    * emitted integer division there too (`[0, 2, 4]`, `WHERE … > 2` -> `[c]`), and it is `[0.5,
+    * 2.5, 4.5]` / `[b, c]` after this commit.
+    */
+  it should "keep the coercion of a NON-nullable operand" in {
+    // The two paths carry the DOUBLE on different sides, so each is pinned where it lives: with NO
+    // schema the CAST chain is dropped and the LITERAL's cast is the only carrier; with a schema
+    // the left operand renders it. What must hold in BOTH is that a `(double)` exists at all --
+    // without one the operands are two integers and Painless divides as integers.
+    forAll(
+      Table(
+        ("sql", "schema", "carrier"),
+        ("SELECT name FROM t WHERE CAST(n AS DOUBLE) / 2 > 2", false, "((double) 2)"),
+        ("SELECT name FROM t WHERE CAST(n AS DOUBLE) / 2 > 2", true, "(double) param1")
+      )
+    ) { (sql, withSchema, carrier) =>
+      val emitted = predicateOf(sql, withSchema)
+      withClue(emitted) {
+        emitted should include(carrier)
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** The scanner's TRUE positive: `TRY_CAST` renders a `try`/`catch` STATEMENT (Painless has no
+    * expression-level `try`), so the operand must fall back to its parameter. If the scan stopped
+    * seeing `try`, that statement would be spliced back in and ES would reject the pipeline --
+    * MEASURED: `def lv1 = String.valueOf(try { … } catch …);` is a `compile error`. The chain is
+    * still dropped, which is the residual, and the emission is byte-identical to the parent.
+    */
+  it should "fall back to the parameter when a rendering is a STATEMENT" in {
+    val emitted =
+      processorOf(
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT) + 1))"
+      )
+    withClue(emitted) {
+      emitted should not include "try "
+      declarationsOutsideStatementStart(emitted) shouldBe empty
+    }
+  }
+
+  it should "keep it in a projection too" in {
+    val emitted = fieldOf("SELECT CAST(n AS DOUBLE) / 2 AS c FROM t", withSchema = false)
+    withClue(emitted)(emitted should include("((double) 2)"))
+  }
+
+  /** The DDL venue of the same rule: an ingest processor persists its script, so an unplaceable
+    * declaration there is stored in the customer's cluster.
+    */
+  it should "keep a computed column's arithmetic placeable too" in {
+    forAll(
+      Table(
+        "computed column",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS ((CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2)))",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS (n * 2 + 1))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))"
+      )
+    ) { sql =>
+      val emitted = processorOf(sql)
+      withClue(emitted) {
+        declarationsOutsideStatementStart(emitted) shouldBe empty
+        duplicateDeclarations(emitted) shouldBe empty
+      }
+    }
+  }
+
+  /** The query half this commit DOES move: one chain, one operand. Before it the chain was dropped
+    * and ES compared a `ZonedDateTime` with an `int` -- a `class_cast` shard failure, not a wrong
+    * row; after it, `[a, b, c]` (MEASURED, ES 8.18, all three `d` in 2025).
+    */
+  it should "render a single operand's chain in a PREDICATE too" in {
+    val emitted = predicateOf("SELECT name FROM t WHERE YEAR(d) + 1 = 2026")
+    withClue(emitted) {
+      emitted should include(".get(ChronoField.YEAR)")
+      declarationsOutsideStatementStart(emitted) shouldBe empty
+      duplicateDeclarations(emitted) shouldBe empty
+    }
+  }
+  // -- item 7: a processor re-parse must not be applied to an already-extracted value ------------
+
+  /** Every `instanceof String ? …parse(…) : Instant.ofEpochMilli(…)` a PROCESSOR emits exists to
+    * turn the RAW `ctx.<field>` into a temporal. Applying it to anything else means the operand had
+    * already been through a chain -- and the value it re-parses is no longer a date. Returns the
+    * operands re-parsed that are not a raw `ctx.` access.
+    */
+  protected def reparsedNonSourceOperands(emitted: String): Seq[String] = {
+    // 🔴 A parameter that ALIASES the source field is a legitimate operand: the prologue binds
+    // `def param1 = ctx.d;` and the branches then parse `param1`. Found by review -- the first
+    // version of this rule called those offenders, so adding the (correct) shape
+    // `CASE WHEN YEAR(d) > 2000 THEN d ELSE d END` to the table below would have REDDENED a correct
+    // emission. A test that mandates a defect is worse than no test.
+    val sourceAliases =
+      "def ([A-Za-z0-9_]+) = (ctx[.?][A-Za-z0-9_.?\\[\\]']*);".r
+        .findAllMatchIn(emitted)
+        .map(_.group(1))
+        .toSet
+    // 🔴 `?` is IN the class: a nested path renders `ctx.meta?.when`, and without it the regex
+    // matched nothing at all, so this rule was BLIND to the nested venue (also found by review).
+    "\\(([A-Za-z0-9_.?\\[\\]']+) instanceof String \\?".r
+      .findAllMatchIn(emitted)
+      .map(_.group(1))
+      .filterNot(operand => operand.startsWith("ctx.") || sourceAliases.contains(operand))
+      .toSeq
+  }
+
+  /** `originalType == Any` says the identifier NAMES a column; it does not say the operand still
+    * RENDERS one. `YEAR(d)` renders an `int`, and the processor handed that `int` back to its own
+    * date parse.
+    *
+    * 🔴 Why the guard admits `chainType == Any` and that is SAFE: `processorTemporal` emits a parse
+    * only when the column's `declaredType` is a temporal and answers `None` otherwise, so the
+    * DECLARED TYPE is a second gate and admitting `Any` cannot conjure a parse over a non-date
+    * column. MEASURED (review): `SCRIPT AS (YEAR(unknown))` over an UNDECLARED column is exactly
+    * the reachable `chainType == Any` case, and it emits ZERO parses; so does a `VARCHAR` column.
+    * ⚠️ That gate is what the guard leans on -- anything that loosens `processorTemporal` to emit a
+    * parse for a wider set of declared types removes this safety net silently. MEASURED as a real
+    * ingest pipeline on ES 8.18 over `{"d":"2025-01-10","n":1}`:
+    * {{{
+    * CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END  before  script_exception   after  c = 1
+    * GREATEST(YEAR(d), MONTH(d))                     before  script_exception   after  c = 2025
+    * CASE WHEN n > 0 THEN YEAR(d) ELSE MONTH(d) END  before  "1970-01-01T…2.025Z" after c = 2025
+    * }}}
+    * 🔴 The third is the dangerous one: it did not fail, it STORED the year 2025 read as epoch
+    * MILLIS. A computed column held a 1970 timestamp and nothing anywhere said so.
+    *
+    * ⚠️ Not owned here, PRE-EXISTING and unchanged: `GREATEST` renders `Math.max` over `def`, so
+    * Painless picks the `double` overload and `_source` carries `2025.0` for an INTEGER column (the
+    * indexed value is 2025). It reproduces with NO date function -- `GREATEST(n, m)` over two INT
+    * columns stores `7.0` -- so it is a `GREATEST` residual, not this commit's.
+    */
+  "a chained operand in a PROCESSOR" should "not be handed back to the processor's date parse" in {
+    forAll(
+      Table(
+        "computed column",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (GREATEST(YEAR(d), MONTH(d))))",
+        "CREATE TABLE t (d DATE, n INTEGER, c INTEGER SCRIPT AS (CASE WHEN n > 0 THEN YEAR(d) ELSE MONTH(d) END))",
+        // review's COALESCE/NULLIF pair -- also silent 1970 garbage before, so this is not a
+        // CASE-only fix
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (COALESCE(YEAR(d), 0)))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (NULLIF(YEAR(d), 0)))",
+        // 🔴 the shape that would have reddened the FIRST version of the rule: the branches return
+        // the date column itself, so parsing `param1` (which aliases `ctx.d`) is CORRECT here.
+        // MEASURED: c = '2025-01-10T00:00:00.000Z'
+        "CREATE TABLE t (d DATE, c DATE SCRIPT AS (CASE WHEN YEAR(d) > 2000 THEN d ELSE d END))",
+        // the second reachable shape review found for the same false positive
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(CASE WHEN 1 = 1 THEN d ELSE d END)))"
+      )
+    ) { sql =>
+      val emitted = processorOf(sql)
+      withClue(emitted)(reparsedNonSourceOperands(emitted) shouldBe empty)
+    }
+  }
+
+  /** The guard must not disable the parse where it IS needed: a bare date column in a processor is
+    * still `ctx.d`, and without the parse every date function in an ingest script breaks again
+    * (21.8 Part C, PR #315).
+    */
+  it should "still parse the raw source field it was written for" in {
+    val emitted = processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d)))")
+    withClue(emitted) {
+      emitted should include("ctx.d instanceof String")
+      emitted should include(".get(ChronoField.YEAR)")
+    }
+  }
+
+}

@@ -414,9 +414,26 @@ package object sql {
 
   }
 
-  case class LiteralParam(literal: String, maybeCheckNotNull: Option[String] = None)
-      extends PainlessParam {
+  /** @param key
+    *   the identity this parameter is deduplicated on, when it differs from the literal.
+    *
+    * 🔴 Issue #373. An identifier registers as a `LiteralParam` in a PROCESSOR or TRANSFORM context
+    * (its operand is `ctx.<field>` / `doc['<alias>'].value`, not a doc-value read), so
+    * `Identifier.contextKey` -- #370's fix -- never applied there and two different chains over one
+    * column collapsed onto a single parameter again: `SCRIPT AS (CASE WHEN YEAR(d) > MONTH(d) …)`
+    * emitted `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)` on ONE `ctx.d`.
+    *
+    * ⚠️ Used at ONE site -- the processor's parsed temporal base. Keying the identifier
+    * registrations themselves was measured to fix nothing and to cost a DEAD duplicate declaration,
+    * so it is deliberately not done; see the call site.
+    */
+  case class LiteralParam(
+    literal: String,
+    maybeCheckNotNull: Option[String] = None,
+    key: Option[String] = None
+  ) extends PainlessParam {
     override def param: String = literal
+    override def contextKey: String = key.getOrElse(literal)
     override def sql: String = ""
     override def nullable: Boolean = maybeCheckNotNull.nonEmpty
     override def checkNotNull: String = maybeCheckNotNull.getOrElse("")
@@ -428,6 +445,151 @@ package object sql {
     case object Processor extends PainlessContextType
     case object Query extends PainlessContextType
     case object Transform extends PainlessContextType
+  }
+
+  /** Is a rendered Painless fragment a single EXPRESSION, i.e. may it be placed where an operand
+    * goes? [[PainlessOperandForm.placeable]] is the one owner of that rule.
+    *
+    * A `def x = …;` and a `try { … } catch { … }` are STATEMENTS: Painless allows them as the tail
+    * of a whole script -- which is why a `script_fields` projection of a safe cast works -- and
+    * NOWHERE an operand may go. [[PainlessContext.bindLocal]] hoists the first kind into the
+    * prologue; the second kind cannot be hoisted as an expression at all (see
+    * [[PainlessContext.bindLocalWith]]) and its caller must fall back to a parameter.
+    *
+    * 🔴 The scan SKIPS string literals, which is the whole reason it is not a `contains`. A `;` a
+    * user put in a format or a pattern (`DATE_FORMAT(d, 'yyyy;MM')`) must not be read as a
+    * statement separator: a caller that demotes on it drops the operand's function chain, a SILENT
+    * wrong answer.
+    *
+    * 🔴 THE ASYMMETRY IS DELIBERATE -- when in doubt, prefer the LOUD direction. Answering
+    * "statement" about an expression loses a chain silently; answering "expression" about a
+    * statement splices it into an operand slot and Elasticsearch says `compile error`. Every
+    * limitation below therefore sits on the loud side.
+    *
+    * Invariants the cases in `PainlessExpressionFormSpec` pin, each for a reason:
+    *   - ONE `quote` character, not two booleans: an apostrophe inside a double-quoted pattern
+    *     (`"it's;ok"`) or a quote inside a single-quoted one (`'say "hi";'`) would corrupt a
+    *     two-flag reading. What matters is WHICH delimiter opened the literal.
+    *   - `\` consumes the backslash AND the next character. An escaped BACKSLASH therefore CLOSES
+    *     the literal, so `foo("a\\") ; x` really does contain a separator. A scanner that only
+    *     special-cased `\"` would read the closing quote as escaped, swallow the rest of the
+    *     script, miss that `;` and splice a statement.
+    *   - `try` counts only on a word boundary: `entry `, `retry`, `a_try ` and `registry` all
+    *     contain it.
+    *
+    * Accepted limitations, all LOUD-direction, pinned as characterisation so nobody "fixes" one
+    * silently: the `try` arm keys on the spelling `try `, so `try{ x }` and a bare `try` are not
+    * matched; and an unterminated literal swallows a following real `;` -- in a script
+    * Elasticsearch rejects anyway. Bounds-safe: the escape step may run past the end, which the
+    * loop guard catches.
+    */
+  private[sql] object PainlessOperandForm {
+
+    /** Where the first statement boundary is, or `None` for a pure expression. Callers that only
+      * decide use [[placeable]]; this variant exists so a diagnostic can NAME the offending spot.
+      */
+    def firstStatementAt(rendered: String): Option[Int] = {
+      var found = -1
+      scanOutsideLiterals(rendered) { i =>
+        val c = rendered.charAt(i)
+        if (c == ';') found = i
+        else if (
+          rendered.startsWith("try ", i) &&
+          (i == 0 || !(rendered.charAt(i - 1).isLetterOrDigit || rendered.charAt(i - 1) == '_'))
+        ) found = i
+        found < 0 // stop at the first boundary -- the answer cannot change after it
+      }
+      if (found < 0) None else Some(found)
+    }
+
+    def placeable(rendered: String): Boolean = firstStatementAt(rendered).isEmpty
+
+    /** `rendered.split(";")`, except that a `;` inside a string literal is not a separator.
+      *
+      * 🔴 `ScriptProcessor.fromScript` assembles an ingest script by splitting the rendered
+      * Painless, treating the LAST part as the expression to assign and rejoining the preamble. A
+      * bare `split(";")` there let a `;` inside a literal in the last statement cut the expression
+      * in half, and the assignment was written INTO the literal: `c KEYWORD SCRIPT AS
+      * (UPPER('a;b'))` emitted `"a; ctx.c = b".toUpperCase()` -- valid Painless that computes a
+      * value and discards it, so Elasticsearch answers 200 and the computed column is simply ABSENT
+      * (issue #373, a residual of it; measured on 8.18.3). `REPLACE(name, ';', 'x')` hits the same
+      * thing with no contrived input at all.
+      *
+      * Mirrors `String.split(";")` including its removal of trailing empty parts, so every source
+      * with no quoted `;` splits byte-identically to what it did before. Proved exhaustively over
+      * the literal-free alphabet `{a, b, ;, \}` up to length 7 -- 21,845 strings, zero mismatches.
+      *
+      * 🔴 WHY UNDER-SPLITTING IS SAFE, and it is load-bearing. The only direction this can differ
+      * from `String.split(";")` is FEWER cuts, and it does that whenever a literal is left
+      * unbalanced -- which is reachable, because `function/time/package.scala` builds
+      * `ofPattern("<pattern>")` by raw concatenation without `escapePainlessString`, so
+      * `DATE_FORMAT(d, 'yyyy\')` emits an unterminated literal and every later `;` is read as
+      * string content. The assignment then lands in the middle of the script rather than at the
+      * end. That is harmless ONLY because this scanner's escape rule is Painless's own: for any
+      * emission Painless accepts, "inside a literal" means the same to both, so a disagreement
+      * implies an unbalanced literal, and Elasticsearch rejects such a script with a compile error
+      * whichever way it was split. Both spellings measured as `compile error` on 8.18.3. If the
+      * escape rule here is ever relaxed, that argument dies with it.
+      */
+    def splitStatements(rendered: String): Array[String] =
+      if (rendered.isEmpty) Array(rendered)
+      else {
+        val parts = scala.collection.mutable.ArrayBuffer.empty[String]
+        var start = 0
+        scanOutsideLiterals(rendered) { i =>
+          if (rendered.charAt(i) == ';') {
+            parts += rendered.substring(start, i)
+            start = i + 1
+          }
+          true
+        }
+        parts += rendered.substring(start)
+        var n = parts.length
+        while (n > 0 && parts(n - 1).isEmpty) n -= 1
+        parts.take(n).toArray
+      }
+
+    /** `rendered` with every string literal blanked out, character for character, so a caller can
+      * ask a question about CODE only. Indices and length are preserved, so a match on the result
+      * carries the same offsets and the same captured text as one on the original.
+      *
+      * 🔴 `ScriptTarget.of` recovers "which column does this ingest script feed" by taking the LAST
+      * `ctx.<name> = ` in the source. A literal is allowed to contain that text -- `CONCAT(name, ';
+      * ctx.d = 1')` is ordinary SQL -- and the raw regex then reported the computed column of one
+      * processor as another's. `IngestPipeline.diff` keys processors by it, and a `Map` silently
+      * DROPS the loser: measured, the ALTER rewrote the sibling column's processor and never added
+      * the new column (issue #373). Blanking the literals first is what makes the recovery read
+      * code and not data.
+      */
+    def withoutLiterals(rendered: String): String = {
+      val out = Array.fill(rendered.length)(' ')
+      scanOutsideLiterals(rendered) { i =>
+        out(i) = rendered.charAt(i)
+        true
+      }
+      new String(out)
+    }
+
+    /** Walks `rendered` once and hands the caller every index lying OUTSIDE a string literal.
+      *
+      * 🔴 The literal handling lives HERE and nowhere else. `firstStatementAt` and
+      * `splitStatements` must agree about what a `;` inside a literal is -- one decides whether a
+      * fragment may sit in an operand slot, the other decides where an ingest script's last
+      * statement begins -- and two copies of this loop would be free to drift apart.
+      */
+    private def scanOutsideLiterals(rendered: String)(at: Int => Boolean): Unit = {
+      var i = 0
+      var quote = '\u0000'
+      var continue = true
+      while (i < rendered.length && continue) {
+        val c = rendered.charAt(i)
+        if (quote != '\u0000') {
+          if (c == '\\') i += 1 else if (c == quote) quote = '\u0000'
+        } else if (c == '\'' || c == '"') quote = c
+        else continue = at(i)
+        i += 1
+      }
+    }
   }
 
   /** Context for painless scripts
@@ -468,14 +630,20 @@ package object sql {
         case identifier: Identifier if isProcessor =>
           if (identifier.name.nonEmpty)
             addParam(
-              LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ )
+              LiteralParam(
+                identifier.processParamName,
+                None /*identifier.processCheckNotNull*/
+              )
             )
           else
             None
         case identifier: Identifier if isTransform =>
           if (identifier.name.nonEmpty)
             addParam(
-              LiteralParam(identifier.transformParamName, identifier.transformCheckNotNull)
+              LiteralParam(
+                identifier.transformParamName,
+                identifier.transformCheckNotNull
+              )
             )
           else
             None
@@ -510,10 +678,18 @@ package object sql {
     def get(token: Token): Option[String] = {
       token match {
         case identifier: Identifier if isProcessor =>
-          get(LiteralParam(identifier.processParamName, None /*identifier.processCheckNotNull*/ ))
+          get(
+            LiteralParam(
+              identifier.processParamName,
+              None /*identifier.processCheckNotNull*/
+            )
+          )
         case identifier: Identifier if isTransform =>
           get(
-            LiteralParam(identifier.transformParamName, None /*identifier.transformCheckNotNull*/ )
+            LiteralParam(
+              identifier.transformParamName,
+              None /*identifier.transformCheckNotNull*/
+            )
           )
         case param: PainlessParam =>
           // By `contextKey`, not `equals`: see `PainlessParam.contextKey` (issue #370).
@@ -1587,7 +1763,13 @@ package object sql {
         context match {
           case Some(ctx) =>
             processorBase
-              .flatMap(e => ctx.addParam(LiteralParam(e)))
+              // 🔴 Keyed on the CHAIN, like every other registration (issue #373). The parsed
+              // processor base is the SAME literal for every chain over one column, so `YEAR(d)`
+              // and `MONTH(d)` collapsed onto one parameter and both folds landed on it:
+              // `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`, an `int.get(…)` that
+              // throws -- and in an ingest pipeline `ignore_failure: true` swallows it and the
+              // computed column is simply ABSENT.
+              .flatMap(e => ctx.addParam(LiteralParam(e, None, Some(contextKeyOf(e)))))
               .orElse(ctx.addParam(this))
               .getOrElse("")
           case _ =>
@@ -1635,10 +1817,15 @@ package object sql {
       * MONTH)` no longer collapse onto one object, and neither do `YEAR(d)` and `MONTH(d)`, which
       * used to produce `….get(ChronoField.YEAR).get(ChronoField.MONTH_OF_YEAR)`.
       */
-    override lazy val contextKey: String =
+    override lazy val contextKey: String = contextKeyOf(paramName)
+
+    /** The same identity rule over an arbitrary operand rendering, so a PROCESSOR (`ctx.<field>`)
+      * or TRANSFORM (`doc['<alias>'].value`) registration keys on its chain too (issue #373).
+      */
+    def contextKeyOf(base: String): String =
       // The folded RENDERINGS, not the SQL spellings: `YEAR(d)` and `EXTRACT(YEAR FROM d)` fold
       // the same `.get(ChronoField.YEAR)` and must share one parameter (review, L1).
-      foldedFunctions.foldLeft(paramName) { (key, f) =>
+      foldedFunctions.foldLeft(base) { (key, f) =>
         key + (f match {
           case ps: PainlessScript => Try(ps.painless(None)).getOrElse(f.toSQL(""))
           case _                  => f.toSQL("")

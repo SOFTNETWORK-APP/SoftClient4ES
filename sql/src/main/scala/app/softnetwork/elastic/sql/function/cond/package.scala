@@ -186,6 +186,14 @@ package object cond {
 
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
+    /** Whether the value `expr1` RENDERS is a `java.time.LocalTime`. `out` and `expr1.out` both
+      * report the column's type; `Identifier.chainType` reports the chain's (#367).
+      */
+    private[this] def receiverIsTime: Boolean = expr1 match {
+      case i: Identifier => i.chainType == SQLTypes.Time
+      case other         => other.out == SQLTypes.Time
+    }
+
     private[this] def checkIfExpressionNullable(expr: PainlessScript): Boolean = expr match {
       case f: FunctionChain if f.functions.nonEmpty => true
       case _                                        => false
@@ -200,12 +208,32 @@ package object cond {
     ): String = {
       callArgs match {
         case List(arg0, arg1) =>
+          // 🔴 The SECOND argument is guarded too (issue #373, found by review) -- the same hole
+          // `checkCase` had, one method up in this file. `NULLIF(CAST(d AS TIME), CAST(ts AS
+          // TIME))` called the comparison with a null `arg1` for any document missing `ts`:
+          // MEASURED on ES 8.18, `null_pointer_exception: Cannot read field "hour" because
+          // "other" is null`.
+          //
+          // 🔴 And the guard means NOT-EQUAL, not null. SQL says `NULLIF(a, b)` is NULL when
+          // `a = b`; with `b` NULL the comparison is UNKNOWN, so the rows are NOT equal and the
+          // answer is `a`. Short-circuiting `arg1 == null` to the NULL branch would invert that.
+          def nullIf(comparison: String): String =
+            s"$arg0 == null || ($arg1 != null && $comparison) ? null : $arg0"
           val expr =
             out match {
               case SQLTypes.Varchar =>
-                s"$arg0 == null || $arg0.compareTo($arg1) == 0 ? null : $arg0"
-              case _: SQLTemporal => s"$arg0 == null || $arg0.isEqual($arg1) ? null : $arg0"
-              case _              => s"$arg0 == $arg1 ? null : $arg0"
+                nullIf(s"$arg0.compareTo($arg1) == 0")
+              // 🔴 Keyed on what the RECEIVER's chain RENDERS, not on `out` (issue #373).
+              // `LocalTime` has no `isEqual`, and MEASURED on ES 8.18 before this,
+              // `NULLIF(CAST(d AS TIME), CAST('00:00:00' AS TIME))` failed the shard in a real
+              // `script_fields`. Neither `out` nor `expr1.out` says so: both are TIMESTAMP, the
+              // COLUMN's type -- `chainType` is the derivation that describes the rendering
+              // (#367), and it answers TIME. Two wrong keys were tried before measuring it.
+              case _: SQLTemporal if receiverIsTime =>
+                nullIf(s"$arg0.compareTo($arg1) == 0")
+              case _: SQLTemporal => nullIf(s"$arg0.isEqual($arg1)")
+              // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard.
+              case _ => s"$arg0 == $arg1 ? null : $arg0"
             }
           context match {
             case Some(ctx) =>
@@ -296,14 +324,52 @@ package object cond {
       else Right(())
     }
 
-    private[this] def checkCase(e: String, c: String, v: String): String = {
-      out match {
-        case SQLTypes.Varchar =>
-          s"$e != null && $e.compareTo($c) == 0 ? $v"
-        case _: SQLTemporal =>
-          s"$e != null && $e.isEqual($c) ? $v"
-        case _ => s"$e == $c ? $v"
-      }
+    /** Whether the CASE EXPRESSION -- the receiver of every `WHEN` comparison -- renders a
+      * `java.time.LocalTime`. `out` reports the CASE's result type and cannot say (issue #373).
+      */
+    private[this] def receiverIsTime: Boolean = expression.exists {
+      case i: Identifier => i.chainType == SQLTypes.Time
+      case other         => other.out == SQLTypes.Time
+    }
+
+    /** @param candidateNullable
+      *   whether `c` is a BOUND parameter that can hold `null`.
+      *
+      * 🔴 The CANDIDATE needs a guard too (issue #373). `CASE <expr> WHEN <column> THEN …` emitted
+      * `e != null && e.isEqual(c) ? v` and called the comparison with `c == null` for any document
+      * missing that column -- MEASURED on ES 8.18: `NullPointerException:
+      * ChronoLocalDate.toEpochDay() because "other" is null`. `compareTo` on the `Varchar` arm has
+      * exactly the same hole.
+      *
+      * ⚠️ The candidate is ALWAYS bound before it is guarded, so `c != null` costs one reference
+      * and never a second rendering of its chain. See the call site for why no predicate decides
+      * it: none of the three the AST offers can see a function-wrapped column's nullability.
+      */
+    private[this] def checkCase(
+      e: String,
+      c: String,
+      v: String,
+      candidateNullable: Boolean
+    ): String = {
+      val guard = if (candidateNullable) s"$e != null && $c != null" else s"$e != null"
+      // 🔴 A TIME is decided by what the RECEIVER RENDERS, not by `out` (issue #373, found by
+      // review). `out` is the CASE's RESULT type -- the least common supertype of the expression,
+      // the conditions and the results -- and it reports TIMESTAMP for
+      // `CASE CAST(d AS TIME) WHEN CAST(ts AS TIME) …` whose operands are both `LocalTime`, so an
+      // arm keyed on it was DEAD and that shape still emitted `isEqual`. MEASURED on ES 8.18:
+      // `dynamic method [java.time.LocalTime, isEqual/1] not found`, the very failure this PR's
+      // first commit exists to remove. `Identifier.chainType` (#367) is the derivation that
+      // describes the rendering -- the same key `NULLIF` needed.
+      if (receiverIsTime) s"$guard && $e.compareTo($c) == 0 ? $v"
+      else
+        out match {
+          case SQLTypes.Varchar =>
+            s"$guard && $e.compareTo($c) == 0 ? $v"
+          case _: SQLTemporal =>
+            s"$guard && $e.isEqual($c) ? $v"
+          // `==` is null-safe in Painless, so a numeric / boolean candidate needs no guard.
+          case _ => s"$e == $c ? $v"
+        }
     }
 
     /** A result rendering that can sit opposite a `null` branch.
@@ -360,16 +426,26 @@ package object cond {
                       })
                     expParam match {
                       case Some(e) =>
-                        if (cond.nullable) {
-                          ctx.addParam(LiteralParam(c)) match {
-                            case Some(c) => checkCase(e, c, r)
-                            case _       => checkCase(e, c, r)
-                          }
-                        } else {
-                          checkCase(e, c, r)
+                        // 🔴 ALWAYS bound, ALWAYS guarded (issue #373, found by review). The
+                        // earlier version asked `cond.nullable`, and MEASURED that is false for a
+                        // function-wrapped column -- `UPPER(other)` reports `nullable = false`
+                        // while rendering `(param3 == null) ? null : param3.toUpperCase()` -- so
+                        // `CASE UPPER(name) WHEN UPPER(other) …` was neither bound nor guarded and
+                        // threw `null_pointer_exception: Cannot read field "value"` on ES 8.18.
+                        //
+                        // No predicate decides it any more, because none of the three I measured
+                        // is reliable: the wrapper's `name` is EMPTY, its `nullable` is false, and
+                        // its function is not a `FunctionWithIdentifier`, so the inner column is
+                        // not reachable from here. The unconditional rule is provably safe
+                        // instead: binding is a no-op when the candidate is already a name
+                        // (`addParam` returns the existing one), and `c != null` on a candidate
+                        // that cannot be null is redundant bytes, never a different answer.
+                        ctx.addParam(LiteralParam(c)) match {
+                          case Some(bound) => checkCase(e, bound, r, candidateNullable = true)
+                          case _           => checkCase(e, c, r, candidateNullable = false)
                         }
                       case _ =>
-                        checkCase(e, c, r)
+                        checkCase(e, c, r, candidateNullable = false)
                     }
                   }
                   .mkString(" : ")

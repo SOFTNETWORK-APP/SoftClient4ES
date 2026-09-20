@@ -289,7 +289,11 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
       "def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); " +
       "def param3 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); "
     )
-    emitted should endWith("? param3 : param1 != null && param1.isEqual(param4) ? param5 : param6")
+    // The candidate is guarded too (issue #373): `lastSeen` is a column and a document may not
+    // have it, which was an NPE before.
+    emitted should endWith(
+      "? param3 : param1 != null && param4 != null && param1.isEqual(param4) ? param5 : param6"
+    )
     // Rule 2, normalisation FIRST: the branch's DATE narrowing was appended to this object before
     // the chain rendered; the UTC normalisation must still come first (`LocalDate` has no
     // `toInstant()`).
@@ -340,9 +344,8 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
     // The TIME twin (review): `CAST(ts AS TIME) + INTERVAL 1 HOUR > …` was right on `main` for the
     // same accidental reason, and re-narrowed a `LocalTime` once the interval fold kept the
     // coercion. Executed on ES 8.18 over midnight dates: the first selects every document. The
-    // second is pinned for its IDENTITY only -- `=` is spelled `isEqual`, which `LocalTime` does
-    // not have (`dynamic method [java.time.LocalTime, isEqual/1] not found`), on `main` too:
-    // #367's comparison spelling, not owned here.
+    // second now EXECUTES: `=` over a TIME receiver is spelled `equals`, which `LocalTime` has
+    // (issue #373) -- it was pinned for its identity only while it still emitted `isEqual`.
     predicateOf(
       "SELECT name FROM t WHERE CAST(d AS TIME) + INTERVAL 1 HOUR > CAST('00:30:00' AS TIME)"
     ) shouldBe
@@ -352,7 +355,8 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
     predicateOf("SELECT name FROM t WHERE CAST(d AS TIME) = CAST('00:00:00' AS TIME)") shouldBe
     s"def param1 = $guardedDoc.toLocalTime()); " +
     "def param2 = LocalTime.parse(\"00:00:00\", DateTimeFormatter.ISO_LOCAL_TIME); " +
-    "param1 == null ? false : (param1.isEqual(param2))"
+    // `compareTo`, not `isEqual`: `LocalTime` is the one temporal without it (issue #373).
+    "param1 == null ? false : (param1.compareTo(param2) == 0)"
   }
 
   "the identity key" should "not read the narrowing off the object" in {
