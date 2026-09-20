@@ -203,12 +203,17 @@ class ConversionTargetTypeSpec extends AnyFlatSpec with Matchers {
   }
 
   // -- C - nesting / paren balance (#219/#220 must stay closed) ---------------
+  // NOTE: the `a KEYWORD` column in the SCRIPT AS rows below is declared deliberately. These rows
+  // are about paren balance, not about resolution, and a computed column may no longer read an
+  // undeclared column (`validateScriptReferences`). Declaring it keeps the rows testing what they
+  // were written to test.
   it should "survive nesting inside another function and inside SCRIPT AS" in {
     val nested = statementOf("SELECT CONCAT(CAST(name AS CHAR(10)), 'x') FROM t")
     Parser(nested.sql) shouldBe Right(nested)
     identifierOf("SELECT CONCAT(CAST('1' AS CHAR(10)), 'x') FROM t")
       .painless(None) should include("String.valueOf")
-    val script = statementOf("CREATE TABLE t (c VARCHAR SCRIPT AS (UPPER(CAST(a AS CHAR(3)))))")
+    val script =
+      statementOf("CREATE TABLE t (a KEYWORD, c VARCHAR SCRIPT AS (UPPER(CAST(a AS CHAR(3)))))")
     Parser(script.sql) shouldBe Right(script)
   }
 
@@ -218,8 +223,8 @@ class ConversionTargetTypeSpec extends AnyFlatSpec with Matchers {
     // `(` matches but the parameter does not, the position is restored.
     Parser("CREATE TABLE t (c VARCHAR FIELDS (raw KEYWORD))").isRight shouldBe true
     Parser("CREATE TABLE t (c VARCHAR(255) FIELDS (raw KEYWORD))").isRight shouldBe true
-    Parser("CREATE TABLE t (c VARCHAR SCRIPT AS (UPPER(a)))").isRight shouldBe true
-    Parser("CREATE TABLE t (c VARCHAR(255) SCRIPT AS (UPPER(a)))").isRight shouldBe true
+    Parser("CREATE TABLE t (a KEYWORD, c VARCHAR SCRIPT AS (UPPER(a)))").isRight shouldBe true
+    Parser("CREATE TABLE t (a KEYWORD, c VARCHAR(255) SCRIPT AS (UPPER(a)))").isRight shouldBe true
     Parser("SELECT amount::BIGINT FROM t WHERE id IN (1,2)").isRight shouldBe true
     Parser("SELECT (amount::INT) + 1 FROM t").isRight shouldBe true
   }

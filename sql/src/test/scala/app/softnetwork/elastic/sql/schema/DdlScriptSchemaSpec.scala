@@ -132,15 +132,30 @@ class DdlScriptSchemaSpec extends AnyFlatSpec with Matchers {
     ) shouldBe "def param1 = ctx.a; ctx.b = (param1 == null) ? null : param1.toUpperCase()"
   }
 
-  // -- OQ-4: an operand the schema cannot resolve -----------------------------------------------
+  // -- OQ-4, REVERSED 2026-09-20 ----------------------------------------------------------------
 
-  "an operand that names no declared column" should "stay silent and emit the identity" in {
-    // The lead's OQ-4 ruling. A `CREATE TABLE` that works today keeps working: the conversion
-    // simply does not fire, exactly as before, rather than the statement being rejected.
-    createSource(
-      "CREATE TABLE t (zip_n BIGINT SCRIPT AS (CAST(absent_column AS BIGINT)))",
-      "zip_n"
-    ) shouldBe "def param1 = ctx.absent_column; ctx.zip_n = param1"
+  /** 🔴 This row previously asserted the OPPOSITE, and the reversal is deliberate.
+    *
+    * OQ-4 ruled that an operand naming no declared column should "stay silent and emit the
+    * identity" -- the statement accepted, the conversion simply not firing. The lead overturned
+    * that on 2026-09-20: *"Existence and type otherwise the painless will not be accurate."*
+    *
+    * The emission is what settles it. An unresolved operand has no declared type, so the processor
+    * writes Painless for a value the document will not carry, and every failure mode is at INGEST,
+    * long after the DDL was accepted:
+    * {{{
+    * CREATE TABLE t (c INTEGER SCRIPT AS (YEAR(nosuch)))
+    *   -> def param1 = ctx.nosuch.get(ChronoField.YEAR)    // NPE, swallowed: column ABSENT
+    * CREATE TABLE t (meta STRUCT FIELDS (dt DATE), c TIMESTAMP SCRIPT AS (DATE_TRUNC(meta.other, MONTH)))
+    *   -> ZonedDateTime.parse(...)  where a DECLARED date column would get LocalDate.parse
+    *       (measured on 8.18.3: `Text '2025-01-10' could not be parsed at index 10`)
+    * }}}
+    */
+  "an operand that names no declared column" should "be rejected, not silently emitted" in {
+    Parser("CREATE TABLE t (zip_n BIGINT SCRIPT AS (CAST(absent_column AS BIGINT)))") match {
+      case Left(err) => err.msg should include("'absent_column', which does not exist")
+      case Right(_)  => fail("an undeclared operand was accepted")
+    }
   }
 
   // -- the DDL text is not disturbed ------------------------------------------------------------
