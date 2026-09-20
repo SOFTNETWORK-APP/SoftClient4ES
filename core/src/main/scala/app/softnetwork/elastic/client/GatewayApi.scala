@@ -84,6 +84,7 @@ import app.softnetwork.elastic.sql.query.{
   WatcherStatement
 }
 import app.softnetwork.elastic.sql.schema.{
+  validateScriptReferences,
   Impossible,
   IngestPipeline,
   IngestPipelineType,
@@ -801,6 +802,26 @@ class TableExecutor(
           s"🔄 Merging existing index $indexName DDL with new DDL."
         )
         val updatedTable: Table = schema.merge(alter.statements)
+
+        // 🔴 The ALTER half of the computed-column reference check. `CreateTable.validate()` runs
+        // the same rule in the `sql` module, but an ALTER statement carries no column list, so the
+        // only place the whole table is known is HERE, after the merge against the table loaded
+        // from Elasticsearch. Without this, `ALTER TABLE t SET SCRIPT AS (…)` could still install
+        // a processor reading a column the table does not have -- the defect fixed on the CREATE
+        // path, reached by a different statement.
+        validateScriptReferences(updatedTable) match {
+          case Left(reason) =>
+            return Future.successful(
+              ElasticFailure(
+                ElasticError(
+                  message = s"Invalid computed column in ALTER TABLE $indexName: $reason",
+                  statusCode = Some(400),
+                  operation = Some("ddl")
+                )
+              )
+            )
+          case Right(_) => // ok
+        }
 
         // load default pipeline diff if needed
         val defaultPipelineDiff: Option[List[PipelineDiff]] =

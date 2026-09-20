@@ -422,9 +422,15 @@ CREATE TABLE orders (
 `ALTER TABLE ... ALTER COLUMN ... SET SCRIPT AS (...)` resolves the same way, against the table as
 it currently exists.
 
-> An operand that names no column of the table is left **unconverted** rather than rejected: the
-> statement still succeeds and the raw value is stored. Check the column names if a computed column
-> comes back with the type of its source instead of its own.
+> An operand must name a column the table declares, and must have a type the function can take.
+> `CREATE TABLE t (c INTEGER SCRIPT AS (YEAR(nosuch)))` and
+> `CREATE TABLE t (k KEYWORD, c INTEGER SCRIPT AS (YEAR(k)))` are both rejected with a message
+> naming the column. Declaration ORDER does not matter — a computed column may reference one
+> declared after it, and may reference another computed column.
+>
+> Two cases are deliberately **not** checked, because the generated script coerces the value and
+> works: a string function's argument (`CONCAT(name, ' ', id)` over a numeric `id`), and a
+> `STORED` column, whose source columns need not exist in the table that carries it.
 
 **Date and time functions in a computed column.** In an ingest script the operand is the raw JSON
 value of the incoming document, not the temporal object a query sees, so `YEAR(created)`,

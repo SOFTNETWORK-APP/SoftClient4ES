@@ -16,8 +16,14 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
+import app.softnetwork.elastic.sql.function.{
+  Function => SQLFunction,
+  FunctionN,
+  FunctionWithIdentifier
+}
+import app.softnetwork.elastic.sql.function.cond.Case
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -568,6 +574,215 @@ package object schema {
 
   }
 
+  /** Every column a `SCRIPT AS (…)` expression READS, paired with the function that consumes it.
+    *
+    * Both DDL defects this answers are the same one seen from two sides: a reference the table does
+    * not have, and a reference whose DECLARED type the consuming function cannot take. Either way
+    * the emitted Painless is written for a value the document will not carry.
+    *
+    * 🔴 The discriminator is `name.nonEmpty`, and that is a property of the AST rather than a
+    * guess: a container node (the wrapper an expression is parsed into), a literal (`functions =
+    * [LongValue]`) and `CURRENT_DATE` (`functions = [CurrentDate]`) ALL carry an empty name, and
+    * only a real column reference carries one. Measured over arithmetic, CASE, CONCAT, nested calls
+    * and constants.
+    *
+    * 🔴 The consuming function is `functions.LAST`, not the head. The chain is stored outermost
+    * first — `YEAR(DATE_TRUNC(d, MONTH))` is `[Year, DateTrunc]` — so the function that actually
+    * receives the column is the innermost one. Taking the head would check `YEAR`'s input against
+    * the column and pass, or fail, for the wrong reason.
+    */
+  private[sql] object ScriptReferences {
+
+    def of(script: PainlessScript): Seq[(Identifier, Option[SQLFunction])] = of(script, None)
+
+    private def of(
+      script: PainlessScript,
+      enclosing: Option[SQLFunction]
+    ): Seq[(Identifier, Option[SQLFunction])] = script match {
+      case i: Identifier =>
+        // 🔴 Two shapes, and only one of them puts the consumer on the identifier.
+        // `YEAR(d)` parses as the identifier `d` CARRYING the chain, so its consumer is the
+        // innermost of its own functions. `UPPER(n)` parses as a container whose function holds
+        // `n` as an ARGUMENT, and there `n` has no chain at all -- its consumer is the function
+        // that encloses it. Reading only `functions.lastOption` left every argument-shaped operand
+        // unchecked, which accepted `UPPER(n)` over an INTEGER.
+        val consumer = i.functions.lastOption.orElse(enclosing)
+        val here = if (i.name.nonEmpty) Seq(i -> consumer) else Nil
+        // ...and ALWAYS recurse: a named identifier can still carry arguments of its own, as
+        // `DATE_DIFF(a, b, YEAR)` does.
+        // 🔴 `filterNot(_ eq i)` is load-bearing, not tidiness. A `FunctionWithIdentifier`
+        // (`DATE_PARSE`, `DATE_FORMAT`, `LAST_DAY`, `ISNULL`, ...) lists its OWN receiver in
+        // `args`, so without it every such node yielded itself twice and the walk was 2^depth:
+        // measured 16,384 pairs and 148 ms at depth 14, with one rejection message repeated 8
+        // times for a 3-deep expression.
+        here ++ i.functions.flatMap(f => operandsOf(f, i).flatMap(of(_, Some(f))))
+      // 🔴 A CASE's WHEN condition is a CRITERIA, not an identifier -- `nosuch > 0` parses as a
+      // `GenericExpression`. Without these arms the walk bottomed out at the condition and
+      // `CASE WHEN nosuch > 0 THEN 1 ELSE 0 END` was accepted with an undeclared column in it.
+      case e: Expression =>
+        of(e.identifier, enclosing) ++
+          // 🔴 BETWEEN's bounds are NOT reachable as a `PainlessScript`: `BetweenExpr.maybeValue`
+          // is a `FromTo`, which is not one, so `n BETWEEN lo AND nosuch` walked to `n` alone and
+          // the undeclared bound was ACCEPTED -- the original defect, reached through a criteria
+          // class instead of a function. Found by independent review; the completeness guard now
+          // carries a BETWEEN row.
+          e.maybeValue.toSeq
+            .flatMap {
+              case ft: FromTo => Seq(ft.from, ft.to)
+              case other      => Seq(other)
+            }
+            .collect { case p: PainlessScript => p }
+            .flatMap(of(_, enclosing))
+      case p: Predicate =>
+        Seq(p.leftCriteria, p.rightCriteria)
+          .collect { case c: PainlessScript => c }
+          .flatMap(of(_, enclosing))
+      // 🔴 A function can also appear as an operand DIRECTLY, with no identifier wrapping it:
+      // in `(a + b) * e` the left operand of `*` is the `ArithmeticExpression` for `a + b`. Without
+      // this arm the walk saw only `e`.
+      case f: SQLFunction => operandsOf(f).flatMap(of(_, Some(f)))
+      case _              => Nil
+    }
+
+    /** The operands a function READS.
+      *
+      * 🔴 NOT `FunctionN.args`, which is a TYPE-COMPUTATION list and not an operand list:
+      * `Case.args` deliberately omits the WHEN conditions (it feeds `leastCommonSuperType` over the
+      * result branches), so a walk over `args` alone accepted `CASE WHEN nosuch > 0 THEN 1 ELSE 0
+      * END`. Anything carrying operands some other way is likewise invisible here -- the #318
+      * failure mode, where enumerating by type fails OPEN and no rejection test notices.
+      * `ScriptReferenceValidationSpec` guards it by asserting this walk finds exactly the columns
+      * the EMISSION reads, derived independently; that assertion is what caught the `Case`
+      * omission.
+      */
+    /** The operands of `f`, EXCLUDING the receiver `self` already being visited.
+      *
+      * 🔴 A `FunctionWithIdentifier` (`DATE_PARSE`, `DATE_FORMAT`, `LAST_DAY`, `ISNULL`, ...) lists
+      * its OWN receiver among its operands, so a naive walk yielded every such node twice and was
+      * 2^depth -- measured 32 pairs at depth 5 for `LAST_DAY(LAST_DAY(...))`, and 16,384 at depth
+      * 14. Reference equality does NOT catch it (the receiver is a distinct instance), so the
+      * exclusion is by the trait that declares the relationship.
+      */
+    private def operandsOf(f: SQLFunction, self: Identifier): List[PainlessScript] =
+      operandsOf(f).filterNot { arg =>
+        f match {
+          // the operand that IS this function's receiver -- `self` is already being visited
+          case fwi: FunctionWithIdentifier => (fwi.identifier eq arg) || (fwi.identifier eq self)
+          case _                           => false
+        }
+      }
+
+    private def operandsOf(f: SQLFunction): List[PainlessScript] = f match {
+      case c: Case =>
+        c.expression.toList ++
+          c.conditions.flatMap { case (cond, res) => List(cond, res) } ++
+          c.default.toList
+      case fn: FunctionN[_, _] => fn.args
+      case _                   => Nil
+    }
+  }
+
+  // `private[elastic]` and not `private[sql]`: the ALTER half of this rule lives in `core`
+  // (`GatewayApi`), because only the point where an ALTER is APPLIED holds the whole table.
+  /** May a column declared `declared` be handed to a function whose input type is `required`?
+    *
+    * 🔴 It takes BOTH relations because they answer complementary halves, and neither alone is
+    * right -- measured:
+    *
+    *   - `matches` handles ABSTRACT input types. A function often declares `NUMERIC`, `TEMPORAL` or
+    *     `ANY`, which no column is ever DECLARED as, and only `matches` relates a concrete type to
+    *     its abstract supertype (`INT -> NUMERIC`, `ANY -> TEMPORAL`). `canConvert` says false.
+    *   - `canConvert` handles CONCRETE widening inside one family. `DATE -> DATETIME` is the
+    *     published `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` example, which stores `age` correctly
+    *     on all four majors; `matches` says false, because it is a same-family IDENTITY check and
+    *     deliberately not a conversion check. Using `matches` alone REJECTED that example.
+    *
+    * Both say false for every operand that must be refused (`KEYWORD -> TEMPORAL`, `INT ->
+    * TEMPORAL`, `INT -> VARCHAR`, `BOOLEAN -> VARCHAR`, `KEYWORD -> NUMERIC`), so the union widens
+    * what is ACCEPTED without weakening what is REJECTED.
+    *
+    * ⚠️ `canConvert` is READ here, never changed. Its "expansion only" numeric rule exists for
+    * `TableDiff`, where loosening it would silently legalise a narrowing column-type change in an
+    * ALTER. If this operand rule ever needs to be more permissive it needs its OWN relation --
+    * widening `canConvert` would reach the schema-evolution check too.
+    */
+  private def acceptableOperand(declared: SQLType, required: SQLType): Boolean =
+    // 🔴 A STRING-typed input is NOT checked, and that is a measured limit rather than an omission.
+    // The declared `inputType` does not say whether the emission coerces: `CONCAT` and `UPPER` BOTH
+    // declare VARCHAR, yet `CONCAT(a, n)` emits `String.valueOf(param2)` and stores `"ORD-42"`
+    // correctly on ES 8.18.3, while `UPPER(n)` emits `param1.toUpperCase()` and breaks. Checking
+    // the declared type rejected BOTH -- and `CONCAT(name, ' ', id)` is the most ordinary computed
+    // column there is. `DATE_PARSE(d, 'yyyy-MM-dd')` over a declared DATE is the same shape: at
+    // ingest `ctx.d` IS the raw JSON string, which is the reason the function exists.
+    //
+    // So the check is confined to the inputs where no coercion exists and the emission calls a
+    // method straight on the operand -- temporal and numeric. That is also where the original
+    // defect lives: a wrong declared type picks the wrong parse. `UPPER(n)` is knowingly left
+    // accepted; catching it needs the EMISSION's coercion behaviour, not a declared type.
+    required.isInstanceOf[SQLLiteral] ||
+    SQLTypeUtils.matches(declared, required) ||
+    SQLTypeUtils.canConvert(declared, required)
+
+  /** Reject a computed column whose expression reads a column the table does not declare, or hands
+    * a column to a function that cannot take its declared type.
+    *
+    * 🔴 Runs on the RESOLVED table -- after `Table.update()` has settled every path and re-derived
+    * every script -- which is why a forward reference such as `CREATE TABLE t (c INTEGER SCRIPT AS
+    * (n + 1), n INTEGER)` is accepted: at that point `n` is in the column list regardless of
+    * declaration order. Validating the PARSED columns instead would reject it.
+    *
+    * 🔴 The type read is the column's DECLARED type, never `Identifier.baseType`: `runtimeType`
+    * collapses every temporal declaration to `Timestamp`, and the declaration is exactly what the
+    * ingest emission needs -- a DATE column parses as a `LocalDate`, a TIMESTAMP as a
+    * `ZonedDateTime`, and getting that wrong is the defect this rejects.
+    */
+  private[elastic] def validateScriptReferences(schema: Schema): Either[String, Unit] = {
+    // 🔴 A REGULAR table only. Every other table type projects columns from somewhere else, so its
+    // own column list is not the population a reference is checked against: a materialized view's
+    // computed column legitimately reads a column of its SOURCE (`effective_date` from
+    // `createdAt`), and at ingest that value is in the incoming document even though the view never
+    // declares it. Validating those here rejected an MV round-trip -- and MV deployment RENDERS a
+    // stage's schema to DDL and runs the text, so it would have broken deployment, not a test.
+    // Reaching them needs the source schema, which this seam does not hold.
+    if (!schema.isRegular) return Right(())
+
+    def columnErrors(column: Column): Seq[String] =
+      // 🔴 A `STORED` column is skipped: `Column.processors` is `script.filterNot(_.materialized)`,
+      // so it emits NOTHING that can run at ingest, and the whole justification for this check --
+      // "the emitted Painless is written for a value the document will not carry" -- does not
+      // apply. It is also the documented POINT of `STORED`: the same column is an executing
+      // `SCRIPT AS` in the index that computes it and a `STORED` one in every index it flows into,
+      // where the source columns deliberately did not survive the transform.
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.expr)
+        .flatMap(ScriptReferences.of)
+        .flatMap { case (id, consumer) =>
+          schema.find(id.path) match {
+            case None =>
+              Seq(
+                s"Column '${column.path}' reads '${id.path}', which does not exist " +
+                s"in table '${schema.name}'"
+              )
+            case Some(referenced) =>
+              consumer.collect { case fn: FunctionN[_, _] => fn }.toSeq.flatMap { fn =>
+                if (acceptableOperand(referenced.dataType, fn.inputType)) Nil
+                else
+                  Seq(
+                    s"Column '${column.path}' applies ${fn.sql} to '${id.path}', which is " +
+                    s"declared ${referenced.dataType.typeId} and not ${fn.inputType.typeId}"
+                  )
+              }
+          }
+        } ++ column.multiFields.flatMap(columnErrors)
+
+    schema.columns.flatMap(columnErrors).distinct match {
+      case Nil    => Right(())
+      case errors => Left(errors.mkString("; "))
+    }
+  }
+
   /** Attach `schema` to a DDL `SCRIPT AS (…)` expression, so each operand resolves to its declared
     * column and `SQLTypeUtils.coerce` can see a real type instead of `Any`.
     *
@@ -580,8 +795,13 @@ package object schema {
     * The synthetic statement carries no SELECT, no GROUP BY and one placeholder table: `update`
     * reads `request.schemas.get(<main table>)` first and falls back to `request.schema`, which is
     * the schema handed in here, so the table's NAME is irrelevant and no alias, bucket or field
-    * alias can resolve. An operand the schema does not know simply keeps `col = None` — the lead's
-    * OQ-4 ruling, and byte-for-byte today's emission.
+    * alias can resolve. An operand the schema does not know simply keeps `col = None`.
+    *
+    * ⚠️ That was the lead's OQ-4 ruling, which also decided such a statement should be ACCEPTED.
+    * The ACCEPTANCE half was overturned on 2026-09-20 ("Existence and type otherwise the painless
+    * will not be accurate") and is now enforced by `validateScriptReferences`. RESOLUTION is
+    * unchanged and still byte-for-byte today's emission: nothing rejected here, so nothing that
+    * reaches emission behaves differently.
     *
     * 🔴 A temporal-SOURCE arm still must NOT fire here, and does not: the processor context makes
     * `SQLTypeUtils.coerce`'s `isProcessorContext` guard decline them, because in an ingest script
