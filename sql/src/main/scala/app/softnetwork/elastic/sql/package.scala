@@ -521,15 +521,25 @@ package object sql {
       *
       * 🔴 WHY UNDER-SPLITTING IS SAFE, and it is load-bearing. The only direction this can differ
       * from `String.split(";")` is FEWER cuts, and it does that whenever a literal is left
-      * unbalanced -- which is reachable, because `function/time/package.scala` builds
-      * `ofPattern("<pattern>")` by raw concatenation without `escapePainlessString`, so
-      * `DATE_FORMAT(d, 'yyyy\')` emits an unterminated literal and every later `;` is read as
-      * string content. The assignment then lands in the middle of the script rather than at the
-      * end. That is harmless ONLY because this scanner's escape rule is Painless's own: for any
-      * emission Painless accepts, "inside a literal" means the same to both, so a disagreement
-      * implies an unbalanced literal, and Elasticsearch rejects such a script with a compile error
-      * whichever way it was split. Both spellings measured as `compile error` on 8.18.3. If the
-      * escape rule here is ever relaxed, that argument dies with it.
+      * unbalanced -- which is STILL REACHABLE, so the argument below is live, not ceremonial.
+      *
+      * The route this paragraph used to NAME -- `function/time/package.scala` building
+      * `ofPattern("<pattern>")` by raw concatenation, so `DATE_FORMAT(d, 'yyyy\')` emitted an
+      * unterminated literal -- was CLOSED by issue #383: that emitter escapes its pattern through
+      * `escapePainlessString`. It is replaced here by a MEASURED one rather than deleted, because a
+      * paragraph that reasons about an unreachable case rots: `Identifier.paramName` builds
+      * `doc['<path>']` by raw concatenation too, and a quoted identifier may carry an apostrophe
+      * since story 21.1, so `SELECT UPPER("child's_name") FROM t` emits `doc['child's_name']` and
+      * this scanner desyncs on it exactly as it did on the pattern, and the ingest assignment moves
+      * out of last position -- the #373 failure mode. Measured, not inferred.
+      *
+      * No audit here enumerates every emission site, so nothing below is a proof of unreachability.
+      *
+      * It is harmless ONLY because this scanner's escape rule is Painless's own: for any emission
+      * Painless accepts, "inside a literal" means the same to both, so a disagreement implies an
+      * unbalanced literal, and Elasticsearch rejects such a script with a compile error whichever
+      * way it was split. Both spellings measured as `compile error` on 8.18.3. If the escape rule
+      * here is ever relaxed, that argument dies with it.
       */
     def splitStatements(rendered: String): Array[String] =
       if (rendered.isEmpty) Array(rendered)

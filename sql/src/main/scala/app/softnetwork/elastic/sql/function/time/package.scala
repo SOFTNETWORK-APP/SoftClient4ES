@@ -17,6 +17,8 @@
 package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
+  escapePainlessString,
+  escapeStringLiteral,
   query,
   DateMathRounding,
   DateMathScript,
@@ -699,10 +701,24 @@ package object time {
       */
     private val FractionMarker = "%f"
 
+    /** 🔴 The caller's pattern is a SQL STRING LITERAL (`TypeParser.literal`), so it can carry a
+      * `"` or a `\\` and it lands inside an emitted Painless DOUBLE-QUOTED literal. Unescaped, a
+      * pattern that closes the literal and re-opens one so the parens balance EXECUTES as Painless
+      * -- measured on real Elasticsearch 8.18.3: an ingest pipeline wrote an undeclared field into
+      * every document it touched (issue #383). `escapePainlessString` is the one owner of this
+      * channel; story 21.5 part D applied it to `Value.painless` and `Where.likePainless` and
+      * missed these three sites.
+      *
+      * 🔴 ORDERING, and it is load-bearing: the escaping happens AFTER `convert()` and AFTER the
+      * `%f` split, because `at` / `head` / `tail` index into the UNESCAPED pattern. Escaping each
+      * piece independently is sound only because the escape map is per-character; escaping the
+      * ASSEMBLED call instead would corrupt the emitted code around the literals, and the two
+      * bridge `SQLQuerySpec` byte-identity fixtures are what catch that.
+      */
     protected def param: String = {
       val pattern = convert()
       val at = pattern.indexOf(FractionMarker)
-      if (at < 0) "DateTimeFormatter.ofPattern(\"" + pattern + "\")"
+      if (at < 0) "DateTimeFormatter.ofPattern(\"" + escapePainlessString(pattern) + "\")"
       else {
         // A decimal point written immediately before `%f` BELONGS to the fraction: handing it to
         // `appendFraction` is what makes a zero-nanosecond value format as `12:00:00` instead of
@@ -713,9 +729,9 @@ package object time {
         // it rather than emitting a pattern `ofPattern` would reject.
         val tail = pattern.substring(at + FractionMarker.length).replace(FractionMarker, "SSS")
         val b = new StringBuilder("new DateTimeFormatterBuilder()")
-        if (head.nonEmpty) b.append(s""".appendPattern("$head")""")
+        if (head.nonEmpty) b.append(s""".appendPattern("${escapePainlessString(head)}")""")
         b.append(s".appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, $absorbsPoint)")
-        if (tail.nonEmpty) b.append(s""".appendPattern("$tail")""")
+        if (tail.nonEmpty) b.append(s""".appendPattern("${escapePainlessString(tail)}")""")
         b.append(".toFormatter()")
         b.toString
       }
@@ -814,7 +830,12 @@ package object time {
 
     override def sql: String = DateParse.sql
     override def toSQL(base: String): String = {
-      s"$sql($base, '$format')"
+      // The pattern is re-emitted as a SQL string literal, so it needs that channel's escaper --
+      // `escapeStringLiteral`, the same owner `StringValue.sql` uses. Without it the IDIOMATIC
+      // java.time spelling for embedded text (`yyyy'T'MM`) rendered SQL the grammar REJECTS, and
+      // this render is not decorative: `SHOW CREATE TABLE` publishes it and
+      // `MaterializedViewExtension` persists it and runs `client.run(alter.sql)` (issue #383).
+      s"$sql($base, '${escapeStringLiteral(format)}')"
     }
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
@@ -895,7 +916,12 @@ package object time {
 
     override def sql: String = DateFormat.sql
     override def toSQL(base: String): String = {
-      s"$sql($base, '$format')"
+      // The pattern is re-emitted as a SQL string literal, so it needs that channel's escaper --
+      // `escapeStringLiteral`, the same owner `StringValue.sql` uses. Without it the IDIOMATIC
+      // java.time spelling for embedded text (`yyyy'T'MM`) rendered SQL the grammar REJECTS, and
+      // this render is not decorative: `SHOW CREATE TABLE` publishes it and
+      // `MaterializedViewExtension` persists it and runs `client.run(alter.sql)` (issue #383).
+      s"$sql($base, '${escapeStringLiteral(format)}')"
     }
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
@@ -1021,7 +1047,12 @@ package object time {
 
     override def sql: String = DateTimeParse.sql
     override def toSQL(base: String): String = {
-      s"$sql($base, '$format')"
+      // The pattern is re-emitted as a SQL string literal, so it needs that channel's escaper --
+      // `escapeStringLiteral`, the same owner `StringValue.sql` uses. Without it the IDIOMATIC
+      // java.time spelling for embedded text (`yyyy'T'MM`) rendered SQL the grammar REJECTS, and
+      // this render is not decorative: `SHOW CREATE TABLE` publishes it and
+      // `MaterializedViewExtension` persists it and runs `client.run(alter.sql)` (issue #383).
+      s"$sql($base, '${escapeStringLiteral(format)}')"
     }
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
@@ -1090,7 +1121,12 @@ package object time {
 
     override def sql: String = DateTimeFormat.sql
     override def toSQL(base: String): String = {
-      s"$sql($base, '$format')"
+      // The pattern is re-emitted as a SQL string literal, so it needs that channel's escaper --
+      // `escapeStringLiteral`, the same owner `StringValue.sql` uses. Without it the IDIOMATIC
+      // java.time spelling for embedded text (`yyyy'T'MM`) rendered SQL the grammar REJECTS, and
+      // this render is not decorative: `SHOW CREATE TABLE` publishes it and
+      // `MaterializedViewExtension` persists it and runs `client.run(alter.sql)` (issue #383).
+      s"$sql($base, '${escapeStringLiteral(format)}')"
     }
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =

@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.parser
 
+import app.softnetwork.elastic.sql.PainlessOperandForm
 import app.softnetwork.elastic.sql.query.SingleSearch
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -88,5 +89,87 @@ class PainlessLiteralEscapingSpec extends AnyFlatSpec with Matchers {
       case other => fail(s"unexpected $other")
     }
     painlessOf("""SELECT CONCAT('a"b', name) FROM t""") should include("""a\"b""")
+  }
+
+  // -- issue #383 - a date-format PATTERN is a caller-supplied string literal too ---------------
+  // Story 21.5 part D swept `Value.painless` and `Where.likePainless` and MISSED
+  // `FunctionWithDateTimeFormat.param`, which concatenated the caller's pattern into
+  // `ofPattern("...")` raw. The pattern reaches it from `TypeParser.literal`, so `"` and `\\` are
+  // both reachable with ordinary SQL.
+
+  "a date-format pattern containing a double quote" should "emit VALID escaped Painless" in {
+    painlessOf("""SELECT DATE_FORMAT(d, 'yyyy"MM') FROM t""") should include(
+      """DateTimeFormatter.ofPattern("yyyy\"MM")"""
+    )
+    painlessOf("""SELECT DATE_PARSE(name, 'yyyy"MM') FROM t""") should include(
+      """DateTimeFormatter.ofPattern("yyyy\"MM")"""
+    )
+    // Both remaining members of the family, so the guard covers the four functions and not two.
+    painlessOf("""SELECT DATETIME_FORMAT(ts, 'yyyy"MM') FROM t""") should include(
+      """DateTimeFormatter.ofPattern("yyyy\"MM")"""
+    )
+    painlessOf("""SELECT DATETIME_PARSE(name, 'yyyy"MM') FROM t""") should include(
+      """DateTimeFormatter.ofPattern("yyyy\"MM")"""
+    )
+  }
+
+  "the %f fraction path" should "escape BOTH the head and the tail independently" in {
+    // `%f` splits the pattern into two `appendPattern` arguments, each its own Painless literal.
+    // Escaping the ASSEMBLED call instead would corrupt the code around them, so the two halves
+    // are asserted separately - and the split still indexes into the UNESCAPED pattern.
+    painlessOf("""SELECT DATETIME_FORMAT(ts, '"HH:mm:ss.%f') FROM t""") should include(
+      """.appendPattern("\"HH:mm:ss")"""
+    )
+    painlessOf("""SELECT DATETIME_FORMAT(ts, 'HH:mm:ss.%f"X') FROM t""") should include(
+      """.appendPattern("\"X")"""
+    )
+    // ... and the code between them is untouched by the escaper.
+    painlessOf("""SELECT DATETIME_FORMAT(ts, '"HH:mm:ss.%f"X') FROM t""") should include(
+      """.appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)"""
+    )
+  }
+
+  "a date-format pattern ending in a backslash" should "not leave an unterminated literal" in {
+    painlessOf("""SELECT DATE_FORMAT(d, 'yyyy\\') FROM t""") should include(
+      """ofPattern("yyyy\\")"""
+    )
+  }
+
+  "the injection shape from #383" should "stay INSIDE the literal" in {
+    // The exact pattern that executed on real ES 8.18.3: it closes `ofPattern(`'s literal, runs
+    // statements of its own, then re-opens a literal so the parens balance.
+    val injected = painlessOf(
+      """SELECT DATE_FORMAT(d, 'yyyy") ; ctx.injected = 42 ; def z = DateTimeFormatter.ofPattern("yyyy') FROM t"""
+    )
+    // 🔴 The payload TEXT survives - it is data, and the user asked for it. What must not survive
+    // is the payload as CODE, so the assertion is over the script with its literals blanked out.
+    PainlessOperandForm.withoutLiterals(injected) should not include "ctx.injected"
+    injected should include("""\"""") // the quote is there, escaped
+
+    // ... and the script is the same SHAPE as a clean one: the injected `;` are literal content,
+    // not statement separators. A differential, because the absolute count is an implementation
+    // detail of the null guard.
+    val clean = painlessOf("""SELECT DATE_FORMAT(d, 'yyyy') FROM t""")
+    PainlessOperandForm.splitStatements(injected).length shouldBe
+    PainlessOperandForm.splitStatements(clean).length
+  }
+
+  "a clean date-format pattern" should "emit a BYTE-IDENTICAL script (the no-regression bound)" in {
+    // Captured from origin/main `cc232a33` before the fix. `escapePainlessString` is the identity
+    // for any value containing neither `"` nor `\\`, and every pattern in every fixture in this
+    // repo is such a value - which is what makes the two bridge `SQLQuerySpec` trees the gate.
+    painlessOf("SELECT DATE_FORMAT(d, 'yyyy-MM-dd') FROM t") shouldBe
+    "def arg0 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    """(arg0 == null) ? null : DateTimeFormatter.ofPattern("yyyy-MM-dd").format(arg0)"""
+    painlessOf("SELECT DATETIME_FORMAT(ts, 'HH:mm:ss.%f') FROM t") shouldBe
+    "def arg0 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    """(arg0 == null) ? null : new DateTimeFormatterBuilder().appendPattern("HH:mm:ss")""" +
+    ".appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().format(arg0)"
+    // The IDIOMATIC quoted-literal pattern: `'` is not escaped for Painless, because a Painless
+    // literal here is DOUBLE-quoted. This is the row that proves the fix does not touch the
+    // ordinary, documented java.time spelling.
+    painlessOf("SELECT DATE_FORMAT(d, 'yyyy''T''MM') FROM t") should include(
+      """ofPattern("yyyy'T'MM")"""
+    )
   }
 }
