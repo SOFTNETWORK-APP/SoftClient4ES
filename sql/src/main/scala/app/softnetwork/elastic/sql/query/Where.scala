@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.`type`.{
 }
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
+import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
@@ -800,10 +801,53 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       * renders `LocalDate.parse(…)`, a genuine `LocalDate`, so DATE -> TIMESTAMP is correct there —
       * one of the conversions this fix repairs.
       */
+    /** Does the chain CONVERT to a DATE, i.e. does it render a `LocalDate` rather than the column's
+      * `ZonedDateTime`?
+      *
+      * 🔴 This is what `chainType` cannot answer, and the reason issue #373 item 1 survived
+      * `chainType` (#367). `chainType` is a SQL type: `DATE_ADD(ts, INTERVAL 1 DAY)` reports DATE
+      * while still rendering a `ZonedDateTime`, and `DATE_TRUNC(d, MONTH)` reports TEMPORAL for the
+      * same reason -- both keep the receiver's Java type, which is exactly what the override below
+      * is right about. A `Conversion` does not: `CAST(d AS DATE)` emits
+      * `…toInstant().atZone(Z).toLocalDate()`, a genuine `LocalDate`.
+      *
+      * 🔴 And NOT `rendersLocalDate`, measured false here on BOTH paths -- the reason is
+      * SEQUENCING, not just registration. `operandType` is computed before the chain renders, and
+      * the no-schema fold registers `.toLocalDate()` DURING rendering; with a schema the conversion
+      * emits the narrowing inline and registers nothing at all. Measured no-schema:
+      * `painlessMethods` empty before the render, `.toLocalDate()` after it. The conversion itself
+      * is the one thing that knows at the point the decision is made.
+      *
+      * ⚠️ `targetType == Date` is UNOBSERVABLE today, and is kept for correctness rather than
+      * coverage: relaxing it to `case _: Conversion => true` passes the whole suite, because this
+      * predicate is consulted only when `chainType` is TEMPORAL and, for a temporal conversion that
+      * is not to DATE, the chain type and the column type agree so both branches answer the same.
+      * Measured, twice -- do not "simplify" it, and do not read it as tested.
+      *
+      * ⚠️ DATE ONLY, deliberately. The TIME twin is NOT fixed: `SQLTypeUtils.coerce` has no `(Time,
+      * _)` SOURCE arm, so `operandType = Time` coerces to identity and nothing is emitted. `CAST(ts
+      * AS TIME) > ts` fails with `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`
+      * before and after this change (measured on 8.18.3). Including TIME here was measured to
+      * change no emission at all -- dead code that would have read as coverage -- so it is left out
+      * and the gap is recorded in `MixedTemporalComparisonSpec`.
+      */
+    val convertsToLocal =
+      identifier.functions.exists {
+        case c: Conversion => c.targetType == SQLTypes.Date
+        case _             => false
+      }
+
     val operandType =
       if (
         chainType.isInstanceOf[SQLTemporal] && identifier.baseType.isInstanceOf[SQLTemporal] &&
-        targetedFromChain != SQLTypes.Date && targetedFromChain != SQLTypes.Time
+        targetedFromChain != SQLTypes.Date && targetedFromChain != SQLTypes.Time &&
+        // 🔴 …and the chain has not converted the receiver to a date/time-only type. Without this
+        // the operand claimed the COLUMN's type while rendering a `LocalDate`, so the coercion to
+        // the common super type was computed against a type that did not describe the rendering and
+        // came out a no-op: `CAST(d AS DATE) > ts` compared a `LocalDate` with a `ZonedDateTime`
+        // (`class_cast_exception`), and no-schema `CAST(d AS DATE) = d` compared them with `==`,
+        // which is silently FALSE for every document (issue #373, item 1).
+        !convertsToLocal
       ) identifier.baseType
       else chainType
 

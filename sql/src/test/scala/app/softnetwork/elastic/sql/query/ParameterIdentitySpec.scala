@@ -205,9 +205,20 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
     ".withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS) : null; " +
     "def left1 = param2; (left1 == null || param1 == null ? false : ((left1.isBefore(param1))))"
     // A CAST binds too (`left1`), so the column it converts and the bare column stay one parameter.
+    //
+    // 🔴 The comparison now WIDENS the converted side back to a `ZonedDateTime` before comparing
+    // (issue #373, item 1). It used to compare the `LocalDate` the CAST renders with the raw
+    // column: `Cannot cast java.time.ZonedDateTime to java.time.chrono.ChronoLocalDate` on ES
+    // 8.18.3 -- this row pinned the identity of a shape that could not run. EXECUTED on 8.18.3
+    // over three midnight dates: the old bytes are a `runtime error`, these return ALL THREE
+    // documents, which is right because `CAST(d AS DATE)` promoted to a timestamp IS `d` at
+    // midnight. The promotion is ANSI's (DATE -> TIMESTAMP) and comes from the coercion to the
+    // common super type, which was always there and was computed against a type that did not
+    // describe the rendering.
     predicateOf("SELECT name FROM t WHERE CAST(d AS DATE) = d") shouldBe
     s"def param1 = $guardedDoc); " +
-    s"def left1 = (param1 != null ? param1$utc.toLocalDate() : null); " +
+    s"def param2 = (param1 != null ? param1$utc.toLocalDate() : null); " +
+    s"def left1 = (param2 != null ? param2.atStartOfDay(ZoneId.of('Z')) : null); " +
     "(left1 == null || param1 == null ? false : ((left1.isEqual(param1))))"
   }
 
@@ -255,16 +266,21 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
   }
 
   "a CAST chain compared with its own column" should "be two parameters" in {
-    // ⚠️ Pinned for the IDENTITY, with the rest stated plainly: before the fix this was
-    // `left1.isAfter(param1)` with the `.minus(3, …)` folded INTO `param1` -- `x > x`, always false,
-    // silently. Now the two sides are distinct, and the comparison FAILS LOUDLY on ES 8.18
-    // (`Cannot cast java.time.ZonedDateTime to java.time.chrono.ChronoLocalDate`): the right-hand
-    // column is not narrowed to the left chain's DATE, which is #367's rule 8 for a COLUMN right
-    // operand -- a pre-existing gap this fix exposes rather than creates, and does not own.
+    // Before #370 this was `left1.isAfter(param1)` with the `.minus(3, …)` folded INTO `param1` --
+    // `x > x`, always false, silently. #370 made the two sides distinct, at which point the
+    // comparison FAILED LOUDLY on ES 8.18 (`Cannot cast java.time.ZonedDateTime to
+    // java.time.chrono.ChronoLocalDate`), and that was recorded here as a gap this spec did not own.
+    //
+    // 🔴 That gap WAS issue #373 item 1, and it is now fixed: the converted side is widened back to
+    // a `ZonedDateTime` before the comparison, so both sides are the same Java type. EXECUTED on
+    // 8.18.3 -- the old bytes are a `runtime error`, these return `[]`, and flipping `isAfter` to
+    // `isBefore` on the very same script returns all three documents, which is what proves the
+    // comparison discriminates rather than matching nothing.
     predicateOf("SELECT name FROM t WHERE CAST(d AS DATE) - INTERVAL 3 DAY > d") shouldBe
     s"def param1 = $guardedDoc); " +
     s"def param2 = (param1 != null ? param1$utc.toLocalDate() : null); " +
-    "def left1 = (param2 == null) ? null : (def)(param2.minus(3, ChronoUnit.DAYS)); " +
+    "def param3 = (param2 == null) ? null : (def)(param2.minus(3, ChronoUnit.DAYS)); " +
+    s"def left1 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); " +
     "(left1 == null || param1 == null ? false : ((left1.isAfter(param1))))"
   }
 
