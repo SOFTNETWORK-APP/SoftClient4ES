@@ -433,6 +433,32 @@ object Parser
       }
     }
 
+  /** Parse a bare `SCRIPT AS (…)` BODY — the expression alone, with no wrapper and no statement
+    * around it. The entry point exists so a caller that already holds the stored SQL text of a
+    * computed column can recover its AST without re-implementing the grammar: `_meta.script.sql`
+    * survives the Elasticsearch round-trip while `ScriptProcessor.expr` does not (issue #385).
+    *
+    * 🔴 It runs [[scriptValue]] — the SAME production [[script]] runs — and NOT `Parser.apply`,
+    * which normalises a whole statement and would reject an expression outright. One production, so
+    * a body the DDL accepts is a body this accepts, by construction rather than by review.
+    *
+    * `None` for anything this grammar does not accept: the callers are VALIDATION-only and treat an
+    * unrecognised body as "nothing to check" rather than as a rejection (see
+    * `ScriptProcessor.validationExpr`, which states why that has to be a fail-open).
+    */
+  def parseScriptExpression(text: String): Option[PainlessScript] =
+    try {
+      parseAll(scriptValue, text) match {
+        case Success(s, _) => Some(s)
+        case _             => None
+      }
+    } catch {
+      // Same boundary rationale as `grammar`'s (#250): every alternative of `scriptValue` ends in
+      // `Identifier.update`-adjacent AST construction, and a throw from there must not turn a
+      // best-effort validation walk into a crash.
+      case NonFatal(_) => None
+    }
+
   /** `SCRIPT AS (<expr>) STORED` — the column's value is already materialized in this index, so the
     * script records how it was DERIVED and is NOT executed here.
     *

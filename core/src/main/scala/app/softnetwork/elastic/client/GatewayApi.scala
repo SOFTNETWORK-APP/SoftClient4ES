@@ -77,6 +77,7 @@ import app.softnetwork.elastic.sql.query.{
   ShowWatcherStatus,
   ShowWatchers,
   SingleSearch,
+  StandardJoin,
   Statement,
   TableStatement,
   TruncateTable,
@@ -657,14 +658,29 @@ class TableExecutor(
 
           // 3) Index exists + OR REPLACE → remplacement
           case ElasticSuccess(true) =>
-            // proceed with replacement
-            logger.info(s"♻️ Replacing index $indexName.")
-            replaceExistingIndex(indexName, create, partitioned, single)
+            // 🔴 The target table is built AND validated HERE, before either route runs, because
+            // `replaceExistingIndex` DELETES the existing index first. A rejection raised inside
+            // `createNonExistentIndex` would therefore destroy the user's index and put nothing
+            // back (issue #385 review, B-1): measured on `CREATE OR REPLACE TABLE t AS SELECT
+            // UPPER(d) AS d, c FROM src` -- a statement that succeeded before the rule existed.
+            // The check is pure and cheap; nothing about it belongs downstream of a destructive
+            // call.
+            ctasTargetTable(indexName, create, single) match {
+              case Left(error)  => Future.successful(ElasticFailure(error))
+              case Right(table) =>
+                // proceed with replacement
+                logger.info(s"♻️ Replacing index $indexName.")
+                replaceExistingIndex(indexName, table, partitioned, single)
+            }
 
           // 4) Index not exists → creation
           case ElasticSuccess(false) =>
-            // proceed with creation
-            createNonExistentIndex(indexName, create, partitioned, single)
+            ctasTargetTable(indexName, create, single) match {
+              case Left(error)  => Future.successful(ElasticFailure(error))
+              case Right(table) =>
+                // proceed with creation
+                createNonExistentIndex(indexName, table, partitioned, single)
+            }
 
           // 5) Error on indexExists
           case ElasticFailure(elasticError) =>
@@ -814,7 +830,15 @@ class TableExecutor(
             return Future.successful(
               ElasticFailure(
                 ElasticError(
-                  message = s"Invalid computed column in ALTER TABLE $indexName: $reason",
+                  // 🔴 The remedy is named because the column the message names need NOT be the
+                  // one the user altered: every ALTER re-validates the whole table, so a computed
+                  // column that has been invalid since before this statement refuses the ALTER
+                  // too. Phrased to be true in BOTH cases -- the offending column may well be the
+                  // one being altered (`SET SCRIPT AS (…)` over a missing operand).
+                  message =
+                    s"Invalid computed column in ALTER TABLE $indexName: $reason. Every ALTER " +
+                    s"re-validates the computed columns of '$indexName'; drop or redefine the " +
+                    "column named above if it is not the one you are altering.",
                   statusCode = Some(400),
                   operation = Some("ddl")
                 )
@@ -962,7 +986,7 @@ class TableExecutor(
 
   private def replaceExistingIndex(
     indexName: String,
-    create: CreateTable,
+    table: Table,
     partitioned: Boolean,
     single: Option[SingleSearch]
   )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
@@ -984,21 +1008,57 @@ class TableExecutor(
     }
 
     // 2. Recreate index using the same logic as createNonExistentIndex
-    createNonExistentIndex(indexName, create, partitioned, single)
+    createNonExistentIndex(indexName, table, partitioned, single)
   }
 
-  /* Create index / template for non-existent index
-   */
-  private def createNonExistentIndex(
+  /** The table a `CREATE TABLE` will create, VALIDATED — the single place both CREATE routes get
+    * their target from, and the only place either of them may be refused.
+    *
+    * 🔴 It is called BEFORE `replaceExistingIndex`'s `deleteIndex`, which is the whole point: this
+    * method is pure (a schema read plus a merge) and a refusal must not cost the user their index.
+    *
+    * 🔴 The validation covers BOTH shapes — the AS-SELECT merge, whose scripts `CreateTable
+    * .validate()` never looks at (`case Left(select) => select.validate()` validates the QUERY),
+    * and the explicit column list, which the parser has already validated, so the second pass is
+    * free. Deliberately the same message and status as the ALTER hook in `alterExistingIndex`: BIDC
+    * run 2's D-1 finding is that two DDL routes disagreeing about one rejection is invisible from
+    * either branch alone.
+    */
+  private def ctasTargetTable(
     indexName: String,
     create: CreateTable,
-    partitioned: Boolean,
     single: Option[SingleSearch]
-  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
-    implicit val ec: ExecutionContext = system.dispatcher
-    // index does not exist, proceed with creation
-    logger.info(s"✅ Creating index $indexName.")
-    var table: Table =
+  ): Either[ElasticError, Table] = {
+    // 🔴 A self-referential CTAS must FAIL, and this guard is what keeps it failing now that the
+    // target table is built BEFORE `replaceExistingIndex` deletes the index. On `main`
+    // `CREATE OR REPLACE TABLE src AS SELECT c FROM src` failed -- after destroying `src`, because
+    // the delete invalidates the schema cache and the subsequent `GET /src` 404s. With the build
+    // hoisted above the delete it would instead find the schema, survive the delete, recreate an
+    // EMPTY index and answer 200 (`0 documents indexed`). Restoring the failure is the whole job.
+    //
+    // Exact match against every name the statement READS -- `sources` (the FROM tables) plus every
+    // standard JOIN leg, because `SELECT o.c FROM other o JOIN src s ON ...` empties `src` just as
+    // surely and `sources` alone does not see it. Nothing is RESOLVED: an Elasticsearch ALIAS, a
+    // wildcard or comma-list source, and a qualified reference spelled differently are all
+    // UNCOVERED, deliberately -- reading them needs the round trip this check runs before, and
+    // each behaves as it does on `main`.
+    single
+      .filter { s =>
+        val read = s.sources ++ s.from.joins.collect { case sj: StandardJoin => sj.source.name }
+        read.contains(indexName)
+      }
+      .foreach { _ =>
+        val error = ElasticError(
+          // ASCII only: customer-facing, and the lint job sets no `-encoding`.
+          message = s"CREATE TABLE $indexName cannot select from itself.",
+          statusCode = Some(400),
+          operation = Some("schema")
+        )
+        logger.error(s"❌ ${error.message}")
+        return Left(error)
+      }
+
+    val table: Table =
       single match {
         case Some(single) =>
           single.from.tables.map(_.name).toSet.headOption match {
@@ -1026,7 +1086,7 @@ class TableExecutor(
                     operation = Some("schema")
                   )
                   logger.error(s"❌ ${error.message}")
-                  return Future.successful(ElasticFailure(error))
+                  return Left(error)
               }
             case _ =>
               val error =
@@ -1036,11 +1096,39 @@ class TableExecutor(
                   operation = Some("schema")
                 )
               logger.error(s"❌ ${error.message}")
-              return Future.successful(ElasticFailure(error))
+              return Left(error)
           }
         case _ =>
           create.schema
       }
+
+    validateScriptReferences(table) match {
+      case Left(reason) =>
+        Left(
+          ElasticError(
+            message = s"Invalid computed column in CREATE TABLE $indexName: $reason",
+            statusCode = Some(400),
+            operation = Some("ddl")
+          )
+        )
+      case Right(_) => Right(table)
+    }
+  }
+
+  /* Create index / template for non-existent index
+   */
+  private def createNonExistentIndex(
+    indexName: String,
+    validatedTable: Table,
+    partitioned: Boolean,
+    single: Option[SingleSearch]
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    // index does not exist, proceed with creation
+    logger.info(s"✅ Creating index $indexName.")
+    // built and validated by `ctasTargetTable`, before this route -- or `replaceExistingIndex`'s
+    // delete -- was entered
+    var table: Table = validatedTable
 
     // create index pipeline(s) if needed
     table.defaultPipeline match {

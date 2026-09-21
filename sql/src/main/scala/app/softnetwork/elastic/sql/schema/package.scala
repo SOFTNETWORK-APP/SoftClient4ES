@@ -24,11 +24,13 @@ import app.softnetwork.elastic.sql.function.{
   FunctionWithIdentifier
 }
 import app.softnetwork.elastic.sql.function.cond.Case
+import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.ObjectNode
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
@@ -38,6 +40,19 @@ package object schema {
   val mapper: ObjectMapper = JacksonConfig.objectMapper
 
   type Schema = Table
+
+  /** The receipt for the two places this module DEGRADES a computed column instead of rejecting it:
+    * a projection that drops a script whose operands it does not carry ([[Table.mergeWithSearch]]),
+    * and a stored expression this grammar can no longer parse ([[ScriptProcessor.validationExpr]]).
+    * Both are deliberate fail-opens, and silent degradation is the failure mode this area keeps
+    * paying for -- the WARN is what makes each one reviewable in a log.
+    *
+    * Named explicitly rather than derived from `getClass`: a package object's runtime name is
+    * `...schema.package$`, which is neither what an operator would configure nor what a log-capture
+    * assertion can bind to by reading the source.
+    */
+  private[schema] val logger: Logger =
+    LoggerFactory.getLogger("app.softnetwork.elastic.sql.schema")
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
 
@@ -561,6 +576,40 @@ package object schema {
         case None => this
       }
 
+    /** The expression to walk FOR VALIDATION, and for nothing else.
+      *
+      * 🔴 [[expr]] is `None` for every processor read back out of Elasticsearch, so a rule that
+      * walks `expr` alone is blind on exactly the path production takes: `ALTER TABLE t DROP COLUMN
+      * n` on a LIVE table left an orphaned processor reading `ctx.n` behind, and a CTAS off a live
+      * source copied one (issue #385). The SQL text survives the round-trip -- `_meta.script.sql`
+      * carries it -- so the reference set is recoverable by re-parsing it through the SAME
+      * `scriptValue` production the DDL grammar uses.
+      *
+      * 🔴 This NEVER feeds emission. `expr` deliberately stays `None`, so
+      * [[ScriptProcessor.resolvedAgainst]] keeps its documented behaviour ("returns `this`
+      * unchanged whenever there is no expression to re-derive from") and no stored Painless moves
+      * under a table that is merely being altered. Populating `expr` at load time would re-derive
+      * `source` for every loaded processor -- a far wider change than the rule this serves.
+      *
+      * 🔴 A text this grammar does NOT accept is SKIPPED, with a WARN, not rejected. A legacy or
+      * hand-written `_meta.script.sql` must not block every future ALTER on that table; the cost of
+      * the fail-open is that such a column's references go unchecked, which is exactly today's
+      * behaviour for it. A reviewer will challenge this: it is deliberate.
+      *
+      * `lazy`, because both consumers (the projection drop and `validateScriptReferences`) can ask
+      * the same processor and the parse is not free.
+      */
+    private[elastic] lazy val validationExpr: Option[PainlessScript] =
+      expr.orElse {
+        val reparsed = Parser.parseScriptExpression(script)
+        if (reparsed.isEmpty)
+          logger.warn(
+            s"The stored expression of computed column '$column' cannot be parsed [$script]; " +
+            "its column references are not checked."
+          )
+        reparsed
+      }
+
     override def baseType: SQLType = dataType
 
     def processorType: IngestProcessorType = IngestProcessorType.Script
@@ -723,6 +772,29 @@ package object schema {
     SQLTypeUtils.matches(declared, required) ||
     SQLTypeUtils.canConvert(declared, required)
 
+  /** The columns `column`'s EXECUTING script reads that `projection` does not carry, in the order
+    * the walk finds them and without duplicates.
+    *
+    * 🔴 ONE walk, and ONE lookup: `ScriptReferences.of` over [[ScriptProcessor.validationExpr]],
+    * then `schema.find(id.path)` -- the same pair `validateScriptReferences` uses, so the
+    * projection rule and the rejection rule cannot disagree about what a reference IS or about how
+    * a `STRUCT` path resolves. A second walk here would be a second answer to the same question.
+    *
+    * 🔴 A `materialized` (`STORED`) script is NOT considered. It emits nothing (`Column.processors`
+    * is `script.filterNot(_.materialized)`), and carrying the derivation forward into an index
+    * whose source operands deliberately did not survive is the documented POINT of `STORED` -- the
+    * same carve-out `validateScriptReferences` makes.
+    */
+  private def unsatisfiedScriptReferences(column: Column, projection: Schema): Seq[String] =
+    column.script
+      .filterNot(_.materialized)
+      .toSeq
+      .flatMap(_.validationExpr)
+      .flatMap(ScriptReferences.of)
+      .map(_._1.path)
+      .filter(path => projection.find(path).isEmpty)
+      .distinct
+
   /** Reject a computed column whose expression reads a column the table does not declare, or hands
     * a column to a function that cannot take its declared type.
     *
@@ -756,7 +828,7 @@ package object schema {
       column.script
         .filterNot(_.materialized)
         .toSeq
-        .flatMap(_.expr)
+        .flatMap(_.validationExpr)
         .flatMap(ScriptReferences.of)
         .flatMap { case (id, consumer) =>
           schema.find(id.path) match {
@@ -2452,6 +2524,15 @@ package object schema {
           }
           cols :+ col
         }
+      // 🔴 Decided AFTER the fold, over the COMPLETE projection. A script may legitimately read a
+      // column that appears LATER in the SELECT list (`SELECT c, d FROM t1`), so an in-fold
+      // decision would drop a script the projection does in fact satisfy -- measured, and pinned.
+      //
+      // 🔴 ...and BEFORE `update()`, which re-derives every SURVIVING script against the settled
+      // column list. Applying the drop afterwards would leave `update()` deriving Painless for an
+      // operand that is about to be taken away.
+      val projected = this.copy(columns = cols)
+      val retained = cols.map(withSatisfiableScripts(projected, _))
       val primaryKey =
         this.primaryKey.filter(pk => cols.exists(_.name == pk))
       val partitionBy =
@@ -2463,7 +2544,133 @@ package object schema {
               None
           case _ => None
         }
-      this.copy(columns = cols, primaryKey = primaryKey, partitionBy = partitionBy).update()
+      this
+        .copy(
+          columns = retained,
+          primaryKey = primaryKey,
+          partitionBy = partitionBy,
+          processors = retainedProcessors(projected),
+          // 🔴 A CTAS target is a PLAIN INDEX, whatever it was projected FROM. Inheriting the
+          // source's type made `CREATE TABLE t AS SELECT … FROM <a materialized view>` produce a
+          // table typed `materialized_view`, which then:
+          //   - short-circuits `validateScriptReferences` (its `isRegular` carve-out), so the
+          //     computed-column rule is inert on exactly that target;
+          //   - makes `Table.merge` THROW ("Cannot alter table … of type materialized_view") for
+          //     every later ALTER on an ordinary index;
+          //   - publishes `_meta.type = materialized_view`, so `SHOW TABLES` reports it as a view
+          //     and the extension's metadata lookup can claim it.
+          // `CREATE MATERIALIZED VIEW` is a different statement, owned by the extension, and it
+          // builds its own schema with the type set explicitly. Verified 2026-09-21 against
+          // softclient4es-extensions: nothing there calls `mergeWithSearch`, and every MV /
+          // changelog / enrichment schema sets `tableType` itself.
+          tableType = TableType.Regular,
+          // ...and the source's OWN materialized views do not refresh from the copy.
+          materializedViews = Nil
+        )
+        .update()
+    }
+
+    /** The TABLE-level processors (`Table.processors`, i.e. the ones a pipeline declares rather
+      * than a column) a projection can carry.
+      *
+      * 🔴 The invariant: **a CTAS target's pipeline must not contain a processor that reads, or
+      * writes, a column the target does not carry.** `mergeWithSearch` inherited `processors`
+      * WHOLESALE, and `defaultPipeline` admits a table-level processor exactly when no COLUMN
+      * contributes one for the same name -- so `CREATE TABLE t2 AS SELECT c FROM t1` over a source
+      * carrying `set {field: c, copy_from: d}` shipped a pipeline reading `ctx.d` into an index
+      * with no `d`. Measured, not reasoned: the processor was present in `t2.defaultPipeline` and
+      * `validateScriptReferences` could not see it, because that rule walks COLUMNS.
+      *
+      * 🔴 The predicate is deliberately narrow: a dependency is disqualifying ONLY when it names a
+      * column the SOURCE table declares and the projection did not carry. A name the source never
+      * declared -- `_id`, an enrich target, any metadata field -- is none of the projection's
+      * business, and treating it as missing would drop every primary-key processor. Filtering by
+      * `p.column` alone does NOT fix the measured example either: there `column = c` IS projected
+      * and the lost operand is `copy_from: d`.
+      *
+      * ⚠️ `GenericProcessor` is the one arm whose READS cannot be determined -- it is an arbitrary
+      * JSON body read back from Elasticsearch with no schema. Its WRITE target is known
+      * (`properties("field")`) and is checked; a `GenericProcessor` whose target survives while an
+      * operand of its own does not is CARRIED, exactly as before. That is stated rather than
+      * hidden, and pinned by a test.
+      */
+    private def retainedProcessors(projection: Schema): Seq[IngestProcessor] =
+      processors.filter { processor =>
+        val lost = processorDependencies(processor)
+          .filter(name => this.find(name).isDefined && projection.find(name).isEmpty)
+          .distinct
+        if (lost.isEmpty) true
+        else {
+          logger.warn(
+            s"Processor '${processor.sql}' of table '$name' is NOT carried into the table created " +
+            s"from it: the projection does not select ${lost.map(m => s"'$m'").mkString(", ")}."
+          )
+          false
+        }
+      }
+
+    /** Every column `processor` reads or writes, as far as its type allows that to be determined.
+      *
+      * `IngestProcessor` is `sealed`, so this match is exhaustive by construction and a new
+      * processor type cannot be added without the compiler asking what it depends on -- the #318
+      * failure mode (enumerating by type and failing OPEN) in the one place it would be silent.
+      */
+    private def processorDependencies(processor: IngestProcessor): Seq[String] =
+      processor match {
+        case s: ScriptProcessor =>
+          s.column +: s.validationExpr.toSeq.flatMap(ScriptReferences.of).map(_._1.path)
+        case r: RenameProcessor        => Seq(r.column, r.newName)
+        case r: RemoveProcessor        => Seq(r.column)
+        case k: PrimaryKeyProcessor    => k.column +: k.value.toSeq
+        case s: SetProcessor           => s.column +: s.copyFrom.toSeq
+        case d: DateIndexNameProcessor => Seq(d.column)
+        case e: EnrichProcessor        => Seq(e.column, e.field)
+        // the write target only -- see `retainedProcessors`: an arbitrary JSON body has no
+        // determinable operands, and guessing at key names would be a second, weaker answer.
+        case g: GenericProcessor => Seq(g.column)
+      }
+
+    /** `column` as the projection can carry it: a copied column whose EXECUTING script reads
+      * operands the projection does not select keeps everything EXCEPT that script.
+      *
+      * 🔴 The script is DROPPED, not rejected. `CREATE TABLE t2 AS SELECT c FROM t1` populates `c`
+      * from the `INSERT INTO … AS SELECT` that follows, so the data is right and the statement
+      * works today; refusing it would break a statement the user never wrote a script for. What
+      * does NOT work is the processor: it reads a column `t2` has no mapping for, throws on every
+      * document, `ignore_failure` swallows it, and `SHOW CREATE TABLE t2` advertises a derivation
+      * the index cannot perform. Copying it as a plain stored column is the honest shape.
+      *
+      * Recurses into `multiFields` for the same reason `validateScriptReferences` does: a computed
+      * column can be declared inside a `STRUCT`, and its operands can be top-level columns the
+      * projection dropped. ⚠️ MEASURED, because the recursion's lookup looks asymmetric and is not:
+      * inside a `STRUCT`, `y INTEGER SCRIPT AS (YEAR(dt))` resolves `dt` to the TOP-LEVEL column of
+      * that name -- the emission itself reads `ctx.dt`, not `ctx.meta.dt` -- so a top-level lookup
+      * is the right one and there is no struct-relative resolution in this engine to be wrong
+      * about. `validateScriptReferences` reads it the same way, which is why that shape is rejected
+      * at parse time today (`Column 'meta.y' reads 'dt', which does not exist in table 's'`) and
+      * can only be met on a table stored by an older version.
+      *
+      * 🔴 There is NO `isRegular` carve-out here, and the asymmetry with `validateScriptReferences`
+      * is deliberate. That rule's carve-out exists because a non-regular table's computed column
+      * legitimately reads a column of its SOURCE, which the INCOMING DOCUMENT carries at ingest
+      * even though the table never declares it. A projection is the opposite situation: the rows
+      * come from this statement's own `INSERT INTO … AS SELECT`, and a column the SELECT does not
+      * project is not in them -- for a view exactly as for a table. Adding the carve-out here would
+      * keep a script that is guaranteed to read `null`. (`mergeWithSearch` also types its target
+      * `Regular`, so the backstop applies to it either way.)
+      */
+    private def withSatisfiableScripts(projection: Schema, column: Column): Column = {
+      val kept = unsatisfiedScriptReferences(column, projection) match {
+        case Nil => column
+        case missing =>
+          logger.warn(
+            s"Computed column '${column.path}' is copied from table '$name' WITHOUT its script: " +
+            s"the projection does not select ${missing.map(m => s"'$m'").mkString(", ")}. " +
+            "The column keeps the values the query produces."
+          )
+          column.copy(script = None)
+      }
+      kept.copy(multiFields = kept.multiFields.map(withSatisfiableScripts(projection, _)))
     }
 
     override def validate(): Either[String, Unit] = {
