@@ -271,4 +271,48 @@ class StringLiteralEscapingSpec extends AnyFlatSpec with Matchers {
     firstName("""SELECT MAX("salary") FROM t""") shouldBe "salary"
     statementOf("""SELECT a AS "b" FROM t""").sql should include(""""b"""")
   }
+
+  // -- E - issue #383, the SQL-render half: a date-format PATTERN is a literal too --------------
+  // `FunctionWithDateTimeFormat`'s four `toSQL` sites interpolated the caller's pattern into
+  // `s"$sql($base, '$format')"` with no escaping, so a pattern carrying a quote rendered SQL the
+  // grammar rejects. Not decorative: `SHOW CREATE TABLE` publishes the render and
+  // `MaterializedViewExtension` PERSISTS it and runs `client.run(alter.sql)`.
+  "a date-format pattern carrying a quote" should "render SQL that RE-PARSES to the same AST" in {
+    Seq(
+      // `yyyy'T'MM` is the STANDARD java.time spelling for embedded text - ordinary correct SQL,
+      // not a contrived input, and it was un-re-parseable on every one of the four functions.
+      "SELECT DATE_FORMAT(d, 'yyyy''T''MM') FROM t",
+      "SELECT DATE_PARSE(name, 'yyyy''T''MM') FROM t",
+      "SELECT DATETIME_FORMAT(ts, 'yyyy''T''MM') FROM t",
+      "SELECT DATETIME_PARSE(name, 'yyyy''T''MM') FROM t",
+      """SELECT DATE_FORMAT(d, 'a\\b') FROM t"""
+    ).foreach { sql =>
+      val stmt = statementOf(sql)
+      withClue(s"[$sql] rendered as [${stmt.sql}] ") {
+        Parser(stmt.sql) shouldBe Right(stmt)
+        // 🔴 And the RENDER fixed point as well. AST equality alone is WEAK here: `Identifier`
+        // inherits `PainlessParam.equals`, which compares only the rendered doc access, so two
+        // statements differing ONLY in their format string are EQUAL as ASTs. The render fixed
+        // point is what actually sees the pattern.
+        Parser(stmt.sql).map(_.sql) shouldBe Right(stmt.sql)
+      }
+    }
+  }
+
+  it should "carry the escaped pattern in the render itself" in {
+    statementOf("SELECT DATE_FORMAT(d, 'yyyy''T''MM') FROM t").sql should include(
+      """'yyyy\'T\'MM'"""
+    )
+  }
+
+  it should "leave a quote-free pattern BYTE-IDENTICAL (the no-regression bound)" in {
+    Seq(
+      "SELECT DATE_FORMAT(d, 'yyyy-MM-dd') FROM t",
+      "SELECT DATE_PARSE(name, 'yyyy-MM-dd') FROM t",
+      "SELECT DATETIME_FORMAT(ts, 'HH:mm:ss.%f') FROM t",
+      "SELECT DATETIME_PARSE(name, 'yyyy-MM-dd HH:mm:ss') FROM t"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") { statementOf(sql).sql shouldBe sql }
+    }
+  }
 }

@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.watcher
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.schema.mapper
 import app.softnetwork.elastic.sql.{
+  escapeStringLiteral,
   BooleanValue,
   ByteValue,
   DdlToken,
@@ -142,7 +143,14 @@ case class ScriptWatcherCondition(
   params: ListMap[String, Value[_]] = ListMap.empty
 ) extends WatcherCondition {
   override def sql: String = {
-    val base = s" WHEN SCRIPT '$script' USING LANG '$lang'"
+    // 🔴 `script` and `lang` are arbitrary user text and this renders them into SQL string
+    // literals, so they answer to `escapeStringLiteral` -- the ONE owner of that channel -- exactly
+    // as the date-format patterns in `function/time/package.scala` do (issue #383). Unescaped, an
+    // ordinary condition comparing against a string constant rendered SQL that did not re-parse:
+    // `WHEN SCRIPT 'ctx.payload.x == ''a'''` came back as `WHEN SCRIPT 'ctx.payload.x == 'a''`,
+    // rejected with `string matching regex '(?i)DO\b' expected`. Measured.
+    val base =
+      s" WHEN SCRIPT '${escapeStringLiteral(script)}' USING LANG '${escapeStringLiteral(lang)}'"
     if (params.nonEmpty) {
       val paramsStr = ObjectValue(params).ddl
       s"$base WITH PARAMS $paramsStr RETURNS TRUE"

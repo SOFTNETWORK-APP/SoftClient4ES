@@ -4,7 +4,8 @@ import app.softnetwork.elastic.sql.function.FunctionWithIdentifier
 import app.softnetwork.elastic.sql.function.time.{CurrentDate, DateSub, DateTimeFunction}
 import app.softnetwork.elastic.sql.http._
 import app.softnetwork.elastic.sql.operator.GT
-import app.softnetwork.elastic.sql.query.Criteria
+import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.query.{CreateWatcher, Criteria}
 import app.softnetwork.elastic.sql.schema.mapper
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.time.CalendarInterval
@@ -433,4 +434,58 @@ class WatcherSpec extends AnyFlatSpec with Matchers {
     json shouldBe """{"trigger":{"schedule":{"cron":"0 */5 * * * ?"}},"input":{"simple":{"keys":["value1","value2"]}},"condition":{"script":{"source":"ctx.payload.keys.size > params.threshold","lang":"painless","params":{"threshold":1}}},"actions":{"webhook_action":{"foreach":"ctx.payload.keys","max_iterations":2,"webhook":{"scheme":"https","host":"example.com","port":443,"method":"post","path":"/webhook","headers":{"Content-Type":"application/json"},"params":{"watch_id":"{{ctx.watch_id}}"},"body":"{\"message\": \"Watcher triggered with {{ctx.payload._value}}\"}","connection_timeout":"10s","read_timeout":"30s"}}}}"""
   }
 
+  // =============================================================
+  // Issue #383, the SQL-render half - a watcher script is a string literal too
+  // =============================================================
+
+  behavior of "a watcher script carrying a quote"
+
+  // `ScriptWatcherCondition.sql` interpolated `script` and `lang` into SQL string literals with no
+  // escaping, the same defect as `FunctionWithDateTimeFormat`'s four `toSQL` sites and answering to
+  // the same owner, `escapeStringLiteral`. A condition comparing against a string CONSTANT is
+  // ordinary usage, and it rendered SQL the grammar rejects.
+  val quotedScriptCondition: WatcherCondition = ScriptWatcherCondition(
+    script = "ctx.payload.hits.total > 0 && ctx.payload.status == 'a'"
+  )
+
+  private def watcherWith(condition: WatcherCondition): Watcher = Watcher(
+    id = "my_watcher",
+    condition = condition,
+    trigger = intervalTrigger,
+    input = searchInput,
+    actions = ListMap("log_action" -> loggingAction)
+  )
+
+  // `Parser` yields the `CreateWatcher` STATEMENT; `watcher` is the value this spec builds.
+  private def reparsed(sql: String): Watcher = Parser(sql) match {
+    case Right(cw: CreateWatcher) => cw.watcher
+    case other                    => fail(s"[$sql] expected a CreateWatcher, got $other")
+  }
+
+  it should "render SQL that RE-PARSES to the same watcher" in {
+    val built = watcherWith(quotedScriptCondition)
+    val rendered = built.sql
+    withClue(s"rendered as [$rendered] ") {
+      reparsed(rendered).condition shouldBe built.condition
+      // And the render fixed point - AST equality alone can be blind to a field that only the
+      // render reads (see the note in `StringLiteralEscapingSpec` section E).
+      reparsed(rendered).sql shouldBe rendered
+    }
+  }
+
+  it should "escape the quote in the SQL render ONLY, never in the watcher JSON" in {
+    watcherWith(quotedScriptCondition).sql should include(
+      """WHEN SCRIPT 'ctx.payload.hits.total > 0 && ctx.payload.status == \'a\''"""
+    )
+    // 🔴 The JSON is a DIFFERENT channel: Jackson escapes it, and a `\'` reaching Elasticsearch
+    // would be a script that no longer compiles. The escaper must not leak across.
+    val json: String = watcherWith(quotedScriptCondition).node
+    json should include(""""source":"ctx.payload.hits.total > 0 && ctx.payload.status == 'a'"""")
+  }
+
+  it should "leave a quote-free script BYTE-IDENTICAL (the no-regression bound)" in {
+    watcherWith(scriptCondition).sql should include(
+      """WHEN SCRIPT 'ctx.payload.hits.total > params.threshold' USING LANG 'painless'"""
+    )
+  }
 }
