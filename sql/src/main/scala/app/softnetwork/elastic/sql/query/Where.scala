@@ -1457,6 +1457,11 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               // lie issue #367 fixed for EMISSION, still live in VALIDATION -- and `chainType`
               // and `valueType` are the two derivations that already answer it for each side.
               Validator.validateTypesMatching(identifier.chainType, valueType) match {
+                // 🔴 ...and a comparison additionally accepts any two DATE-CARRYING temporals,
+                // because it is the one caller that RECONCILES them (issue #384, item 2). See
+                // `SQLTypeUtils.comparableTemporals` for why that allowance is NOT in `matches`.
+                case Left(_) if SQLTypeUtils.comparableTemporals(identifier.chainType, valueType) =>
+                  Right(())
                 case Left(_) =>
                   Left(
                     s"Type mismatch: '${identifier.chainType.typeId}' is not compatible with '${valueType.typeId}' in expression: $this"

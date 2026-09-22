@@ -344,6 +344,86 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * not tell this apart from a legal comparison. Core calls `validateResolved()` at the one seam
     * that produces a resolved statement.
     */
+  /** 🔴 Two operands explicitly cast to DIFFERENT date-carrying types are COMPARABLE, and the
+    * engine used to reject them at PARSE while accepting the very same pair when the right side
+    * wore no cast (issue #384, item 2). `SQLTypeUtils.matches` paired DATETIME with TIMESTAMP and
+    * left DATE out of its own set.
+    *
+    * MEASURED against two engines rather than argued from the standard — both ACCEPT the date pair
+    * and both REJECT the TIME pairs, which is exactly the line drawn here:
+    *
+    * {{{
+    *                                         DuckDB 0.10.1  PostgreSQL 17.7  MySQL 8.4.5
+    *   CAST(d AS DATE)  > CAST(ts AS TIMESTAMP)   accept        accept       accept
+    *   CAST(tm AS TIME) > CAST(ts AS TIMESTAMP)   REJECT        REJECT       accept (coerces)
+    *   CAST(tm AS TIME) > CAST(d  AS DATE)        REJECT        REJECT       accept (coerces)
+    * }}}
+    *
+    * MySQL is the outlier and answers `1` for both TIME rows — silent coercion, the failure mode
+    * this engine exists to avoid — so the DuckDB/PostgreSQL line is the one taken.
+    */
+  /** 🔴 The allowance above belongs to the COMPARISON and to nothing else. `matches` also answers
+    * for `BETWEEN`'s from/to pair, `NULLIF` / `CASE` branch reconciliation and arithmetic operands,
+    * and NONE of those promote their operands — a comparison is the only caller with a
+    * `comparisonTargetType` / `promotedRight`.
+    *
+    * Widening `matches` itself was implemented, MEASURED and REVERTED: review executed the result
+    * and each of these turned a clean parse rejection into `all shards failed` on ES 8.18.3
+    * (`ZonedDateTime` against `LocalDate` in `isBefore` / `isEqual`, and `Cannot apply [-]
+    * operation to types [ZonedDateTime] and [ZonedDateTime]`). This project's standing rule: a
+    * parse fix must not upgrade a loud failure into a silent corruption — or, as here, into a shard
+    * error naming neither the column nor the SQL.
+    */
+  "the date-carrying allowance" should "not leak to callers that cannot reconcile" in {
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(d AS DATE) BETWEEN CAST('2025-01-01' AS DATE) " +
+        "AND CAST('2025-12-31T00:00:00Z' AS TIMESTAMP)",
+        "SELECT NULLIF(CAST(d AS DATE), CAST(ts AS TIMESTAMP)) AS x FROM t",
+        "SELECT CAST(d AS DATE) - CAST(ts AS TIMESTAMP) AS x FROM t"
+      )
+    ) { sql => withClue(s"[$sql] ")(Parser(sql).isLeft shouldBe true) }
+  }
+
+  "two operands cast to different date-carrying types" should "be comparable" in {
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > CAST(ts AS TIMESTAMP)",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > CAST(ts AS DATETIME)",
+        "SELECT name FROM t WHERE CAST(ts AS TIMESTAMP) > CAST(d AS DATE)",
+        "SELECT name FROM t WHERE CAST(d AS DATE) = CAST(ts AS TIMESTAMP)"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ")(Parser(sql).isRight shouldBe true)
+    }
+    // ...and the one that is accepted emits the promotion, rather than merely parsing.
+    val emitted = predicateOf("SELECT name FROM t WHERE CAST(d AS DATE) > CAST(ts AS TIMESTAMP)")
+    withClue(s"->\n$emitted\n")(emitted should include("atStartOfDay"))
+  }
+
+  /** The other half of the same line: a TIME cast against a date-carrying cast is refused at PARSE,
+    * where both types are known without a schema. (A TIME against a bare COLUMN is only knowable
+    * after resolution — that is what `validateResolved` below is for.)
+    */
+  "a TIME cast against a date-carrying cast" should "be refused at parse" in {
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(ts AS TIME) > CAST(ts AS TIMESTAMP)",
+        "SELECT name FROM t WHERE CAST(ts AS TIME) > CAST(d AS DATE)",
+        "SELECT name FROM t WHERE CAST(ts AS TIMESTAMP) > CAST(ts AS TIME)"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ")(Parser(sql).isLeft shouldBe true)
+    }
+    // and TIME against TIME stays legal
+    Parser(
+      "SELECT name FROM t WHERE CAST(ts AS TIME) > CAST('07:00:00' AS TIME)"
+    ).isRight shouldBe true
+  }
+
   /** 🔴 `Expression.validate()` compares the types the two operands END UP with, not the ones their
     * COLUMNS have (issue #384, item 4). `identifier.out` is the column's type, so the rule was
     * wrong in BOTH directions once a schema was attached — it accepted a TIME against a TIMESTAMP
@@ -356,6 +436,35 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * It is observable ONLY against a schema-resolved statement, which is what this asserts and why
     * the corpus could not falsify it.
     */
+  "validate() on a schema-resolved statement" should "read the chain's types, not the column's" in {
+    def criteriaOf(sql: String): Criteria = Parser(sql) match {
+      case Right(ss: SingleSearch) =>
+        ss.update(Some(schema)).where.flatMap(_.criteria).getOrElse(fail(s"[$sql] no criteria"))
+      case other => fail(s"[$sql] unexpected: $other")
+    }
+    // two LocalTimes compare perfectly well -- this was REJECTED (TIMESTAMP vs TIME)
+    withClue("TIME = TIME ") {
+      criteriaOf(
+        "SELECT name FROM t WHERE CAST(ts AS TIME) = CAST('07:00:00' AS TIME)"
+      ).validate() shouldBe Right(())
+    }
+    // a TIME against a date-carrying column -- this was ACCEPTED (TIMESTAMP vs TIMESTAMP)
+    withClue("TIME > TIMESTAMP ") {
+      criteriaOf("SELECT name FROM t WHERE CAST(ts AS TIME) > ts").validate().isLeft shouldBe true
+    }
+    // and the date family stays comparable, resolved or not
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > ts",
+        "SELECT name FROM t WHERE ts > CAST(d AS DATE)",
+        "SELECT name FROM t WHERE LAST_DAY(d) = d",
+        "SELECT name FROM t WHERE YEAR(d) = 2025",
+        "SELECT name FROM t WHERE UPPER(name) = 'A'"
+      )
+    ) { sql => withClue(s"[$sql] ")(criteriaOf(sql).validate() shouldBe Right(())) }
+  }
+
   "a TIME operand" should "be refused against a date-carrying one, and accepted against a TIME" in {
     def resolved(sql: String): SingleSearch = Parser(sql) match {
       case Right(ss: SingleSearch) => ss.update(Some(schema))
