@@ -500,5 +500,56 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     ) { sql =>
       withClue(s"[$sql] ")(resolved(sql).validateResolved() shouldBe Right(()))
     }
+
+    /** 🔴 Issue #384, item 1 — the same comparison in a CASE is the same defect. WHERE was refused
+      * with a message while `SELECT CASE WHEN … END` reached Elasticsearch and failed the shard,
+      * which is the worse of the two outcomes for the identical SQL.
+      */
+    forAll(
+      Table(
+        "sql",
+        "SELECT CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END AS c FROM t",
+        "SELECT CASE WHEN ts > CAST(ts AS TIME) THEN 1 ELSE 0 END AS c FROM t",
+        "SELECT name FROM t ORDER BY CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ") {
+        val result = resolved(sql).validateResolved()
+        result.isLeft shouldBe true
+        result.left.getOrElse("") should include("TIME")
+      }
+    }
+    // ...and a CASE that compares comparable things is untouched
+    forAll(
+      Table(
+        "sql",
+        "SELECT CASE WHEN CAST(d AS DATE) > ts THEN 1 ELSE 0 END AS c FROM t",
+        "SELECT CASE WHEN YEAR(d) = 2025 THEN 1 ELSE 0 END AS c FROM t",
+        "SELECT CASE WHEN name = 'a' THEN 1 ELSE 0 END AS c FROM t"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ")(resolved(sql).validateResolved() shouldBe Right(()))
+    }
+
+    /** 🔴 Found by review: the walk has to reach a CASE wherever a statement can put one, and
+      * "wherever" is wider than the SELECT list. A GROUP BY bucket and a CASE buried in a
+      * criterion's OPERAND both reached Elasticsearch and failed the shard while the same
+      * comparison written directly in WHERE was refused with a message.
+      */
+    forAll(
+      Table(
+        "sql",
+        "SELECT COUNT(*) AS n FROM t " +
+        "GROUP BY CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END",
+        "SELECT name FROM t WHERE CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END = 1",
+        "SELECT ABS(CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END) AS c FROM t"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ") {
+        val result = resolved(sql).validateResolved()
+        result.isLeft shouldBe true
+        result.left.getOrElse("") should include("TIME")
+      }
+    }
   }
 }

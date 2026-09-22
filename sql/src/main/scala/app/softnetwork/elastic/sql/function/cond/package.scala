@@ -51,7 +51,63 @@ package object cond {
   case object Greatest extends Expr("GREATEST") with ConditionalOp
   case object Least extends Expr("LEAST") with ConditionalOp
 
-  case object Case extends Expr("CASE") with ConditionalOp
+  case object Case extends Expr("CASE") with ConditionalOp {
+
+    /** The `WHEN` conditions of every `CASE` in an operand's chain, as the [[Criteria]] they are
+      * (issue #384, item 1).
+      *
+      * 🔴 ONE walk, because two places need it and they must not drift: a SELECT-list / ORDER BY
+      * `CASE` in a SEARCH (`SingleSearch.validateResolved`) and a computed column's stored
+      * expression in DDL (`schema.validateScriptReferences`). A comparison written inside a CASE is
+      * the same comparison as one written in WHERE, and it used to be checked in neither.
+      *
+      * ⚠️ `Case.args` deliberately EXCLUDES the conditions (it returns the expression, the THEN
+      * results and the ELSE), so they are unreachable through the chain and have to be read off
+      * `conditions` -- which is exactly why nothing had ever looked at them.
+      */
+    def conditionsOf(chain: FunctionChain): Seq[Criteria] = {
+      // 🔴 ARGUMENTS as well as the chain, and that is not a refinement — it is the difference
+      // between refusing a wrong answer and shipping one. `transformFunctions` walks the chain
+      // APPLIED TO an operand, so it sees `CASE WHEN … END` but not the CASE inside
+      // `ABS(CASE WHEN … END)` or `(CASE WHEN … END) + 1`. MEASURED: the wrapped form was accepted
+      // and stored `c = 0.0` for every document (the temporal collapse having erased the
+      // `CAST(ts AS TIME)`), while the bare form was correctly refused -- found by review, one
+      // function away from the shape the check did see.
+      def walk(fn: Function, depth: Int): Seq[Criteria] =
+        if (depth > MaxNesting) Nil
+        else
+          (fn match {
+            case c: Case =>
+              c.conditions.collect { case (criteria: Criteria, _) => criteria } ++
+                c.conditions
+                  .collect { case (_, result: FunctionChain) => result }
+                  .flatMap(
+                    from(_, depth + 1)
+                  ) ++
+                c.expression.toSeq
+                  .collect { case f: FunctionChain => f }
+                  .flatMap(from(_, depth + 1))
+            case _ => Nil
+          }) ++ (fn match {
+            case n: FunctionN[_, _] =>
+              n.args.collect { case f: FunctionChain => f }.flatMap(from(_, depth + 1))
+            case _ => Nil
+          })
+
+      def from(c: FunctionChain, depth: Int): Seq[Criteria] =
+        if (depth > MaxNesting) Nil
+        else FunctionUtils.transformFunctions(c).flatMap(walk(_, depth))
+
+      from(chain, 0)
+    }
+
+    /** A depth stop for [[conditionsOf]]. A CASE inside a CASE inside a function is already beyond
+      * anything measured; the bound exists so a cyclic or pathological AST cannot hang validation,
+      * not because the depth is meaningful.
+      */
+    private val MaxNesting = 12
+
+  }
 
   case object WHEN extends Expr("WHEN") with TokenRegex
   case object THEN extends Expr("THEN") with TokenRegex

@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLType, SQLTypeUtils, SQ
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
 import app.softnetwork.elastic.sql.function.{
   Function => SQLFunction,
+  FunctionChain,
   FunctionN,
   FunctionWithIdentifier
 }
@@ -816,6 +817,37 @@ package object schema {
     // declares it. Validating those here rejected an MV round-trip -- and MV deployment RENDERS a
     // stage's schema to DDL and runs the text, so it would have broken deployment, not a test.
     // Reaching them needs the source schema, which this seam does not hold.
+    // 🔴 Issue #384, item 1 — the TEMPORAL check runs FIRST, ABOVE the `isRegular` carve-out
+    // below, and deliberately so. That carve-out is argued about the reference POPULATION (a
+    // materialized view's computed column legitimately reads a column of its SOURCE); a comparison
+    // between a TIME and a date-carrying value needs no population at all, so inheriting the
+    // exemption would have left an MV's computed column with the defect while a regular table's is
+    // refused. Raised after review measured exactly that.
+    //
+    // It has to be here at all because in an INGEST script every temporal collapses to a
+    // `ZonedDateTime` (story 21.8 rule 3), which ERASES a `CAST(ts AS TIME)` rather than honouring
+    // it: `SCRIPT AS (CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END)` emits `ts > ts` and
+    // stores a confident, WRONG `0` for every document (measured on ES 8.18.3). Without it, making
+    // those scripts run at all (item 3) would have turned a column that was silently ABSENT into
+    // one that is silently WRONG, which is strictly worse.
+    def temporalErrors(column: Column): Seq[String] =
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.validationExpr)
+        .flatMap {
+          case chain: FunctionChain => Case.conditionsOf(chain)
+          case _                    => Nil
+        }
+        .flatMap(_.temporalComparisonErrors)
+        .map(reason => s"Column '${column.path}': $reason") ++
+      column.multiFields.flatMap(temporalErrors)
+
+    schema.columns.flatMap(temporalErrors).distinct match {
+      case Nil    =>
+      case errors => return Left(errors.mkString("; "))
+    }
+
     if (!schema.isRegular) return Right(())
 
     def columnErrors(column: Column): Seq[String] =

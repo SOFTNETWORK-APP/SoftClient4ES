@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTypeUtils,
   SQLTypes
 }
+import app.softnetwork.elastic.sql.function.cond.Case
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
 import app.softnetwork.elastic.sql.function.convert.Conversion
@@ -67,13 +68,16 @@ sealed trait Criteria extends Updateable with PainlessScript {
     * Recursive in ONE place, the way `dependencies` above already is, so a new `Criteria` subtype
     * cannot silently opt out of it.
     */
-  def temporalComparisonErrors: Seq[String] = this match {
+  def temporalComparisonErrors: Seq[String] = (this match {
     case Predicate(left, _, right, _, _) =>
       left.temporalComparisonErrors ++ right.temporalComparisonErrors
     case e: Expression             => e.temporalComparisonError.toSeq
     case relation: ElasticRelation => relation.criteria.temporalComparisonErrors
     case _                         => Nil
-  }
+    // 🔴 ...and a CASE nested in an OPERAND is the same comparison again. `WHERE CASE WHEN
+    // CAST(ts AS TIME) > ts THEN 1 ELSE 0 END = 1` puts the offending predicate inside the LEFT
+    // operand of an equality, where the arm above sees only the equality itself. Found by review.
+  }) ++ referencedIdentifiers.flatMap(Case.conditionsOf).flatMap(_.temporalComparisonErrors)
 
   def dependencies: Seq[Identifier] = this match {
     case Predicate(left, _, right, _, _) => left.dependencies ++ right.dependencies

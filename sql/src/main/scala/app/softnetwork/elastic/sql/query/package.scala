@@ -35,6 +35,7 @@ import app.softnetwork.elastic.sql.schema.{
   TableType
 }
 import app.softnetwork.elastic.sql.function.FunctionUtils
+import app.softnetwork.elastic.sql.function.cond.Case
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -846,7 +847,10 @@ package object query {
       * measured, and each one names the shape it refuses.
       */
     def validateResolved(): Either[String, Unit] =
-      (where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq)
+      (where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
+        select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
+        orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
+        groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
         .flatMap(_.temporalComparisonErrors)
         .headOption
         .map(Left(_))

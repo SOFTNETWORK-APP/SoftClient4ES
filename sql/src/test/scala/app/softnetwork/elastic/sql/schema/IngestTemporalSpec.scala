@@ -203,4 +203,76 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
       }
     }
   }
+  /** 🔴 Issue #384, item 1 — a comparison a processor CANNOT express is refused at DDL, because
+    * making these scripts run (item 3) would otherwise have made this one silently WRONG.
+    *
+    * In an ingest script every temporal collapses to a `ZonedDateTime` (rule 3 above), which ERASES
+    * a `CAST(ts AS TIME)` rather than honouring it: `SCRIPT AS (CASE WHEN CAST(ts AS TIME) > ts …)`
+    * emits `ts > ts` and stores a confident `0` for every document. MEASURED on 8.18.3 — and on
+    * `origin/main` the very same column threw instead (the operand was parsed twice) and was simply
+    * ABSENT. Absent is bad; a plausible wrong number is worse, so the statement is refused where
+    * the user can still do something about it.
+    */
+  it should "refuse a comparison a processor cannot express" in {
+    val rejected = Parser(
+      "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+      "SCRIPT AS (CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END))"
+    )
+    withClue(s"$rejected ") {
+      rejected.isLeft shouldBe true
+      rejected.left.getOrElse("").toString should include("TIME")
+      rejected.left.getOrElse("").toString should include("'c'")
+    }
+
+    /** 🔴 Found by review, and it is the finding that mattered most: the walk must reach a CASE
+      * nested as a function ARGUMENT. `transformFunctions` walks the chain APPLIED TO an operand,
+      * so it saw `CASE WHEN … END` but not `ABS(CASE WHEN … END)` — and item 3 had made that
+      * wrapped form RUN, so it stored a confident `c = 0.0` where it used to be absent. One
+      * function away from the shape the check did see.
+      */
+    forAll(
+      Table(
+        "wrapped",
+        "ABS(CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END)",
+        "(CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END) + 1"
+      )
+    ) { expr =>
+      withClue(s"[$expr] ") {
+        Parser(
+          "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+          s"SCRIPT AS ($expr))"
+        ).isLeft shouldBe true
+      }
+    }
+    // the same wrapping over a comparison that IS expressible stays accepted
+    Parser(
+      "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+      "SCRIPT AS (ABS(CASE WHEN CAST(d AS DATE) > ts THEN 1 ELSE 0 END)))"
+    ).isRight shouldBe true
+
+    // ...and no OTHER comparison is refused by this rule. ⚠️ ACCEPTED, not necessarily WORKING:
+    // this asserts the DDL parses, which is all this rule owns. `CAST(ts AS TIME) >
+    // CAST('07:00:00' AS TIME)` is accepted here and still yields NO column at ingest — the
+    // temporal collapse erases both casts. Measured, unchanged by this story, and deliberately not
+    // claimed otherwise.
+    forAll(
+      Table(
+        "cmp",
+        "d > ts",
+        "CAST(d AS DATE) > ts",
+        "LAST_DAY(d) > ts",
+        "YEAR(d) > 2000",
+        "UPPER(name) = 'A'",
+        "CAST(ts AS TIME) > CAST('07:00:00' AS TIME)"
+      )
+    ) { cmp =>
+      withClue(s"[$cmp] ") {
+        Parser(
+          "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+          s"SCRIPT AS (CASE WHEN $cmp THEN 1 ELSE 0 END))"
+        ).isRight shouldBe true
+      }
+    }
+  }
+
 }
