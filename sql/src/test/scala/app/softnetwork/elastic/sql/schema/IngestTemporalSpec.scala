@@ -4,6 +4,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.CreateTable
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.scalatest.prop.TableDrivenPropertyChecks
 
 /** Story 21.8 Part C — a date function over a date COLUMN was unusable in an ingest script.
   *
@@ -41,7 +42,7 @@ import org.scalatest.matchers.should.Matchers
   * absent. `instanceof` on null throws and `ignore_failure: true` swallows it, which is the same
   * outcome — and the same mechanism — as before this story.
   */
-class IngestTemporalSpec extends AnyFlatSpec with Matchers {
+class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPropertyChecks {
 
   private def source(sql: String, column: String): String =
     Parser(sql) match {
@@ -164,5 +165,42 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers {
     "ZoneId.of('Z')); " +
     "def param4 = Long.valueOf(ChronoUnit.YEARS.between(param2, param3)); " +
     "ctx.age = (param1 == null) ? null : param4"
+  }
+
+  /** 🔴 Issue #384 — a COMPARISON inside a computed column must not be given the query path's
+    * operand promotion.
+    *
+    * A query reconciles a `LocalDate` operand with a `ZonedDateTime` one by appending
+    * `.atStartOfDay(ZoneId.of('Z'))` to whichever side is date-only. In a processor there is no
+    * date-only side to fix: rule 3 above has already collapsed every temporal to a `ZonedDateTime`,
+    * so appending it is `dynamic method [java.time.ZonedDateTime, atStartOfDay/1] not found` —
+    * #368's rule, in the venue where it costs most. `ScriptProcessor` sets `ignore_failure = true`,
+    * so the throw is swallowed and the document is simply indexed with the computed column ABSENT:
+    * no error anywhere, and the defect is invisible to every query.
+    *
+    * MEASURED on real ES 8.18.3 through the DDL path, for both document shapes, when the guard was
+    * missing. Found by review, not by the suite — which is why the assertion is on the SHAPE (a
+    * method appended to a bound parameter) rather than on `atStartOfDay` as a substring: the
+    * LEGITIMATE `LocalDate.parse(…).atStartOfDay(…)` of rule 4 appears in these very scripts.
+    */
+  it should "never promote a comparison operand in a processor" in {
+    forAll(
+      Table(
+        "ddl",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN ts > CAST(d AS DATE) THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN CAST(d AS DATE) > ts THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN DATE_TRUNC(CAST(d AS DATE), MONTH) > ts THEN 1 ELSE 0 END))"
+      )
+    ) { ddl =>
+      val s = source(ddl, "c")
+      withClue(s"[$ddl] ->\n$s\n") {
+        s should not include regex("""param\d+\.atStartOfDay\(""")
+        s should not include regex("""right\d+\.atStartOfDay\(""")
+        s should not include regex("""left\d+\.atStartOfDay\(""")
+      }
+    }
   }
 }

@@ -401,6 +401,29 @@ package object function {
     def foldsOntoOperand: Boolean =
       scala.util.Try(painless(None)).toOption.exists(_.startsWith("."))
 
+    /** Does this function's rendering PRODUCE a value of `outputType`'s own Java type, rather than
+      * PRESERVING the Java type of the operand it is applied to? (issue #384)
+      *
+      * 🔴 This is NOT [[foldsOntoOperand]], and the two disagree in both directions — using that
+      * one here was measured wrong at the design gate. `Conversion` OVERRIDES `foldsOntoOperand` to
+      * TRUE on the no-schema path (a `CAST(d AS DATE)` folds `.toLocalDate()` onto the parameter)
+      * while still replacing the type; `DATE_TRUNC … QUARTER` overrides it to FALSE while still
+      * preserving it. `foldsOntoOperand` answers *how is this rendered*, which is what parameter
+      * IDENTITY needs (#370). This answers *what does it render into*.
+      *
+      * The default is PRESERVE, and it is the honest default for the temporal family: every
+      * adjuster in it returns its receiver's own type — `with(TemporalAdjusters…)`, `truncatedTo`,
+      * `plus`, `withDayOfMonth` (#368's rule). So `DATE_ADD(ts, INTERVAL 1 DAY)` reports DATE as a
+      * SQL type while rendering a `ZonedDateTime`, and only a function that says otherwise here
+      * changes the answer.
+      *
+      * Read by `Identifier.renderedType`, which is what decides whether a comparison's two sides
+      * need reconciling. Declaring it on the FUNCTION rather than deriving it at the call site is
+      * #368's `TimeField.accessor` rule: the thing that knows owns the answer, so the next such
+      * function gets it by construction instead of by someone remembering.
+      */
+    def producesOutputJavaType: Boolean = false
+
     override def checkIfNullable: Boolean =
       super.checkIfNullable && (this match {
         case f: FunctionWithIdentifier

@@ -55,6 +55,26 @@ sealed trait Criteria extends Updateable with PainlessScript {
     */
   def negated: Option[Criteria] = None
 
+  /** Comparisons whose two operands render `java.time` types that ANSI does not compare — today
+    * exactly TIME against a date-carrying temporal (issue #384).
+    *
+    * 🔴 Asked of a SCHEMA-RESOLVED statement and of nothing else. Without a schema a bare column's
+    * type is `Any`, so `CAST(ts AS TIME) > ts` is a TIME against an UNKNOWN and there is nothing to
+    * reject — MEASURED: `Parser` validates the unresolved AST, where every such comparison is
+    * indistinguishable from a legal one. That is why this is a separate method rather than an arm
+    * of `validate()`: `validate()` runs at parse time, where the answer is not knowable yet.
+    *
+    * Recursive in ONE place, the way `dependencies` above already is, so a new `Criteria` subtype
+    * cannot silently opt out of it.
+    */
+  def temporalComparisonErrors: Seq[String] = this match {
+    case Predicate(left, _, right, _, _) =>
+      left.temporalComparisonErrors ++ right.temporalComparisonErrors
+    case e: Expression             => e.temporalComparisonError.toSeq
+    case relation: ElasticRelation => relation.criteria.temporalComparisonErrors
+    case _                         => Nil
+  }
+
   def dependencies: Seq[Identifier] = this match {
     case Predicate(left, _, right, _, _) => left.dependencies ++ right.dependencies
     case c: Expression                   => c.dependencies
@@ -759,6 +779,23 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case None                    => SQLTypes.Any
     }
 
+  /** The JAVA type the RIGHT-hand side renders — what `Identifier.renderedType` answers for the
+    * left operand, asked on the right (issue #384).
+    *
+    * [[valueType]] stays the SQL type because that is what `check`'s per-type dispatch needs: it
+    * picks the comparison SPELLING (`isBefore` / `compareTo` / `==`), which follows the SQL type.
+    * This one decides what the two sides must be CONVERTED to, which follows the Java type, and the
+    * two questions had one answer for as long as only the left operand was ever converted.
+    *
+    * A non-identifier value is its own producer — a DATE literal renders `LocalDate.parse(…)` — so
+    * `out` is already the Java type for it.
+    */
+  protected def valueRenderedType: SQLType =
+    maybeValue match {
+      case Some(id: Identifier) => id.renderedType
+      case _                    => valueType
+    }
+
   /** Can the doc-value of this identifier be a TEMPORAL at run time? `Any` means the column's type
     * is UNKNOWN — no schema was attached — and the narrowing below has always been applied there,
     * which the no-schema bridge fixtures pin; only a column KNOWN to be something else may skip it.
@@ -768,94 +805,49 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   private def mayBeTemporal(identifier: Identifier): Boolean =
     identifier.baseType == SQLTypes.Any || identifier.baseType.isInstanceOf[SQLTemporal]
 
-  /** The operand of this criterion, rendered ONCE, as `(chain, coerced)` — see the note at the
-    * bottom of the method.
+  /** The JAVA type the LEFT operand renders — `Identifier.renderedType`, plus the one thing that
+    * derivation cannot see (issue #384).
+    *
+    * 🔴 [[leftOperand]] INJECTS a narrowing onto the operand when the right-hand side is a DATE (or
+    * TIME) LITERAL: the literal renders `LocalDate.parse(…)`, so the doc-value is given
+    * `.toLocalDate()` to meet it. That injection happens AFTER the type is computed and changes
+    * what the operand renders, so asking the chain alone answers TIMESTAMP for something that
+    * renders a `LocalDate`.
+    *
+    * Getting this wrong is not theoretical: the first version of this fix promoted the LITERAL of
+    * `DATE_ADD(d, INTERVAL 1 DAY) = CAST('2025-01-31' AS DATE)` to a `ZonedDateTime` while the
+    * narrowed operand stayed a `LocalDate` — caught by `PredicateTransformSurvivalSpec`'s interval
+    * pin, which exists for exactly this class of mistake.
+    *
+    * The condition is the injection's own, stated once so the two cannot drift.
     */
-  protected def leftOperand(context: Option[PainlessContext]): (String, String) = {
-    // 🔴 Issue #367 — BOTH the target and the source of the coercion are read from the type the
-    // operand's rendering really has (`Identifier.chainType`), not from the column's. With
-    // `identifier.out` here, `WEEKDAY(d) = 0` asked for the common supertype of TIMESTAMP and
-    // BIGINT and then converted the extracted `int` as though it were a date.
-    val chainType = identifier.chainType
-    val targetedFromChain =
-      if (maybeValue.isEmpty) chainType
-      else if (chainType.isInstanceOf[SQLNumeric] && valueType.isInstanceOf[SQLNumeric]) chainType
-      else SQLTypeUtils.leastCommonSuperType(List(chainType, valueType))
+  protected def operandRenderedType: SQLType =
+    if (narrowsToValueType) valueType else identifier.renderedType
 
-    /** 🔴 The coercion arms are keyed on the JAVA type of the string that was rendered, and a
-      * TEMPORAL chain over a TEMPORAL column does not change it: `doc['d'].value` is a
-      * `ZonedDateTime` and every adjuster in the family returns the RECEIVER's own type
-      * (`with(TemporalAdjusters…)`, `truncatedTo`, `plus`) — #368's rule, restated. So the chain's
-      * SQL type can say DATE while the value is still a `ZonedDateTime`, and coercing DATE ->
-      * TIMESTAMP then emits `.atStartOfDay(…)`, which is declared on `LocalDate` alone. MEASURED on
-      * ES 8.18: `WHERE LAST_DAY(d) = ts` answered `dynamic method [java.time.ZonedDateTime,
-      * atStartOfDay/1] not found`, where the same query WORKED before this fix — found by review,
-      * and pinned below by `PredicateTransformSurvivalSpec` plus an executed row in
-      * `PredicateFunctionResultSpec`.
-      *
-      * The exception is the narrowing the block below injects: when the target really is DATE (or
-      * TIME) the operand is given `.toLocalDate()` / `.toLocalTime()` first, so the two types agree
-      * again and `chainType` is the right source.
-      *
-      * A chain whose BASE is not temporal is untouched by any of this: `DATE_PARSE(name, …)`
-      * renders `LocalDate.parse(…)`, a genuine `LocalDate`, so DATE -> TIMESTAMP is correct there —
-      * one of the conversions this fix repairs.
-      */
-    /** Does the chain CONVERT to a DATE, i.e. does it render a `LocalDate` rather than the column's
-      * `ZonedDateTime`?
-      *
-      * 🔴 This is what `chainType` cannot answer, and the reason issue #373 item 1 survived
-      * `chainType` (#367). `chainType` is a SQL type: `DATE_ADD(ts, INTERVAL 1 DAY)` reports DATE
-      * while still rendering a `ZonedDateTime`, and `DATE_TRUNC(d, MONTH)` reports TEMPORAL for the
-      * same reason -- both keep the receiver's Java type, which is exactly what the override below
-      * is right about. A `Conversion` does not: `CAST(d AS DATE)` emits
-      * `…toInstant().atZone(Z).toLocalDate()`, a genuine `LocalDate`.
-      *
-      * 🔴 And NOT `rendersLocalDate`, measured false here on BOTH paths -- the reason is
-      * SEQUENCING, not just registration. `operandType` is computed before the chain renders, and
-      * the no-schema fold registers `.toLocalDate()` DURING rendering; with a schema the conversion
-      * emits the narrowing inline and registers nothing at all. Measured no-schema:
-      * `painlessMethods` empty before the render, `.toLocalDate()` after it. The conversion itself
-      * is the one thing that knows at the point the decision is made.
-      *
-      * ⚠️ `targetType == Date` is UNOBSERVABLE today, and is kept for correctness rather than
-      * coverage: relaxing it to `case _: Conversion => true` passes the whole suite, because this
-      * predicate is consulted only when `chainType` is TEMPORAL and, for a temporal conversion that
-      * is not to DATE, the chain type and the column type agree so both branches answer the same.
-      * Measured, twice -- do not "simplify" it, and do not read it as tested.
-      *
-      * ⚠️ DATE ONLY, deliberately. The TIME twin is NOT fixed: `SQLTypeUtils.coerce` has no `(Time,
-      * _)` SOURCE arm, so `operandType = Time` coerces to identity and nothing is emitted. `CAST(ts
-      * AS TIME) > ts` fails with `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`
-      * before and after this change (measured on 8.18.3). Including TIME here was measured to
-      * change no emission at all -- dead code that would have read as coverage -- so it is left out
-      * and the gap is recorded in `MixedTemporalComparisonSpec`.
-      */
-    val convertsToLocal =
-      identifier.functions.exists {
-        case c: Conversion => c.targetType == SQLTypes.Date
-        case _             => false
-      }
+  /** Will [[leftOperand]] narrow the operand to the right-hand side's DATE/TIME type? The same
+    * predicate the injection uses — `originalType == Any` says this identifier NAMES a column, the
+    * column may be temporal, and the right side is a LITERAL (a document field on the other side
+    * renders a `ZonedDateTime` of its own and gets no narrowing: both sides or neither).
+    */
+  private def narrowsToValueType: Boolean =
+    identifier.originalType == SQLTypes.Any && mayBeTemporal(identifier) &&
+    !valueReadsDocumentField &&
+    (valueType == SQLTypes.Date || valueType == SQLTypes.Time)
 
-    val operandType =
-      if (
-        chainType.isInstanceOf[SQLTemporal] && identifier.baseType.isInstanceOf[SQLTemporal] &&
-        targetedFromChain != SQLTypes.Date && targetedFromChain != SQLTypes.Time &&
-        // 🔴 …and the chain has not converted the receiver to a date/time-only type. Without this
-        // the operand claimed the COLUMN's type while rendering a `LocalDate`, so the coercion to
-        // the common super type was computed against a type that did not describe the rendering and
-        // came out a no-op: `CAST(d AS DATE) > ts` compared a `LocalDate` with a `ZonedDateTime`
-        // (`class_cast_exception`), and no-schema `CAST(d AS DATE) = d` compared them with `==`,
-        // which is silently FALSE for every document (issue #373, item 1).
-        !convertsToLocal
-      ) identifier.baseType
-      else chainType
-
-    val targetedType = maybeValue match {
+  /** The type BOTH operands are reconciled to before they are compared.
+    *
+    * 🔴 Extracted so there is ONE answer (issue #384). It used to be computed inside
+    * [[leftOperand]], where only the left operand could see it, and the right one was rendered raw
+    * by [[painlessValue]] — which is the whole defect: `ts > CAST(d AS DATE)` promoted the side
+    * that was already a `ZonedDateTime` and left the `LocalDate` alone.
+    */
+  protected def comparisonTargetType: SQLType = {
+    val operandType = operandRenderedType
+    maybeValue match {
       // 🔴 Two numbers are compared as numbers, with NO widening. Painless compares boxed numerics
       // numerically (MEASURED on ES 8.18 for `==`, `>`, `contains` and a BETWEEN pair, across
-      // Integer/long/double mixes), and the parameter shortcut below has always emitted the
-      // comparison with no conversion at all — so skipping it here is what keeps the two paths
+      // Integer/long/double mixes), and the parameter shortcut in [[painless]] has always emitted
+      // the comparison with no conversion at all — so skipping it here is what keeps the two paths
       // agreeing rather than a shortcut of its own.
       //
       // It is also the difference between working and a 400: a widening renders as the PRIMITIVE
@@ -866,9 +858,124 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       // method-inside-the-guard: a conversion may not wrap a guarded ternary.
       case Some(_) if operandType.isInstanceOf[SQLNumeric] && valueType.isInstanceOf[SQLNumeric] =>
         operandType
-      case Some(_) => SQLTypeUtils.leastCommonSuperType(List(operandType, valueType))
+      // 🔴 Issue #384 — the common super type is computed from what BOTH sides RENDER. Reading the
+      // right side's SQL type here made `CAST(d AS DATE) > DATE_TRUNC(ts, MONTH)` ask for
+      // `leastCommonSuperType(DATE, TEMPORAL)`, which is DATE, and a DATE target then told the
+      // left operand it was already there — while the right was rendering a `ZonedDateTime`.
+      case Some(_) => SQLTypeUtils.leastCommonSuperType(List(operandType, valueRenderedType))
       case None    => operandType
     }
+  }
+
+  /** ANSI SQL defines no comparison between a TIME and a date-carrying temporal: a `LocalTime` has
+    * no date, so promoting it to a `ZonedDateTime` would have to invent one (issue #384, lead
+    * decision D-2 — reject, do not guess).
+    *
+    * Without this the two sides reach Painless as different types and Elasticsearch fails the shard
+    * with `Cannot cast java.time.ZonedDateTime to java.time.LocalTime` — loud, but naming neither
+    * the column nor the SQL that produced it. `SQLTypeUtils.coerce` has no `(Time, _)` SOURCE arm
+    * and is not given one: there is no correct value to emit.
+    *
+    * ⚠️ TIME against TIME is legal and untouched — `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)`
+    * compares two `LocalTime`s and works.
+    *
+    * ⚠️ Comparison operators only. `BETWEEN` and `IN` carry a pair / a list rather than one
+    * comparable operand, and `BETWEEN` belongs to issue #381.
+    */
+  def temporalComparisonError: Option[String] = {
+    def dateCarrying(t: SQLType): Boolean =
+      t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp
+    val l = operandRenderedType
+    val r = valueRenderedType
+    if (!operator.isInstanceOf[ComparisonOperator]) None
+    else if ((l == SQLTypes.Time && dateCarrying(r)) || (r == SQLTypes.Time && dateCarrying(l)))
+      Some(
+        s"Type mismatch: a TIME value cannot be compared with a ${if (l == SQLTypes.Time) r.typeId
+        else l.typeId} value in expression: $this"
+      )
+    else None
+  }
+
+  /** Do the two operands render DIFFERENT `java.time` types, so that the right one has to be moved
+    * to meet the left (issue #384)?
+    *
+    * 🔴 NEVER in a PROCESSOR context, and this is not a precaution — it is a measured regression
+    * the first version shipped. In an ingest script the operand is not a doc-value: a DATE column
+    * renders `(ctx.d instanceof String ? LocalDate.parse(…).atStartOfDay(Z) : Instant.ofEpochMilli(
+    * ctx.d).atZone(Z))`, already a `ZonedDateTime`, so `.atStartOfDay(…)` is `dynamic method
+    * [java.time.ZonedDateTime, atStartOfDay/1] not found` — #368's rule again. And the failure is
+    * INVISIBLE: `ScriptProcessor` sets `ignore_failure = true`, so `CREATE TABLE t (… c INT SCRIPT
+    * AS (CASE WHEN ts > CAST(d AS DATE) THEN 1 ELSE 0 END))` indexed documents with no `c` at all.
+    * MEASURED on real ES 8.18.3 through the DDL path, for both the string and the epoch-millis
+    * document shapes. The LEFT operand has always had this guard (it routes through
+    * `processorTemporal` rather than `coerce`); the right one needs the same.
+    *
+    * ⚠️ The TRANSFORM (materialized-view) context is NOT excluded and must not be: it reads
+    * `doc['x'].value`, so its operands are the same `java.time` objects a query's are.
+    *
+    * 🔴 TEMPORAL mismatches only (lead decision D-3). Full symmetry would also convert string and
+    * numeric right-hand sides, which are compared today with no conversion on either side; keeping
+    * the condition here is what makes "every non-temporal predicate is byte-identical" a property
+    * of the code rather than a claim about a test run.
+    *
+    * ⚠️ It says the two RENDERINGS disagree, not that `coerce` has an arm for the pair. Where it
+    * has none the promotion is the identity and only the binding below remains — visible today only
+    * for a TIME source, which [[temporalComparisonError]] refuses before it can execute.
+    */
+  protected def rightNeedsTemporalPromotion(context: Option[PainlessContext]): Boolean = {
+    val from = valueRenderedType
+    val to = comparisonTargetType
+    from != to && from.isInstanceOf[SQLTemporal] && to.isInstanceOf[SQLTemporal] &&
+    !context.exists(_.isProcessor)
+  }
+
+  /** The RIGHT operand, promoted to [[comparisonTargetType]] (issue #384).
+    *
+    * ⚠️ NOT applied inside `check`: `bucketPipelineCheck` calls that with `params.<metric>`
+    * operands, which are epoch-millis doubles and have no `java.time` type to reconcile. The five
+    * call sites are all in [[painless]].
+    */
+  protected def promotedRight(ref: String, context: Option[PainlessContext]): String =
+    if (rightNeedsTemporalPromotion(context))
+      SQLTypeUtils.coerce(ref, valueRenderedType, comparisonTargetType, nullable = false, context)
+    else ref
+
+  /** The operand of this criterion, rendered ONCE, as `(chain, coerced)` — see the note at the
+    * bottom of the method.
+    */
+  protected def leftOperand(context: Option[PainlessContext]): (String, String) = {
+    // 🔴 Issue #367 — BOTH the target and the source of the coercion are read from the type the
+    // operand's RENDERING really has, not from the column's. With `identifier.out` here,
+    // `WEEKDAY(d) = 0` asked for the common supertype of TIMESTAMP and BIGINT and then converted
+    // the extracted `int` as though it were a date. Issue #384 moved those two derivations up to
+    // `operandRenderedType` / `comparisonTargetType`, where the RIGHT operand can read them too.
+
+    /** 🔴 The coercion arms are keyed on the JAVA type of the string that was rendered, and a
+      * TEMPORAL chain over a TEMPORAL column does not change it: `doc['d'].value` is a
+      * `ZonedDateTime` and every adjuster in the family returns the RECEIVER's own type
+      * (`with(TemporalAdjusters…)`, `truncatedTo`, `plus`) — #368's rule, restated. So the chain's
+      * SQL type can say DATE while the value is still a `ZonedDateTime`, and coercing DATE ->
+      * TIMESTAMP then emits `.atStartOfDay(…)`, which is declared on `LocalDate` alone. MEASURED on
+      * ES 8.18: `WHERE LAST_DAY(d) = ts` answered `dynamic method [java.time.ZonedDateTime,
+      * atStartOfDay/1] not found`, where the same query WORKED before that fix — found by review,
+      * and pinned by `PredicateTransformSurvivalSpec` plus an executed row in
+      * `PredicateFunctionResultSpec`.
+      *
+      * The exception is the narrowing the block below injects: when the target really is DATE (or
+      * TIME) the operand is given `.toLocalDate()` / `.toLocalTime()` first, so the two types agree
+      * again.
+      *
+      * A chain whose BASE is not temporal is untouched by any of this: `DATE_PARSE(name, …)`
+      * renders `LocalDate.parse(…)`, a genuine `LocalDate`, so DATE -> TIMESTAMP is correct there.
+      */
+    // 🔴 Issue #384 — ONE derivation, `Identifier.renderedType`, replaces the four-clause override
+    // and the `convertsToLocal` predicate that used to sit here. That predicate enumerated the
+    // producers BY CLASS (`case c: Conversion if targetType == Date`) and so could not see
+    // `DATE_PARSE`, could not see a `CAST` with a preserving function above it, and excluded TIME.
+    // `renderedType` asks the FUNCTION instead (`producesOutputJavaType`), which is the only place
+    // the answer is knowable — see there for why it is not `foldsOntoOperand`.
+    val operandType = operandRenderedType
+    val targetedType = comparisonTargetType
     context match {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
@@ -1128,6 +1235,37 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // so calling it twice would declare it twice (review H-4).
     val innerRight = painlessValue(context)
 
+    /** The same rendering, promoted to the comparison's target type when the two sides render
+      * different `java.time` types (issue #384). `innerRight` is atomic on every route that uses
+      * this one — the parameter shortcut requires `!rightNullable`, and the two tail returns are
+      * reached only when the right side needs no local — so the promotion lands where a method may
+      * legally be appended. The guarded route below promotes `rightRef` instead, which is the bound
+      * local.
+      */
+    lazy val rightPromoted = promotedRight(innerRight, context)
+
+    /** Does this rendering carry a conditional, i.e. is it a guarded ternary rather than a name, a
+      * literal or a call chain? A `?` can only be the ternary operator here — a Painless string
+      * literal is the one place it could appear otherwise, and DOUBLE-quoted ones are skipped.
+      * (Single-quoted forms such as `ZoneId.of('Z')` are not skipped and do not need to be: no
+      * emission in this tree puts a `?` inside one.)
+      */
+    def carriesConditional(rendered: String): Boolean = {
+      var inString = false
+      var i = 0
+      var found = false
+      while (i < rendered.length && !found) {
+        val c = rendered.charAt(i)
+        if (inString) {
+          if (c == '\\') i += 1
+          else if (c == '"') inString = false
+        } else if (c == '"') inString = true
+        else if (c == '?') found = true
+        i += 1
+      }
+      found
+    }
+
     /** An operand of a comparison must be ATOMIC. A rendering that is not a bare name carries
       * operators whose precedence swallows what is appended to it — `param2 ? 1 : 0` with `== 1`
       * appended parses as `param2 ? 1 : (0 == 1)` (review L-9, measured: `Cannot cast from [int] to
@@ -1223,9 +1361,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           // `ABS(amount)` already used, and the reason those were never affected.
           case Some(p) if !rightNullable && p == chainRendering =>
             if (identifier.nullable)
-              return s"$p == null ? false : $painlessNot(${check(context, p, innerRight)})"
+              return s"$p == null ? false : $painlessNot(${check(context, p, rightPromoted)})"
             else
-              return s"$painlessNot(${check(context, p, innerRight)})"
+              return s"$painlessNot(${check(context, p, rightPromoted)})"
           case _ =>
         }
       case _ =>
@@ -1263,8 +1401,24 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     val needsLeftLocal = leftNullable || !atomic(innerLeft)
     val leftRef =
       if (needsLeftLocal) context.map(_.bindLocal(innerLeft)).getOrElse(innerLeft) else innerLeft
+    // Issue #384 — a rendering carrying a CONDITIONAL is bound before a promotion is appended to
+    // it, even though `atomic` accepts it: `atomic` asks whether an OPERATOR may be appended, which
+    // a parenthesised ternary allows because every operator inside it is already bracketed.
+    //
+    // ⚠️ This is about ONE EVALUATION, not about correctness on ES 8. The unbound form
+    // `(param2 != null ? … : null).atStartOfDay(…)` was MEASURED on real ES 8.18.3 and it WORKS and
+    // returns the right rows — `param2` is a `def`, so the ternary is `def`-typed and the call
+    // dispatches dynamically. Story 21.8 rule 2 (`member method [java.lang.Object, …] not found`)
+    // describes a differently-typed operand, and assuming it applied here was wrong until it was
+    // executed. What the binding buys is real but smaller: the null guard and the comparison read
+    // the SAME local instead of evaluating the guarded conversion twice, the emission matches what
+    // the LEFT operand already does, and no claim is being made about Painless on ES 6.8 / 7.17,
+    // where this shape has not been measured.
     val rightRef =
-      if (rightNullable && !atomic(innerRight))
+      if (
+        (rightNullable && !atomic(innerRight)) ||
+        (rightNeedsTemporalPromotion(context) && carriesConditional(innerRight))
+      )
         context.map(_.bindLocal(innerRight, "right")).getOrElse(innerRight)
       else innerRight
     val guards =
@@ -1273,7 +1427,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         if (rightNullable) Some(s"$rightRef == null") else None
       ).flatten
     if (guards.nonEmpty && context.nonEmpty)
-      return s"(${guards.mkString(" || ")} ? false : ($painlessNot(${check(context, leftRef, rightRef)})))"
+      return s"(${guards.mkString(" || ")} ? false : ($painlessNot(${check(context, leftRef, promotedRight(rightRef, context))})))"
     // 🔴 INVARIANT (story BIDC-8, review L-11): a statement sequence is legal ONLY with no
     // `PainlessContext`. `Criteria.painless` is spliced into larger expressions -- a `Predicate`
     // joins two renderings with `&&`/`||`, and a `CASE` condition captures one as
@@ -1282,8 +1436,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // route is the HAVING / bucket-pipeline one, which is never spliced. Gated by
     // `PainlessOperandFormSpec`, which FAILS (14 shapes) if `bindLocal` stops hoisting.
     if (identifier.nullable)
-      return s"def left = $leftRef; left == null ? false : $painlessNot(${check(context, "left", innerRight)})"
-    s"$painlessNot${check(context, leftRef, innerRight)}"
+      return s"def left = $leftRef; left == null ? false : $painlessNot(${check(context, "left", rightPromoted)})"
+    s"$painlessNot${check(context, leftRef, rightPromoted)}"
   }
 
   override def validate(): Either[String, Unit] = {

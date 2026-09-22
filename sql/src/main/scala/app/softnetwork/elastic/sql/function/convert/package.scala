@@ -60,6 +60,13 @@ package object convert {
       value.isInstanceOf[Identifier] && inputType == SQLTypes.Any &&
       (outputType == SQLTypes.Date || outputType == SQLTypes.Time)
 
+    /** A conversion is the definition of PRODUCING a type: `CAST(d AS DATE)` renders a `LocalDate`
+      * whatever its receiver was. Unconditional, and deliberately NOT restricted to DATE/TIME the
+      * way `foldsOntoOperand` above is — `CAST(d AS TIMESTAMP)` produces a `ZonedDateTime` just as
+      * definitely, it merely happens to coincide with a date column's own rendering (issue #384).
+      */
+    override def producesOutputJavaType: Boolean = true
+
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>

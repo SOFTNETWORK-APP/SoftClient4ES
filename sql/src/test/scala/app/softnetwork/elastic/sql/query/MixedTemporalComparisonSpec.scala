@@ -80,26 +80,19 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * rule survives a change in how the promotion is spelled. The byte pins live in
     * `ParameterIdentitySpec`, whose expectations these shapes moved.
     */
-  /** 🔴 WHAT THIS FIX DOES NOT COVER, each MEASURED on ES 8.18.3 and identical before and after.
-    * Recorded here because the rule above reads more general than it is: only the LEFT operand is
-    * coerced -- `painlessValue` renders the right one raw -- so the reconciliation is one-sided.
+  /** 🔴 ISSUE #384 CLOSED THE OTHER ANGLES. The block below used to record five shapes this rule
+    * did NOT cover, because only the LEFT operand was ever coerced. Four of them are now fixed and
+    * asserted further down; what remains here is the list of what is still someone else's:
     *
-    *   - REVERSED ORDER. `ts > CAST(d AS DATE)`, `ts = CAST(d AS DATE)`, `d = CAST(ts AS DATE)`:
-    *     `Cannot cast java.time.LocalDate to java.time.chrono.ChronoZonedDateTime`.
-    *   - A RIGHT side that is not TIMESTAMP/DATETIME. `CAST(d AS DATE) > DATE_TRUNC(ts, MONTH)`
-    *     gives `lcs(DATE, TEMPORAL) = DATE`, which short-circuits the override before this
-    *     predicate is consulted.
-    *   - A `LocalDate` produced WITHOUT a `Conversion`. `DATE_PARSE(DATE_FORMAT(d, 'yyyy-MM-dd'),
-    *     'yyyy-MM-dd') > ts` renders `LocalDate.parse` over a temporal base column, and `DateParse`
-    *     is a second `LocalDate` producer this predicate cannot see.
-    *   - `BETWEEN`, which fails differently again: the from/to pair's type is not temporal, so
-    *     `check` emits a raw `>=` / `<=` and answers `Cannot apply [>] operation to types
-    *     [java.time.LocalDate] and [java.time.ZonedDateTime]`.
-    *   - The TIME twin, `CAST(ts AS TIME) > ts`: `coerce` has no `(Time, _)` SOURCE arm, so nothing
-    *     is emitted and it stays `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`.
+    *   - `BETWEEN` — issue **#381**. `Expression.check` dispatches on `valueType`, which for a
+    *     `BetweenExpr` is the from/to pair's type rather than either bound's, so both bounds emit a
+    *     raw `>=` / `<=`. That fails for `ZonedDateTime` against `ZonedDateTime` too, and with no
+    *     schema it throws before Painless is reached at all, so it is a dispatch defect rather than
+    *     a reconciliation one. Once #381 dispatches per bound the bounds flow through this rule.
+    *   - the NO-SCHEMA path of a column-vs-column comparison — see the residual block at the end.
     *
-    * All five are the same one-sided reconciliation seen from different angles. They are left for a
-    * follow-up rather than widened into here, where each would need its own measured promotion.
+    * The TIME twin (`CAST(ts AS TIME) > ts`) is no longer emitted at all: it is REJECTED, see "a
+    * TIME operand" below.
     */
   "a date-only chain compared with a raw timestamp column" should "promote to a common type" in {
     forAll(
@@ -195,19 +188,19 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     *     #373 item 8 -- parameter identity, not comparison reconciliation -- and is filed
     *     separately.
     */
-  "the one-sided reconciliation" should "be characterised, not silently accepted" in {
-    // The reversed order is the same defect and is NOT fixed: asserted so the gap is visible and
-    // cannot be closed by accident. Measured on 8.18.3 as a class_cast_exception.
-    forAll(
-      Table(
-        "sql",
-        "SELECT name FROM t WHERE ts > CAST(d AS DATE)",
-        "SELECT name FROM t WHERE d = CAST(ts AS DATE)",
-        "SELECT name FROM t WHERE CAST(ts AS TIME) > ts"
-      )
-    ) { sql =>
-      val emitted = predicateOf(sql)
-      withClue(s"[$sql] ->\n$emitted\n")(emitted should not include "atStartOfDay")
+  /** 🔴 A CHARACTERIZATION test failing IS the fix working. This block used to assert that the
+    * reversed order and the TIME twin emitted NO promotion; issue #384 promotes the first two and
+    * refuses the third, so the recorded fact is updated rather than the code reverted (story 21.8's
+    * rule, live again). What it asserts now is the half that did not move: `BETWEEN`, which belongs
+    * to #381 and still emits a raw relational operator over two different `java.time` types.
+    */
+  "BETWEEN with a column bound" should "still be characterised — it belongs to #381" in {
+    val emitted = predicateOf("SELECT name FROM t WHERE CAST(d AS DATE) BETWEEN ts AND ts")
+    withClue(s"->\n$emitted\n") {
+      // the raw operators #381 owns, not the `isBefore` / `isAfter` dispatch a comparison gets
+      emitted should include(">=")
+      emitted should not include "isBefore"
+      emitted should not include "atStartOfDay"
     }
   }
 
@@ -227,5 +220,164 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     )
     // the shared parameter still carries the DATE-literal narrowing (item 8)
     withClue(s"shared ->\n$shared\n")(shared should include(".toLocalDate().withDayOfMonth(1)"))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Issue #384 — the reconciliation is two-sided
+  // ---------------------------------------------------------------------------------------------
+
+  /** The operand that needs promoting is whichever one renders the date-only value, and it may be
+    * the RIGHT one. Asserted ON THE RIGHT OPERAND of the comparison, not merely somewhere in the
+    * script: a bare `include("atStartOfDay")` is satisfied by the left operand's own promotion and
+    * would pass on the unfixed code for two of these rows.
+    */
+  "a raw timestamp column compared with a date-only chain" should "promote the RIGHT operand" in {
+    forAll(
+      Table(
+        ("sql", "why"),
+        (
+          "SELECT name FROM t WHERE ts > CAST(d AS DATE)",
+          "the reversed order of the row already covered above"
+        ),
+        ("SELECT name FROM t WHERE ts = CAST(d AS DATE)", "the `=` spelling"),
+        ("SELECT name FROM t WHERE d = CAST(ts AS DATE)", "the columns swapped as well"),
+        (
+          "SELECT name FROM t WHERE LAST_DAY(d) > CAST(ts AS DATE)",
+          "an adjuster on the left keeps the ZonedDateTime, so the right is the one to move"
+        )
+      )
+    ) { (sql, why) =>
+      val emitted = predicateOf(sql)
+      withClue(s"[$sql] -- $why ->\n$emitted\n") {
+        emitted should include regex """\.(?:isAfter|isEqual|isBefore)\(right\d+\.atStartOfDay\("""
+      }
+    }
+  }
+
+  /** A promotion is appended to a NAME, never to a guarded ternary, so the null guard and the
+    * comparison read one evaluation of the same local.
+    *
+    * ⚠️ Honest about what this is NOT: the unbound form the first version of this fix emitted,
+    * `(param2 != null ? … : null).atStartOfDay(…)`, was EXECUTED on real ES 8.18.3 and it works —
+    * `param2` is a `def`, so the ternary is `def`-typed and the method dispatches dynamically.
+    * Story 21.8 rule 2 was assumed to apply here and does not. The pin stays because the property
+    * is worth holding (one evaluation, and the same shape the left operand already emits), not
+    * because the alternative was measured broken on ES 8.
+    */
+  "a promotion" should "land on a bound name, not a conditional" in {
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE ts > CAST(d AS DATE)",
+        "SELECT name FROM t WHERE ts = CAST(d AS DATE)",
+        "SELECT name FROM t WHERE d = CAST(ts AS DATE)",
+        "SELECT name FROM t WHERE LAST_DAY(d) > CAST(ts AS DATE)",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > ts",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > DATE_TRUNC(ts, MONTH)",
+        "SELECT name FROM t WHERE DATE_TRUNC(CAST(d AS DATE), MONTH) > ts"
+      )
+    ) { sql =>
+      val emitted = predicateOf(sql)
+      withClue(s"[$sql] ->\n$emitted\n")(emitted should not include regex("""\: null\)\.\w"""))
+    }
+  }
+
+  /** The three shapes whose LEFT operand renders a `LocalDate` that the old predicate could not see
+    * — a preserving function ABOVE a conversion, a producer that is not a `Conversion`, and a
+    * right-hand side whose SQL type is TEMPORAL rather than TIMESTAMP.
+    */
+  "a date-only rendering the chain type does not report" should "still be promoted" in {
+    forAll(
+      Table(
+        ("sql", "why"),
+        (
+          "SELECT name FROM t WHERE CAST(d AS DATE) > DATE_TRUNC(ts, MONTH)",
+          "the right side's chain type is TEMPORAL; its RENDERING is a ZonedDateTime"
+        ),
+        (
+          "SELECT name FROM t WHERE DATE_TRUNC(CAST(d AS DATE), MONTH) > ts",
+          "a preserving function sits ABOVE the conversion, so chainType reports TEMPORAL"
+        ),
+        (
+          "SELECT name FROM t WHERE DATE_PARSE(DATE_FORMAT(d, 'yyyy-MM-dd'), 'yyyy-MM-dd') > ts",
+          "DATE_PARSE is a LocalDate producer that is not a Conversion"
+        )
+      )
+    ) { (sql, why) =>
+      val emitted = predicateOf(sql)
+      withClue(s"[$sql] -- $why ->\n$emitted\n") {
+        emitted should include regex """def left\d+ = \(param\d+ != null \? param\d+\.atStartOfDay\("""
+      }
+    }
+  }
+
+  /** 🔴 THE TRAP THIS RULE MUST NOT FALL INTO, and it did once: a comparison against a DATE LITERAL
+    * NARROWS the operand to a `LocalDate` before it renders, so BOTH sides are already date-only
+    * and promoting either one re-creates the mismatch from the other direction. The narrowing is
+    * injected after the type is computed, which is precisely why `Expression.operandRenderedType`
+    * asks about it rather than reading the chain alone.
+    *
+    * `PredicateTransformSurvivalSpec`'s interval pin is what caught this; the row is repeated here
+    * because this is the rule that owns the mistake.
+    */
+  "a comparison against a DATE literal" should "promote neither side" in {
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE DATE_ADD(d, INTERVAL 1 DAY) = CAST('2025-01-31' AS DATE)",
+        "SELECT name FROM t WHERE DATE_TRUNC(d, MONTH) = CAST('2025-01-01' AS DATE)",
+        "SELECT name FROM t WHERE CAST(d AS DATE) = CAST('2025-01-05' AS DATE)",
+        "SELECT name FROM t WHERE LAST_DAY(d) = CAST('2025-01-31' AS DATE)"
+      )
+    ) { sql =>
+      val emitted = predicateOf(sql)
+      withClue(s"[$sql] ->\n$emitted\n")(emitted should not include "atStartOfDay")
+    }
+  }
+
+  /** ANSI defines no TIME-to-TIMESTAMP comparison, so it is REJECTED rather than guessed at (lead
+    * decision D-2). `SQLTypeUtils.coerce` has no `(Time, _)` source arm and is deliberately not
+    * given one: there is no correct value to emit.
+    *
+    * 🔴 Asked of the SCHEMA-RESOLVED statement, because that is the only place the answer exists.
+    * `Parser` validates what it parsed, where `ts` is `Any` — measured — so a parse-time rule could
+    * not tell this apart from a legal comparison. Core calls `validateResolved()` at the one seam
+    * that produces a resolved statement.
+    */
+  "a TIME operand" should "be refused against a date-carrying one, and accepted against a TIME" in {
+    def resolved(sql: String): SingleSearch = Parser(sql) match {
+      case Right(ss: SingleSearch) => ss.update(Some(schema))
+      case other                   => fail(s"[$sql] unexpected: $other")
+    }
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(ts AS TIME) > ts",
+        "SELECT name FROM t WHERE ts > CAST(ts AS TIME)",
+        "SELECT name FROM t WHERE CAST(ts AS TIME) = d"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ") {
+        val result = resolved(sql).validateResolved()
+        result.isLeft shouldBe true
+        result.left.getOrElse("") should include("TIME")
+      }
+    }
+    // TIME against TIME is legal and must stay so.
+    resolved(
+      "SELECT name FROM t WHERE CAST(ts AS TIME) = CAST('07:00:00' AS TIME)"
+    ).validateResolved() shouldBe Right(())
+    // and nothing else is refused by this rule
+    forAll(
+      Table(
+        "sql",
+        "SELECT name FROM t WHERE CAST(d AS DATE) > ts",
+        "SELECT name FROM t WHERE ts > CAST(d AS DATE)",
+        "SELECT name FROM t WHERE YEAR(d) = 2025",
+        "SELECT name FROM t WHERE name = 'a'"
+      )
+    ) { sql =>
+      withClue(s"[$sql] ")(resolved(sql).validateResolved() shouldBe Right(()))
+    }
   }
 }

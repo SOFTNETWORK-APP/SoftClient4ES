@@ -830,6 +830,28 @@ package object query {
         }
     }
 
+    /** The rules that can only be checked once a SCHEMA has been attached (issue #384).
+      *
+      * 🔴 Deliberately NOT part of [[validate]]. `Parser.apply` validates the statement it just
+      * parsed, where every column's type is `Any`; the types these rules read exist only after
+      * `update(Some(schema))`. Core calls this at the ONE seam that produces a resolved statement
+      * (`SearchApi.resolveWithSchema`), which is the same seam #306 uses to attach the schema in
+      * the first place.
+      *
+      * ⚠️ It is NOT a second `validate()`. Running the whole of `validate()` against resolved types
+      * would surface every pre-existing disagreement between a column's DECLARED type and its
+      * chain's — including `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)`, which works today and
+      * which `Expression.validate`'s `identifier.out` (the COLUMN's type, not the chain's) already
+      * rejects when it is asked after resolution. This method carries exactly the rules that were
+      * measured, and each one names the shape it refuses.
+      */
+    def validateResolved(): Either[String, Unit] =
+      (where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq)
+        .flatMap(_.temporalComparisonErrors)
+        .headOption
+        .map(Left(_))
+        .getOrElse(Right(()))
+
     override def validate(): Either[String, Unit] = {
       for {
         // Story 22.5 — an UNREFERENCED CTE's body reaches `DerivedTable.validate()` through no

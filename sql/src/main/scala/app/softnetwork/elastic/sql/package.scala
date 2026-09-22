@@ -1701,6 +1701,46 @@ package object sql {
         case _                         => out
       }
 
+    /** The type the operand's rendering really HAS at run time — the JAVA type, where [[chainType]]
+      * is the SQL one (issue #384).
+      *
+      * 🔴 The two differ for the whole temporal family and that difference is the defect. Every
+      * adjuster returns its RECEIVER's type (#368), so `DATE_ADD(ts, INTERVAL 1 DAY)` reports DATE
+      * while rendering a `ZonedDateTime` and `DATE_TRUNC(d, MONTH)` reports TEMPORAL for the same
+      * reason. Only a function that PRODUCES its output type changes the answer, and the function
+      * is what knows: `TransformFunction.producesOutputJavaType`.
+      *
+      * So: scan the chain OUTERMOST inward and take the first producer with a temporal output;
+      * failing that, the column's own type. Three shapes PR #379 could not reach, each measured:
+      *
+      *   - `DATE_TRUNC(CAST(d AS DATE), MONTH)` — a preserving function ABOVE a producer, so
+      *     `chainType` (TEMPORAL) described neither side;
+      *   - `DATE_PARSE(DATE_FORMAT(d, …), …)` over a TEMPORAL column — a producer that is not a
+      *     `Conversion`, which the old `convertsToLocal` predicate enumerated by class;
+      *   - `CAST(ts AS TIME)` — a producer whose output is TIME, excluded there as dead code.
+      *
+      * ⚠️ Asked only of a TEMPORAL chain. For everything else the SQL type and the Java type agree
+      * closely enough that `chainType` is already the answer, and widening the question would drag
+      * `String.valueOf` / numeric widening into a derivation that has nothing to say about them.
+      *
+      * ⚠️ An AGGREGATE reports `chainType`, for the reason [[chainType]] already records: its
+      * predicate is rendered context-free as a bucket-pipeline read of a metric Elasticsearch has
+      * already computed, so no operand of it is ever coerced.
+      */
+    def renderedType: SQLType = {
+      val ct = chainType
+      if (isAggregation || !ct.isInstanceOf[SQLTemporal]) ct
+      else
+        FunctionUtils
+          .transformFunctions(this)
+          .collectFirst {
+            case f: TransformFunction[_, _]
+                if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
+              f.outputType
+          }
+          .getOrElse(if (baseType.isInstanceOf[SQLTemporal]) baseType else ct)
+    }
+
     /** The type the column was DECLARED as, where that differs from what a query hands Painless.
       * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.
       */
