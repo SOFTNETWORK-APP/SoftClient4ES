@@ -362,6 +362,31 @@ The gateway:
 - creates index or template
 - **populates data using the Bulk API**
 
+> **A computed column keeps its script only if the projection carries every column it reads.**
+> `CREATE TABLE monthly AS SELECT year FROM orders`, where `orders.year` is
+> `SCRIPT AS (YEAR(order_date))`, creates `monthly.year` as an ordinary stored column: its values
+> come from the query that populates the table, and no pipeline is created for it. Select
+> `order_date` as well and the script travels with the column. The dropped script is reported at
+> `WARN`, naming the column and the operands the projection does not select.
+>
+> The same applies to a pipeline processor the source table declares: one that **writes** — or,
+> where the processor's operands are determinable, **reads** — a column the projection does not
+> carry is not copied either. A processor read back from Elasticsearch that this engine does not
+> recognise is checked on its target field only, because its other operands cannot be identified.
+>
+> If the copied script would otherwise be invalid in the new table — an operand whose declared
+> type the function cannot take, say — the statement is **rejected**, and the reason is worded
+> exactly as the equivalent `CREATE TABLE` / `ALTER TABLE` rejection words it (the surrounding
+> sentence differs: each statement names itself, and the `ALTER` form adds a remedy that does not
+> apply here). The check runs **before anything is created, and before `CREATE OR REPLACE` deletes
+> the existing index**, so a refused statement leaves the cluster exactly as it was.
+>
+> A query may not select from the table it is creating: `CREATE TABLE t AS SELECT … FROM t` is
+> refused, and so is a query that reads it as a `JOIN` leg.
+>
+> A table created this way is an ordinary table, even when the query selects from a materialized
+> view: it is not itself a view, and nothing refreshes it.
+
 ---
 
 ### Computed columns: `SCRIPT AS` and `STORED`
@@ -431,6 +456,20 @@ it currently exists.
 > Two cases are deliberately **not** checked, because the generated script coerces the value and
 > works: a string function's argument (`CONCAT(name, ' ', id)` over a numeric `id`), and a
 > `STORED` column, whose source columns need not exist in the table that carries it.
+>
+> **The rule applies to a live table, and to EVERY `ALTER` on it.** A table is re-validated as a
+> whole before an `ALTER` is applied — it is read back from Elasticsearch, where a computed
+> column's SQL expression is stored — so `ALTER TABLE t DROP COLUMN n` is rejected while a computed
+> column of `t` reads `n`, and so is any *other* alteration of `t` (`ADD COLUMN`, a setting, an
+> alias) while `t` carries a computed column that does not satisfy the rule. In that case the
+> message names the offending column rather than the one you altered, and says so. The remedy is to
+> drop or redefine that column: `ALTER TABLE t DROP COLUMN <the computed column>` removes the
+> reference along with the column, and is accepted **once no other computed column of `t` is still
+> invalid** — validation reports every offending column, so a table with two of them has to lose
+> (or fix) both before any other alteration is accepted.
+>
+> A stored expression this engine can no longer parse is reported at `WARN` and its references go
+> unchecked, so an unparseable one never makes a table un-alterable.
 
 **Date and time functions in a computed column.** In an ingest script the operand is the raw JSON
 value of the incoming document, not the temporal object a query sees, so `YEAR(created)`,

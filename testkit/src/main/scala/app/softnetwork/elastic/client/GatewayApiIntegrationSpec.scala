@@ -222,6 +222,288 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   // ---------------------------------------------------------------------------
+  // CREATE TABLE AS SELECT / ALTER TABLE DROP COLUMN — the computed-column
+  // reference rule against a real cluster (issue #385)
+  // ---------------------------------------------------------------------------
+
+  /** Issue #385 made the computed-column reference rule reach two paths it could not: a `CREATE
+    * TABLE … AS SELECT`, whose projection now DROPS a copied script it cannot satisfy and whose
+    * target is built and validated BEFORE either create route (so a refusal cannot destroy the
+    * index it refuses to replace), and a table read back out of Elasticsearch, whose
+    * `ScriptProcessor.expr` is `None` — which is why the rule was a no-op in production.
+    *
+    * 🔴 The `sql` and `core` specs answer all of that with a PARSED schema and a counting stub, so
+    * what they prove is the order of calls in our own code. Every claim below is CLUSTER-side and
+    * unobservable without one: the values the copy delivers, the processor Elasticsearch does or
+    * does not end up storing, the documents that survive a rejection, and — the ALTER half — a
+    * schema that has genuinely made the round trip through a mapping instead of being hand-built.
+    */
+
+  /** id -> one integer column, for the value assertions below. `toDouble.toLong` keeps the
+    * comparison free of per-major numeric boxing; `scalarOf` unwraps Elasticsearch's per-field
+    * array and fails naming the row when the column is absent altogether.
+    */
+  private def intsById(sql: String, column: String): Map[Long, Long] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      String.valueOf(scalarOf(row, column)).toDouble.toLong
+    }.toMap
+
+  private def pipelineNames(): Seq[Any] =
+    assertQueryRows(System.nanoTime(), client.run("SHOW PIPELINES").futureValue).map(_("name"))
+
+  /** The fixture for the CTAS rows, and its own control: three DIFFERENT years, so a copy that lost
+    * the values — or repeated one of them — cannot satisfy the assertions that follow. `c` is
+    * computed by the source's own ingest pipeline, so this row also says that anything the next
+    * three observe about `c` is about the PROJECTION and not about a source that never computed.
+    */
+  it should "compute the source table's computed column before any projection copies it (#385)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS ccr_src (
+        |  id INT,
+        |  d DATE,
+        |  c INTEGER SCRIPT AS (YEAR(d))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO ccr_src (id, d) VALUES
+        |  (1, '2024-03-15'),
+        |  (2, '2019-07-04'),
+        |  (3, '2025-12-31');""".stripMargin
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 3)))
+
+    intsById("SELECT id, c FROM ccr_src", "c") shouldBe Map(1L -> 2024L, 2L -> 2019L, 3L -> 2025L)
+  }
+
+  it should "copy a computed column WITHOUT its script when the projection drops the operand (#385)" in {
+    // `c` reads `d`, and `d` is not projected. Before #385 the script was copied wholesale: the
+    // target index got a pipeline whose `ctx.d` can never resolve, and `SHOW TABLE` advertised a
+    // derivation the index cannot perform.
+    assertDml(
+      System.nanoTime(),
+      client.run("CREATE TABLE ccr_projected AS SELECT id, c FROM ccr_src").futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    // 🔴 The values are the whole justification for DROPPING the script instead of rejecting the
+    // statement: the user never wrote it, and the `INSERT INTO … AS SELECT` delivers the column.
+    intsById("SELECT id, c FROM ccr_projected", "c") shouldBe
+    Map(1L -> 2024L, 2L -> 2019L, 3L -> 2025L)
+
+    val ddl =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE ccr_projected").futureValue).ddl
+        .replaceAll("\\s+", " ")
+    ddl should include("c INT")
+    withClue(s"[$ddl] ") { ddl should not include "SCRIPT AS" }
+
+    // ...and the cluster holds no processor for it AT ALL: with the script gone the merged table
+    // declares nothing, so `createNonExistentIndex` never creates a pipeline. This is the half no
+    // unit test can reach — the stub counts OUR calls, this asks Elasticsearch what it kept.
+    pipelineNames() should not contain "ccr_projected_ddl_default_pipeline"
+  }
+
+  it should "keep the script, and keep it WORKING, when the projection carries the operand (#385)" in {
+    // 🔴 The control, and the row that reddens if the drop rule is too eager. `d` IS projected, so
+    // the script survives the projection and the target's own pipeline must still compute `c`.
+    assertDml(
+      System.nanoTime(),
+      client.run("CREATE TABLE ccr_carried AS SELECT id, d, c FROM ccr_src").futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    val ddl =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE ccr_carried").futureValue).ddl
+        .replaceAll("\\s+", " ")
+    withClue(s"[$ddl] ") { ddl should include("c INT SCRIPT AS (YEAR(d))") }
+    pipelineNames() should contain("ccr_carried_ddl_default_pipeline")
+
+    intsById("SELECT id, c FROM ccr_carried", "c") shouldBe
+    Map(1L -> 2024L, 2L -> 2019L, 3L -> 2025L)
+
+    // The retained script is asserted by USE, not by its rendering: a fresh document that supplies
+    // only `d` must come back with `c` computed by the TARGET's pipeline. A copied-but-dead
+    // processor (the pre-#385 shape on the other target) cannot satisfy this.
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO ccr_carried (id, d) VALUES (4, '2031-01-02');").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    intsById("SELECT id, c FROM ccr_carried WHERE id = 4", "c") shouldBe Map(4L -> 2031L)
+  }
+
+  it should "refuse a CREATE OR REPLACE … AS SELECT without destroying the existing table (#385)" in {
+    // 🔴 The blocking defect of the #385 review, at cluster level: the rejection used to live inside
+    // `createNonExistentIndex`, which `replaceExistingIndex` reaches AFTER `deleteIndex` — so a
+    // refused statement deleted the user's index and put nothing back. A stub can count the delete;
+    // only a cluster can say the documents are still readable afterwards.
+    val create =
+      """CREATE TABLE IF NOT EXISTS ccr_existing (
+        |  id INT,
+        |  v KEYWORD
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO ccr_existing (id, v) VALUES (1, 'keep me'), (2, 'me too');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    val before = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, v FROM ccr_existing ORDER BY id LIMIT 10").futureValue
+    )
+    before.size shouldBe 2
+
+    // `UPPER(d) AS d` re-types the operand IN the projection, so the drop rule cannot repair the
+    // copied script (`d` is projected) and the TYPE half of the rule must refuse the statement.
+    val refused = client
+      .run("CREATE OR REPLACE TABLE ccr_existing AS SELECT UPPER(d) AS d, c FROM ccr_src")
+      .futureValue
+    renderResults(System.nanoTime(), refused)
+    refused.isSuccess shouldBe false
+    val error = refused.toEither.left.get
+    error.message should startWith("Invalid computed column in CREATE TABLE ccr_existing: ")
+    error.message should include("'c'")
+    error.message should include("'d'")
+    error.statusCode shouldBe Some(400)
+    error.operation shouldBe Some("ddl")
+
+    // the index, its mapping AND its documents
+    val ddl =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE ccr_existing").futureValue).ddl
+    ddl should include("v KEYWORD")
+    collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, v FROM ccr_existing ORDER BY id LIMIT 10").futureValue
+    ) shouldBe before
+  }
+
+  it should "refuse a CTAS that selects from itself, leaving the table and its documents (#385)" in {
+    // 🔴 A regression the #385 rework itself created and then closed: with the target table built
+    // BEFORE the delete, `CREATE OR REPLACE TABLE t AS SELECT … FROM t` stopped failing — it
+    // deleted `t`, recreated it EMPTY and answered 200. On `main` it failed too, but only after
+    // destroying the index. Its own fixture, so a regression here cannot cascade into the rows above.
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS ccr_self (id INT, v KEYWORD);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO ccr_self (id, v) VALUES (1, 'a'), (2, 'b');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val refused =
+      client.run("CREATE OR REPLACE TABLE ccr_self AS SELECT id, v FROM ccr_self").futureValue
+    renderResults(System.nanoTime(), refused)
+    refused.isSuccess shouldBe false
+    // 🔴 The DOCUMENTS come first, deliberately: MEASURED with the guard removed, Elasticsearch
+    // really does log `Index 'ccr_self' deleted successfully` and then recreate it empty, so this
+    // is the assertion that carries the data-loss claim. Asserting the wording first would let a
+    // regression redden on a message instead of on the rows.
+    assertSelectResult(
+      System.nanoTime(),
+      client.run("SELECT id, v FROM ccr_self ORDER BY id LIMIT 10").futureValue,
+      nbResults = Some(2)
+    )
+    refused.toEither.left.get.message shouldBe "CREATE TABLE ccr_self cannot select from itself."
+    refused.toEither.left.get.statusCode shouldBe Some(400)
+  }
+
+  it should "refuse a CTAS whose target is only a JOIN leg, leaving it intact (#385)" in {
+    // `SingleSearch.sources` is `from.tables` alone — it does not see a join — and the FROM leg here
+    // names a DIFFERENT, readable index, so without the join half of the guard the statement gets
+    // as far as deleting `ccr_join_self` and recreating it from the wrong schema.
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS ccr_join_other (id INT, v KEYWORD);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO ccr_join_other (id, v) VALUES (1, 'x');").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS ccr_join_self (id INT, v KEYWORD);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO ccr_join_self (id, v) VALUES (1, 'a'), (2, 'b');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val refused = client
+      .run(
+        "CREATE OR REPLACE TABLE ccr_join_self AS " +
+        "SELECT o.id FROM ccr_join_other o INNER JOIN ccr_join_self s ON o.id = s.id"
+      )
+      .futureValue
+    renderResults(System.nanoTime(), refused)
+    refused.isSuccess shouldBe false
+    // the documents first, for the same reason as the row above — and it matters more here: with
+    // the join half of the guard removed the statement is refused ANYWAY, by the missing-relational-
+    // engine check, so the message alone would still look like a pass while the index is gone.
+    assertSelectResult(
+      System.nanoTime(),
+      client.run("SELECT id, v FROM ccr_join_self ORDER BY id LIMIT 10").futureValue,
+      nbResults = Some(2)
+    )
+    refused.toEither.left.get.message shouldBe
+    "CREATE TABLE ccr_join_self cannot select from itself."
+  }
+
+  it should "refuse DROP COLUMN of an operand a LOADED computed column still reads (#385)" in {
+    // 🔴 The most valuable row of the set, and the one the whole `sql` half exists for: an ALTER
+    // re-reads the table from Elasticsearch, where `ScriptProcessor.expr` is `None` for every
+    // processor — only `_meta.script.sql` survives the round trip. A rule that walks `expr` is
+    // green on every parsed fixture and inert HERE, which is exactly how the defect shipped.
+    // `CREATE TABLE` caches no schema, so `alterExistingIndex`'s `loadSchema` reads the mapping
+    // this statement actually wrote; the proof is that pointing the validator back at `expr`
+    // reddens this row and nothing else in the file.
+    val create =
+      """CREATE TABLE IF NOT EXISTS ccr_live (
+        |  id INT,
+        |  n INTEGER,
+        |  c INTEGER SCRIPT AS (n + 1)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO ccr_live (id, n) VALUES (1, 41), (2, 7);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    // the table is genuinely loaded, and its computed column genuinely computes
+    intsById("SELECT id, c FROM ccr_live", "c") shouldBe Map(1L -> 42L, 2L -> 8L)
+
+    val refused = client.run("ALTER TABLE ccr_live DROP COLUMN n").futureValue
+    renderResults(System.nanoTime(), refused)
+    refused.isSuccess shouldBe false
+    val error = refused.toEither.left.get
+    error.message should startWith("Invalid computed column in ALTER TABLE ccr_live: ")
+    error.message should include("'c'")
+    error.message should include("'n'")
+    error.statusCode shouldBe Some(400)
+    error.operation shouldBe Some("ddl")
+
+    // nothing was applied: the operand is still there and still readable
+    intsById("SELECT id, n FROM ccr_live", "n") shouldBe Map(1L -> 41L, 2L -> 7L)
+
+    // ...and the escape hatch the documentation promises works: drop the computed column itself,
+    // and the operand becomes droppable. Without this the rule would be a one-way door for every
+    // table stored by an older version.
+    assertDdl(System.nanoTime(), client.run("ALTER TABLE ccr_live DROP COLUMN c").futureValue)
+    assertDdl(System.nanoTime(), client.run("ALTER TABLE ccr_live DROP COLUMN n").futureValue)
+    val ddl = assertShowTable(System.nanoTime(), client.run("SHOW TABLE ccr_live").futureValue).ddl
+    withClue(s"[$ddl] ") {
+      ddl should not include "SCRIPT AS"
+      ddl should include("id INT")
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------
 
