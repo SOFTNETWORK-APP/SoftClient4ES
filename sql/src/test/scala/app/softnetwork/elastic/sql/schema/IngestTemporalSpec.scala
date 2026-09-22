@@ -183,6 +183,84 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
     * method appended to a bound parameter) rather than on `atStartOfDay` as a substring: the
     * LEGITIMATE `LocalDate.parse(…).atStartOfDay(…)` of rule 4 appears in these very scripts.
     */
+  /** 🔴 Issue #384, item 3 — in an ingest script EACH operand of a comparison is parsed EXACTLY
+    * ONCE, and a parsed operand is never parsed again.
+    *
+    * Two pre-existing defects, both measured on real ES 8.18.3 through
+    * `_ingest/pipeline/_simulate`, over `CASE WHEN <cmp> THEN 1 ELSE 0 END` and both document
+    * shapes (a JSON string and epoch millis). **8 of 12 comparison shapes produced NO column** — 7
+    * of them SILENTLY, `ignore_failure = true` swallowing the throw; the eighth (`LAST_DAY(d) >
+    * ts`) emitted Painless that does not compile, so the pipeline was refused and the DDL failed
+    * loudly:
+    *
+    *   - the LEFT operand was parsed TWICE whenever its chain had already parsed it, so
+    *     `Instant.ofEpochMilli` was handed a `ZonedDateTime` — **5** shapes;
+    *   - the RIGHT operand was never parsed, so `d > ts` compared a parsed `ZonedDateTime` with the
+    *     raw `ctx.ts` — **2** shapes.
+    *
+    * (The 8th, `d > CAST('2025-01-01' AS DATE)`, is neither: the parameter shortcut in
+    * `Expression.painless` discards the coercion. NOT fixed — see the release note.)
+    *
+    * One rule fixes both of the above: parse an operand exactly when it is still a BARE column read
+    * (`Expression.parsesAsBareColumn`). 11 of the 12 now compute, and the VALUES were checked, not
+    * merely their presence.
+    *
+    * The assertion is on the MECHANISM rather than on bytes: a parse may not take an operand that
+    * is itself a parse. A byte pin over these would be long, fragile, and would not say why.
+    */
+  it should "parse each operand of a comparison exactly once" in {
+
+    /** `def <name> = <expr>;` declarations, in order. */
+    def declarations(script: String): Map[String, String] =
+      script
+        .split("; ")
+        .toList
+        .collect {
+          case d if d.trim.startsWith("def ") =>
+            val body = d.trim.stripPrefix("def ")
+            val i = body.indexOf(" = ")
+            body.substring(0, i) -> body.substring(i + 3)
+        }
+        .toMap
+
+    val parse = "instanceof String"
+    forAll(
+      Table(
+        "cmp",
+        "d > ts",
+        "ts > d",
+        "CAST(d AS DATE) > ts",
+        "ts > CAST(d AS DATE)",
+        "DATE_TRUNC(d, MONTH) > ts",
+        "ts > DATE_TRUNC(d, MONTH)",
+        "LAST_DAY(d) > ts",
+        "DATE_ADD(ts, INTERVAL 1 DAY) > ts",
+        "CAST(d AS DATE) > CAST(ts AS TIMESTAMP)"
+      )
+    ) { cmp =>
+      val script = source(
+        "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+        s"SCRIPT AS (CASE WHEN $cmp THEN 1 ELSE 0 END))",
+        "c"
+      )
+      val decls = declarations(script)
+      withClue(s"[$cmp] ->\n$script\n") {
+        // BOTH sides are parsed -- exactly two parses, one per operand.
+        parse.r.findAllMatchIn(script).size shouldBe 2
+        // ...and neither parse takes an operand that is ALREADY a parse.
+        """\((\w+) instanceof String""".r
+          .findAllMatchIn(script)
+          .map(_.group(1))
+          .foreach { name =>
+            withClue(s"operand [$name] is re-parsed; its declaration is [${decls
+              .getOrElse(name, "<not a local>")}] ") {
+              decls.get(name).exists(_.contains(parse)) shouldBe false
+            }
+          }
+      }
+    }
+  }
+
   it should "never promote a comparison operand in a processor" in {
     forAll(
       Table(
@@ -203,6 +281,7 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
       }
     }
   }
+
   /** 🔴 Issue #384, item 1 — a comparison a processor CANNOT express is refused at DDL, because
     * making these scripts run (item 3) would otherwise have made this one silently WRONG.
     *

@@ -926,6 +926,55 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * has none the promotion is the identity and only the binding below remains — visible today only
     * for a TIME source, which [[temporalComparisonError]] refuses before it can execute.
     */
+  /** In an INGEST script, does this operand still render the RAW `ctx.<field>` — so that it is the
+    * one that has to be PARSED (issue #384, item 3)?
+    *
+    * 🔴 The parse belongs to the BARE column read and to nothing else. A chain has ALREADY had it
+    * inserted, inside itself, by `coerce`'s own processor arm — `DATE_TRUNC(d, MONTH)` renders
+    * `(ctx.d instanceof String ? … : Instant.ofEpochMilli(ctx.d)…).withDayOfMonth(1)`. Applying it
+    * again to THAT hands `Instant.ofEpochMilli` a `ZonedDateTime`, which throws, and
+    * `ignore_failure = true` turns the throw into a computed column that is simply ABSENT.
+    *
+    * MEASURED on real ES 8.18.3 via `_ingest/pipeline/_simulate`, for both the string and the
+    * epoch-millis document shapes, over `CASE WHEN <cmp> THEN 1 ELSE 0 END`: **8 of 12 comparison
+    * shapes produced no column**, byte-identical on `origin/main`, so all of it is pre-existing.
+    * The exact split, re-counted after review challenged a looser one: **5** are this double parse
+    * (`CAST(d AS DATE) > ts`, `DATE_TRUNC(d, MONTH) > ts`, `LAST_DAY(d) > ts`, `DATE_ADD(ts,
+    * INTERVAL 1 DAY) > ts`, `CAST(d AS DATE) > CAST(ts AS TIMESTAMP)`), **2** are the right operand
+    * never being parsed (`d > ts`, `ts > d`), and the **1** remaining (`d > CAST('2025-01-01' AS
+    * DATE)`) is the parameter shortcut in [[painless]] discarding the coercion — a separate cause,
+    * NOT fixed here.
+    *
+    * ⚠️ And 7 of the 8 are SILENT, not 8: `LAST_DAY(d) > ts` emits Painless that does not compile,
+    * so Elasticsearch refuses the pipeline and the DDL fails loudly. The other seven are swallowed
+    * by `ignore_failure = true`.
+    *
+    * The previous guard asked whether the CHAIN TYPE was temporal, which a chain that has already
+    * parsed itself answers YES to — that is #373 item 7's guard, one level too coarse. Asking
+    * whether any function has been applied is what separates the two, and it is the same shape as
+    * #367's rule 1: the operand may be treated as the raw column only while it still IS the raw
+    * column.
+    */
+  protected def parsesAsBareColumn(id: Identifier): Boolean =
+    id.functions.isEmpty &&
+    (id.chainType == SQLTypes.Any || id.chainType.isInstanceOf[SQLTemporal])
+
+  /** The RIGHT operand's ingest-script parse — the symmetric half of [[parsesAsBareColumn]] (issue
+    * #384, item 3).
+    *
+    * Only the LEFT operand was ever parsed, so `CASE WHEN d > ts …` compared a parsed
+    * `ZonedDateTime` with the raw `ctx.ts` and the column vanished. A right operand carrying a
+    * chain is left alone for exactly the reason the left one is: it has already parsed itself.
+    */
+  protected def processorParsedRight(ref: String, context: Option[PainlessContext]): String =
+    maybeValue match {
+      case Some(id: Identifier)
+          if context.exists(_.isProcessor) && id.originalType == SQLTypes.Any &&
+            parsesAsBareColumn(id) =>
+        SQLTypeUtils.processorTemporal(ref, id.declaredType).getOrElse(ref)
+      case _ => ref
+    }
+
   protected def rightNeedsTemporalPromotion(context: Option[PainlessContext]): Boolean = {
     val from = valueRenderedType
     val to = comparisonTargetType
@@ -942,7 +991,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   protected def promotedRight(ref: String, context: Option[PainlessContext]): String =
     if (rightNeedsTemporalPromotion(context))
       SQLTypeUtils.coerce(ref, valueRenderedType, comparisonTargetType, nullable = false, context)
-    else ref
+    else processorParsedRight(ref, context)
 
   /** The operand of this criterion, rendered ONCE, as `(chain, coerced)` — see the note at the
     * bottom of the method.
@@ -1050,14 +1099,22 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         // `chainType` (#367) is what says whether the rendering is still a temporal.
         case Some(ctx)
             if identifier.originalType == SQLTypes.Any && ctx.isProcessor &&
-              (identifier.chainType == SQLTypes.Any ||
-              identifier.chainType.isInstanceOf[SQLTemporal]) =>
+              parsesAsBareColumn(identifier) =>
           SQLTypeUtils
             .processorTemporal(chain, identifier.declaredType)
             .getOrElse(
               SQLTypeUtils
                 .coerce(chain, operandType, targetedType, identifier.nullable, context)
             )
+        // 🔴 A temporal chain in a PROCESSOR needs no coercion at all, because story 21.8's rule 3
+        // has already collapsed it: every temporal value in an ingest script is a `ZonedDateTime`,
+        // whatever its SQL type says. Coercing it emitted `.atStartOfDay(…)` — a `LocalDate`
+        // method — onto the `ZonedDateTime` the CAST had just produced, so
+        // `CASE WHEN CAST(d AS DATE) > ts …` threw and the computed column was ABSENT (measured on
+        // 8.18.3, both document shapes, and identically broken on `origin/main` for a different
+        // reason: there the same operand was parsed TWICE).
+        case Some(ctx) if ctx.isProcessor && identifier.chainType.isInstanceOf[SQLTemporal] =>
+          chain
         case _ =>
           SQLTypeUtils.coerce(chain, operandType, targetedType, identifier.nullable, context)
       }
