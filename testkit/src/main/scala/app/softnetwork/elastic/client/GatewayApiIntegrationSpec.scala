@@ -580,6 +580,85 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     intsById("SELECT id, n FROM cast_cc", "n") shouldBe Map(1L -> 125L, 2L -> 7L)
   }
 
+  /** 🔴 The lead's OQ-2 ruling, executed. `ArithmeticExpression` derived its coercion TARGET from
+    * `args.map(_.out)`, and a schema-resolved `Identifier.out` reports the COLUMN's type — KEYWORD
+    * here — not what the operand RENDERS (BIGINT). The least common supertype came out VARCHAR, so
+    * `coerce` wrapped BOTH operands in `String.valueOf` and Painless CONCATENATED them: a BIGINT
+    * mapping then happily coerced `"1257"`, and `125 + 7` stored **1257**.
+    *
+    * HTTP 200 throughout, which is why this needs a cluster and a NUMBER: an emission that merely
+    * changed is not evidence (`feedback_assert_the_mechanism_not_a_proxy`). Reachable today with a
+    * plain `CAST`, so it is neither caused nor fixed by the assembly repair — after it, `TRY_CAST`
+    * merely joins `CAST` in this shape.
+    */
+  it should "compute, not concatenate, arithmetic over a cast of a string column (#382 OQ-2)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_arith (
+        |  id INT,
+        |  raw KEYWORD,
+        |  m BIGINT,
+        |  c BIGINT SCRIPT AS (CAST(raw AS BIGINT) + m),
+        |  t BIGINT SCRIPT AS (TRY_CAST(raw AS BIGINT) + m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO cast_arith (id, raw, m) VALUES (1, '125', 7), (2, '40', 2);")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // 132, not 1257 — and 42, not 402: two rows, because a single one is satisfiable by accident
+    intsById("SELECT id, c FROM cast_arith", "c") shouldBe Map(1L -> 132L, 2L -> 42L)
+    // ... and the safe cast, which could not reach this shape at all before #382
+    intsById("SELECT id, t FROM cast_arith", "t") shouldBe Map(1L -> 132L, 2L -> 42L)
+
+    // the control: arithmetic over a cast of a NUMERIC column was always right and must stay right
+    val numeric =
+      """CREATE TABLE IF NOT EXISTS cast_arith_num (
+        |  id INT,
+        |  n INTEGER,
+        |  m BIGINT,
+        |  c BIGINT SCRIPT AS (CAST(n AS BIGINT) + m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(numeric).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_arith_num (id, n, m) VALUES (1, 125, 7);").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    intsById("SELECT id, c FROM cast_arith_num", "c") shouldBe Map(1L -> 132L)
+  }
+
+  /** The QUERY venue of the same target defect — the sweep #382's spec asked for. `renderedType`
+    * feeds predicates and projections too, so `WHERE CAST(raw AS BIGINT) + 1 > 130` compared a
+    * CONCATENATED string with a number.
+    */
+  it should "compute, not concatenate, arithmetic over a cast in a QUERY too (#382 OQ-2)" in {
+    val rows = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id, CAST(raw AS BIGINT) + m AS c FROM cast_arith WHERE id = 1")
+        .futureValue
+    )
+    withClue(s"$rows ") {
+      rows.size shouldBe 1
+      String.valueOf(scalarOf(rows.head, "c")).toDouble.toLong shouldBe 132L
+    }
+
+    // and in a predicate: 132 > 130 is true, "1257" > 130 is not a number comparison at all
+    val filtered = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id FROM cast_arith WHERE CAST(raw AS BIGINT) + m > 130")
+        .futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------

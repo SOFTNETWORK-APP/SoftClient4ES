@@ -48,6 +48,35 @@ case class ArithmeticExpression(
 
   override def args: List[PainlessScript] = List(left, right)
 
+  /** The type an operand's rendering really PRODUCES — the question [[toPainless]] already asks of
+    * the SOURCE of each coercion, asked here of the TARGET as well (issue #382, the lead's OQ-2).
+    *
+    * 🔴 `FunctionN.argTypes` answers `_.out`, and a schema-resolved `Identifier.out` reports the
+    * COLUMN's type, not the chain's. So `CAST(name AS BIGINT) + m` over a KEYWORD column reported
+    * `List(KEYWORD, BIGINT)`, `leastCommonSuperType` came out VARCHAR, and `coerce`'s `(_, _:
+    * SQLLiteral)` arm wrapped BOTH operands in `String.valueOf`: Painless CONCATENATED them, a
+    * BIGINT mapping coerced the result happily, and `SCRIPT AS (CAST(raw AS BIGINT) + m)` stored
+    * **1257** where 132 was asked for. HTTP 200 — the #205 silent-wrong-answer family.
+    *
+    * The rule was already written down one scaladoc below: *"Coerced FROM what the operand RENDERS,
+    * not from its column's type"* (#367). It was applied to the FROM and never to the TO.
+    *
+    * Repaired HERE rather than at a second local in `toPainless`, because `argTypes` is the single
+    * input to [[baseType]], `baseType` feeds `out`, and `out` is the coercion target in BOTH
+    * renderings — `toPainless` for the nullable path and `painless` for the other. One derivation
+    * fixes both; a local would have left `painless` broken. It also stops the expression DESCRIBING
+    * itself as a string: `out` is what a CTAS writes into the target mapping.
+    *
+    * The non-`Identifier` arm keeps today's `_.out` exactly: a nested arithmetic renders what its
+    * own `out` says, and a literal's `out` already carries any cast applied to it.
+    */
+  private def argTypeOf(operand: PainlessScript): SQLType = operand match {
+    case i: Identifier => i.chainType
+    case other         => other.out
+  }
+
+  override def argTypes: List[SQLType] = args.map(argTypeOf)
+
   override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
   override def validate(): Either[String, Unit] = {
@@ -79,6 +108,12 @@ case class ArithmeticExpression(
       // 🔴 Coerced FROM what the operand RENDERS, not from its column's type (#367's rule, which
       // this site never applied): `YEAR(d)` renders an `int`, and reading `baseType` asked for a
       // TIMESTAMP -> BIGINT conversion that emitted `.toInstant()` on that `int`.
+      // 🔴 This and `argTypeOf` above (issue #382) agree on the `Identifier` arm -- which is the
+      // whole of #382 -- and DELIBERATELY still differ on the other one: this reads `baseType`,
+      // that one reads `out`. Unifying them is arguably more accurate (a nested operand renders
+      // coerced to its own `out`, not to its `baseType`) but it is an UNGUARDED change: restoring
+      // `baseType` in `argTypeOf` leaves the whole estate green, so nothing here distinguishes the
+      // two for a non-`Identifier` operand. Measured, recorded on #382, and not smuggled in.
       def renderedType(operand: PainlessScript): SQLType = operand match {
         case i: Identifier => i.chainType
         case other         => other.baseType
