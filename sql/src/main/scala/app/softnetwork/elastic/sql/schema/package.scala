@@ -1063,10 +1063,17 @@ package object schema {
       // would print an EMPTY prologue (the same trap `PainlessResidualsSpec.fieldOf` records).
       val expression = script.painless(Some(ctx))
       val prologue = ctx.toString
-      val source =
-        if (expression.trim.startsWith("return "))
-          ScriptTarget.assemble(prologue, expression.trim.stripPrefix("return "), column)
-        else ScriptTarget.assemble(prologue, expression, column)
+      // 🔴 The old assembly had a `case Array(single) if single.trim.startsWith("return ")` arm
+      // that stripped a leading `return `. It is gone because it was DEAD, and #293's lesson is
+      // that a dead branch beside a live one is worse than no branch (issue #382):
+      //
+      //   - `sql/src/main` contains exactly ONE emitter of the text `return ` — the safe cast's
+      //     `catch (Exception e) { return null; }` — and that is the CONTEXT-FREE arm;
+      //   - `fromScript` always supplies a context, so that arm is unreachable from here, and in
+      //     any case the token is in the middle of the rendering rather than at its start;
+      //   - `ScriptProcessorAssemblySpec`'s sweep asserts the property rather than the reasoning:
+      //     no assembled source contains `return ` at all.
+      val source = ScriptTarget.assemble(prologue, expression, column)
       ScriptProcessor(
         pipelineType = pipelineType,
         script = script.sql,

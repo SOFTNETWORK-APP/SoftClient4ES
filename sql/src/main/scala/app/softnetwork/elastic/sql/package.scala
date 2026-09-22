@@ -506,14 +506,27 @@ package object sql {
 
     /** `rendered.split(";")`, except that a `;` inside a string literal is not a separator.
       *
-      * 🔴 `ScriptProcessor.fromScript` assembles an ingest script by splitting the rendered
-      * Painless, treating the LAST part as the expression to assign and rejoining the preamble. A
-      * bare `split(";")` there let a `;` inside a literal in the last statement cut the expression
-      * in half, and the assignment was written INTO the literal: `c KEYWORD SCRIPT AS
-      * (UPPER('a;b'))` emitted `"a; ctx.c = b".toUpperCase()` -- valid Painless that computes a
-      * value and discards it, so Elasticsearch answers 200 and the computed column is simply ABSENT
-      * (issue #373, a residual of it; measured on 8.18.3). `REPLACE(name, ';', 'x')` hits the same
-      * thing with no contrived input at all.
+      * ⚠️ NO PRODUCTION CALLER SINCE ISSUE #382, and the reason is worth keeping: it existed for
+      * `ScriptProcessor.fromScript`, which assembled an ingest script by splitting the rendered
+      * Painless, treating the LAST part as the expression to assign and rejoining the preamble.
+      * Making THAT scanner literal-aware fixed one half of the defect (below) and could not fix the
+      * other: a `;` inside a BLOCK is a statement boundary to any scanner, so a `TRY_CAST`'s
+      * `try`/`catch` still displaced the assignment. `fromScript` is now HANDED the prologue and
+      * the expression ([[app.softnetwork.elastic.sql.schema]]'s `ScriptTarget.assemble`), so the
+      * boundary is never thrown away and never has to be recovered.
+      *
+      * It is KEPT, not deleted, because it is the executable SPECIFICATION of the literal rule that
+      * [[firstStatementAt]] and [[withoutLiterals]] still enforce: `PainlessExpressionFormSpec`
+      * pins that it agrees with `String.split(";")` wherever no literal is involved, and
+      * `PainlessLiteralEscapingSpec` uses it as the differential for #383's injection shape. Delete
+      * it and those two proofs go with it, while the rule they describe stays live.
+      *
+      * 🔴 The defect it was written for, so the rule is not re-learned: a bare `split(";")` let a
+      * `;` inside a literal in the last statement cut the expression in half, and the assignment
+      * was written INTO the literal. `c KEYWORD SCRIPT AS (UPPER('a;b'))` emitted `"a; ctx.c =
+      * b".toUpperCase()` -- valid Painless that computes a value and discards it, so Elasticsearch
+      * answers 200 and the computed column is simply ABSENT (issue #373, a residual of it; measured
+      * on 8.18.3). `REPLACE(name, ';', 'x')` hits the same thing with no contrived input at all.
       *
       * Mirrors `String.split(";")` including its removal of trailing empty parts, so every source
       * with no quoted `;` splits byte-identically to what it did before. Proved exhaustively over

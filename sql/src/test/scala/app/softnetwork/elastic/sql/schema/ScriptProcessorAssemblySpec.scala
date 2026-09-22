@@ -282,6 +282,12 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
         code.substring(at + "ctx.c = ".length) should not include ";"
         val before = code.substring(0, at)
         before.count(_ == '{') shouldBe before.count(_ == '}')
+        // 🔴 And no `return ` anywhere, which is what lets `assemble` drop the arm that stripped
+        // one (issue #382). A `return` in a processor script leaves the WHOLE script, so it can
+        // never be part of a computed column's value; the only emitter of the token is the safe
+        // cast's context-FREE rendering, which `fromScript` cannot reach. Asserted as a PROPERTY
+        // of every shape rather than argued in a comment alone.
+        """\breturn\b""".r.findFirstIn(code) shouldBe None
       }
     }
   }
