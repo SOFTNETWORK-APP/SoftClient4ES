@@ -82,15 +82,23 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPr
     haystack.sliding(needle.length).count(_ == needle)
 
   /** Every `def` in a well-formed emission opens a STATEMENT, so it may only appear at the start of
-    * the script or just after a `; `. This is the rule the first version of item 5's commit broke:
-    * it spliced `def lv0 = …; ` into a slot that must hold a single EXPRESSION, and ES answered
-    * `compile error` for five predicates that had returned rows. Returns the offending fragments.
+    * the script or just after one has ended. This is the rule the first version of item 5's commit
+    * broke: it spliced `def lv0 = …; ` into a slot that must hold a single EXPRESSION, and ES
+    * answered `compile error` for five predicates that had returned rows. Returns the offending
+    * fragments.
+    *
+    * 🔴 A statement ends with `; ` OR with `} ` (issue #382). A prologue entry may be a BLOCK — the
+    * hoisted `try { … } catch (Exception e) {} ` a safe cast declares — and Painless needs no `;`
+    * after a block. Keying only on `; ` reported `catch (Exception e) {} def lv2 = …` as an
+    * offence, on an emission Elasticsearch compiles and runs. Reachable since #367 in a QUERY
+    * (`WHERE TRY_CAST(…) = 6 AND n + 1 > 2`) and never exercised there; #382 makes it the ordinary
+    * shape of a `TRY_CAST` computed column.
     */
   protected def declarationsOutsideStatementStart(emitted: String): Seq[String] =
     "def ".r
       .findAllMatchIn(emitted)
       .map(_.start)
-      .filterNot(i => i == 0 || emitted.startsWith("; ", i - 2))
+      .filterNot(i => i == 0 || emitted.startsWith("; ", i - 2) || emitted.startsWith("} ", i - 2))
       .map(i => emitted.substring(math.max(0, i - 24), math.min(emitted.length, i + 12)))
       .toSeq
 
@@ -488,20 +496,50 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPr
     }
   }
 
-  /** The scanner's TRUE positive: `TRY_CAST` renders a `try`/`catch` STATEMENT (Painless has no
-    * expression-level `try`), so the operand must fall back to its parameter. If the scan stopped
-    * seeing `try`, that statement would be spliced back in and ES would reject the pipeline --
-    * MEASURED: `def lv1 = String.valueOf(try { … } catch …);` is a `compile error`. The chain is
-    * still dropped, which is the residual, and the emission is byte-identical to the parent.
+  /** 🔴 REWRITTEN by issue #382. This test used to assert the DEFECT — `emitted should not include
+    * "try "` on a computed column — i.e. it MANDATED the silent drop of the conversion
+    * (`feedback_assert_the_mechanism_not_a_proxy`: a test can enforce a defect, and then the
+    * natural response to a red is to revert the fix).
+    *
+    * The demotion existed only because a safe cast rendered a STATEMENT in a processor: the #367
+    * hoist into the prologue was gated to QUERY context. #382 un-gates it, so in a processor the
+    * operand is now a plain name, the coercion is placeable and the chain is no longer dropped:
+    * `TRY_CAST(name AS DOUBLE) + 1` computed `name + 1` on the RAW string before, HTTP 200.
+    *
+    * The scanner's true-positive claim this test also carried is re-pinned below, at the site where
+    * it is still true.
     */
-  it should "fall back to the parameter when a rendering is a STATEMENT" in {
+  it should "hoist a STATEMENT rendering into the prologue instead of dropping the chain" in {
     val emitted =
       processorOf(
         "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT) + 1))"
       )
     withClue(emitted) {
-      emitted should not include "try "
+      emitted should include("try { safe1 =") // the conversion survives ...
+      emitted.indexOf("try ") should be < emitted.indexOf("ctx.c = ") // ... in the PROLOGUE
+      emitted should not include "return null" // ... and without the `return` that cannot travel
       declarationsOutsideStatementStart(emitted) shouldBe empty
+    }
+  }
+
+  /** The scanner's TRUE positive, where it is STILL true: a CONTEXT-FREE rendering. There is no
+    * prologue to hoist into, so `TRY_CAST` really does render a `try`/`catch` STATEMENT, and
+    * anything that places an operand must keep seeing it -- MEASURED: `def lv1 = String.valueOf(try
+    * { … } catch …);` is a `compile error` on ES 8.18.
+    *
+    * Asserted on `placeable` itself rather than on a demotion, because the demotion is what #382
+    * removed from the contexted path; the property the scanner exists for is unchanged.
+    */
+  it should "still see a STATEMENT in a context-free rendering" in {
+    val rendered = single("SELECT TRY_CAST(name AS BIGINT) AS c FROM t").select.fields.head
+      .painless(None)
+    withClue(rendered) {
+      rendered should include("try ")
+      app.softnetwork.elastic.sql.PainlessOperandForm.placeable(rendered) shouldBe false
+      // ... and the control: the plain cast is an expression in the same position
+      app.softnetwork.elastic.sql.PainlessOperandForm.placeable(
+        single("SELECT CAST(name AS BIGINT) AS c FROM t").select.fields.head.painless(None)
+      ) shouldBe true
     }
   }
 

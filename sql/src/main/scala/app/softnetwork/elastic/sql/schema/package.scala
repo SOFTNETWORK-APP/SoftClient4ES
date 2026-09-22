@@ -960,6 +960,37 @@ package object schema {
 
     def assign(column: String, expression: String): String = s"${reference(column)} = $expression"
 
+    /** An ingest script, assembled from the two halves its producer ALREADY HOLDS: the PROLOGUE the
+      * `PainlessContext` accumulated and the EXPRESSION the script rendered (issue #382).
+      *
+      * 🔴 It used to be re-derived: `fromScript` concatenated the two, split the result on `;` and
+      * called the last part the expression. That works only while the expression is `;`-free, and a
+      * `TRY_CAST` renders a `try`/`catch` STATEMENT, so the assignment landed INSIDE the `catch`
+      * with no right-hand side — `... catch (Exception e) { return null; ctx.c = }`, which
+      * Elasticsearch rejects, so `TRY_CAST` in a computed column had never worked. The literal half
+      * of the same re-derivation was #373/#375. The cure for both is not a smarter scanner: it is
+      * to stop throwing the boundary away and then hunting for it.
+      *
+      * 🔴 BYTE-PRESERVING, and that is a CONTRACT, not a nicety. `ScriptProcessor.source` is
+      * persisted in `_meta` and `IngestPipeline.diff` compares it, so a gratuitous byte move
+      * reports every such processor as changed on the next ALTER (the 21.8 Part F churn family).
+      * The old assembly emitted `<prologue up to its last `;`> ctx.<c> = <expr>` with a prologue,
+      * and a LEADING SPACE — `" ctx.c = …"` — without one. One rule reproduces both: trim the
+      * prologue's trailing whitespace, then join with exactly one space. Trimming rather than
+      * relying on the trailing space every declaration happens to carry also keeps the output
+      * well-formed if one ever forgets it. Pinned in `ScriptProcessorAssemblySpec` ("exactly as
+      * before").
+      */
+    def assemble(prologue: String, expression: String, column: String): String =
+      s"${trimRight(prologue)} ${assign(column, expression.trim)}"
+
+    /** `String.stripTrailing`, which is JDK 11+ and this build targets 8. */
+    private def trimRight(s: String): String = {
+      var end = s.length
+      while (end > 0 && s.charAt(end - 1).isWhitespace) end -= 1
+      s.substring(0, end)
+    }
+
     /** The LAST `ctx.<column> = …` in `source`, which is the one `assign` appended.
       *
       * Greedy on purpose: every statement before it is a `def paramN = …` preamble, and those read
@@ -978,7 +1009,44 @@ package object schema {
         case _                  => None
       }
 
-    private val Assignment = """(?s).*(?:^|;)\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
+    /** 🔴 The separator set is "a STATEMENT boundary", not "a `;`" (issue #382). A prologue entry
+      * may be a BLOCK — the hoisted `try { … } catch (Exception e) {} ` a safe cast declares — and
+      * a block statement needs no `;` after it, so the assignment that follows one is preceded by
+      * `} `. With `;` alone `of` answered `None` for every `TRY_CAST` computed column, which is not
+      * cosmetic: `IngestPipeline.diff` keys a processor by this, and an unreadable identity falls
+      * back to a content-addressed one — the ALTER churn family (21.8 Part F). Found by the
+      * round-trip assertion in `ScriptProcessorAssemblySpec`, which is why `assign` and `of` are
+      * asserted together rather than each on its own.
+      */
+    private val Assignment = """(?s).*(?:^|;|\})\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
+  }
+
+  /** The PUBLISHED entry point to the ingest-script assembly, for a caller outside this package
+    * that renders its own Painless into a `PainlessContext(Processor)` and must produce the same
+    * processor source (issue #382).
+    *
+    * 🔴 Deliberately a façade over ONE method rather than a widening of [[ScriptTarget]].
+    * `reference` / `assign` / `of` are an internal round-trip contract that `Column.update` and
+    * `IngestPipeline.diff` also depend on; publishing the object would publish all of it and invite
+    * a fourth derivation of "which column does this script feed". The derivation stays in
+    * `ScriptTarget`, beside `assign` and `of`, which is what keeps writing and reading in step.
+    *
+    * The known caller is `softclient4es-extensions`' materialized-view enrichment (`RequiredField`
+    * / `FieldAnalyzer`), which carried a THIRD copy of the assembly — a raw `split(";")`, so it
+    * inherited BOTH the #373 literal defect and this block one.
+    */
+  object IngestScript {
+
+    /** @param prologue
+      *   the rendered `PainlessContext` — the `def …;` declarations, possibly empty
+      * @param expression
+      *   the rendered script body, which must be an EXPRESSION (see
+      *   `PainlessOperandForm.placeable`)
+      * @param column
+      *   the computed column the script feeds
+      */
+    def assemble(prologue: String, expression: String, column: String): String =
+      ScriptTarget.assemble(prologue, expression, column)
   }
 
   object ScriptProcessor {
@@ -990,17 +1058,15 @@ package object schema {
       materialized: Boolean = false
     ): ScriptProcessor = {
       val ctx = PainlessContext(PainlessContextType.Processor)
-      val scr = script.painless(Some(ctx))
-      val painless = s"$ctx$scr"
-      val source = PainlessOperandForm.splitStatements(painless) match {
-        case Array(single) if single.trim.startsWith("return ") =>
-          val stripped = single.trim.stripPrefix("return ").trim
-          ScriptTarget.assign(column, stripped)
-        case parts =>
-          val last = parts.last.trim
-          val updated = parts.dropRight(1) :+ s" ${ScriptTarget.assign(column, last)}"
-          updated.mkString(";")
-      }
+      // 🔴 The body is rendered FIRST and bound: rendering is what REGISTERS the parameters and the
+      // hoisted locals, so `ctx` is only complete afterwards. An inline `s"$ctx${script.painless…}"`
+      // would print an EMPTY prologue (the same trap `PainlessResidualsSpec.fieldOf` records).
+      val expression = script.painless(Some(ctx))
+      val prologue = ctx.toString
+      val source =
+        if (expression.trim.startsWith("return "))
+          ScriptTarget.assemble(prologue, expression.trim.stripPrefix("return "), column)
+        else ScriptTarget.assemble(prologue, expression, column)
       ScriptProcessor(
         pipelineType = pipelineType,
         script = script.sql,

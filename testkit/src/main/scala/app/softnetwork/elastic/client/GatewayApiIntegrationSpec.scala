@@ -504,6 +504,83 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   // ---------------------------------------------------------------------------
+  // TRY_CAST / SAFE_CAST in a computed column, and arithmetic over a cast —
+  // the ingest script Elasticsearch has to COMPILE and RUN (issue #382)
+  // ---------------------------------------------------------------------------
+
+  /** 🔴 Issue #382's whole claim is that Elasticsearch now compiles and runs a script it used to
+    * reject, and **a byte pin cannot say that** (#385's lesson). `sql`'s specs assert the assembled
+    * source; only a cluster can say whether the pipeline was accepted, what it stored for a row it
+    * could convert, and what it stored for one it could not.
+    *
+    * Before the fix the emitted source was `… try { … } catch (Exception e) { return null; ctx.n =
+    * }` — an assignment inside the `catch` with no right-hand side — so `CREATE TABLE` itself
+    * failed and no document could be indexed. `TRY_CAST` in a computed column had never worked in
+    * ANY shape.
+    *
+    * ⚠️ The fix hoists the `try`/`catch` into the prologue, where a `return null` cannot travel (it
+    * would leave the whole script), so a failed conversion leaves the local at its initial `null`
+    * and the processor assigns `null`. Whether Elasticsearch then stores a JSON null or omits the
+    * field is NOT inferable from the emission, which is the second reason this row exists.
+    */
+  it should "compile and run a TRY_CAST computed column (#382)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS trycast_cc (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT SCRIPT AS (TRY_CAST(raw AS BIGINT))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    // 🔴 `raw` mixes a castable and an UNCASTABLE value on purpose: `TRY_CAST` exists for the
+    // second one, and a fixture where every row converts would pass against a plain `CAST` too.
+    val insert =
+      """INSERT INTO trycast_cc (id, raw) VALUES
+        |  (1, '125'),
+        |  (2, 'abc'),
+        |  (3, '7');""".stripMargin
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 3)))
+
+    // the conversion RAN: two different values, so a copy that lost them cannot satisfy this
+    intsById("SELECT id, n FROM trycast_cc WHERE id <> 2", "n") shouldBe Map(1L -> 125L, 3L -> 7L)
+
+    // ... and the row that cannot be converted is STORED, with no value for the computed column.
+    // Asserted as "absent or null" because that is the honest boundary: `ignore_failure` is not
+    // involved (nothing throws), and which of the two Elasticsearch picks is a cluster decision.
+    val failing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, raw, n FROM trycast_cc WHERE id = 2").futureValue
+    )
+    withClue(s"$failing ") {
+      failing.size shouldBe 1
+      String.valueOf(scalarOf(failing.head, "raw")) shouldBe "abc"
+      failing.head.get("n").filterNot(v => v == null || v == Nil) shouldBe None
+    }
+
+    // the cluster really did keep a pipeline for this table (the pre-fix shape could not create one)
+    pipelineNames() should contain("trycast_cc_ddl_default_pipeline")
+  }
+
+  /** The control for the row above: a PRE-EXISTING shape that must be byte-for-byte unaffected.
+    * `CAST` over the same column already worked, and #382 must not move it.
+    */
+  it should "leave a plain CAST computed column exactly as it was (#382 control)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_cc (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT SCRIPT AS (CAST(raw AS BIGINT))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_cc (id, raw) VALUES (1, '125'), (2, '7');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    intsById("SELECT id, n FROM cast_cc", "n") shouldBe Map(1L -> 125L, 2L -> 7L)
+  }
+
+  // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------
 

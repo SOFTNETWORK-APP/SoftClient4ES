@@ -140,23 +140,149 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
     withClue(s"identities = $identities ")(identities.distinct.size shouldBe identities.size)
   }
 
-  /** 🔴 CHARACTERISATION, not an endorsement. `fromScript` treats the last `;`-delimited chunk as
-    * the expression, and a `;` inside a BLOCK defeats that exactly as a `;` inside a literal did:
-    * `TRY_CAST` emits a `try`/`catch`, and the assignment lands inside the `catch` with no
-    * right-hand side. Elasticsearch answers `compile error`, so it is LOUD and no data is lost —
-    * but `TRY_CAST` in a computed column has never worked.
+  // -- issue #382: a `;` inside a BLOCK ---------------------------------------------------------
+
+  /** 🔴 This block REPLACES a characterisation that used to pin the defect verbatim (`source should
+    * endWith("catch (Exception e) { return null; ctx.c = }")`). A `;` inside a BLOCK defeated the
+    * last-statement strategy exactly as a `;` inside a literal did: `TRY_CAST` renders a
+    * `try`/`catch` STATEMENT, the assignment landed inside the `catch` with no right-hand side,
+    * Elasticsearch answered `compile error`, and `TRY_CAST` in a computed column had never worked
+    * in ANY shape.
     *
-    * Identical before and after this fix (verified by independent review against the pre-fix
-    * assembly on the same rendered Painless), so it is recorded here rather than repaired: the real
-    * remedy is for `fromScript` to be HANDED the prologue and the expression by `PainlessContext`
-    * instead of re-deriving the boundary from their concatenation, which is a larger change than
-    * this one. Recorded so the next reader sees it instead of rediscovering it.
+    * The remedy is the one that characterisation named: `fromScript` is HANDED the prologue and the
+    * expression rather than re-deriving the boundary from their concatenation
+    * ([[ScriptTarget.assemble]]), and a safe cast is hoisted into the prologue in every context
+    * that HAS one, not only in a query (`function/convert`).
+    *
+    * 🔴 The two assertions below fail for DIFFERENT halves of that repair, which is why there are
+    * two (`feedback_assert_the_mechanism_not_a_proxy`: revert the smallest unit, not the branch):
+    *
+    *   - restore the `ctx.context == Query` guard on the hoist, and the assigned expression is the
+    *     `try`/`catch` itself -> `an EXPRESSION` reddens, `braces balance` does not;
+    *   - restore the `splitStatements` assembly, and the assignment is spliced into the `try` block
+    * -> `braces balance` reddens, `an EXPRESSION` does not.
     */
-  "the last-statement strategy" should "still be defeated by a `;` inside a block" in {
-    val source =
-      sourceOf("CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))")
-    withClue(s"[$source] ") {
-      source should endWith("catch (Exception e) { return null; ctx.c = }")
+  private val blockShapes = Table(
+    "ddl",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (SAFE_CAST(name AS BIGINT)))",
+    "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(name AS BIGINT), 'x')))",
+    "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (UPPER(TRY_CAST(name AS KEYWORD))))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (COALESCE(TRY_CAST(name AS BIGINT), 0)))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS " +
+    "(CASE WHEN name = 'x' THEN TRY_CAST(name AS BIGINT) ELSE 0 END))",
+    "CREATE TABLE t (name KEYWORD, c DOUBLE SCRIPT AS (TRY_CAST(name AS DOUBLE) + 1))"
+  )
+
+  /** Where the assignment `assemble` appended starts, located on the literal-blanked source so a
+    * `ctx.c = ` written INSIDE a string literal cannot be mistaken for it. Offsets are preserved,
+    * so the index addresses `source` too.
+    */
+  private def assignmentAt(source: String): Int = literalFree(source).lastIndexOf("ctx.c = ")
+
+  it should "leave the assignment OUTSIDE every block, not only outside every literal" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val at = assignmentAt(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        at should be >= 0
+        val before = code.substring(0, at)
+        // an unbalanced `{` before the assignment means it was spliced INTO a block
+        before.count(_ == '{') shouldBe before.count(_ == '}')
+      }
+    }
+  }
+
+  it should "assign an EXPRESSION, never a statement" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val rhs = code.substring(assignmentAt(source) + "ctx.c = ".length)
+      withClue(s"[$ddl] -> [$source] ") {
+        // Painless has no expression-level `try`, and a `;` would start a second statement --
+        // either one makes `ctx.c = <rhs>` a compile error. Asked of the literal-blanked source, so
+        // this is about CODE.
+        rhs should not include ";"
+        """\btry\b""".r.findFirstIn(rhs) shouldBe None
+        rhs.trim should not be empty
+      }
+    }
+  }
+
+  it should "keep exactly one assignment, readable back as the computed column" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      withClue(s"[$ddl] -> [$source] ") {
+        literalFree(source).split("ctx\\.c = ", -1).length - 1 shouldBe 1
+        ScriptTarget.of(source) shouldBe Some("c")
+      }
+    }
+  }
+
+  /** The hoist itself: a safe cast's `try`/`catch` must be in the PROLOGUE. Without this the two
+    * assertions above are satisfied by a script that simply dropped the conversion — which is what
+    * `TRY_CAST(name AS DOUBLE) + 1` used to do, silently (issue #373's `placeable` residual).
+    */
+  it should "hoist a safe cast's try/catch into the prologue" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        code should include("try { safe")
+        code.indexOf("try ") should be < assignmentAt(source)
+        code should not include "return null"
+      }
+    }
+  }
+
+  /** The byte pin for the filed shape, so the repair itself cannot drift unnoticed. */
+  it should "assemble the filed TRY_CAST shape exactly (#382)" in {
+    sourceOf(
+      "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))"
+    ) shouldBe
+    "def param1 = ctx.name; def safe1 = null; " +
+    "try { safe1 = (param1 != null ? (def)(Long.parseLong(param1).longValue()) : null); } " +
+    "catch (Exception e) {} ctx.c = safe1"
+  }
+
+  /** 🔴 The sweep the fix owes (spec §3, task 3): once the safe cast is hoisted, is EVERY contexted
+    * processor rendering an expression? Asked of a corpus that mixes every emitter that can produce
+    * a statement — the safe cast, a CASE, an arithmetic local, a function chain — because a single
+    * remaining statement producer would put `assemble` back in the business of splicing.
+    *
+    * Deliberately a GUARD and not an assumption: if a future emitter renders a statement in a
+    * processor, this reddens here rather than in a customer's cluster.
+    */
+  it should "render every computed column as an EXPRESSION once the prologue is hoisted" in {
+    forAll(
+      Table(
+        "ddl",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))",
+        "CREATE TABLE t (name KEYWORD, n INTEGER, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT) + n))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(name AS BIGINT), 'x')))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (COALESCE(TRY_CAST(name AS BIGINT), 0)))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS " +
+        "(CASE WHEN name = 'x' THEN TRY_CAST(name AS BIGINT) ELSE 0 END))",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS ((CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2)))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (UPPER('a;b')))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (REPLACE(name, ';', 'x')))",
+        "CREATE TABLE t (d DATE, c KEYWORD SCRIPT AS (DATE_FORMAT(d, 'yyyy')))",
+        "CREATE TABLE t (d DATE, c DATE SCRIPT AS (DATE_TRUNC(d, MONTH)))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (LENGTH(name) + 1))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (NULLIF(LENGTH(name), 0)))"
+      )
+    ) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val at = assignmentAt(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        at should be >= 0
+        code.substring(at + "ctx.c = ".length) should not include ";"
+        val before = code.substring(0, at)
+        before.count(_ == '{') shouldBe before.count(_ == '}')
+      }
     }
   }
 }
