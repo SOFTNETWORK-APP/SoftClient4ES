@@ -211,7 +211,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                           .map(_.sql)
                           .getOrElse("")}"
                       )
-                    ElasticResult.success(resolved)
+                    // 🔴 Issue #384 — the rules that need the SCHEMA are checked HERE, because this
+                    // is the only place a resolved statement exists. `Parser.apply` validates the
+                    // statement it parsed, where every column is `Any`, so a TIME compared with a
+                    // TIMESTAMP is indistinguishable from a legal comparison at parse time. Without
+                    // this the mismatch reaches Elasticsearch and fails the shard with
+                    // `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`, naming neither
+                    // the column nor the SQL. NOT a second `validate()` — see `validateResolved`.
+                    resolved.validateResolved() match {
+                      case Left(reason) =>
+                        logger.error(s"❌ $reason")
+                        ElasticResult.failure(
+                          ElasticError(
+                            message = reason,
+                            statusCode = Some(400),
+                            index = Some(source),
+                            operation = Some("search")
+                          )
+                        )
+                      case Right(_) => ElasticResult.success(resolved)
+                    }
                   case Left(reason) =>
                     logger.error(s"❌ $reason")
                     ElasticResult.failure(

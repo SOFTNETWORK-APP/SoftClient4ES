@@ -4,6 +4,7 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.CreateTable
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.scalatest.prop.TableDrivenPropertyChecks
 
 /** Story 21.8 Part C — a date function over a date COLUMN was unusable in an ingest script.
   *
@@ -41,7 +42,7 @@ import org.scalatest.matchers.should.Matchers
   * absent. `instanceof` on null throws and `ignore_failure: true` swallows it, which is the same
   * outcome — and the same mechanism — as before this story.
   */
-class IngestTemporalSpec extends AnyFlatSpec with Matchers {
+class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPropertyChecks {
 
   private def source(sql: String, column: String): String =
     Parser(sql) match {
@@ -165,4 +166,192 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers {
     "def param4 = Long.valueOf(ChronoUnit.YEARS.between(param2, param3)); " +
     "ctx.age = (param1 == null) ? null : param4"
   }
+
+  /** 🔴 Issue #384 — a COMPARISON inside a computed column must not be given the query path's
+    * operand promotion.
+    *
+    * A query reconciles a `LocalDate` operand with a `ZonedDateTime` one by appending
+    * `.atStartOfDay(ZoneId.of('Z'))` to whichever side is date-only. In a processor there is no
+    * date-only side to fix: rule 3 above has already collapsed every temporal to a `ZonedDateTime`,
+    * so appending it is `dynamic method [java.time.ZonedDateTime, atStartOfDay/1] not found` —
+    * #368's rule, in the venue where it costs most. `ScriptProcessor` sets `ignore_failure = true`,
+    * so the throw is swallowed and the document is simply indexed with the computed column ABSENT:
+    * no error anywhere, and the defect is invisible to every query.
+    *
+    * MEASURED on real ES 8.18.3 through the DDL path, for both document shapes, when the guard was
+    * missing. Found by review, not by the suite — which is why the assertion is on the SHAPE (a
+    * method appended to a bound parameter) rather than on `atStartOfDay` as a substring: the
+    * LEGITIMATE `LocalDate.parse(…).atStartOfDay(…)` of rule 4 appears in these very scripts.
+    */
+  /** 🔴 Issue #384, item 3 — in an ingest script EACH operand of a comparison is parsed EXACTLY
+    * ONCE, and a parsed operand is never parsed again.
+    *
+    * Two pre-existing defects, both measured on real ES 8.18.3 through
+    * `_ingest/pipeline/_simulate`, over `CASE WHEN <cmp> THEN 1 ELSE 0 END` and both document
+    * shapes (a JSON string and epoch millis). **8 of 12 comparison shapes produced NO column** — 7
+    * of them SILENTLY, `ignore_failure = true` swallowing the throw; the eighth (`LAST_DAY(d) >
+    * ts`) emitted Painless that does not compile, so the pipeline was refused and the DDL failed
+    * loudly:
+    *
+    *   - the LEFT operand was parsed TWICE whenever its chain had already parsed it, so
+    *     `Instant.ofEpochMilli` was handed a `ZonedDateTime` — **5** shapes;
+    *   - the RIGHT operand was never parsed, so `d > ts` compared a parsed `ZonedDateTime` with the
+    *     raw `ctx.ts` — **2** shapes.
+    *
+    * (The 8th, `d > CAST('2025-01-01' AS DATE)`, is neither: the parameter shortcut in
+    * `Expression.painless` discards the coercion. NOT fixed — see the release note.)
+    *
+    * One rule fixes both of the above: parse an operand exactly when it is still a BARE column read
+    * (`Expression.parsesAsBareColumn`). 11 of the 12 now compute, and the VALUES were checked, not
+    * merely their presence.
+    *
+    * The assertion is on the MECHANISM rather than on bytes: a parse may not take an operand that
+    * is itself a parse. A byte pin over these would be long, fragile, and would not say why.
+    */
+  it should "parse each operand of a comparison exactly once" in {
+
+    /** `def <name> = <expr>;` declarations, in order. */
+    def declarations(script: String): Map[String, String] =
+      script
+        .split("; ")
+        .toList
+        .collect {
+          case d if d.trim.startsWith("def ") =>
+            val body = d.trim.stripPrefix("def ")
+            val i = body.indexOf(" = ")
+            body.substring(0, i) -> body.substring(i + 3)
+        }
+        .toMap
+
+    val parse = "instanceof String"
+    forAll(
+      Table(
+        "cmp",
+        "d > ts",
+        "ts > d",
+        "CAST(d AS DATE) > ts",
+        "ts > CAST(d AS DATE)",
+        "DATE_TRUNC(d, MONTH) > ts",
+        "ts > DATE_TRUNC(d, MONTH)",
+        "LAST_DAY(d) > ts",
+        "DATE_ADD(ts, INTERVAL 1 DAY) > ts",
+        "CAST(d AS DATE) > CAST(ts AS TIMESTAMP)"
+      )
+    ) { cmp =>
+      val script = source(
+        "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+        s"SCRIPT AS (CASE WHEN $cmp THEN 1 ELSE 0 END))",
+        "c"
+      )
+      val decls = declarations(script)
+      withClue(s"[$cmp] ->\n$script\n") {
+        // BOTH sides are parsed -- exactly two parses, one per operand.
+        parse.r.findAllMatchIn(script).size shouldBe 2
+        // ...and neither parse takes an operand that is ALREADY a parse.
+        """\((\w+) instanceof String""".r
+          .findAllMatchIn(script)
+          .map(_.group(1))
+          .foreach { name =>
+            withClue(s"operand [$name] is re-parsed; its declaration is [${decls
+              .getOrElse(name, "<not a local>")}] ") {
+              decls.get(name).exists(_.contains(parse)) shouldBe false
+            }
+          }
+      }
+    }
+  }
+
+  it should "never promote a comparison operand in a processor" in {
+    forAll(
+      Table(
+        "ddl",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN ts > CAST(d AS DATE) THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN CAST(d AS DATE) > ts THEN 1 ELSE 0 END))",
+        "CREATE TABLE t (d DATE, ts TIMESTAMP, c INTEGER " +
+        "SCRIPT AS (CASE WHEN DATE_TRUNC(CAST(d AS DATE), MONTH) > ts THEN 1 ELSE 0 END))"
+      )
+    ) { ddl =>
+      val s = source(ddl, "c")
+      withClue(s"[$ddl] ->\n$s\n") {
+        s should not include regex("""param\d+\.atStartOfDay\(""")
+        s should not include regex("""right\d+\.atStartOfDay\(""")
+        s should not include regex("""left\d+\.atStartOfDay\(""")
+      }
+    }
+  }
+
+  /** 🔴 Issue #384, item 1 — a comparison a processor CANNOT express is refused at DDL, because
+    * making these scripts run (item 3) would otherwise have made this one silently WRONG.
+    *
+    * In an ingest script every temporal collapses to a `ZonedDateTime` (rule 3 above), which ERASES
+    * a `CAST(ts AS TIME)` rather than honouring it: `SCRIPT AS (CASE WHEN CAST(ts AS TIME) > ts …)`
+    * emits `ts > ts` and stores a confident `0` for every document. MEASURED on 8.18.3 — and on
+    * `origin/main` the very same column threw instead (the operand was parsed twice) and was simply
+    * ABSENT. Absent is bad; a plausible wrong number is worse, so the statement is refused where
+    * the user can still do something about it.
+    */
+  it should "refuse a comparison a processor cannot express" in {
+    val rejected = Parser(
+      "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+      "SCRIPT AS (CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END))"
+    )
+    withClue(s"$rejected ") {
+      rejected.isLeft shouldBe true
+      rejected.left.getOrElse("").toString should include("TIME")
+      rejected.left.getOrElse("").toString should include("'c'")
+    }
+
+    /** 🔴 Found by review, and it is the finding that mattered most: the walk must reach a CASE
+      * nested as a function ARGUMENT. `transformFunctions` walks the chain APPLIED TO an operand,
+      * so it saw `CASE WHEN … END` but not `ABS(CASE WHEN … END)` — and item 3 had made that
+      * wrapped form RUN, so it stored a confident `c = 0.0` where it used to be absent. One
+      * function away from the shape the check did see.
+      */
+    forAll(
+      Table(
+        "wrapped",
+        "ABS(CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END)",
+        "(CASE WHEN CAST(ts AS TIME) > ts THEN 1 ELSE 0 END) + 1"
+      )
+    ) { expr =>
+      withClue(s"[$expr] ") {
+        Parser(
+          "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+          s"SCRIPT AS ($expr))"
+        ).isLeft shouldBe true
+      }
+    }
+    // the same wrapping over a comparison that IS expressible stays accepted
+    Parser(
+      "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+      "SCRIPT AS (ABS(CASE WHEN CAST(d AS DATE) > ts THEN 1 ELSE 0 END)))"
+    ).isRight shouldBe true
+
+    // ...and no OTHER comparison is refused by this rule. ⚠️ ACCEPTED, not necessarily WORKING:
+    // this asserts the DDL parses, which is all this rule owns. `CAST(ts AS TIME) >
+    // CAST('07:00:00' AS TIME)` is accepted here and still yields NO column at ingest — the
+    // temporal collapse erases both casts. Measured, unchanged by this story, and deliberately not
+    // claimed otherwise.
+    forAll(
+      Table(
+        "cmp",
+        "d > ts",
+        "CAST(d AS DATE) > ts",
+        "LAST_DAY(d) > ts",
+        "YEAR(d) > 2000",
+        "UPPER(name) = 'A'",
+        "CAST(ts AS TIME) > CAST('07:00:00' AS TIME)"
+      )
+    ) { cmp =>
+      withClue(s"[$cmp] ") {
+        Parser(
+          "CREATE TABLE t (name KEYWORD, d DATE, ts TIMESTAMP, c INTEGER " +
+          s"SCRIPT AS (CASE WHEN $cmp THEN 1 ELSE 0 END))"
+        ).isRight shouldBe true
+      }
+    }
+  }
+
 }

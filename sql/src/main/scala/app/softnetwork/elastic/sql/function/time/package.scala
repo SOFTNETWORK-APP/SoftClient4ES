@@ -828,6 +828,12 @@ package object time {
     override def inputType: SQLVarchar = SQLTypes.Varchar
     override def outputType: SQLDate = SQLTypes.Date
 
+    /** `LocalDate.parse(arg, fmt)` is a standalone call over a STRING: there is no temporal
+      * receiver whose type could be preserved, so this is the second `LocalDate` producer beside
+      * `Conversion` — the one issue #384's predicate could not see (§1d).
+      */
+    override def producesOutputJavaType: Boolean = true
+
     override def sql: String = DateParse.sql
     override def toSQL(base: String): String = {
       // The pattern is re-emitted as a SQL string literal, so it needs that channel's escaper --
@@ -1044,6 +1050,11 @@ package object time {
 
     override def inputType: SQLVarchar = SQLTypes.Varchar
     override def outputType: SQLDateTime = SQLTypes.DateTime
+
+    /** The `DATETIME` twin of `DateParse` above: `ZonedDateTime.parse(arg, fmt)` over a STRING, so
+      * it produces rather than preserves (issue #384).
+      */
+    override def producesOutputJavaType: Boolean = true
 
     override def sql: String = DateTimeParse.sql
     override def toSQL(base: String): String = {

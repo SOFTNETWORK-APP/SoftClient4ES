@@ -185,6 +185,37 @@ object SQLTypeUtils {
     out.typeId == Any.typeId || in.typeId == Any.typeId ||
     out.typeId == Null.typeId || in.typeId == Null.typeId
 
+  /** Are these two types comparable BY A COMPARISON OPERATOR, over and above [[matches]]?
+    *
+    * 🔴 Issue #384 — the DATE-CARRYING temporals are mutually comparable, DATE included, and
+    * `matches` leaves DATE out of its own {DATETIME, TIMESTAMP} set. So `CAST(d AS DATE) > CAST(ts
+    * AS TIMESTAMP)` was REJECTED at parse while `CAST(d AS DATE) > ts` was accepted and promoted —
+    * the same pair, two answers, decided by whether the right side happened to wear a cast.
+    *
+    * MEASURED against two engines rather than argued from the standard: DuckDB 0.10.1 and
+    * PostgreSQL 17.7 both ACCEPT `DATE > TIMESTAMP` (the DATE is promoted, which is exactly what
+    * `coerce`'s `.atStartOfDay(…)` arm does here) and both REJECT `TIME > TIMESTAMP` and `TIME >
+    * DATE` (`Cannot compare values of type TIME and type TIMESTAMP` / `operator does not exist:
+    * time without time zone > timestamp without time zone`). MySQL 8.4.5 is the outlier — it
+    * answers `1` for both TIME pairs by coercion, the silent-coercion mode this engine exists to
+    * avoid — so the DuckDB/PostgreSQL line is the one taken, and
+    * `Expression.temporalComparisonError` refuses the TIME pair by name.
+    *
+    * 🔴 DELIBERATELY NOT FOLDED INTO [[matches]], and that is the whole point of it being a
+    * separate predicate. `matches` also answers for `BETWEEN`'s from/to pair, `NULLIF` / `CASE`
+    * branch reconciliation and arithmetic operands — and NONE of those promote. Widening the shared
+    * function was implemented, measured and REVERTED after review executed the result: `CAST(d AS
+    * DATE) BETWEEN CAST('2025-01-01' AS DATE) AND CAST('…' AS TIMESTAMP)`, `NULLIF(CAST(d AS DATE),
+    * CAST(ts AS TIMESTAMP))` and `CAST(d AS DATE) - CAST(ts AS TIMESTAMP)` each turned a clean
+    * parse rejection into `all shards failed` on ES 8.18.3. A comparison is the one caller that
+    * RECONCILES its operands (`Expression.comparisonTargetType` / `promotedRight`), so it is the
+    * one caller that may accept the pair.
+    */
+  def comparableTemporals(out: SQLType, in: SQLType): Boolean = {
+    val dateCarrying = Set(Date.typeId, DateTime.typeId, Timestamp.typeId)
+    dateCarrying.contains(out.typeId) && dateCarrying.contains(in.typeId)
+  }
+
   def leastCommonSuperType(types: List[SQLType]): SQLType = {
     val distinct = types.distinct
     if (distinct.size == 1) return distinct.head
