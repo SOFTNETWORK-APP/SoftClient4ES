@@ -344,6 +344,18 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * not tell this apart from a legal comparison. Core calls `validateResolved()` at the one seam
     * that produces a resolved statement.
     */
+  /** 🔴 `Expression.validate()` compares the types the two operands END UP with, not the ones their
+    * COLUMNS have (issue #384, item 4). `identifier.out` is the column's type, so the rule was
+    * wrong in BOTH directions once a schema was attached — it accepted a TIME against a TIMESTAMP
+    * (the cast invisible: TIMESTAMP against TIMESTAMP) and rejected two `LocalTime`s (TIMESTAMP
+    * against TIME). Same `out`-vs-`chainType` lie #367 fixed for EMISSION, still live in
+    * VALIDATION.
+    *
+    * ⚠️ MEASURED: this changes NOTHING at parse — 0 of 1773 corpus shapes move — because `Cast`'s
+    * constructor sets the operand's `_out`, so `out` and `chainType` coincide on an unresolved AST.
+    * It is observable ONLY against a schema-resolved statement, which is what this asserts and why
+    * the corpus could not falsify it.
+    */
   "a TIME operand" should "be refused against a date-carrying one, and accepted against a TIME" in {
     def resolved(sql: String): SingleSearch = Parser(sql) match {
       case Right(ss: SingleSearch) => ss.update(Some(schema))

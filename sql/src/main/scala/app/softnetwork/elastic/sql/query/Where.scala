@@ -1447,11 +1447,19 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         case Some(v) =>
           v.validate() match {
             case Left(err) => Left(s"$err in expression: $this")
-            case Right(_) =>
-              Validator.validateTypesMatching(identifier.out, v.out) match {
+            case Right(_)  =>
+              // 🔴 Issue #384, item 4 — the types COMPARED are the ones the two operands END UP
+              // with, not the ones their COLUMNS have. `identifier.out` is the column's type, so
+              // this rule was wrong in BOTH directions: it accepted `CAST(ts AS TIME) > ts`
+              // (TIMESTAMP against TIMESTAMP, the cast invisible) and rejected
+              // `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)` (TIMESTAMP against TIME, two
+              // `LocalTime`s that compare perfectly well). It is the same `out`-vs-`chainType`
+              // lie issue #367 fixed for EMISSION, still live in VALIDATION -- and `chainType`
+              // and `valueType` are the two derivations that already answer it for each side.
+              Validator.validateTypesMatching(identifier.chainType, valueType) match {
                 case Left(_) =>
                   Left(
-                    s"Type mismatch: '${identifier.out.typeId}' is not compatible with '${v.out.typeId}' in expression: $this"
+                    s"Type mismatch: '${identifier.chainType.typeId}' is not compatible with '${valueType.typeId}' in expression: $this"
                   )
                 case Right(_) => Right(())
               }
