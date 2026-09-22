@@ -359,6 +359,24 @@ SELECT
 FROM dates_table;
 ```
 
+**In a computed column:**
+
+```sql
+-- convert what can be converted, leave the rest without a value
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (TRY_CAST(zip_code AS BIGINT))
+);
+```
+
+`'75001'` stores `zip_n = 75001`; `'N/A'` is indexed with **no value** for `zip_n`. The document is
+always stored — the failed conversion never rejects it. See
+[DDL statements](ddl_statements.md#computed-columns-script-as-and-stored).
+
+> Before **0.24.0** a safe cast in a computed column produced a malformed script, so the
+> `CREATE TABLE` itself failed. It works in every shape from 0.24.0 on.
+
 **Safe Boolean Conversions:**
 
 > `TRY_CAST` catches a conversion that RAISES. A cast to `BOOLEAN` never raises — every string that

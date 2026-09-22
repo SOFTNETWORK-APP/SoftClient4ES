@@ -447,6 +447,32 @@ CREATE TABLE orders (
 `ALTER TABLE ... ALTER COLUMN ... SET SCRIPT AS (...)` resolves the same way, against the table as
 it currently exists.
 
+**`TRY_CAST` / `SAFE_CAST` in a computed column.** A safe cast converts the values it can and yields
+no value for the ones it cannot, instead of failing the document:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (TRY_CAST(zip_code AS BIGINT))
+);
+```
+
+A row whose `zip_code` is `'75001'` stores `zip_n = 75001`; a row whose `zip_code` is `'N/A'` is
+stored with **no value** for `zip_n`, and `SELECT zip_n` returns nothing for it. The document itself
+is always indexed — nothing is rejected and nothing is lost. Use a plain `CAST` when a value that
+cannot be converted should be a loud failure instead.
+
+> Before **0.24.0** this never worked, in any shape: the generated script was malformed, so the
+> `CREATE TABLE` itself failed. If you worked around it with a plain `CAST` plus a `CASE`, the safe
+> cast now expresses it directly.
+
+**Arithmetic over a cast.** `SCRIPT AS (CAST(amount_str AS BIGINT) + fee)` over a string column
+COMPUTES the sum. Before **0.24.0** it concatenated the two renderings — `'125'` and `7` stored
+`1257` rather than `132`, with no error — in a computed column, in a `WHERE` and in a projection
+alike. Re-run `CREATE TABLE` / `ALTER TABLE ... SET SCRIPT AS` and reindex for any table whose
+computed column was built from that shape on an earlier version.
+
 > An operand must name a column the table declares, and must have a type the function can take.
 > `CREATE TABLE t (c INTEGER SCRIPT AS (YEAR(nosuch)))` and
 > `CREATE TABLE t (k KEYWORD, c INTEGER SCRIPT AS (YEAR(k)))` are both rejected with a message
