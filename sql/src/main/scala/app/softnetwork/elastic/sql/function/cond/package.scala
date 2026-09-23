@@ -362,19 +362,70 @@ package object cond {
       * corpus -- dead by construction, so it is the invariant that is recorded, not the code.
       * `NULLIF(s, NULL)` and `NULLIF(NULL, 0)` pin it.
       */
+    /** Can [[toPainlessCall]] express a comparison between these two renderings at all?
+      *
+      * 🔴 DERIVED FROM THE ARMS, not written alongside them. The arms are: both TEXT (`compareTo`),
+      * both TEMPORAL (`isEqual` / `compareTo`), and a final `==` that Painless applies to any pair
+      * without complaining. An earlier spelling listed the ONE pair it had measured -- TEXT against
+      * NUMBER -- and everything else fell through to `==`. That is how a TEMPORAL or BOOLEAN
+      * operand against a NUMBER or a text LITERAL reached `==`: Painless answers `false` for
+      * `ZonedDateTime == String` and for `Boolean == Long`, never throwing, so `NULLIF` returned
+      * its first argument for EVERY row, HTTP 200, in every venue -- the silent always-false this
+      * very rule refuses TEXT-against-NUMBER to avoid. A predicate written beside the arms says
+      * nothing when a new arm appears; one derived FROM them cannot drift.
+      *
+      * ⚠️ UNKNOWN accepts. An unresolved column reports `Any` (no schema attached: a wildcard or
+      * multi-index FROM, a mapping that failed to load), and refusing there would reject legitimate
+      * SQL on every schema-less path while the resolved spelling of the same statement is fine. A
+      * NULL operand accepts for the same reason, and SQL agrees: `NULLIF(a, NULL)` is `a`.
+      */
+    private def comparable(left: SQLType, right: SQLType): Boolean =
+      left.isUnknown || right.isUnknown ||
+      (left.isText && right.isText) ||
+      (left.isTemporal && right.isTemporal) ||
+      (left.isNumber && right.isNumber) ||
+      (left.isBoolean && right.isBoolean)
+
+    /** A TEMPORAL operand against a text one. Refused -- but by [[temporalLiteralError]] FIRST,
+      * because it can say something far more useful than the type names.
+      *
+      * 🔴 Both halves are refusals today, and the reason is the EMITTER, not the types.
+      * [[toPainlessCall]] has no way to compare a `ZonedDateTime` with a `String`: the pair folds
+      * to VARCHAR, misses the text arm (one side is not text), misses the temporal arm (`out` is
+      * not temporal) and lands on `==`, which Painless evaluates to `false` for every document
+      * without ever throwing. `NULLIF(created_at, '2025-01-01')` therefore returned `created_at`
+      * for every row, HTTP 200, in every venue -- measured, and the reason this rule exists.
+      *
+      * Making it WORK needs a `String -> temporal` coercion `SQLTypeUtils.coerce` does not have
+      * (its temporal arms are all temporal-to-temporal), one per subtype, in three venues, on four
+      * Elasticsearch majors -- and Elasticsearch DATE MATH (`now-1d`) has no Painless equivalent at
+      * all, so that spelling can never be coerced and would have to be refused by name. That is a
+      * story, not a guard, and it is scoped as one. Until it lands the answer is LOUD.
+      */
+    private def temporalAgainstText(left: SQLType, right: SQLType): Boolean =
+      (left.isTemporal && right.isText) || (left.isText && right.isTemporal)
+
     def typeMismatchError: Option[String] = {
       val left = argTypeOf(expr1)
       val right = argTypeOf(expr2)
-      def text(t: SQLType) = t.isInstanceOf[SQLVarchar]
-      def number(t: SQLType) = t.isInstanceOf[SQLNumeric]
-      if ((text(left) && number(right)) || (number(left) && text(right)))
+      if (temporalAgainstText(left, right))
+        // The resolver goes first so a MALFORMED literal is named as such (`'x'` is not a date for
+        // this field's format) rather than reported as a bare type mismatch; a WELL-FORMED one
+        // falls through to a message that says what is actually wrong -- the engine, not the SQL.
+        temporalLiteralError(expr1, left, expr2, right)
+          .orElse(temporalLiteralError(expr2, right, expr1, left))
+          .orElse(
+            Some(
+              s"$sql compares ${left.typeId} with ${right.typeId}: comparing a temporal value " +
+              "with a string is not supported yet, so cast the string to the column's type"
+            )
+          )
+      else if (!comparable(left, right))
         Some(
           s"$sql compares ${left.typeId} with ${right.typeId}: NULLIF requires two arguments of " +
           "comparable types, so cast one of them"
         )
-      else
-        temporalLiteralError(expr1, left, expr2, right)
-          .orElse(temporalLiteralError(expr2, right, expr1, left))
+      else None
     }
 
     /** The edge the type rule CANNOT decide: a string literal against a date-mapped column.
@@ -401,7 +452,7 @@ package object cond {
       literal: PainlessScript,
       literalType: SQLType
     ): Option[String] =
-      if (!columnType.isInstanceOf[SQLTemporal] || !literalType.isInstanceOf[SQLVarchar]) None
+      if (!columnType.isTemporal || !literalType.isText) None
       else
         for {
           col   <- mappedColumn(column).filter(c => TemporalLiterals.isTemporalColumn(c.dataType))
@@ -541,7 +592,7 @@ package object cond {
               //
               // The TEXT-against-NUMBER half of the same population is refused instead, by
               // [[typeMismatchError]] -- `==` there would be a silent always-false.
-              case SQLTypes.Varchar if argTypes.forall(_.isInstanceOf[SQLVarchar]) =>
+              case SQLTypes.Varchar if argTypes.forall(_.isText) =>
                 nullIf(s"$arg0.compareTo($arg1) == 0")
               // 🔴 Keyed on what the RECEIVER's chain RENDERS, not on `out` (issue #373).
               // `LocalTime` has no `isEqual`, and MEASURED on ES 8.18 before this,

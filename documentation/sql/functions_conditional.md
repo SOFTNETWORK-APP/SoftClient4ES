@@ -296,8 +296,11 @@ FROM products
   wherever it appeared — a computed column, a projection or a `WHERE`. A function argument is
   evaluated once from 0.24.0 as well; `NULLIF(UPPER(name), 'X')` used to call `UPPER` three times,
   and a `CASE` as the first argument could return the wrong value.
-- The two arguments must be **comparable**, and from **0.24.0** the engine says so itself. Text
-  against a number has no meaning, so `NULLIF(status, 0)` is refused with
+- The two arguments must be **comparable**, and from **0.24.0** the engine says so itself. Two
+  arguments are comparable when both render text, both render a temporal type, both render a
+  number, both render a boolean, or one of them is NULL or a column whose type is not known. Any
+  other pair is refused, because the engine has no way to compare them: `NULLIF(status, 0)` is
+  refused with
 
   ```
   NULLIF(status, 0) compares KEYWORD with BIGINT: NULLIF requires two arguments of comparable
@@ -314,9 +317,20 @@ FROM products
   A cast can *create* the mismatch as well as cure it: `NULLIF(CAST(qty AS KEYWORD), 0)` renders
   text against a number and is refused, even though `qty` is numeric.
 
-- A **string literal against a `date` column** is checked against that column's mapping `format`,
-  the same way a `WHERE` comparison is: `NULLIF(created_at, '2024-01-15')` is accepted,
-  `NULLIF(created_at, 'yesterday')` is refused with a message naming the literal and the field.
+  The same rule refuses a **date against a number** (`NULLIF(created_at, 0)`) and a **boolean
+  against anything but a boolean** (`NULLIF(is_active, 0)`). Before **0.24.0** these were accepted
+  and compared with Painless `==`, which answers `false` for a date against a number without ever
+  failing — so the `NULLIF` returned its first argument for every row and the query answered `200`
+  with the wrong values. If you relied on one of these, write the comparison in the type you mean.
+
+- A **string literal against a `date` column** is refused, and the message depends on the literal.
+  A malformed one is named as such — `NULLIF(created_at, 'yesterday')` reports that `'yesterday'`
+  is not a date for that field's format, checked against the column's mapping exactly as a `WHERE`
+  comparison is. A **well-formed** one — `NULLIF(created_at, '2024-01-15')` — is refused too, with
+  a message saying the comparison is not supported yet: the engine cannot turn a string into a
+  temporal value inside a script, so accepting it would mean comparing a date with a string, which
+  silently never matches. Cast the literal instead:
+  `NULLIF(created_at, CAST('2024-01-15' AS DATE))`.
 - `expr2` being NULL is not a match: SQL says the comparison is then UNKNOWN, so the answer is
   `expr1`, not NULL.
 

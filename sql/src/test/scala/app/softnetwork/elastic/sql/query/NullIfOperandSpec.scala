@@ -249,12 +249,40 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
     */
   private val NumericNullGuard = """(?<![A-Za-z0-9_."])-?\d+(?:\.\d+)?\s*!=\s*null""".r
 
+  /** The two types a refusal NAMES, captured from its own clause rather than searched for anywhere
+    * in the message -- see the note at the reject-list assertion.
+    */
+  private val NamedTypes = """compares ([A-Z_]+) with ([A-Z_]+)""".r
+
+  /** The PRE-EXISTING parse-time refusal from `NullIf.validate()`, which the query venues reach
+    * before the resolved rule can run. Its wording predates #382 and names the pair its own way.
+    * Matched explicitly so that "some Left" still cannot satisfy the reject list.
+    */
+  private val NamedTypesAtParse =
+    """output '([A-Z_]+)' is not compatible with input '([A-Z_]+)'""".r
+
   /** The rendering a `NULLIF` hoisted into the prologue: `def nif<N> = <rendering>;`. */
   private val BoundOperand = """def nif\d+ = (.*?);""".r
 
-  /** Exactly ONE of this expression's `NULLIF` operands renders text -- the pair on which
-    * `String.compareTo` is a per-document throw. Read off the AST, not off the emitted string, so
-    * the assertion cannot agree with the emission by construction.
+  /** NOT both of this expression's `NULLIF` operands render text -- the pair on which
+    * `String.compareTo` is a per-document throw, whatever the other side is.
+    *
+    * 🔴 `!forall(isText)`, not `count == 1` (issue #382, found by review). The old spelling fired
+    * only when EXACTLY ONE side was text, so the receiver-throw family this file documents as
+    * MEASURED -- a `Boolean` or `ZonedDateTime` receiver, where NEITHER side is text -- was never
+    * an offence, and the assertion's own title was not what it checked.
+    *
+    * ⚠️ TWO arms emit `compareTo`, and only one of them is the defect: the `Varchar` arm, where
+    * `String.compareTo` demands a `String` receiver, and the TEMPORAL arm, where `compareTo` on a
+    * `LocalTime` receiver is correct and deliberate (issue #373's `receiverIsTime`). Widening this
+    * predicate to "not both text" flagged `NULLIF(CAST(d AS TIME), d)` -- a legitimate temporal
+    * comparison -- so both homogeneous families are excluded, which is what "BOTH operands render
+    * text" meant all along.
+    *
+    * ⚠️ It reads `argTypes`, the derivation under repair, so it cannot be fully independent of the
+    * emission. That is why it is not the only guard: the pairs it describes are now REFUSED
+    * outright (see "refuse a NULLIF whose operands cannot be compared at all"), and this invariant
+    * covers what survives refusal.
     */
   private def mixesTextWithNonText(expr: String): Boolean =
     queryVerdict(expr).toOption.toSeq
@@ -262,8 +290,11 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
       .flatMap(cond.functionsOf)
       .collect { case n: cond.NullIf => n }
       .exists { n =>
-        val text = n.argTypes.count(_.isInstanceOf[SQLVarchar])
-        text == 1
+        val homogeneous = n.argTypes.forall(_.isText) || n.argTypes.forall(_.isTemporal)
+        // an UNKNOWN operand is comparable with anything by the engine's own rule, and its guard
+        // (`null != null`) short-circuits before `compareTo` can run -- `NULLIF(x, NULL)` is `x`
+        val unknown = n.argTypes.exists(_.isUnknown)
+        !homogeneous && !unknown
       }
 
   // -- N1: the type an operand RENDERS decides the arm ---------------------------------------
@@ -291,6 +322,22 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         }
       }
     }
+  }
+
+  /** 🔴 THE CANARY for the three corpus invariants below (issue #382, found by review).
+    *
+    * Each of them is `offenders shouldBe empty` over `everyVenueEmission`, which contributes
+    * NOTHING for a pair the engine refuses. So all three would go green if `NullIf` started
+    * rejecting the corpus wholesale -- the project's own "everything is rejected satisfies an
+    * assertion that everything is rejected", applied to emitted Painless.
+    *
+    * The population is DERIVED, not written down: every operand compared with ITSELF is comparable
+    * by construction, whatever the comparability rule becomes, so each diagonal pair must still
+    * emit. A count would have been a literal asserting itself.
+    */
+  it should "still EMIT for the whole diagonal, or the invariants below prove nothing" in {
+    val silent = operands.filter(a => everyVenueEmission(s"NULLIF($a, $a)", "KEYWORD").isEmpty)
+    withClue(s"operands whose self-comparison emits nothing: $silent ")(silent shouldBe empty)
   }
 
   /** 🔴 The literal guard Painless refuses, asserted over the WHOLE operand corpus rather than over
@@ -371,7 +418,22 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
     * pre-existing `NullIf.validate()`; the DDL venue is where it reaches emission.)
     */
   it should "not ask the temporal resolver about a literal beside a CAST operand" in {
-    ddlVerdict("NULLIF(CAST(d AS TIME), '00:00:00')", "TIME").isRight shouldBe true
+    // 🔴 AMENDED by the #382 review. The claim above -- that the engine EMITS this shape, so the
+    // resolver must not refuse it -- was never asserted: the row checked acceptance only. It does
+    // not emit it. `CAST(d AS TIME)` renders a `LocalTime`, the literal renders a `String`, the
+    // pair folds to VARCHAR, misses both typed arms and lands on `==`, which is `false` for every
+    // document and never throws. The resolver is still not asked (a function-wrapped operand is
+    // outside `mappedColumn`, which is what this row exists to pin) -- but the answer is now a
+    // refusal from the type rule, carrying the "not supported yet" wording.
+    val verdict = ddlVerdict("NULLIF(CAST(d AS TIME), '00:00:00')", "TIME")
+    val reason = verdict.left.getOrElse(fail(s"expected a refusal, got $verdict"))
+    reason should include("TIME")
+    reason should include("VARCHAR")
+    reason should include("not supported yet")
+    // 🔴 The resolver did NOT judge it. Keyed on the resolver's OWN wording, not on the literal:
+    // the message echoes the whole expression, so `not include "00:00:00'"` matched the echo and
+    // failed -- a probe's own predicate is part of what has to be falsified.
+    reason should not include "as a date/time value for date field"
   }
 
   /** 🔴 RECORDED, NOT FIXED, and BYTE-IDENTICAL to `origin/main` -- found by widening the guard
@@ -410,11 +472,15 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         // NULL compares with anything: `NULLIF(a, NULL)` is UNKNOWN, so the answer is `a`.
         ("NULLIF(s, NULL)", "KEYWORD"),
         ("NULLIF(NULL, 0)", "BIGINT"),
-        // The boundary the ruling leaves ALONE: these emit exactly what they emitted before.
-        ("NULLIF(d, 0)", "DATE"),
-        ("NULLIF(b, 0)", "BOOLEAN"),
-        ("NULLIF(b, 'x')", "BOOLEAN"),
-        ("NULLIF(s, d)", "KEYWORD")
+        // 🔴 The boundary the ruling used to leave alone, and no longer does. `NULLIF(d, 0)`,
+        // `NULLIF(b, 0)`, `NULLIF(b, 'x')` and `NULLIF(s, d)` all fell to the `==` arm, which
+        // Painless evaluates to `false` for a `ZonedDateTime` against a `Long`, a `Boolean`
+        // against a `Long` and a `ZonedDateTime` against a `String` -- WITHOUT throwing. So the
+        // NULLIF returned its first argument for every document, HTTP 200, and the shapes were
+        // pinned here as "accepted" with no assertion on what they emitted. They are refused
+        // below; see `refuse a NULLIF whose operands cannot be compared at all`.
+        ("NULLIF(n, 1.5)", "BIGINT"),
+        ("NULLIF(d, CAST('2025-01-01' AS DATE))", "DATE")
       )
     ) { (expr, dataType) =>
       everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
@@ -454,8 +520,17 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
           // 🔴 Story 21.4's lesson: a rejection test is UNFALSIFIABLE while any `Left` passes it.
           // The message must NAME BOTH rendered types and must not be an internal-error label --
           // restoring the defect yields a `Left` too.
-          reason should include(left)
-          reason should include(right)
+          //
+          // 🔴 Read from the TYPE clause, not with `include` (issue #382, found by review). The
+          // message echoes the whole expression AND, in the DDL venue, up to 200 characters of the
+          // caller's SQL (#262) -- which declares `s KEYWORD, n BIGINT`. So `include("KEYWORD")`
+          // and `include("BIGINT")` were free, and a message naming only ONE type, or the WRONG
+          // pair, passed.
+          val named = NamedTypes
+            .findFirstMatchIn(reason)
+            .orElse(NamedTypesAtParse.findFirstMatchIn(reason))
+            .getOrElse(fail(s"[$venue] [$expr] message names no type pair: $reason"))
+          (named.group(1), named.group(2)) shouldBe ((left, right))
           reason should not include "Internal"
           reason should not include "Operation failed"
           // ...and the DDL venue, which is the one the ruling repairs, must NAME THE EXPRESSION
@@ -480,32 +555,106 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
   it should "ask the temporal-literal resolver about a string literal over a date column" in {
     forAll(
       Table(
-        ("expr", "accepted"),
-        ("NULLIF(d, '2025-01-01')", true),
-        ("NULLIF(d, '2025-01-01 10:00:00')", true),
-        ("NULLIF(ts, '2025-01-01T10:00:00Z')", true),
-        ("NULLIF('2025-01-01', d)", true),
-        // date math and epoch millis are Elasticsearch's to judge, never rejected here
-        ("NULLIF(d, 'now-1d')", true),
-        ("NULLIF(d, '1735689600000')", true),
-        ("NULLIF(d, 'x')", false),
-        ("NULLIF(d, '2026-02-30')", false),
-        ("NULLIF('x', d)", false),
-        ("NULLIF(ts, 'nope')", false)
+        // 🔴 AMENDED by the #382 review: EVERY row is refused now, and the column records which
+        // JUDGE refused it, because that is what the wording has to come from.
+        //
+        // A temporal operand against a text one cannot be EMITTED -- the pair folds to VARCHAR,
+        // misses both typed arms and lands on `==`, which is silently `false` for every document.
+        // So a well-formed literal is refused too, with a message that says the engine cannot do
+        // it yet rather than pretending the SQL is wrong. A MALFORMED literal is still refused by
+        // the resolver, which names the literal and the field -- a strictly better message, and
+        // the reason the resolver stays reachable and goes first.
+        //
+        // Making the well-formed half WORK is its own story (a `String -> temporal` coercion per
+        // subtype, three venues, four ES majors; and `now-1d` is Elasticsearch date math, which
+        // has no Painless equivalent at all and must stay refused by name).
+        ("expr", "judge"),
+        ("NULLIF(d, '2025-01-01')", "engine"),
+        ("NULLIF(d, '2025-01-01 10:00:00')", "engine"),
+        ("NULLIF(ts, '2025-01-01T10:00:00Z')", "engine"),
+        ("NULLIF('2025-01-01', d)", "engine"),
+        ("NULLIF(d, 'now-1d')", "engine"),
+        ("NULLIF(d, '1735689600000')", "engine"),
+        ("NULLIF(d, 'x')", "resolver"),
+        ("NULLIF(d, '2026-02-30')", "resolver"),
+        ("NULLIF('x', d)", "resolver"),
+        ("NULLIF(ts, 'nope')", "resolver")
       )
-    ) { (expr, accepted) =>
+    ) { (expr, judge) =>
       everyVenueVerdict(expr, "DATE").foreach { case (venue, verdict) =>
         withClue(s"[$venue] [$expr] -> $verdict ") {
-          if (accepted) verdict shouldBe Right(())
-          else {
-            val reason = verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED"))
-            // The resolver's own message, which names the LITERAL and the FIELD -- not the type
-            // rule's, which could not tell these apart.
+          val reason = verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED"))
+          reason should not include "Internal"
+          // 🔴 The two judges must be TOLD APART, or this table proves only that everything is
+          // refused -- which it would still do with the resolver deleted.
+          if (judge == "engine") {
+            reason should include("not supported yet")
+            reason should not include "is not a valid"
+          } else {
+            reason should not include "not supported yet"
+          }
+          if (judge == "resolver") {
+            // The resolver's own message, which names the LITERAL and the FIELD -- the wording the
+            // type rule could never produce, and the reason it is asked FIRST.
             reason should include("as a date/time value for date field")
             reason should include(if (expr.contains("ts")) "'ts'" else "'d'")
             reason should not include "requires two arguments of comparable types"
           }
         }
+      }
+    }
+  }
+
+  /** 🔴 The population the #382 review found: pairs `toPainlessCall` cannot compare AT ALL, which
+    * therefore reached its final `==` arm -- and Painless applies `==` to any two references
+    * without complaining, answering `false`. So the NULLIF returned its first argument for EVERY
+    * document, HTTP 200, in every venue. They were all pinned as "accepted" beforehand, asserting
+    * the verdict and never the emission, which is exactly how they survived.
+    *
+    * The refusal is DERIVED from the arms (`NullIf.comparable`), not written beside them: both
+    * text, both temporal, both numeric, both boolean, or one side UNKNOWN. So a new arm cannot
+    * leave this list stale, and an unresolved column is never falsely refused.
+    */
+  it should "refuse a NULLIF whose operands cannot be compared at all" in {
+    forAll(
+      Table(
+        ("expr", "dataType", "left", "right"),
+        ("NULLIF(d, 0)", "DATE", "TIMESTAMP", "BIGINT"),
+        ("NULLIF(0, d)", "DATE", "BIGINT", "TIMESTAMP"),
+        ("NULLIF(b, 0)", "BOOLEAN", "BOOLEAN", "BIGINT"),
+        ("NULLIF(b, 'x')", "BOOLEAN", "BOOLEAN", "VARCHAR"),
+        ("NULLIF(s, d)", "KEYWORD", "KEYWORD", "TIMESTAMP"),
+        ("NULLIF(d, b)", "DATE", "TIMESTAMP", "BOOLEAN")
+      )
+    ) { (expr, dataType, left, right) =>
+      everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
+        withClue(s"[$venue] [$expr] -> $verdict ") {
+          val reason = verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED"))
+          reason should include(left)
+          reason should include(right)
+          reason should not include "Internal"
+          reason should not include "Operation failed"
+        }
+      }
+    }
+  }
+
+  /** The other half of the same rule: a pair the arms CAN express must still be accepted, or
+    * `comparable` would be satisfied by refusing everything. Each row exercises one arm.
+    */
+  it should "keep accepting every pair an arm can express" in {
+    forAll(
+      Table(
+        ("expr", "dataType"),
+        ("NULLIF(s, 'x')", "KEYWORD"), // both text
+        ("NULLIF(n, 0)", "BIGINT"), // both numeric
+        ("NULLIF(b, false)", "BOOLEAN"), // both boolean
+        ("NULLIF(d, d)", "DATE"), // both temporal
+        ("NULLIF(CAST(d AS DATE), CAST('2025-01-01' AS DATE))", "DATE")
+      )
+    ) { (expr, dataType) =>
+      everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
+        withClue(s"[$venue] [$expr] ")(verdict shouldBe Right(()))
       }
     }
   }
