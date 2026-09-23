@@ -264,13 +264,20 @@ FROM products
 -- Converts 0 prices to NULL
 ```
 
-**3. Avoid division by zero:**
+**3. Avoid division by zero — no longer needed, and measured not to work:**
 ```sql
+-- ⚠️ Since 0.24.0 the engine returns NULL for a zero divisor by itself, so write this:
 SELECT 
-  total_sales / NULLIF(total_orders, 0) AS avg_order_value
+  total_sales / total_orders AS avg_order_value
 FROM sales_summary
--- Returns NULL instead of error when total_orders = 0
+-- NULL on the rows where total_orders = 0
 ```
+
+> ⚠️ `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — throws a
+> `null_pointer_exception` in a search on exactly the rows where `total_orders = 0`, and silently
+> drops the computed column in an ingest pipeline. Measured on real Elasticsearch, identically
+> before and after `0.24.0`. `NULLIF` remains correct everywhere else; see the
+> [`/` operator](operators.md) for the division rule.
 
 **4. Clean data:**
 ```sql

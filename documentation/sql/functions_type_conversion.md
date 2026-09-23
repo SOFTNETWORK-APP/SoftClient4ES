@@ -220,14 +220,22 @@ FROM products;
 
 **2. Convert for calculations:**
 ```sql
--- Avoid integer division
+-- A cast is NOT needed to avoid integer division: since 0.24.0 `/` always yields a floating-point
+-- result, whatever its operands are (see the `/` operator in operators.md)
 SELECT 
   order_id,
   total_items,
   total_price,
-  CAST(total_price AS DOUBLE) / CAST(total_items AS DOUBLE) AS avg_price
+  total_price / total_items AS avg_price
 FROM orders;
+
+-- What a cast IS for here: reading a NUMBER out of a text column
+SELECT CAST(amount_str AS DOUBLE) + fee AS total FROM payments;
 ```
+
+> ⚠️ A cast still decides what the OPERAND is — `CAST(price AS INTEGER) / 2` over `7.5` divides
+> `7`, not `7.5`, and answers `3.5`. What it no longer decides is whether the **division** is
+> integral: it never is.
 
 **3. Format output:**
 ```sql
