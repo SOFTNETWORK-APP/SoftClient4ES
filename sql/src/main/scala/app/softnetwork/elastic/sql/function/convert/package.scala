@@ -28,7 +28,6 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.PainlessContextType
 
 package object convert {
 
@@ -66,6 +65,13 @@ package object convert {
       * definitely, it merely happens to coincide with a date column's own rendering (issue #384).
       */
     override def producesOutputJavaType: Boolean = true
+
+    /** A SAFE conversion turns a non-null operand into a null when the conversion fails: the
+      * hoisted local stays at its initial `null` and nothing throws. That is a nullability source
+      * the raw column parameter does not carry, and `FunctionN.painless` guards on it (issue #382).
+      * A plain `CAST` throws instead, so it does not qualify.
+      */
+    override def rendersNullOnFailure: Boolean = safe
 
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
@@ -124,17 +130,20 @@ package object convert {
           // the hoisted form leaves the local at its initial `null`, which is the same answer for
           // every consumer: a failed safe cast is NULL.
           //
-          // A context-free rendering keeps the statement form byte-for-byte: it is only ever the
-          // tail of a script, and `ConversionTargetTypeSpec` / `NarrowingCastSpec` pin it.
-          // ⚠️ QUERY context only, and that boundary is the point. A PROCESSOR (ingest) or TRANSFORM
+          // 🔴 THE BOUNDARY IS "IS THERE A PROLOGUE", AND NOTHING ELSE (issue #382).
+          //
+          // A context-free rendering keeps the statement form byte-for-byte: there is nowhere to
+          // hoist to, it is only ever the tail of a whole script, and `ConversionTargetTypeSpec` /
+          // `NarrowingCastSpec` pin it. Every CONTEXT has a prologue, so every context hoists.
+          //
+          // ⚠️ #367 restricted this to QUERY on the ground that a PROCESSOR (ingest) or TRANSFORM
           // (materialized-view) script is PERSISTED and diffed — `ScriptProcessor.source` is read
-          // back from `_meta` and compared, and this repo has a standing defect family where an
-          // ALTER re-creates a processor nobody changed. The predicate that needs an expression is a
-          // QUERY predicate, so nothing is gained by moving those bytes. ⚠️ A safe cast in a
-          // computed column stays as broken as it was (`ScriptProcessor.fromScript` assigns the last
-          // `;`-separated segment, so neither form is valid Painless there) — pre-existing, measured,
-          // and deliberately not repaired here.
-          case Some(ctx) if !bloc && ctx.context == PainlessContextType.Query =>
+          // back from `_meta` and compared — so "nothing is gained by moving those bytes". That
+          // argument expired with #382: it held only while a safe cast in a computed column was
+          // broken anyway, and #382 is the repair. No stored processor can churn under this change,
+          // because a table whose computed column used `TRY_CAST` could never be CREATED — the
+          // assignment landed inside the `catch` and Elasticsearch answered `compile error`.
+          case Some(ctx) if !bloc =>
             ctx.bindLocalWith("safe")(name =>
               s"def $name = null; try { $name = $ret; } catch (Exception e) {} "
             )

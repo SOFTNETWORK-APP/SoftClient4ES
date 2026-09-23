@@ -3,7 +3,7 @@ package app.softnetwork.elastic.sql.schema
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.IngestTimestampValue
 import app.softnetwork.elastic.sql.query.{CreatePipeline, CreateTable}
-import com.fasterxml.jackson.databind.node.ObjectNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -434,4 +434,123 @@ class PipelineRoundTripIdentitySpec extends AnyFlatSpec with Matchers {
     ScriptTarget.of("def x = 1") shouldBe None
     ScriptTarget.of("if (ctx.age == null) { return }") shouldBe None
   }
+
+  // -- issue #382, F3: a GENERATED processor beside a FOREIGN one on the same column -------------
+
+  /** A stored pipeline with one extra, hand-authored `script` processor appended — what a cluster
+    * looks like after `ALTER PIPELINE … ADD PROCESSOR SCRIPT(source = '…')`.
+    */
+  private def withForeignScript(pipeline: IngestPipeline, source: String): IngestPipeline = {
+    val node = pipeline.node
+    val body = mapper.createObjectNode()
+    body.put("lang", "painless")
+    body.put("source", source)
+    body.put("ignore_failure", true)
+    val wrapper = mapper.createObjectNode()
+    wrapper.set("script", body)
+    node.get("processors").asInstanceOf[ArrayNode].add(wrapper)
+    IngestPipeline(
+      name = pipeline.name,
+      json = mapper.writeValueAsString(node),
+      pipelineType = Some(pipeline.pipelineType)
+    )
+  }
+
+  private val oneComputedColumn =
+    "CREATE TABLE t (s KEYWORD, c BIGINT SCRIPT AS (LENGTH(s)))"
+
+  private val sameColumnChanged =
+    "CREATE TABLE t (s KEYWORD, c BIGINT SCRIPT AS (LENGTH(s) + 1))"
+
+  /** A hand-authored source that ALSO assigns `ctx.c`, its assignment following a real block. */
+  private val foreignAssigningC =
+    "if (ctx.s != null) { ctx.flag = true } ctx.c = 2"
+
+  /** 🔴 `Seq.toMap` DROPS the loser of a key collision, and the loser is a REAL processor (issue
+    * #382, F3, found by independent review).
+    *
+    * `identity` recovers `c` from BOTH the generated processor for column `c` and a hand-authored
+    * one whose last assignment is `ctx.c = 2` — correctly, since both really do assign it. The two
+    * then share a key, `toMap` keeps one, and the diff for the other simply does not happen: the
+    * ALTER applies FEWER changes than were asked for, silently. MEASURED on the shape below, with
+    * the generated processor CHANGED on the desired side:
+    *
+    * {{{
+    *   before the repair   1 diff    <- the generated processor's change VANISHED
+    *   after  the repair   2 diffs   ProcessorChanged(c) + ProcessorRemoved(the foreign one)
+    * }}}
+    *
+    * #382 ENLARGED this population by widening the boundary set with `}` (a foreign source whose
+    * assignment follows a block now recovers an identity where it used to fall back to the
+    * anonymous one), but the CLASS pre-existed: a foreign source ending `…; ctx.c = 2` collided
+    * before #382 too. The repair is therefore in the diff, where the drop happens, and not in the
+    * boundary set — and it closes the pre-existing half with it.
+    *
+    * 🔴 Every other test in this file uses TWO GENERATED sources, so none of them could see this: a
+    * generated-versus-FOREIGN collision was uncovered.
+    */
+  "a generated processor and a FOREIGN one assigning the same column" should
+  "both survive the diff" in {
+    val desired = declared(oneComputedColumn)
+    val actual = withForeignScript(
+      readBack(desired, asStoredOnEs79(desired)),
+      foreignAssigningC
+    )
+    // both sides hold a processor whose recovered identity is `c` -- i.e. the collision is real
+    actual.processors
+      .filter(_.processorType == IngestProcessorType.Script)
+      .flatMap(p => p.properties.get("source").collect { case s: String => s })
+      .flatMap(ScriptTarget.of) shouldBe List("c", "c")
+
+    // nothing about the DECLARED column changed, so the only diff is the foreign processor, which
+    // the table does not declare
+    actual.diff(desired).map(_.getClass.getSimpleName) shouldBe List("ProcessorRemoved")
+  }
+
+  it should "report BOTH when the declared one also changed" in {
+    val actual = withForeignScript(
+      readBack(declared(oneComputedColumn), asStoredOnEs79(declared(oneComputedColumn))),
+      foreignAssigningC
+    )
+    // 🔴 The COUNT is the assertion and the shape is what makes it mean something: the generated
+    // processor's change must be reported as a CHANGE, and the foreign one as a removal. Before
+    // the repair this was a single diff -- one of the two had been dropped from the map.
+    actual
+      .diff(declared(sameColumnChanged))
+      .map(_.getClass.getSimpleName)
+      .sorted shouldBe List("ProcessorChanged", "ProcessorRemoved")
+  }
+
+  /** 🔴 The RECORDED boundary of the repair above, asserted so it is falsifiable. On Elasticsearch
+    * 6.8 a stored processor carries no `description`, so the GENERATED processor reads back
+    * anonymous and its collision fallback is a content hash rather than `c`. The two processors are
+    * still told apart -- nothing is dropped, which is what the repair is for -- but the declared
+    * one is reported as removed-and-added rather than as changed.
+    *
+    * Telling them apart on 6.8 would need CONTENT matching, which is a heuristic and a lead call.
+    * This assertion says which behaviour ships; it reddens the day someone improves it.
+    */
+  it should "still tell them apart on 6.8, at the cost of a churn instead of a change" in {
+    val actual = withForeignScript(
+      readBack(declared(oneComputedColumn), asStoredOnEs68(declared(oneComputedColumn))),
+      foreignAssigningC
+    )
+    // three diffs, not one: the declared processor churns, the foreign one is removed -- and above
+    // all, no processor has silently disappeared from the comparison
+    actual
+      .diff(declared(sameColumnChanged))
+      .map(_.getClass.getSimpleName)
+      .sorted shouldBe List("ProcessorAdded", "ProcessorRemoved", "ProcessorRemoved")
+  }
+
+  /** The control: with NO collision the keys are untouched, so a pipeline nobody hand-edited still
+    * round-trips to an EMPTY diff. Without this the repair could be satisfied by a key that is
+    * unique because it is content-addressed — which would reintroduce the 21.8 Part F churn.
+    */
+  it should "leave a pipeline with no collision diffing EMPTY" in {
+    val desired = declared(oneComputedColumn)
+    readBack(desired, asStoredOnEs79(desired)).diff(desired) shouldBe Nil
+    readBack(desired, asStoredOnEs68(desired)).diff(desired) shouldBe Nil
+  }
+
 }

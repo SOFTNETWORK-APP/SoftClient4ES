@@ -153,24 +153,22 @@ SELECT 2 * 3 * 4 AS result;
 ```sql
 -- Basic division
 SELECT 10 / 2 AS result;
--- Result: 5
+-- Result: 5.0
 
--- Integer division
+-- `/` is ALWAYS floating-point, whatever its operands are (since 0.24.0)
 SELECT 10 / 3 AS result;
--- Result: 3 (truncated if both operands are integers)
+-- Result: 3.3333333333333335
 
--- Float division
 SELECT 10.0 / 3 AS result;
 -- Result: 3.333...
 
--- Avoid division by zero
-SELECT 
-  CASE 
-    WHEN quantity != 0 THEN total / quantity 
-    ELSE 0 
-  END AS avg_price
-FROM orders;
+-- Division by zero needs no guard of your own: it is NULL
+SELECT total / quantity AS avg_price FROM orders;
+-- NULL on the rows where quantity = 0
 ```
+
+> See [`/`](operators.md) in the operators reference for the full rule, including why a `CASE` or
+> `COALESCE` wrapper around a division does **not** parse.
 
 **Modulo:**
 ```sql

@@ -220,14 +220,22 @@ FROM products;
 
 **2. Convert for calculations:**
 ```sql
--- Avoid integer division
+-- A cast is NOT needed to avoid integer division: since 0.24.0 `/` always yields a floating-point
+-- result, whatever its operands are (see the `/` operator in operators.md)
 SELECT 
   order_id,
   total_items,
   total_price,
-  CAST(total_price AS DOUBLE) / CAST(total_items AS DOUBLE) AS avg_price
+  total_price / total_items AS avg_price
 FROM orders;
+
+-- What a cast IS for here: reading a NUMBER out of a text column
+SELECT CAST(amount_str AS DOUBLE) + fee AS total FROM payments;
 ```
+
+> ⚠️ A cast still decides what the OPERAND is — `CAST(price AS INTEGER) / 2` over `7.5` divides
+> `7`, not `7.5`, and answers `3.5`. What it no longer decides is whether the **division** is
+> integral: it never is.
 
 **3. Format output:**
 ```sql
@@ -358,6 +366,36 @@ SELECT
   TRY_CAST(date_str AS DATE) AS parsed_date
 FROM dates_table;
 ```
+
+**In a computed column:**
+
+```sql
+-- convert what can be converted, leave the rest NULL
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (TRY_CAST(zip_code AS BIGINT))
+);
+```
+
+`'75001'` stores `zip_n = 75001`; `'N/A'` is indexed with `zip_n` set to `NULL` — the `_source`
+carries `"zip_n": null` and no doc value is written, so the row is skipped by
+`WHERE zip_n IS NOT NULL` and by any aggregation over `zip_n`. The document is always stored. See
+[DDL statements](ddl_statements.md#computed-columns-script-as-and-stored).
+
+A failed safe cast is a NULL operand for whatever wraps it, following the same rule as a column that
+is null: `CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, and so are
+`UPPER(...)`, `LENGTH(...)`, `ABS(...)` and `ROUND(...)` over it.
+
+> Before **0.24.0** a safe cast in a computed column produced a malformed script, so the
+> `CREATE TABLE` itself failed.
+>
+> From **0.24.0** `NULLIF` over a cast works too — `NULLIF(TRY_CAST(zip_code AS BIGINT), 0)` and
+> `NULLIF(CAST(zip_code AS BIGINT), 0)` alike, in a computed column, a projection and a `WHERE`.
+> Before 0.24.0 both were rejected with a script compile error, because the comparison was decided
+> by the column's declared type (`KEYWORD`) rather than by what the cast RENDERS. See
+> [NULLIF](functions_conditional.md#nullif) for the one shape that is still refused: comparing a
+> value that really is text with a number.
 
 **Safe Boolean Conversions:**
 

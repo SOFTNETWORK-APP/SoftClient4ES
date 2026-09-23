@@ -321,7 +321,7 @@ object TemporalLiterals {
     * ISO optional-time literal. `date_nanos` resolves to `ANY` on the AST and is therefore never a
     * candidate (excluded by construction -- see the unit test that pins it).
     */
-  private def isTemporalColumn(dataType: SQLType): Boolean = dataType match {
+  private[elastic] def isTemporalColumn(dataType: SQLType): Boolean = dataType match {
     case _: SQLTime     => false
     case _: SQLTemporal => true
     case _              => false

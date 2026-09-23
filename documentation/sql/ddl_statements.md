@@ -447,6 +447,75 @@ CREATE TABLE orders (
 `ALTER TABLE ... ALTER COLUMN ... SET SCRIPT AS (...)` resolves the same way, against the table as
 it currently exists.
 
+**`TRY_CAST` / `SAFE_CAST` in a computed column.** A safe cast converts the values it can and yields
+`NULL` for the ones it cannot, instead of failing the document:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (TRY_CAST(zip_code AS BIGINT))
+);
+```
+
+A row whose `zip_code` is `'75001'` stores `zip_n = 75001`. A row whose `zip_code` is `'N/A'` is
+indexed with `zip_n` set to `NULL`: the stored `_source` carries `"zip_n": null`, no doc value is
+written, so `WHERE zip_n IS NOT NULL` and any aggregation over `zip_n` skip that row, while
+`SELECT zip_n` returns the row with an empty value rather than omitting it. Use a plain `CAST` when
+a value that cannot be converted should be a loud failure instead.
+
+A failed safe cast is a NULL operand for whatever wraps it, exactly like a column that is null:
+`CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, not the text `null-X`.
+
+> **What "never rejected" rests on.** The generated `script` processor carries
+> `ignore_failure: true`, so a document survives even a conversion the engine cannot express as a
+> null. Turn `ignore_failure` off on that processor — through `ALTER PIPELINE` — and a failure
+> rejects the document at index time like any other pipeline failure.
+
+> Before **0.24.0** this never worked, in any shape: the generated script was malformed, so the
+> `CREATE TABLE` itself failed. If you worked around it with a plain `CAST` plus a `CASE`, the safe
+> cast now expresses it directly.
+
+**Arithmetic over a cast.** From **0.24.0** the cast decides the arithmetic, in a computed column,
+in a `WHERE` and in a projection alike. Two consequences, both of them changes to statements that
+ran without error before:
+
+- **A cast of a string column now COMPUTES.** `SCRIPT AS (CAST(amount_str AS BIGINT) + fee)` sums
+  the two. Before 0.24.0 it concatenated the two renderings — `'125'` and `7` stored `1257` rather
+  than `132`, with no error.
+- **A cast of a NUMERIC column to a different numeric type now decides the result type.**
+  `CAST(price AS INTEGER) / 2` over `price = 5.0` is `2`, because `CAST(price AS INTEGER)` really is
+  an integer; before 0.24.0 the column's own type won and it was `2.5`. The widening direction moves
+  the same way: `CAST(qty AS DOUBLE) / 2` over an `INTEGER` column is now `2.5` where it was `2`.
+  `WHERE` clauses over such an expression therefore match a different set of rows.
+- **A numeric column cast to a string now CONCATENATES.** `CAST(qty AS KEYWORD) + 2` yields
+  `'42'`-style text; before 0.24.0 the string was silently parsed back to a number and the
+  expression computed. Under `-`, `*` and `/` the same shape is now a runtime failure rather than a
+  silently un-done cast.
+
+Arithmetic with **no cast**, and a cast to the column's **own** type, are unchanged.
+
+**`NULLIF` in a computed column.** From **0.24.0** `NULLIF` follows what each argument renders, the
+same rule as the arithmetic above, and a function argument is evaluated once:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (NULLIF(CAST(zip_code AS BIGINT), 0)),   -- 0 becomes NULL
+  label KEYWORD SCRIPT AS (NULLIF(UPPER(zip_code), 'N/A'))
+);
+```
+
+Before 0.24.0 both columns were rejected at `CREATE TABLE`: the first because the comparison was
+decided by `zip_code`'s declared `KEYWORD` type rather than by the cast, the second because the
+function argument was spliced into the comparison unparenthesised. A `CASE` as the first argument
+compiled and could return the wrong value. See [NULLIF](functions_conditional.md#nullif).
+
+Re-run `CREATE TABLE` / `ALTER TABLE ... SET SCRIPT AS` and reindex for any table whose computed
+column uses one of these shapes; a stored computed column of a moved shape is also reported as
+changed by the next `ALTER TABLE`.
+
 > An operand must name a column the table declares, and must have a type the function can take.
 > `CREATE TABLE t (c INTEGER SCRIPT AS (YEAR(nosuch)))` and
 > `CREATE TABLE t (k KEYWORD, c INTEGER SCRIPT AS (YEAR(k)))` are both rejected with a message

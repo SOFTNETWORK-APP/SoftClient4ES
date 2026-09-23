@@ -40,6 +40,20 @@ package object function {
       case _: CurrentFunction => true
       case _                  => false
     }
+
+    /** Can this function turn a NON-null operand into a null (issue #382, the lead's Ruling B)?
+      *
+      * Only a SAFE conversion does: `TRY_CAST` / `SAFE_CAST` hoist `def safe1 = null; try { safe1
+      * = …; } catch (Exception e) {}` into the prologue, so the value the call reads is null
+      * exactly when the conversion FAILED — while the column it came from is perfectly non-null.
+      * Every other function either propagates its operand's null or throws.
+      *
+      * Declared HERE rather than pattern-matched on `convert.Conversion` in [[FunctionN.painless]]:
+      * the package object that hosts `FunctionN` is the PARENT of `function.convert`, and a parent
+      * reaching into a child for a type test is the kind of coupling that gets copied. The one
+      * implementor overrides it with its own `safe` flag.
+      */
+    def rendersNullOnFailure: Boolean = false
   }
 
   trait FunctionWithIdentifier extends Function with Updateable {
@@ -207,6 +221,25 @@ package object function {
 
     override def shouldBeScripted: Boolean = functions.exists(_.shouldBeScripted)
 
+    /** 🔴 ARGUMENTS as well as the chain's own functions (issue #382, found by review). A safe cast
+      * one `FunctionN` deeper -- `CONCAT(NULLIF(TRY_CAST(s AS BIGINT), 0), 'x')`,
+      * `ABS(GREATEST(TRY_CAST(s AS BIGINT), 1))` -- is not in `functions`, so the null guard that
+      * Ruling B added stood down and the failure reached the call exactly as it did before the
+      * ruling: the literal text `"nullx"` stored for the string family, and an NPE that
+      * `ignore_failure` swallows into an ABSENT column for the numeric one. The same shape
+      * `ConditionalOp.functionsOf` already walks for the post-resolution rules.
+      */
+    override def rendersNullOnFailure: Boolean =
+      functions.exists {
+        case n: FunctionN[_, _] =>
+          n.rendersNullOnFailure || n.args.exists {
+            case c: FunctionChain => c.rendersNullOnFailure
+            case f: Function      => f.rendersNullOnFailure
+            case _                => false
+          }
+        case f => f.rendersNullOnFailure
+      }
+
     override def functionNestedElement: Option[NestedElement] =
       functions.flatMap(_.functionNestedElement).headOption
 
@@ -219,6 +252,33 @@ package object function {
         acc ++ FunctionUtils.funIdentifiers(fun)
       }
       .filterNot(_.name.isEmpty)
+  }
+
+  object FunctionN {
+
+    /** Is `rendered` a bare Painless identifier, i.e. something a `== null` may be written against?
+      * Used by the null guard (issue #382) to decline a rendered EXPRESSION.
+      */
+    private[function] def isName(rendered: String): Boolean =
+      rendered.nonEmpty && (rendered.charAt(0).isLetter || rendered.charAt(0) == '_') &&
+      rendered.forall(c => c.isLetterOrDigit || c == '_')
+  }
+
+  /** Does an ARGUMENT render `null` when its own conversion fails, however deeply it sits?
+    *
+    * A `PainlessScript` is not necessarily a `Function`, and a safe cast may be nested inside a
+    * further `FunctionN`, so both shapes are asked. `FunctionChain.rendersNullOnFailure` does the
+    * descent for a chain; this covers the bare cases at an argument position.
+    *
+    * ⚠️ A package-level function, NOT a member of [[FunctionN]]: as a trait member it is mixed into
+    * every implementor and scalac 2.13.16 fails with `AssertionError: List(object
+    * package$FunctionN, object package$FunctionN)` during `mixin`. It needs no `this`, so nothing
+    * is lost.
+    */
+  private[sql] def argRendersNullOnFailure(a: PainlessScript): Boolean = a match {
+    case c: FunctionChain => c.rendersNullOnFailure
+    case f: Function      => f.rendersNullOnFailure
+    case _                => false
   }
 
   trait FunctionN[In <: SQLType, Out <: SQLType]
@@ -246,7 +306,17 @@ package object function {
 
     override def toSQL(base: String): String = s"$base$sql"
 
-    def checkIfNullable: Boolean = args.exists(_.nullable)
+    /** 🔴 `|| exists(argRendersNullOnFailure)` (issue #382, Ruling B, found by review). This
+      * predicate GATES the whole null-guard block below, so asking only about `nullable` meant the
+      * guard was never even attempted when NO argument was nullable -- and a failing safe cast over
+      * a LITERAL or a NOT NULL column is exactly that case. `CONCAT(TRY_CAST('abc' AS BIGINT),
+      * 'x')` stored the literal text `"nullx"`, and `ABS(TRY_CAST('abc' AS DOUBLE))` threw an NPE
+      * that `ignore_failure` swallowed into an absent column, both AFTER the ruling that was meant
+      * to close them. It fires only where a safe cast is present, which is the population the
+      * ruling names.
+      */
+    def checkIfNullable: Boolean =
+      args.exists(_.nullable) || args.exists(argRendersNullOnFailure)
 
     override def painless(context: Option[PainlessContext]): String = {
       context match {
@@ -254,17 +324,6 @@ package object function {
           args.foreach(arg => ctx.addParam(arg)) // ensure all args are added to the context
         case _ =>
       }
-
-      val nullCheck =
-        if (checkIfNullable) {
-          args.zipWithIndex
-            .filter(_._1.nullable)
-            .map { case (a, i) =>
-              context.flatMap(ctx => ctx.get(a)).getOrElse(s"arg$i") + " == null"
-            }
-            .mkString(" || ")
-        } else
-          ""
 
       val assignments =
         args.zipWithIndex
@@ -351,6 +410,61 @@ package object function {
                 .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)
           }
         }
+
+      /** 🔴 A SAFE cast is a nullability source the raw parameter does not carry (issue #382, the
+        * lead's Ruling B), so the guard must also test the reference the CALL reads.
+        *
+        * `TRY_CAST(s AS BIGINT)` hoists its `try`/`catch` into the prologue and the call reads a
+        * parameter derived from that local, which is NULL exactly when the conversion failed —
+        * while `ctx.s` is non-null. Guarding only `ctx.s` let the null through, and MEASURED on
+        * real Elasticsearch 8.18.3 over `s = 'abc'`:
+        *
+        *   - `CONCAT(TRY_CAST(s AS BIGINT), 'x')` stored the literal text `"nullx"` (Painless
+        *     `String.valueOf(null)`) — a wrong VALUE, not an absent column;
+        *   - `ABS`, `ROUND`, `SUBSTRING`, `TRIM`, `LOWER`, `REPLACE`, `LENGTH` over the same
+        *     operand threw an NPE, which `ignore_failure: true` swallows — the column is absent by
+        *     a swallowed exception rather than by a decision.
+        *
+        * The semantics chosen are the engine's OWN, not a third set: `CONCAT(s, 'x')` over a null
+        * `s` already emits `(param1 == null) ? null : …` — ANSI, a NULL operand makes the whole
+        * call NULL. A failed safe cast IS a null operand, so it answers the same way. (The dialects
+        * that SKIP a null fragment were considered and rejected: this engine has one rule for a
+        * null operand and a second one would have to be explained at every venue.)
+        *
+        * 🔴 The raw parameter is KEPT alongside it, and that is not belt-and-braces. A prologue
+        * declaration is evaluated UNCONDITIONALLY, so a derived reference cannot stand in for its
+        * source wherever the derivation itself would throw on a null — the ingest temporal base
+        * (`param1 instanceof String ? LocalDate.parse(param1, …) : Instant.ofEpochMilli(param1)`)
+        * is exactly that: it NPEs on a null `param1` before any guard is reached. Replacing the
+        * reference rather than adding to it reddened `IngestTemporalSpec` and
+        * `DateDocValueEmissionSpec` (measured), which is why the extra test is scoped to
+        * `rendersNullOnFailure` and every other shape stays byte-identical.
+        */
+      val nullCheck =
+        if (checkIfNullable) {
+          // 🔴 `nullable || rendersNullOnFailure`, not `nullable` alone (issue #382, Ruling B).
+          // A safe cast is a nullability source the OPERAND does not carry -- that is the whole
+          // premise of the ruling -- so a non-nullable argument (a literal, a NOT NULL column)
+          // was dropped here before anything could ask, and `CONCAT(TRY_CAST('abc' AS BIGINT),
+          // 'x')` stored `"nullx"` exactly as it did before the fix.
+          args.zipWithIndex
+            .filter { case (a, _) => a.nullable || argRendersNullOnFailure(a) }
+            .flatMap { case (a, i) =>
+              val base = context.flatMap(ctx => ctx.get(a)).getOrElse(s"arg$i")
+              // `callArgs(i)` is a NAME for a nullable argument -- a `paramN` the context minted
+              // or the `argN` the context-free path declares -- so it can be compared with null.
+              // Anything else (a rendered expression) is left to the raw parameter alone.
+              val rendered = callArgs(i)
+              val rendersNullOnFailure = argRendersNullOnFailure(a)
+              val extra =
+                if (rendersNullOnFailure && rendered != base && FunctionN.isName(rendered))
+                  List(rendered)
+                else Nil
+              (base :: extra).map(ref => s"$ref == null")
+            }
+            .mkString(" || ")
+        } else
+          ""
 
       val painlessCall = toPainlessCall(callArgs, context)
 

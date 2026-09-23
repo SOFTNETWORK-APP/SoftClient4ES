@@ -59,6 +59,11 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
     """"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'""".r
       .replaceAllIn(source, m => " " * m.matched.length)
 
+  /** A Painless BLOCK COMMENT around `body`. Assembled rather than written literally: Scala
+    * comments NEST, so the delimiters cannot appear inside the scaladoc that explains them.
+    */
+  private def blockComment(body: String): String = "/" + "* " + body + " *" + "/"
+
   private def columnsOf(ddl: String): List[Column] =
     Parser(ddl) match {
       case Right(ct: CreateTable) => ct.schema.columns
@@ -140,23 +145,230 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
     withClue(s"identities = $identities ")(identities.distinct.size shouldBe identities.size)
   }
 
-  /** 🔴 CHARACTERISATION, not an endorsement. `fromScript` treats the last `;`-delimited chunk as
-    * the expression, and a `;` inside a BLOCK defeats that exactly as a `;` inside a literal did:
-    * `TRY_CAST` emits a `try`/`catch`, and the assignment lands inside the `catch` with no
-    * right-hand side. Elasticsearch answers `compile error`, so it is LOUD and no data is lost —
-    * but `TRY_CAST` in a computed column has never worked.
+  // -- issue #382: a `;` inside a BLOCK ---------------------------------------------------------
+
+  /** 🔴 This block REPLACES a characterisation that used to pin the defect verbatim (`source should
+    * endWith("catch (Exception e) { return null; ctx.c = }")`). A `;` inside a BLOCK defeated the
+    * last-statement strategy exactly as a `;` inside a literal did: `TRY_CAST` renders a
+    * `try`/`catch` STATEMENT, the assignment landed inside the `catch` with no right-hand side,
+    * Elasticsearch answered `compile error`, and `TRY_CAST` in a computed column had never worked
+    * in ANY shape.
     *
-    * Identical before and after this fix (verified by independent review against the pre-fix
-    * assembly on the same rendered Painless), so it is recorded here rather than repaired: the real
-    * remedy is for `fromScript` to be HANDED the prologue and the expression by `PainlessContext`
-    * instead of re-deriving the boundary from their concatenation, which is a larger change than
-    * this one. Recorded so the next reader sees it instead of rediscovering it.
+    * The remedy is the one that characterisation named: `fromScript` is HANDED the prologue and the
+    * expression rather than re-deriving the boundary from their concatenation
+    * ([[ScriptTarget.assemble]]), and a safe cast is hoisted into the prologue in every context
+    * that HAS one, not only in a query (`function/convert`).
+    *
+    * 🔴 The two assertions below fail for DIFFERENT halves of that repair, which is why there are
+    * two (`feedback_assert_the_mechanism_not_a_proxy`: revert the smallest unit, not the branch):
+    *
+    *   - restore the `ctx.context == Query` guard on the hoist, and the assigned expression is the
+    *     `try`/`catch` itself -> `an EXPRESSION` reddens, `braces balance` does not;
+    *   - restore the `splitStatements` assembly, and the assignment is spliced into the `try` block
+    * -> `braces balance` reddens, `an EXPRESSION` does not.
     */
-  "the last-statement strategy" should "still be defeated by a `;` inside a block" in {
-    val source =
-      sourceOf("CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))")
-    withClue(s"[$source] ") {
-      source should endWith("catch (Exception e) { return null; ctx.c = }")
+  private val blockShapes = Table(
+    "ddl",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (SAFE_CAST(name AS BIGINT)))",
+    "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(name AS BIGINT), 'x')))",
+    "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (UPPER(TRY_CAST(name AS KEYWORD))))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (COALESCE(TRY_CAST(name AS BIGINT), 0)))",
+    "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS " +
+    "(CASE WHEN name = 'x' THEN TRY_CAST(name AS BIGINT) ELSE 0 END))",
+    "CREATE TABLE t (name KEYWORD, c DOUBLE SCRIPT AS (TRY_CAST(name AS DOUBLE) + 1))"
+  )
+
+  /** Where the assignment `assemble` appended starts, located on the literal-blanked source so a
+    * `ctx.c = ` written INSIDE a string literal cannot be mistaken for it. Offsets are preserved,
+    * so the index addresses `source` too.
+    */
+  private def assignmentAt(source: String): Int = literalFree(source).lastIndexOf("ctx.c = ")
+
+  it should "leave the assignment OUTSIDE every block, not only outside every literal" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val at = assignmentAt(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        at should be >= 0
+        val before = code.substring(0, at)
+        // an unbalanced `{` before the assignment means it was spliced INTO a block
+        before.count(_ == '{') shouldBe before.count(_ == '}')
+      }
     }
   }
+
+  it should "assign an EXPRESSION, never a statement" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val rhs = code.substring(assignmentAt(source) + "ctx.c = ".length)
+      withClue(s"[$ddl] -> [$source] ") {
+        // Painless has no expression-level `try`, and a `;` would start a second statement --
+        // either one makes `ctx.c = <rhs>` a compile error. Asked of the literal-blanked source, so
+        // this is about CODE.
+        rhs should not include ";"
+        """\btry\b""".r.findFirstIn(rhs) shouldBe None
+        rhs.trim should not be empty
+      }
+    }
+  }
+
+  it should "keep exactly one assignment, readable back as the computed column" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      withClue(s"[$ddl] -> [$source] ") {
+        literalFree(source).split("ctx\\.c = ", -1).length - 1 shouldBe 1
+        ScriptTarget.of(source) shouldBe Some("c")
+      }
+    }
+  }
+
+  /** The hoist itself: a safe cast's `try`/`catch` must be in the PROLOGUE. Without this the two
+    * assertions above are satisfied by a script that simply dropped the conversion — which is what
+    * `TRY_CAST(name AS DOUBLE) + 1` used to do, silently (issue #373's `placeable` residual).
+    */
+  it should "hoist a safe cast's try/catch into the prologue" in {
+    forAll(blockShapes) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        code should include("try { safe")
+        code.indexOf("try ") should be < assignmentAt(source)
+        code should not include "return null"
+      }
+    }
+  }
+
+  /** The byte pin for the filed shape, so the repair itself cannot drift unnoticed. */
+  it should "assemble the filed TRY_CAST shape exactly (#382)" in {
+    sourceOf(
+      "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))"
+    ) shouldBe
+    "def param1 = ctx.name; def safe1 = null; " +
+    "try { safe1 = (param1 != null ? (def)(Long.parseLong(param1).longValue()) : null); } " +
+    "catch (Exception e) {} ctx.c = safe1"
+  }
+
+  /** 🔴 The sweep the fix owes (spec §3, task 3): once the safe cast is hoisted, is EVERY contexted
+    * processor rendering an expression? Asked of a corpus that mixes every emitter that can produce
+    * a statement — the safe cast, a CASE, an arithmetic local, a function chain — because a single
+    * remaining statement producer would put `assemble` back in the business of splicing.
+    *
+    * Deliberately a GUARD and not an assumption: if a future emitter renders a statement in a
+    * processor, this reddens here rather than in a customer's cluster.
+    */
+  it should "render every computed column as an EXPRESSION once the prologue is hoisted" in {
+    forAll(
+      Table(
+        "ddl",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT)))",
+        "CREATE TABLE t (name KEYWORD, n INTEGER, c BIGINT SCRIPT AS (TRY_CAST(name AS BIGINT) + n))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(name AS BIGINT), 'x')))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (COALESCE(TRY_CAST(name AS BIGINT), 0)))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS " +
+        "(CASE WHEN name = 'x' THEN TRY_CAST(name AS BIGINT) ELSE 0 END))",
+        "CREATE TABLE t (n INTEGER, c BIGINT SCRIPT AS ((CAST(n AS BIGINT) + 1) * (CAST(n AS BIGINT) + 2)))",
+        "CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d) * 100 + MONTH(d)))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (UPPER('a;b')))",
+        "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (REPLACE(name, ';', 'x')))",
+        "CREATE TABLE t (d DATE, c KEYWORD SCRIPT AS (DATE_FORMAT(d, 'yyyy')))",
+        "CREATE TABLE t (d DATE, c DATE SCRIPT AS (DATE_TRUNC(d, MONTH)))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (LENGTH(name) + 1))",
+        "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (NULLIF(LENGTH(name), 0)))"
+      )
+    ) { ddl =>
+      val source = sourceOf(ddl)
+      val code = literalFree(source)
+      val at = assignmentAt(source)
+      withClue(s"[$ddl] -> [$source] ") {
+        at should be >= 0
+        code.substring(at + "ctx.c = ".length) should not include ";"
+        val before = code.substring(0, at)
+        before.count(_ == '{') shouldBe before.count(_ == '}')
+        // 🔴 And no `return ` anywhere, which is what lets `assemble` drop the arm that stripped
+        // one (issue #382). A `return` in a processor script leaves the WHOLE script, so it can
+        // never be part of a computed column's value; the only emitter of the token is the safe
+        // cast's context-FREE rendering, which `fromScript` cannot reach. Asserted as a PROPERTY
+        // of every shape rather than argued in a comment alone.
+        """\breturn\b""".r.findFirstIn(code) shouldBe None
+      }
+    }
+  }
+
+  // -- issue #382, F3: a `}` inside a COMMENT is not a statement boundary -----------------------
+
+  /** 🔴 #382 widened `ScriptTarget.of`'s boundary set with `}` — a hoisted `try { … } catch
+    * (Exception e) {} ` is a statement with no `;`, so the assignment that follows one is preceded
+    * by `} ` — and a `}` inside a Painless COMMENT was then read as code. Found by independent
+    * review; MEASURED, `of` on `ctx.c = 1` followed by a block comment holding `} ctx.zzz = 9`:
+    *
+    * {{{
+    *   before #382   Some(c)
+    *   after  #382   Some(zzz)     <- the processor claims another column's identity
+    * }}}
+    *
+    * `IngestPipeline.diff` keys a processor by this, so a wrong identity is a COLLISION, and the
+    * map that indexes them DROPS the loser. Comments are reachable from SQL today: both `ALTER
+    * PIPELINE … ADD PROCESSOR SCRIPT(source = '…')` and `CREATE PIPELINE … WITH PROCESSORS
+    * (SCRIPT(…))` take a hand-authored source.
+    *
+    * Fixed at the seam that already answers the same question for string literals — `is this
+    * character CODE?` — rather than by narrowing the regex, so the two answers cannot drift.
+    *
+    * ⚠️ The two rows whose comment sits BEFORE the assignment used to answer `None` (no boundary
+    * was recognised at all, so the caller fell back to a content-addressed identity). They answer
+    * correctly now; that is a bonus, not the point, and they are here so a future narrowing of the
+    * scanner is visible.
+    */
+  private val commentShapes = Table(
+    ("source", "why"),
+    ("ctx.c = 1 " + blockComment("} ctx.zzz = 9"), "a `}` in a block comment AFTER the assignment"),
+    ("ctx.c = 1 // } ctx.zzz = 9", "a `}` in a line comment"),
+    (blockComment("ctx.zzz = 9") + " ctx.c = 1", "a whole assignment inside a block comment"),
+    ("// ctx.zzz = 1\nctx.c = 2", "a whole assignment inside a line comment"),
+    (
+      "ctx.c = 1 " + blockComment("a ' b"),
+      "an apostrophe in a comment, which must not open a literal"
+    ),
+    ("ctx.c = 1 /* unterminated", "an unterminated block comment swallows the rest"),
+    ("def p = ctx.a; ctx.c = p", "the control: no comment at all"),
+    (
+      "def safe1 = null; try { safe1 = 1; } catch (Exception e) {} ctx.c = safe1",
+      "the control: the `}` boundary #382 added, which must keep working"
+    ),
+    (
+      "if (ctx.s != null) { ctx.flag = true } ctx.c = 2",
+      "a FOREIGN source whose assignment follows a real block"
+    )
+  )
+
+  "a `}` inside a comment" should "not be read as a statement boundary" in {
+    forAll(commentShapes) { (source, why) =>
+      // 🔴 the WHOLE identity, not `.take(1)` (issue #382, found by review). Every shape above
+      // expects exactly `c`, so truncating to one character bought nothing and let `count`,
+      // `created` or `c_wrong` pass -- in a test whose subject is a processor claiming ANOTHER
+      // column's identity. The sibling assertion in this file already asserts the whole value.
+      withClue(s"[$source] -- $why ")(ScriptTarget.of(source) shouldBe Some("c"))
+    }
+  }
+
+  /** The counter-property: blanking comments must not blank CODE. A `/` that opens nothing is
+    * division, and a comment delimiter inside a STRING LITERAL is data.
+    */
+  it should "leave a bare `/` and a delimiter inside a literal alone" in {
+    forAll(
+      Table(
+        ("source", "expected"),
+        ("ctx.c = 1 / 2", Some("c")),
+        ("ctx.c = \"/* } ctx.zzz = 9 */\"", Some("c")),
+        ("ctx.c = '// } ctx.zzz = 9'", Some("c")),
+        // ... and a source this object did NOT write still answers None, so the caller keeps its
+        // content-addressed fallback rather than being handed an invented identity
+        ("def x = 1", None)
+      )
+    )((source, expected) => withClue(s"[$source] ")(ScriptTarget.of(source) shouldBe expected))
+  }
+
 }

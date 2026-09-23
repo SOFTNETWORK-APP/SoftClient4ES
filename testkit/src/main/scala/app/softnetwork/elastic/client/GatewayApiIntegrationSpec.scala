@@ -249,6 +249,28 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       String.valueOf(scalarOf(row, column)).toDouble.toLong
     }.toMap
 
+  /** `intsById`'s exact-valued sibling. #382's Ruling A turns on `2` versus `2.5`, which
+    * `toDouble.toLong` erases.
+    */
+  /** The column's value as Elasticsearch surfaced it, UNPARSED.
+    *
+    * 🔴 `intsById` and `doublesById` both go through `.toDouble`, which erases the very
+    * int-versus-double distinction a control for the `/` ruling has to observe (issue #382, found
+    * by review). A stored column cannot show it either -- the mapping coerces on index -- so the
+    * only place the emitted type is visible is a `script_fields` projection, read raw.
+    */
+  private def rawById(sql: String, column: String): Map[Long, String] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      String.valueOf(scalarOf(row, column))
+    }.toMap
+
+  private def doublesById(sql: String, column: String): Map[Long, Double] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      String.valueOf(scalarOf(row, column)).toDouble
+    }.toMap
+
   private def pipelineNames(): Seq[Any] =
     assertQueryRows(System.nanoTime(), client.run("SHOW PIPELINES").futureValue).map(_("name"))
 
@@ -501,6 +523,726 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       ddl should not include "SCRIPT AS"
       ddl should include("id INT")
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // TRY_CAST / SAFE_CAST in a computed column, and arithmetic over a cast —
+  // the ingest script Elasticsearch has to COMPILE and RUN (issue #382)
+  // ---------------------------------------------------------------------------
+
+  /** 🔴 Issue #382's whole claim is that Elasticsearch now compiles and runs a script it used to
+    * reject, and **a byte pin cannot say that** (#385's lesson). `sql`'s specs assert the assembled
+    * source; only a cluster can say whether the pipeline was accepted, what it stored for a row it
+    * could convert, and what it stored for one it could not.
+    *
+    * Before the fix the emitted source was `… try { … } catch (Exception e) { return null; ctx.n =
+    * }` — an assignment inside the `catch` with no right-hand side — so `CREATE TABLE` itself
+    * failed and no document could be indexed. `TRY_CAST` in a computed column had never worked in
+    * ANY shape.
+    *
+    * ⚠️ The fix hoists the `try`/`catch` into the prologue, where a `return null` cannot travel (it
+    * would leave the whole script), so a failed conversion leaves the local at its initial `null`
+    * and the processor assigns `null`. Whether Elasticsearch then stores a JSON null or omits the
+    * field is NOT inferable from the emission, which is the second reason this row exists.
+    */
+  it should "compile and run a TRY_CAST computed column (#382)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS trycast_cc (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT SCRIPT AS (TRY_CAST(raw AS BIGINT))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    // 🔴 `raw` mixes a castable and an UNCASTABLE value on purpose: `TRY_CAST` exists for the
+    // second one, and a fixture where every row converts would pass against a plain `CAST` too.
+    val insert =
+      """INSERT INTO trycast_cc (id, raw) VALUES
+        |  (1, '125'),
+        |  (2, 'abc'),
+        |  (3, '7');""".stripMargin
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 3)))
+
+    // the conversion RAN: two different values, so a copy that lost them cannot satisfy this
+    intsById("SELECT id, n FROM trycast_cc WHERE id <> 2", "n") shouldBe Map(1L -> 125L, 3L -> 7L)
+
+    // ... and the row that cannot be converted is STORED, with no value for the computed column.
+    // Asserted as "absent or null" because that is the honest boundary: `ignore_failure` is not
+    // involved (nothing throws), and which of the two Elasticsearch picks is a cluster decision.
+    val failing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, raw, n FROM trycast_cc WHERE id = 2").futureValue
+    )
+    withClue(s"$failing ") {
+      failing.size shouldBe 1
+      String.valueOf(scalarOf(failing.head, "raw")) shouldBe "abc"
+      failing.head.get("n").filterNot(v => v == null || v == Nil) shouldBe None
+    }
+
+    // the cluster really did keep a pipeline for this table (the pre-fix shape could not create one)
+    pipelineNames() should contain("trycast_cc_ddl_default_pipeline")
+  }
+
+  /** The control for the row above: a PRE-EXISTING shape that must be byte-for-byte unaffected.
+    * `CAST` over the same column already worked, and #382 must not move it.
+    */
+  it should "leave a plain CAST computed column exactly as it was (#382 control)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_cc (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT SCRIPT AS (CAST(raw AS BIGINT))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_cc (id, raw) VALUES (1, '125'), (2, '7');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    intsById("SELECT id, n FROM cast_cc", "n") shouldBe Map(1L -> 125L, 2L -> 7L)
+  }
+
+  /** 🔴 The lead's OQ-2 ruling, executed. `ArithmeticExpression` derived its coercion TARGET from
+    * `args.map(_.out)`, and a schema-resolved `Identifier.out` reports the COLUMN's type — KEYWORD
+    * here — not what the operand RENDERS (BIGINT). The least common supertype came out VARCHAR, so
+    * `coerce` wrapped BOTH operands in `String.valueOf` and Painless CONCATENATED them: a BIGINT
+    * mapping then happily coerced `"1257"`, and `125 + 7` stored **1257**.
+    *
+    * HTTP 200 throughout, which is why this needs a cluster and a NUMBER: an emission that merely
+    * changed is not evidence (`feedback_assert_the_mechanism_not_a_proxy`). Reachable today with a
+    * plain `CAST`, so it is neither caused nor fixed by the assembly repair — after it, `TRY_CAST`
+    * merely joins `CAST` in this shape.
+    */
+  it should "compute, not concatenate, arithmetic over a cast of a string column (#382 OQ-2)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_arith (
+        |  id INT,
+        |  raw KEYWORD,
+        |  m BIGINT,
+        |  c BIGINT SCRIPT AS (CAST(raw AS BIGINT) + m),
+        |  t BIGINT SCRIPT AS (TRY_CAST(raw AS BIGINT) + m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO cast_arith (id, raw, m) VALUES (1, '125', 7), (2, '40', 2);")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // 132, not 1257 — and 42, not 402: two rows, because a single one is satisfiable by accident
+    intsById("SELECT id, c FROM cast_arith", "c") shouldBe Map(1L -> 132L, 2L -> 42L)
+    // ... and the safe cast, which could not reach this shape at all before #382
+    intsById("SELECT id, t FROM cast_arith", "t") shouldBe Map(1L -> 132L, 2L -> 42L)
+
+    // the control: arithmetic over a cast of a NUMERIC column was always right and must stay right
+    val numeric =
+      """CREATE TABLE IF NOT EXISTS cast_arith_num (
+        |  id INT,
+        |  n INTEGER,
+        |  m BIGINT,
+        |  c BIGINT SCRIPT AS (CAST(n AS BIGINT) + m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(numeric).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_arith_num (id, n, m) VALUES (1, 125, 7);").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    intsById("SELECT id, c FROM cast_arith_num", "c") shouldBe Map(1L -> 132L)
+  }
+
+  /** The QUERY venue of the same target defect — the sweep #382's spec asked for. `renderedType`
+    * feeds predicates and projections too, so `WHERE CAST(raw AS BIGINT) + 1 > 130` compared a
+    * CONCATENATED string with a number.
+    */
+  it should "compute, not concatenate, arithmetic over a cast in a QUERY too (#382 OQ-2)" in {
+    val rows = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id, CAST(raw AS BIGINT) + m AS c FROM cast_arith WHERE id = 1")
+        .futureValue
+    )
+    withClue(s"$rows ") {
+      rows.size shouldBe 1
+      String.valueOf(scalarOf(rows.head, "c")).toDouble.toLong shouldBe 132L
+    }
+
+    // and in a predicate: 132 > 130 is true, "1257" > 130 is not a number comparison at all
+    val filtered = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id FROM cast_arith WHERE CAST(raw AS BIGINT) + m > 130")
+        .futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+  }
+
+  /** 🔴 The lead's Ruling A, executed — and AMENDED by the lead's ruling of 2026-09-23, which
+    * supersedes its DIVISION half. #382's OQ-2 repair moved an `Identifier` operand's declared type
+    * from the COLUMN's (`out`) to the CHAIN's (`chainType`), so a cast decides what the operand IS.
+    * That still holds. What no longer holds is that it decides what the DIVISION is: `/` decides
+    * its own result type and always yields DOUBLE (see `DivisionResultTypeSpec`).
+    *
+    * MEASURED on real Elasticsearch 8.18.3 for `x DOUBLE`, `CAST(x AS INTEGER) / 2`:
+    *
+    * {{{
+    *                       emitted right-hand side     x = 5.0   x = 7.5
+    *   main              (lv1 / ((double) 2))         2.5       3.5
+    *   OQ-2 (superseded) (lv1 / 2)                    2         3
+    *   this ruling       (lv1 / ((double) 2))         2.5       3.5
+    * }}}
+    *
+    * 🔴 So this row is NOT vacuous after the amendment, and the reason is worth stating: the cast
+    * still changes the ANSWER, just not through the division's type. `7.5` narrows to `7`, so
+    * `CAST(x AS INTEGER) / 2` is **3.5** where the uncast `x / 2` is **3.75** — the control table
+    * at the bottom holds exactly that pair. It is the fixture, not the operator, that keeps the
+    * evidence alive.
+    *
+    * ⚠️ `7.5` is in the fixture on purpose, and the predicate threshold is `> 3` rather than `> 2`:
+    * under the superseded integer-division reading the answers were `2` and `3`, so `> 3` matched
+    * NOTHING. A `> 2` threshold would have been satisfied by all three readings.
+    */
+  it should "not let a narrowing cast make a division integral (#382, 2026-09-23)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_narrow (
+        |  id INT,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (CAST(x AS INTEGER) / 2)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_narrow (id, x) VALUES (1, 5.0), (2, 7.5);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // the DDL venue: the OPERAND is narrowed (7.5 -> 7) but the DIVISION stays floating
+    doublesById("SELECT id, c FROM cast_narrow", "c") shouldBe Map(1L -> 2.5, 2L -> 3.5)
+
+    // the QUERY venue, same expression, same answers -- the agreement is the ruling
+    doublesById(
+      "SELECT id, CAST(x AS INTEGER) / 2 AS c FROM cast_narrow",
+      "c"
+    ) shouldBe Map(1L -> 2.5, 2L -> 3.5)
+
+    // ... and in a PREDICATE, where the superseded integer reading is visible as an EMPTY row set:
+    // it answered 2 and 3, and neither is > 3. 3.5 is.
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM cast_narrow WHERE CAST(x AS INTEGER) / 2 > 3").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(2L)
+    }
+
+    // 🔴 The control that keeps the row above from being satisfied by "the cast stopped working":
+    // the SAME division with no cast answers 3.75 where the cast answers 3.5, so the narrowing is
+    // still doing its job on the OPERAND even though it no longer decides the division's type.
+    val control =
+      """CREATE TABLE IF NOT EXISTS cast_narrow_ctl (
+        |  id INT,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (x / 2),
+        |  d DOUBLE SCRIPT AS (CAST(x AS DOUBLE) / 2)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(control).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_narrow_ctl (id, x) VALUES (1, 5.0), (2, 7.5);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    doublesById("SELECT id, c FROM cast_narrow_ctl", "c") shouldBe Map(1L -> 2.5, 2L -> 3.75)
+    doublesById("SELECT id, d FROM cast_narrow_ctl", "d") shouldBe Map(1L -> 2.5, 2L -> 3.75)
+  }
+
+  /** 🔴 The lead's ruling of 2026-09-23 on #382, executed: **`/` decides its own result type.**
+    * `SELECT n / m` over two INTEGER columns answered `3` for 7/2 — Java's integer division, not
+    * SQL's — while the SAME statement inside a JOIN answered `3.5`, because a JOIN evaluates its
+    * SELECT list in DuckDB. And `c DOUBLE SCRIPT AS (n / m)` emitted `param1 / param2` with no
+    * coercion at all, so a column the user DECLARED `DOUBLE` stored `3.0`.
+    *
+    * Three rows and three divisors, none of them exact, so a reading that truncated could not
+    * satisfy any of them; and `%` beside them as the control that says the ruling is `/` and only
+    * `/` — `3 % 8` is `3`, which a wholesale "everything is a double now" would still report as
+    * `3.0` but which `7 % 2` and `9 % 4` (both `1`) would not separate from each other.
+    */
+  it should "divide as SQL divides, not as Java does (#382, 2026-09-23)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS div_int (
+        |  id INT,
+        |  n INTEGER,
+        |  m INTEGER,
+        |  c DOUBLE SCRIPT AS (n / m),
+        |  r INTEGER SCRIPT AS (n % m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO div_int (id, n, m) VALUES (1, 7, 2), (2, 9, 4), (3, 3, 8);")
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    // the computed column: a column DECLARED `DOUBLE` finally stores a double
+    doublesById("SELECT id, c FROM div_int", "c") shouldBe
+    Map(1L -> 3.5, 2L -> 2.25, 3L -> 0.375)
+
+    // the query venue, same expression, same answers
+    doublesById("SELECT id, n / m AS c FROM div_int", "c") shouldBe
+    Map(1L -> 3.5, 2L -> 2.25, 3L -> 0.375)
+
+    // a division of two LITERALS, which takes the other rendering path entirely
+    doublesById("SELECT id, 10 / 3 AS c FROM div_int WHERE id = 1", "c").values.head shouldBe
+    (10.0 / 3.0 +- 1e-9)
+
+    // the PREDICATE, where the change is a different ROW SET: the truncating reading answered
+    // 3, 2 and 0, so NOTHING was `> 3`
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM div_int WHERE n / m > 3").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
+
+    // 🔴 the control: `%` is NOT part of the ruling and must answer exactly what it always did.
+    //
+    // ⚠️ AMENDED by the #382 review, which found the original control VACUOUS. Both `intsById`
+    // (`.toDouble.toLong`) and `doublesById` (`.toDouble`) erase the int/double distinction this
+    // row exists to detect, and the computed column cannot show it either: `r` is mapped INTEGER,
+    // so Elasticsearch coerces whatever the script produced on index. Widen the ruling to `%` and
+    // every assertion here stayed green.
+    //
+    // A QUERY projection is where it IS observable: `script_fields` returns what Painless
+    // produced, with no mapping to coerce it, so an integer `%` surfaces as `1` and a promoted one
+    // as `1.0`. That is the assertion, and it reddens if `%` ever joins `/`.
+    intsById("SELECT id, r FROM div_int", "r") shouldBe Map(1L -> 1L, 2L -> 1L, 3L -> 3L)
+    rawById("SELECT id, n % m AS r FROM div_int", "r") shouldBe
+    Map(1L -> "1", 2L -> "1", 3L -> "3")
+    // ...and the same projection for `/`, which MUST carry the decimal point — so the row above is
+    // shown to be discriminating rather than merely passing.
+    rawById("SELECT id, n / m AS q FROM div_int", "q") shouldBe
+    Map(1L -> "3.5", 2L -> "2.25", 3L -> "0.375")
+
+    // 🔴 the documented way to get a TRUNCATED quotient, executed — because there is no `DIV`
+    // operator and `CAST(n / m AS INTEGER)` is a PARSE ERROR: an arithmetic expression is not yet
+    // accepted as the operand of a CAST, of a function or of a CASE branch. That gap is UNFILED —
+    // NOT issue #267, which is a different defect (a bare LITERAL operand) and was closed
+    // 2026-09-04. The quotient goes into a column and THAT column is cast, which is what
+    // `documentation/sql/operators.md` now tells the reader to do.
+    doublesById("SELECT id, CAST(c AS INTEGER) AS whole FROM div_int", "whole") shouldBe
+    Map(1L -> 3.0, 2L -> 2.0, 3L -> 0.0)
+  }
+
+  /** 🔴 A zero divisor is NULL, and the document SURVIVES — the half of the ruling that is a
+    * data-loss fix rather than a semantic change, and the reason the guard shipped WITH it.
+    *
+    * MEASURED on real Elasticsearch 8.18.3 before the ruling, for `m = 0`:
+    *
+    * {{{
+    *   n INTEGER / m   ingest   the script THREW; `ignore_failure` swallowed it, column ABSENT
+    *   n INTEGER / m   search   HTTP 400 "all shards failed", `arithmetic_exception: / by zero`
+    *   x DOUBLE  / m   ingest   `Infinity` -> HTTP 400, the WHOLE DOCUMENT REJECTED:
+    *                             "[double] supports only finite values, but got [Infinity]"
+    *   x DOUBLE  / m   search   the string "Infinity" in the result column, and `Infinity > 2`
+    *                             matched the row
+    * }}}
+    *
+    * The third line is the one that costs data: it predates this ruling for every `double` column,
+    * and making integer division floating would have extended it to integer columns too. So the
+    * INSERT below is itself an assertion — on `main` it does not fully land.
+    *
+    * ⚠️ `documentation/sql/operators.md` has always said *"Engine returns NULL for invalid
+    * arithmetic"*. None of the four lines above was NULL. It is true now.
+    */
+  it should "index the document a zero divisor used to destroy (#382, 2026-09-23)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS div_zero (
+        |  id INT,
+        |  n INTEGER,
+        |  m INTEGER,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (n / m),
+        |  d DOUBLE SCRIPT AS (x / m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    // the assertion is the COUNT: the second row carries `x / 0`, which used to make
+    // Elasticsearch reject the whole document
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO div_zero (id, n, m, x) VALUES (1, 7, 2, 5.0), (2, 7, 0, 5.0);")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val stored =
+      collectRows(System.nanoTime(), client.run("SELECT id, c, d FROM div_zero").futureValue)
+    withClue(s"$stored ") {
+      stored.size shouldBe 2
+      val byId = stored.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+      String.valueOf(scalarOf(byId(1L), "c")).toDouble shouldBe 3.5
+      String.valueOf(scalarOf(byId(1L), "d")).toDouble shouldBe 2.5
+      // the zero-divisor row: NULL, i.e. no value at all -- not `Infinity`, not a lost document
+      isNullColumn(byId(2L), "c") shouldBe true
+      isNullColumn(byId(2L), "d") shouldBe true
+    }
+
+    // the QUERY venue: the whole search used to fail with HTTP 400, so BOTH rows were lost to the
+    // caller, not just the one with the zero divisor
+    val projected = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, n / m AS c FROM div_zero").futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 2
+      val byId = projected.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+      String.valueOf(scalarOf(byId(1L), "c")).toDouble shouldBe 3.5
+      isNullColumn(byId(2L), "c") shouldBe true
+    }
+
+    // ... and the PREDICATE, where `Infinity > 1` used to MATCH the zero-divisor row
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM div_zero WHERE x / m > 1").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
+  }
+
+  /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,
+    * and the function wrapping it guarded the raw COLUMN parameter — which is not null — so the
+    * null reached the call. MEASURED on real Elasticsearch 8.18.3 over `s = 'abc'`:
+    *
+    * {{{
+    *   CONCAT(TRY_CAST(s AS BIGINT), 'x')   ->  "nullx"     <- the literal text, stored
+    *   CONCAT('x', TRY_CAST(s AS BIGINT))   ->  "xnull"
+    *   ROUND(TRY_CAST(s AS DOUBLE), 1)      ->  NPE, swallowed by `ignore_failure` => no column
+    * }}}
+    *
+    * The first two are a wrong VALUE — Painless `String.valueOf(null)` — not an absent column, and
+    * that is what makes this worth a cluster row: nothing throws, Elasticsearch answers 200, and a
+    * `keyword` mapping stores the word `null` as happily as any other. The repair guards the
+    * reference the CALL reads as well as the raw parameter, so a failed safe cast is a NULL operand
+    * and the whole call is NULL — the rule `CONCAT(s, 'x')` over a null `s` already followed.
+    *
+    * ⚠️ `'125'` is in the fixture so the row cannot be satisfied by a script that computes nothing:
+    * the castable row must still produce the concatenation.
+    */
+  it should "make a failed safe cast NULL, not the text \"null\" (#382 Ruling B)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS trycast_null (
+        |  id INT,
+        |  s KEYWORD,
+        |  c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(s AS BIGINT), 'x')),
+        |  d KEYWORD SCRIPT AS (CONCAT('x', TRY_CAST(s AS BIGINT))),
+        |  f DOUBLE SCRIPT AS (ROUND(TRY_CAST(s AS DOUBLE), 1))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO trycast_null (id, s) VALUES (1, '125'), (2, 'abc');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // the castable row: the conversion ran and the call really did concatenate
+    val ok = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, c, d, f FROM trycast_null WHERE id = 1").futureValue
+    )
+    withClue(s"$ok ") {
+      ok.size shouldBe 1
+      String.valueOf(scalarOf(ok.head, "c")) shouldBe "125x"
+      String.valueOf(scalarOf(ok.head, "d")) shouldBe "x125"
+      String.valueOf(scalarOf(ok.head, "f")).toDouble shouldBe 125.0
+    }
+
+    // the UNCASTABLE row: no value at all, and above all NOT the words `nullx` / `xnull`
+    val failing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, s, c, d, f FROM trycast_null WHERE id = 2").futureValue
+    )
+    withClue(s"$failing ") {
+      failing.size shouldBe 1
+      String.valueOf(scalarOf(failing.head, "s")) shouldBe "abc"
+      // 🔴 Stated as the DEFECT, so this row cannot go green on the pre-fix emission -- and read
+      // through `scalarOf`, which UNWRAPS Elasticsearch's per-field array. Comparing the wrapped
+      // value would have made `List("nullx")` pass this assertion (issue #382, found by review).
+      List("c", "d").foreach { k =>
+        failing.head.get(k).map(v => String.valueOf(scalarOf(failing.head, k))) match {
+          case Some(rendered) =>
+            withClue(s"[$k] ") {
+              rendered should not be "nullx"
+              rendered should not be "xnull"
+            }
+          case None => // absent is the right answer too
+        }
+      }
+      // ...and the column really is SQL NULL, by the same predicate every other row here uses
+      List("c", "d", "f").foreach(k =>
+        withClue(s"[$k] ")(isNullColumn(failing.head, k) shouldBe true)
+      )
+    }
+
+    // 🔴 What the documentation promises about a NULL computed column, measured rather than
+    // assumed: the row IS returned by a plain SELECT (above, `failing.size shouldBe 1`) and IS
+    // skipped by an existence test, because a null writes no doc value.
+    val existing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+    )
+    withClue(s"$existing ") {
+      existing.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+  }
+
+  /** 🔴 Issue #382's NULLIF addendum, N1 — executed, because the defect was a script Elasticsearch
+    * REFUSED and a `sql` byte pin cannot say that one compiles.
+    *
+    * `NullIf.argTypes` answered each operand's `out`, which for a schema-resolved identifier is the
+    * COLUMN's type — so a cast of a KEYWORD reported KEYWORD, the supertype came out VARCHAR, and
+    * the string arm guarded a primitive literal:
+    *
+    * {{{
+    *   def param3 = param2 == null || (0 != null && param2.compareTo(0) == 0) ? null : param2;
+    *     class_cast_exception: Cannot cast from [int] to [java.lang.Object].
+    * }}}
+    *
+    * so `CREATE TABLE` itself failed and no document could be indexed. `CAST`, `TRY_CAST` and `::`
+    * failed identically, and so did the projection and the predicate venues.
+    *
+    * ⚠️ `v` is the shape that MOVED while already working: `NULLIF(CAST(raw AS BIGINT), n)` used to
+    * take the string arm and compare with `compareTo`, which compiled by the luck of `def` dispatch
+    * over two boxed Longs. It now takes the numeric arm its corrected types name — the one
+    * `NULLIF(n, 0)` has always used — and the values it produces are asserted here on both sides of
+    * the move.
+    */
+  it should "compile and run NULLIF over a cast, and compute (#382 N1)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_cast (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT,
+        |  c BIGINT SCRIPT AS (NULLIF(CAST(raw AS BIGINT), 0)),
+        |  t BIGINT SCRIPT AS (NULLIF(TRY_CAST(raw AS BIGINT), 0)),
+        |  v BIGINT SCRIPT AS (NULLIF(CAST(raw AS BIGINT), n))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO nullif_cast (id, raw, n) VALUES (1, '125', 7), (2, '0', 1), (3, '42', 42);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    // the sentinel row is NULL and the others keep their value — two surviving values, so a script
+    // that computed nothing, or nulled everything, cannot satisfy this
+    intsById("SELECT id, c FROM nullif_cast WHERE id <> 2", "c") shouldBe Map(1L -> 125L, 3L -> 42L)
+    intsById("SELECT id, t FROM nullif_cast WHERE id <> 2", "t") shouldBe Map(1L -> 125L, 3L -> 42L)
+    // ... and `v` nulls a DIFFERENT row, so the two columns cannot be confused for one another
+    intsById("SELECT id, v FROM nullif_cast WHERE id <> 3", "v") shouldBe Map(1L -> 125L, 2L -> 0L)
+
+    val sentinel = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, raw, c, t, v FROM nullif_cast WHERE id = 2").futureValue
+    )
+    withClue(s"$sentinel ") {
+      sentinel.size shouldBe 1
+      String.valueOf(scalarOf(sentinel.head, "raw")) shouldBe "0"
+      List("c", "t").foreach(k =>
+        withClue(s"[$k] ")(sentinel.head.get(k).filterNot(v => v == null || v == Nil) shouldBe None)
+      )
+    }
+
+    // the QUERY venue of the same derivation: a projection and a predicate, on the same table
+    val projected = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id, NULLIF(CAST(raw AS BIGINT), 0) AS c FROM nullif_cast WHERE id = 1")
+        .futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 1
+      String.valueOf(scalarOf(projected.head, "c")).toDouble.toLong shouldBe 125L
+    }
+    val filtered = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id FROM nullif_cast WHERE NULLIF(CAST(raw AS BIGINT), 0) > 100")
+        .futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
+  }
+
+  /** 🔴 Issue #382's NULLIF addendum, N2 — and the half a compile error could not have caught.
+    *
+    * `arg0` was spliced RAW three times into `$arg0 == null || ($arg1 != null && $comparison) ?
+    * null : $arg0`, and `&&` / `||` / `==` all bind tighter than `?:`. `u` was the LOUD symptom
+    * (`Cannot cast null to a primitive type [boolean]`), but `w` is the reason this row exists: on
+    * the numeric arm the same re-association COMPILED and answered wrongly.
+    *
+    * {{{
+    *   NULLIF(CASE WHEN n > 1 THEN 1 ELSE 2 END, 1)
+    *     param2 ? 1 : 2 == 1 ? null : param2 ? 1 : 2      reads as  param2 ? 1 : ((2 == 1) ? …)
+    *     n = 5  ->  stored c = 1   where SQL says NULL, HTTP 200
+    * }}}
+    *
+    * ⚠️ `l` is the pre-existing shape whose BYTES moved with the repair (it gains the bound local
+    * and is evaluated once instead of twice); its values are asserted so the move is settled on a
+    * cluster and not on an emission.
+    */
+  it should "compile and run NULLIF over a function, and answer NULL where SQL says NULL (#382 N2)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_fn (
+        |  id INT,
+        |  s KEYWORD,
+        |  n BIGINT,
+        |  u KEYWORD SCRIPT AS (NULLIF(UPPER(s), 'X')),
+        |  l BIGINT SCRIPT AS (NULLIF(LENGTH(s), 2)),
+        |  w BIGINT SCRIPT AS (NULLIF(CASE WHEN n > 1 THEN 1 ELSE 2 END, 1))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO nullif_fn (id, s, n) VALUES (1, 'x', 5), (2, 'yy', 0);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val rows = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, s, u, l, w FROM nullif_fn").futureValue
+    )
+    val byId = rows.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+    withClue(s"$rows ") {
+      byId.keySet shouldBe Set(1L, 2L)
+      // id 1: UPPER('x') = 'X' equals the sentinel -> NULL; LENGTH = 1, kept
+      byId(1L).get("u").filterNot(v => v == null || v == Nil) shouldBe None
+      String.valueOf(scalarOf(byId(1L), "l")).toDouble.toLong shouldBe 1L
+      // 🔴 the SILENT one: the CASE yields 1, which IS the sentinel, so SQL says NULL. Before the
+      // repair this stored 1.
+      byId(1L).get("w").filterNot(v => v == null || v == Nil) shouldBe None
+
+      // id 2: the mirror image, so neither column can be satisfied by a script that always nulls
+      String.valueOf(scalarOf(byId(2L), "u")) shouldBe "YY"
+      byId(2L).get("l").filterNot(v => v == null || v == Nil) shouldBe None
+      String.valueOf(scalarOf(byId(2L), "w")).toDouble.toLong shouldBe 2L
+    }
+
+    // the QUERY venue of the same splice
+    val projected = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, NULLIF(UPPER(s), 'X') AS u FROM nullif_fn WHERE id = 2").futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 1
+      String.valueOf(scalarOf(projected.head, "u")) shouldBe "YY"
+    }
+  }
+
+  /** 🔴 Issue #382, the LEAD RULING of 2026-09-23 — a `NULLIF` that compares TEXT with a NUMBER is
+    * a TYPE ERROR, and the engine refuses it instead of building a script around it.
+    *
+    * Executed, because the thing being asserted is that NOTHING is deployed and NOTHING is stored.
+    * Before the ruling, the DDL form of this statement answered `200`, created the table, and then
+    * the ingest processor threw once per document -- which `ScriptProcessor.ignoreFailure` (`true`
+    * by default) swallowed, so the computed column was simply ABSENT from every document with no
+    * error anywhere. A `sql` byte pin cannot tell that story; the cluster can.
+    *
+    * ⚠️ The error is asserted, NOT a stored value: the message has to name the expression, the
+    * column and BOTH rendered types, or a future regression that merely produces some other `Left`
+    * would satisfy the row (story 21.4's lesson).
+    */
+  it should "refuse a NULLIF that compares text with a number, in every venue (#382)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_mismatch (
+        |  id INT,
+        |  s KEYWORD,
+        |  n BIGINT,
+        |  c BIGINT SCRIPT AS (NULLIF(s, 0))
+        |);""".stripMargin
+    val ddl = client.run(create).futureValue
+    withClue(s"$ddl ") {
+      ddl.isFailure shouldBe true
+      val message = String.valueOf(ddl)
+      message should include("NULLIF(s, 0)")
+      message should include("KEYWORD")
+      message should include("BIGINT")
+      message should include("Column 'c'")
+    }
+    // ...and the table it would have created does not exist, so nothing was deployed half-way
+    client.indexExists("nullif_mismatch", pattern = false) shouldBe ElasticSuccess(false)
+
+    // the QUERY venue of the same rule: a projection and a predicate over a table that DOES exist
+    Seq(
+      "SELECT id, NULLIF(s, 0) AS c FROM nullif_fn",
+      "SELECT id FROM nullif_fn WHERE ISNOTNULL(NULLIF(s, 0))"
+    ).foreach { sql =>
+      val res = client.run(sql).futureValue
+      withClue(s"[$sql] $res ") {
+        res.isFailure shouldBe true
+        val message = String.valueOf(res)
+        message should include("NULLIF(s, 0)")
+        message should include("KEYWORD")
+        message should include("BIGINT")
+      }
+    }
+
+    // 🔴 The temporal-literal edge. `NULLIF(created, '2024-01-15')` and
+    // `NULLIF(created, 'yesterday')` are BOTH a TIMESTAMP against a VARCHAR, and BOTH are refused
+    // -- but by DIFFERENT judges, which is the whole point of the row.
+    //
+    // AMENDED by the #382 review. The well-formed literal used to be ACCEPTED here, and the script
+    // it produced compared a `ZonedDateTime` with a `String` using Painless `==`: always `false`,
+    // never failing, so the NULLIF returned `created` for every document and the CREATE answered
+    // 200. Making that comparison WORK needs a `String -> temporal` coercion the engine does not
+    // have (and Elasticsearch date math has no Painless equivalent at all), so it is refused until
+    // its own story lands, and it says so rather than blaming the SQL.
+    val wellFormed = client
+      .run("""CREATE TABLE IF NOT EXISTS nullif_date (
+             |  id INT,
+             |  created DATE,
+             |  c DATE SCRIPT AS (NULLIF(created, '2024-01-15'))
+             |);""".stripMargin)
+      .futureValue
+    withClue(s"$wellFormed ") {
+      wellFormed.isFailure shouldBe true
+      val message = String.valueOf(wellFormed)
+      // the ENGINE's message: it names the two types and says what is missing
+      message should include("not supported yet")
+      message should include("TIMESTAMP")
+      message should include("VARCHAR")
+      // ...and NOT the resolver's, which would mean the literal was judged malformed
+      message should not include "as a date/time value for date field"
+    }
+    client.indexExists("nullif_date", pattern = false) shouldBe ElasticSuccess(false)
+
+    val bad = client
+      .run("""CREATE TABLE IF NOT EXISTS nullif_date_bad (
+             |  id INT,
+             |  created DATE,
+             |  c DATE SCRIPT AS (NULLIF(created, 'yesterday'))
+             |);""".stripMargin)
+      .futureValue
+    withClue(s"$bad ") {
+      bad.isFailure shouldBe true
+      val message = String.valueOf(bad)
+      // the RESOLVER's message: it names the LITERAL and the FIELD, which the type rule cannot
+      message should include("yesterday")
+      message should include("'created'")
+      message should not include "not supported yet"
+    }
+    client.indexExists("nullif_date_bad", pattern = false) shouldBe ElasticSuccess(false)
   }
 
   // ---------------------------------------------------------------------------
@@ -1727,6 +2469,19 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     * pre-existing divergence, recorded by story 21.3), so unwrap a single-element list before
     * asserting the VALUE. What matters here is the TYPE and the value, not the wrapper.
     */
+  /** A column whose value is SQL NULL, however the client surfaced it: absent from the row, a bare
+    * `null`, or Elasticsearch's per-field ARRAY wrapping of one — `script_fields` values come back
+    * wrapped on every path, so `List(null)` is the shape a null script field really takes.
+    */
+  private def isNullColumn(row: Map[String, Any], key: String): Boolean =
+    row.get(key) match {
+      case None                             => true
+      case Some(null)                       => true
+      case Some(s: Seq[_])                  => s.isEmpty || s.forall(_ == null)
+      case Some(a: java.util.Collection[_]) => a.isEmpty || a.toArray.forall(_ == null)
+      case _                                => false
+    }
+
   private def scalarOf(row: Map[String, Any], key: String): Any =
     row.getOrElse(key, fail(s"no column [$key] in $row")) match {
       case Seq(one)  => one
@@ -2521,10 +3276,25 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   it should "fail loudly at execution on a broken constant script" in {
-    // SELECT 1/0 PARSES (no local evaluation any more) and fails on ES with a script error —
-    // loud, inherited FROM-ful semantics. Message deliberately unpinned (grammar/ES-internal).
-    val res = client.run("SELECT 1/0").futureValue
-    res.isFailure shouldBe true
+    // A constant script that really is broken PARSES (no local evaluation any more) and fails on
+    // ES with a script error — loud, inherited FROM-ful semantics. Message deliberately unpinned
+    // (grammar/ES-internal).
+    //
+    // ⚠️ AMENDED by the lead's `/` ruling of 2026-09-23 (issue #382). This row used to use
+    // `SELECT 1/0`, which is no longer broken: a zero DIVISOR is NULL, in every venue, which is
+    // what `documentation/sql/operators.md` has always promised. `%` was deliberately left out of
+    // that ruling and still throws, so it carries the property this row is about — and the pair
+    // below states the asymmetry rather than hiding it.
+    client.run("SELECT 1 % 0").futureValue.isFailure shouldBe true
+
+    // ... and the ruling itself, at its smallest: a literal division by a literal zero is NULL and
+    // HTTP 200, where it used to be an `arithmetic_exception: / by zero` that failed the whole
+    // request.
+    val divided = assertQueryRows(System.nanoTime(), client.run("SELECT 1/0 AS c").futureValue)
+    withClue(s"$divided ") {
+      divided.size shouldBe 1
+      isNullColumn(divided.head, "c") shouldBe true
+    }
   }
 
   it should "keep the handshake index invisible to SHOW TABLES while it exists" in {

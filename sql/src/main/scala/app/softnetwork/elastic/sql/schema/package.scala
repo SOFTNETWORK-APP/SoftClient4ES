@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.function.{
   FunctionN,
   FunctionWithIdentifier
 }
-import app.softnetwork.elastic.sql.function.cond.Case
+import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
@@ -848,6 +848,40 @@ package object schema {
       case errors => return Left(errors.mkString("; "))
     }
 
+    // 🔴 Issue #382, the LEAD RULING of 2026-09-23 — a `NULLIF` whose two arguments RENDER types
+    // SQL does not compare is a TYPE ERROR, and it is refused HERE for the same two reasons the
+    // temporal check above is: it needs the RESOLVED table (at parse time every column is `Any`,
+    // which matches everything, so `NULLIF(s, 0)` is indistinguishable from `NULLIF(n, 0)`), and
+    // it needs no reference POPULATION, so it sits ABOVE the `isRegular` carve-out -- a
+    // materialized VIEW's computed column is a regular script, and is refused too.
+    //
+    // ⚠️ `filterNot(_.materialized)` below is NOT that carve-out and does not contradict it: a
+    // `materialized` (`STORED`) script EMITS NOTHING -- `Column.processors` is
+    // `script.filterNot(_.materialized)` -- so there is no Painless for this rule to be right or
+    // wrong about. `STORED` and "materialized view" are different things, and a reviewer read the
+    // two as one, so they are spelled apart here.
+    //
+    // Without it the emitted script fails PER DOCUMENT, and `ScriptProcessor.ignoreFailure`
+    // defaults to `true` in a computed column, so the failure is SWALLOWED and the column simply
+    // DISAPPEARS: HTTP 200 over a document missing the value it asked for. See
+    // `NullIf.typeMismatchError` for the three arms and what each one does wrong.
+    def nullIfErrors(column: Column): Seq[String] =
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.validationExpr)
+        .flatMap {
+          case chain: FunctionChain => NullIf.mismatchesOf(chain)
+          case _                    => Nil
+        }
+        .map(reason => s"Column '${column.path}': $reason") ++
+      column.multiFields.flatMap(nullIfErrors)
+
+    schema.columns.flatMap(nullIfErrors).distinct match {
+      case Nil    =>
+      case errors => return Left(errors.mkString("; "))
+    }
+
     if (!schema.isRegular) return Right(())
 
     def columnErrors(column: Column): Seq[String] =
@@ -960,6 +994,37 @@ package object schema {
 
     def assign(column: String, expression: String): String = s"${reference(column)} = $expression"
 
+    /** An ingest script, assembled from the two halves its producer ALREADY HOLDS: the PROLOGUE the
+      * `PainlessContext` accumulated and the EXPRESSION the script rendered (issue #382).
+      *
+      * 🔴 It used to be re-derived: `fromScript` concatenated the two, split the result on `;` and
+      * called the last part the expression. That works only while the expression is `;`-free, and a
+      * `TRY_CAST` renders a `try`/`catch` STATEMENT, so the assignment landed INSIDE the `catch`
+      * with no right-hand side — `... catch (Exception e) { return null; ctx.c = }`, which
+      * Elasticsearch rejects, so `TRY_CAST` in a computed column had never worked. The literal half
+      * of the same re-derivation was #373/#375. The cure for both is not a smarter scanner: it is
+      * to stop throwing the boundary away and then hunting for it.
+      *
+      * 🔴 BYTE-PRESERVING, and that is a CONTRACT, not a nicety. `ScriptProcessor.source` is
+      * persisted in `_meta` and `IngestPipeline.diff` compares it, so a gratuitous byte move
+      * reports every such processor as changed on the next ALTER (the 21.8 Part F churn family).
+      * The old assembly emitted `<prologue up to its last `;`> ctx.<c> = <expr>` with a prologue,
+      * and a LEADING SPACE — `" ctx.c = …"` — without one. One rule reproduces both: trim the
+      * prologue's trailing whitespace, then join with exactly one space. Trimming rather than
+      * relying on the trailing space every declaration happens to carry also keeps the output
+      * well-formed if one ever forgets it. Pinned in `ScriptProcessorAssemblySpec` ("exactly as
+      * before").
+      */
+    def assemble(prologue: String, expression: String, column: String): String =
+      s"${trimRight(prologue)} ${assign(column, expression.trim)}"
+
+    /** `String.stripTrailing`, which is JDK 11+ and this build targets 8. */
+    private def trimRight(s: String): String = {
+      var end = s.length
+      while (end > 0 && s.charAt(end - 1).isWhitespace) end -= 1
+      s.substring(0, end)
+    }
+
     /** The LAST `ctx.<column> = …` in `source`, which is the one `assign` appended.
       *
       * Greedy on purpose: every statement before it is a `def paramN = …` preamble, and those read
@@ -978,7 +1043,44 @@ package object schema {
         case _                  => None
       }
 
-    private val Assignment = """(?s).*(?:^|;)\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
+    /** 🔴 The separator set is "a STATEMENT boundary", not "a `;`" (issue #382). A prologue entry
+      * may be a BLOCK — the hoisted `try { … } catch (Exception e) {} ` a safe cast declares — and
+      * a block statement needs no `;` after it, so the assignment that follows one is preceded by
+      * `} `. With `;` alone `of` answered `None` for every `TRY_CAST` computed column, which is not
+      * cosmetic: `IngestPipeline.diff` keys a processor by this, and an unreadable identity falls
+      * back to a content-addressed one — the ALTER churn family (21.8 Part F). Found by the
+      * round-trip assertion in `ScriptProcessorAssemblySpec`, which is why `assign` and `of` are
+      * asserted together rather than each on its own.
+      */
+    private val Assignment = """(?s).*(?:^|;|\})\s*ctx\.([A-Za-z0-9_.]+)\s*=[^=].*""".r
+  }
+
+  /** The PUBLISHED entry point to the ingest-script assembly, for a caller outside this package
+    * that renders its own Painless into a `PainlessContext(Processor)` and must produce the same
+    * processor source (issue #382).
+    *
+    * 🔴 Deliberately a façade over ONE method rather than a widening of [[ScriptTarget]].
+    * `reference` / `assign` / `of` are an internal round-trip contract that `Column.update` and
+    * `IngestPipeline.diff` also depend on; publishing the object would publish all of it and invite
+    * a fourth derivation of "which column does this script feed". The derivation stays in
+    * `ScriptTarget`, beside `assign` and `of`, which is what keeps writing and reading in step.
+    *
+    * The known caller is `softclient4es-extensions`' materialized-view enrichment (`RequiredField`
+    * / `FieldAnalyzer`), which carried a THIRD copy of the assembly — a raw `split(";")`, so it
+    * inherited BOTH the #373 literal defect and this block one.
+    */
+  object IngestScript {
+
+    /** @param prologue
+      *   the rendered `PainlessContext` — the `def …;` declarations, possibly empty
+      * @param expression
+      *   the rendered script body, which must be an EXPRESSION (see
+      *   `PainlessOperandForm.placeable`)
+      * @param column
+      *   the computed column the script feeds
+      */
+    def assemble(prologue: String, expression: String, column: String): String =
+      ScriptTarget.assemble(prologue, expression, column)
   }
 
   object ScriptProcessor {
@@ -990,17 +1092,22 @@ package object schema {
       materialized: Boolean = false
     ): ScriptProcessor = {
       val ctx = PainlessContext(PainlessContextType.Processor)
-      val scr = script.painless(Some(ctx))
-      val painless = s"$ctx$scr"
-      val source = PainlessOperandForm.splitStatements(painless) match {
-        case Array(single) if single.trim.startsWith("return ") =>
-          val stripped = single.trim.stripPrefix("return ").trim
-          ScriptTarget.assign(column, stripped)
-        case parts =>
-          val last = parts.last.trim
-          val updated = parts.dropRight(1) :+ s" ${ScriptTarget.assign(column, last)}"
-          updated.mkString(";")
-      }
+      // 🔴 The body is rendered FIRST and bound: rendering is what REGISTERS the parameters and the
+      // hoisted locals, so `ctx` is only complete afterwards. An inline `s"$ctx${script.painless…}"`
+      // would print an EMPTY prologue (the same trap `PainlessResidualsSpec.fieldOf` records).
+      val expression = script.painless(Some(ctx))
+      val prologue = ctx.toString
+      // 🔴 The old assembly had a `case Array(single) if single.trim.startsWith("return ")` arm
+      // that stripped a leading `return `. It is gone because it was DEAD, and #293's lesson is
+      // that a dead branch beside a live one is worse than no branch (issue #382):
+      //
+      //   - `sql/src/main` contains exactly ONE emitter of the text `return ` — the safe cast's
+      //     `catch (Exception e) { return null; }` — and that is the CONTEXT-FREE arm;
+      //   - `fromScript` always supplies a context, so that arm is unreachable from here, and in
+      //     any case the token is in the middle of the rendering rather than at its start;
+      //   - `ScriptProcessorAssemblySpec`'s sweep asserts the property rather than the reasoning:
+      //     no assembled source contains `return ` at all.
+      val source = ScriptTarget.assemble(prologue, expression, column)
       ScriptProcessor(
         pipelineType = pipelineType,
         script = script.sql,
@@ -1346,8 +1453,81 @@ package object schema {
       def key(p: IngestProcessor) =
         s"${p.pipelineType.name}-${p.processorType.name}-${identity(p)}"
 
-      val desiredMap = desired.map(p => key(p) -> p).toMap
-      val actualMap = actual.map(p => key(p) -> p).toMap
+      /** 🔴 `Seq.toMap` DROPS the loser of a key collision, and the loser is a REAL processor: the
+        * whole diff for it vanishes and the ALTER silently applies fewer changes than were asked
+        * for (issue #382, F3, found by independent review).
+        *
+        * Two processors can share a key. A GENERATED script processor for column `c` sits beside a
+        * hand-authored `ALTER PIPELINE … ADD PROCESSOR SCRIPT(… ctx.c = 2)`, and `identity`
+        * recovers `c` from both -- correctly, since both really do assign that column. Issue #382
+        * ENLARGED the population by widening the boundary set with `}`, so a foreign source whose
+        * assignment follows a block now recovers an identity where it used to fall back to the
+        * anonymous one; the CLASS pre-existed (a foreign source ending `…; ctx.c = 2` collided
+        * before #382 too), so the repair is here, where the drop happens, rather than in the
+        * boundary set -- and it closes the pre-existing half with it.
+        *
+        * 🔴 THE FALLBACK IS `p.column`, and the asymmetry is the whole design. Disambiguating a
+        * colliding group by CONTENT looked right and is WRONG: only ONE side collides, so the
+        * generated processor gained a suffix on the actual side that its unchanged counterpart on
+        * the desired side did not, and a change became an add plus two removals (measured). A
+        * colliding member falls back instead to the identity it had BEFORE the recovery --
+        * `p.column`, which is the real column for a processor this codebase wrote and is already
+        * content-addressed (`anonymous_<hash>`) for one it did not. Both sides derive it the same
+        * way, and a side with no collision derives nothing at all, so an unchanged pair still
+        * MATCHES.
+        *
+        * ⚠️ Keys that do not collide are untouched, so this is a no-op for every pipeline nobody
+        * has hand-edited -- and the 21.8 Part F round trip stays an identity.
+        *
+        * ⚠️ RECORDED BOUNDARY: on Elasticsearch 6.8 a stored processor has no `description`, so the
+        * GENERATED one reads back anonymous too and its fallback is a content hash rather than `c`.
+        * A collision on 6.8 therefore still churns (remove + add) rather than reporting a change.
+        * It no longer DROPS anything, which is what this repair is for; telling the two apart on
+        * 6.8 would need content matching, which is a heuristic and a lead call.
+        */
+      def keyed(ps: Seq[IngestProcessor]): Map[String, IngestProcessor] = {
+        def prefixed(id: String, p: IngestProcessor): String =
+          s"${p.pipelineType.name}-${p.processorType.name}-$id"
+        def collidingKeys(in: Seq[(String, IngestProcessor)]): Set[String] =
+          in.groupBy(_._1).collect { case (k, group) if group.size > 1 => k }.toSet
+
+        val recovered = ps.map(p => key(p) -> p)
+        val colliding = collidingKeys(recovered)
+        // 🔴 The fallback may land on a key a NON-colliding processor already holds, and that one
+        // must keep it (issue #382, found by review). With `A`(column x, source recovers c),
+        // `B`(column c, recovers c) and `C`(column x, recovers x), `A`'s fallback is `…-x`, which
+        // is `C`'s untouched key: the residual ordinal below then renamed BOTH to `…-x#0`/`#1`, so
+        // `C` -- unchanged, and still plain `…-x` on the other side, where nothing collides --
+        // stopped matching and was reported Removed + Added. Reserving the keys nobody had to
+        // derive keeps the promise three lines down true: a side with no collision derives nothing.
+        val reserved = recovered.collect { case (k, _) if !colliding.contains(k) => k }.toSet
+        val resolved = recovered.map { case (k, p) =>
+          val fallback = prefixed(p.column, p)
+          (if (colliding.contains(k)) {
+             if (reserved.contains(fallback)) s"$fallback~" else fallback
+           } else k) -> p
+        }
+        // ... and if the fallback ITSELF collides -- two script processors on ONE declared column,
+        // the residual 21.8 Part F left open -- a deterministic content ordinal, so that nothing
+        // is ever silently dropped even there.
+        val residual = collidingKeys(resolved)
+        resolved
+          .groupBy(_._1)
+          .toSeq
+          .flatMap {
+            case (k, group) if residual.contains(k) =>
+              group
+                .map(_._2)
+                .sortBy(p => mapper.writeValueAsString(p.node))
+                .zipWithIndex
+                .map { case (p, i) => s"$k#$i" -> p }
+            case (k, group) => Seq(k -> group.head._2)
+          }
+          .toMap
+      }
+
+      val desiredMap = keyed(desired)
+      val actualMap = keyed(actual)
 
       val diffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
 

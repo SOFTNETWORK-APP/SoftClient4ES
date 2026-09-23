@@ -208,7 +208,9 @@ SELECT width * height AS area FROM rectangles;
 ### Operator: `/`
 
 **Description:**  
-Division; division by zero must be guarded (using NULLIF). Engine returns NULL for invalid arithmetic.
+Division. **`/` always yields a floating-point (DOUBLE) result**, whatever its operands are — the
+result type is a property of the operator, not of its arguments. **A zero divisor yields NULL**; no
+guard of your own is required.
 
 **Syntax:**
 ```sql
@@ -219,7 +221,7 @@ expr1 / expr2
 - `expr1`, `expr2` - Numeric expressions
 
 **Output:**
-- Numeric type (NULL if division by zero)
+- `DOUBLE`, always (NULL if the divisor is zero)
 
 **Examples:**
 
@@ -227,65 +229,133 @@ expr1 / expr2
 ```sql
 -- Divide two numbers
 SELECT 10 / 2 AS result;
--- Result: 5
-
--- Calculate average
-SELECT total / NULLIF(count, 0) AS avg FROM table;
+-- Result: 5.0
 
 -- Per-unit price
 SELECT total_price / quantity AS unit_price
 FROM order_items;
+
+-- Average, with no guard of your own: a zero divisor is NULL
+SELECT total / order_count AS ratio FROM statistics;
 ```
 
-**Integer vs Float Division:**
+**Division is always decimal:**
 ```sql
--- Integer division (truncates)
+-- two integers still divide as decimals
 SELECT 10 / 3 AS result;
--- Result: 3 (if both are integers)
+-- Result: 3.3333333333333335
 
--- Float division
-SELECT 10.0 / 3 AS result;
--- Result: 3.333...
+-- ... including two INTEGER columns
+SELECT n / m AS result FROM t;   -- n = 7, m = 2  ->  3.5
 
--- Force float division
-SELECT CAST(10 AS DOUBLE) / 3 AS result;
--- Result: 3.333...
+-- a decimal operand changes nothing, and neither does a cast
+SELECT 10.0 / 3 AS result;                 -- 3.333...
+SELECT CAST(10 AS DOUBLE) / 3 AS result;   -- 3.333...
 ```
 
-**Division by Zero Protection:**
+> **`/` decides its own result type — an engine decision, since `0.24.0`.**
+>
+> A division of numbers is **floating-point whatever its operands are**. Two `INTEGER` columns
+> divide as decimals, and so do two integer literals:
+>
+> ```sql
+> -- n INTEGER = 7, m INTEGER = 2, price DOUBLE = 5.0
+> SELECT n / m AS c FROM t;                        -- 3.5   (was 3 before 0.24.0)
+> SELECT 10 / 3 AS c;                              -- 3.333 (was 3)
+> SELECT CAST(price AS INTEGER) / 2 AS c FROM t;   -- 2.5   (the cast narrows the OPERAND to 5,
+>                                                  --        it does not make the division integral)
+> ```
+>
+> **Where this puts us.** `/` is always-decimal in **MySQL**, **DuckDB** and most analytics engines;
+> **PostgreSQL** is the outlier that truncates when both operands are integers. We follow MySQL and
+> DuckDB, and the reason is not taste: a query containing a **JOIN** evaluates its SELECT-list
+> expressions in DuckDB, so before `0.24.0` the same `n / m` answered `3` without a JOIN and `3.5`
+> with one. The two paths now agree.
+>
+> **A computed column declared `DOUBLE` now stores a double.**
+> `CREATE TABLE u (n INTEGER, m INTEGER, c DOUBLE SCRIPT AS (n / m))` stored `3.0` for 7/2 before
+> `0.24.0`; it stores `3.5`.
+>
+> ⚠️ **There is no truncating-division operator, and no single expression that produces one.**
+> Other engines spell truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither — and the
+> obvious rewrites are **parse errors**, because an arithmetic expression is not accepted as the
+> operand of a function, of a `CAST` or of a `CASE` branch:
+>
+> ```sql
+> CAST(a / b AS INTEGER)     CAST(a + b AS INTEGER)     CAST((a / b) AS INTEGER)   -- ✗ rejected
+> FLOOR(a / b)               ABS(a / b)                 COALESCE(a / b, 0)         -- ✗ rejected
+> FLOOR(x)                   a / NULLIF(b, 0)                                      -- ✓ accepted
+> ```
+>
+> The rule is **directional**: `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is fine. It is
+> not specific to division — any arithmetic operand is refused — and parenthesising does not help.
+> To get an integral quotient today, compute it into a column and cast **that** column:
+>
+> ```sql
+> CREATE TABLE t (n INTEGER, m INTEGER, q DOUBLE SCRIPT AS (n / m));
+> SELECT CAST(q AS INTEGER) AS whole FROM t;   -- 3 for 7 / 2, truncated toward zero
+> ```
+>
+> `%` (MOD) is unaffected by this rule and keeps deriving its type from its operands — see the `%`
+> section below, including what it does with a zero divisor.
+
+**Division by Zero:**
+
+Since `0.24.0` the engine handles it for you: **a zero divisor yields NULL** — verified on real
+Elasticsearch in a projection, in a predicate and in a computed column (an ingest pipeline).
+
+> ⚠️ **Aggregations are not covered by that verification.** A division of two aggregates
+> (`SUM(a) / SUM(b)`, `HAVING SUM(a) / SUM(b) > 1`) is rendered as an Elasticsearch
+> `bucket_script` / `bucket_selector`, which is a different execution context and has not been
+> tested against a zero divisor. Guard it in SQL if a bucket can have a zero denominator.
+
 ```sql
--- Using NULLIF (recommended)
-SELECT total / NULLIF(count, 0) AS avg
-FROM statistics;
--- Returns NULL if count = 0
-
--- Using CASE
-SELECT 
-  CASE 
-    WHEN count != 0 THEN total / count 
-    ELSE 0 
-  END AS avg
-FROM statistics;
-
--- Using COALESCE for default
-SELECT COALESCE(total / NULLIF(count, 0), 0) AS avg
-FROM statistics;
+-- no guard needed
+SELECT total / order_count AS ratio FROM statistics;   -- NULL where order_count = 0
 ```
 
-**Practical Examples:**
+Before `0.24.0` none of that was NULL, and the failure depended on the operand types: integer
+division **threw** (a search answered HTTP 400 `arithmetic_exception: / by zero`, and an ingest
+pipeline silently left the computed column out of the document), while floating division produced
+`Infinity` — which Elasticsearch refuses to index, so **the whole document was rejected**.
+
+> ⚠️ **Two limitations to know about, both of them older than this rule and neither of them fixed
+> by it:**
+>
+> - **`ORDER BY <arithmetic>` over nullable columns fails.** A script sort is typed `number`, and
+>   Elasticsearch rejects a sort script that can return null — which any arithmetic over a nullable
+>   column can, whether from a missing value or from a zero divisor. Measured identically before and
+>   after `0.24.0`. Sort by a plain column, or by a computed column.
+> - **`NULLIF` inside a division fails on exactly the rows it protects.**
+>   `total / NULLIF(order_count, 0)` throws a `null_pointer_exception` in a search on any row where
+>   `order_count = 0`, and silently drops the computed column in an ingest pipeline. Measured
+>   identically before and after `0.24.0`. **Since `0.24.0` you do not need it for division: write
+>   `total / order_count`.**
+
+⚠️ **Corrected in `0.24.0`: the other guards this page used to recommend do not parse.** As above,
+an arithmetic expression is not accepted as the operand of a function, of a `CAST` or of a `CASE`
+branch, so all three of these are **parse errors**, not slower alternatives — they were published
+in error and are measured rejections today:
+
 ```sql
--- Calculate percentage
-SELECT (passed / NULLIF(total, 0)) * 100 AS pass_rate
-FROM exam_results;
+-- ✗ parse error: "')' expected but '/' found"
+SELECT COALESCE(total / NULLIF(order_count, 0), 0) AS ratio FROM statistics;
 
--- Average order value
-SELECT 
-  SUM(total) / NULLIF(COUNT(*), 0) AS avg_order_value
-FROM orders;
+-- ✗ parse error: "'END' expected but '/' found"
+SELECT CASE WHEN order_count != 0 THEN total / order_count ELSE 0 END AS ratio FROM statistics;
 
--- Split cost
-SELECT total_cost / NULLIF(num_people, 0) AS cost_per_person
-FROM expenses;
+-- ✗ parse error: "')' expected but '/' found" -- an arithmetic operand inside a function
+SELECT FLOOR(total / order_count) AS whole FROM statistics;
+```
+
+Write the division on its own instead, and let the engine return NULL:
+
+```sql
+-- ✓ percentage, with the zero case NULL
+SELECT passed / total * 100 AS pass_rate FROM exam_results;
+
+-- ✓ split cost
+SELECT total_cost / num_people AS cost_per_person FROM expenses;
 ```
 
 ---
@@ -293,7 +363,8 @@ FROM expenses;
 ### Operator: `%` (MOD)
 
 **Description:**  
-Remainder/modulo operator.
+Remainder/modulo operator. Unlike `/`, `%` takes its result type from its **operands** — two
+integers give an integer.
 
 **Syntax:**
 ```sql
@@ -305,6 +376,27 @@ expr1 % expr2
 
 **Output:**
 - Integer (remainder of division)
+
+> ⚠️ **A zero divisor is NOT guarded for `%`.** The `0.24.0` rule that turns `a / 0` into NULL
+> covers `/` only, and `%` has two distinct failures:
+>
+> - **integer operands** — `a % 0` throws. A search fails with HTTP 400
+>   `arithmetic_exception: / by zero`; in a computed column the ingest processor's
+>   `ignore_failure` swallows it and the column is simply **absent** from the indexed document.
+> - **floating operands** — `a % 0` is `NaN`, and Elasticsearch refuses to index a non-finite
+>   number, so **the whole document is rejected** (`document_parsing_exception: [double] supports
+>   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix, and
+>   it is still open for `%`.
+>
+> ⚠️ **There is no in-expression way to guard it.** `CASE WHEN b != 0 THEN a % b END`,
+> `COALESCE(a % b, 0)` and `FLOOR(a % b)` are all **parse errors** — an arithmetic expression is
+> not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see the note under
+> `/` above; the restriction is not specific to division). And `a % NULLIF(b, 0)` parses but then
+> throws `null_pointer_exception` on exactly the rows the guard is for, exactly as it does for
+> division.
+>
+> Until `%` is covered, keep a zero divisor out of the data — filter it in `WHERE`
+> (`WHERE b <> 0`), or compute the remainder into its own column from an already-filtered index.
 
 **Examples:**
 
@@ -1803,8 +1895,8 @@ WHERE event_time::TIMESTAMP >= '2025-01-10 00:00:00'::TIMESTAMP;
 
 **In Calculations:**
 ```sql
--- Force float division
-SELECT total::DOUBLE / count::DOUBLE AS average
+-- A cast is no longer needed to make a division float -- `/` always is (since 0.24.0)
+SELECT total / order_count AS average
 FROM statistics;
 
 -- Cast for arithmetic

@@ -67,7 +67,8 @@ object EmissionCostProbe {
       Column("other", SQLTypes.Keyword),
       Column("num", SQLTypes.Keyword),
       Column("amount", SQLTypes.Double),
-      Column("n", SQLTypes.Int)
+      Column("n", SQLTypes.Int),
+      Column("m", SQLTypes.Int)
     )
   )
 
@@ -87,14 +88,25 @@ object EmissionCostProbe {
     "expression function (DATE_FORMAT)" -> "SELECT id FROM t WHERE DATE_FORMAT(d, 'yyyy') = '2025'",
     "expression function (LAST_DAY)" ->
     "SELECT id FROM t WHERE LAST_DAY(d) = CAST('2025-01-31' AS DATE)",
-    "conversion (CAST)"       -> "SELECT id FROM t WHERE CAST(num AS INT) = 9",
-    "conversion (TRY_CAST)"   -> "SELECT id FROM t WHERE TRY_CAST(num AS INT) = 9",
-    "conditional (ISNULL)"    -> "SELECT id FROM t WHERE ISNULL(name) = true",
+    "conversion (CAST)"     -> "SELECT id FROM t WHERE CAST(num AS INT) = 9",
+    "conversion (TRY_CAST)" -> "SELECT id FROM t WHERE TRY_CAST(num AS INT) = 9",
+    "conditional (ISNULL)"  -> "SELECT id FROM t WHERE ISNULL(name) = true",
+    // #382: NULLIF binds a COMPOUND argument to a prologue local, so the two argument forms are
+    // separate shapes -- a name (bound by nothing) and a rendering that has to be hoisted.
+    "conditional (NULLIF, cast)" -> "SELECT id FROM t WHERE NULLIF(CAST(num AS BIGINT), 0) > 1",
+    "conditional (NULLIF, function)" ->
+    "SELECT id FROM t WHERE NULLIF(UPPER(name), 'X') = 'A'",
     "string function (UPPER)" -> "SELECT id FROM t WHERE UPPER(name) = 'A'",
     "math function (ABS)"     -> "SELECT id FROM t WHERE ABS(amount) > 10",
-    "IN, numeric"             -> "SELECT id FROM t WHERE CAST(num AS BIGINT) IN (9, 12)",
-    "IN, strings"             -> "SELECT id FROM t WHERE UPPER(name) IN ('A', 'B')",
-    "both sides"              -> "SELECT id FROM t WHERE YEAR(d) = YEAR(ts)",
+    // #382, the `/` ruling: a division now derives a DOUBLE target, may widen an operand and may
+    // carry a zero-divisor guard. The two forms cost differently -- a column divisor cannot be
+    // proved non-zero and gets the guard, a non-zero literal divisor is proved and gets none -- so
+    // both are timed rather than one standing for the other.
+    "division, two integer columns" -> "SELECT id FROM t WHERE n / m > 1",
+    "division, literal divisor"     -> "SELECT id FROM t WHERE amount / 2 > 1",
+    "IN, numeric"                   -> "SELECT id FROM t WHERE CAST(num AS BIGINT) IN (9, 12)",
+    "IN, strings"                   -> "SELECT id FROM t WHERE UPPER(name) IN ('A', 'B')",
+    "both sides"                    -> "SELECT id FROM t WHERE YEAR(d) = YEAR(ts)",
     "composite AND/OR" ->
     "SELECT id FROM t WHERE WEEKDAY(d) = 0 AND UPPER(name) = 'A' OR ABS(amount) > 10"
   )

@@ -264,13 +264,20 @@ FROM products
 -- Converts 0 prices to NULL
 ```
 
-**3. Avoid division by zero:**
+**3. Avoid division by zero — no longer needed, and measured not to work:**
 ```sql
+-- ⚠️ Since 0.24.0 the engine returns NULL for a zero divisor by itself, so write this:
 SELECT 
-  total_sales / NULLIF(total_orders, 0) AS avg_order_value
+  total_sales / total_orders AS avg_order_value
 FROM sales_summary
--- Returns NULL instead of error when total_orders = 0
+-- NULL on the rows where total_orders = 0
 ```
+
+> ⚠️ `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — throws a
+> `null_pointer_exception` in a search on exactly the rows where `total_orders = 0`, and silently
+> drops the computed column in an ingest pipeline. Measured on real Elasticsearch, identically
+> before and after `0.24.0`. `NULLIF` remains correct everywhere else; see the
+> [`/` operator](operators.md) for the division rule.
 
 **4. Clean data:**
 ```sql
@@ -280,6 +287,52 @@ SELECT
 FROM products
 -- Converts empty strings to NULL after trimming
 ```
+
+**Notes**
+
+- The comparison follows what each argument **renders**, not the type of the column it came from.
+  `NULLIF(CAST(zip_code AS BIGINT), 0)` compares two numbers even though `zip_code` is a `KEYWORD`.
+  Before **0.24.0** it was compared as text and the generated script was rejected by Elasticsearch
+  wherever it appeared — a computed column, a projection or a `WHERE`. A function argument is
+  evaluated once from 0.24.0 as well; `NULLIF(UPPER(name), 'X')` used to call `UPPER` three times,
+  and a `CASE` as the first argument could return the wrong value.
+- The two arguments must be **comparable**, and from **0.24.0** the engine says so itself. Two
+  arguments are comparable when both render text, both render a temporal type, both render a
+  number, both render a boolean, or one of them is NULL or a column whose type is not known. Any
+  other pair is refused, because the engine has no way to compare them: `NULLIF(status, 0)` is
+  refused with
+
+  ```
+  NULLIF(status, 0) compares KEYWORD with BIGINT: NULLIF requires two arguments of comparable
+  types, so cast one of them
+  ```
+
+  — at `CREATE TABLE` / `ALTER TABLE … SET SCRIPT AS` for a computed column, and before the query
+  is sent for a projection or a `WHERE`. Earlier versions built a script around the mismatch
+  instead: in a query Elasticsearch rejected it, and in a computed column the ingest processor's
+  `ignore_failure` swallowed the failure, so **the column was simply missing from every document**
+  and the `CREATE TABLE` still answered `200`. Write the comparison in the type you mean:
+  `NULLIF(status, '0')` or `NULLIF(CAST(status AS BIGINT), 0)`.
+
+  A cast can *create* the mismatch as well as cure it: `NULLIF(CAST(qty AS KEYWORD), 0)` renders
+  text against a number and is refused, even though `qty` is numeric.
+
+  The same rule refuses a **date against a number** (`NULLIF(created_at, 0)`) and a **boolean
+  against anything but a boolean** (`NULLIF(is_active, 0)`). Before **0.24.0** these were accepted
+  and compared with Painless `==`, which answers `false` for a date against a number without ever
+  failing — so the `NULLIF` returned its first argument for every row and the query answered `200`
+  with the wrong values. If you relied on one of these, write the comparison in the type you mean.
+
+- A **string literal against a `date` column** is refused, and the message depends on the literal.
+  A malformed one is named as such — `NULLIF(created_at, 'yesterday')` reports that `'yesterday'`
+  is not a date for that field's format, checked against the column's mapping exactly as a `WHERE`
+  comparison is. A **well-formed** one — `NULLIF(created_at, '2024-01-15')` — is refused too, with
+  a message saying the comparison is not supported yet: the engine cannot turn a string into a
+  temporal value inside a script, so accepting it would mean comparing a date with a string, which
+  silently never matches. Cast the literal instead:
+  `NULLIF(created_at, CAST('2024-01-15' AS DATE))`.
+- `expr2` being NULL is not a match: SQL says the comparison is then UNKNOWN, so the answer is
+  `expr1`, not NULL.
 
 ---
 
