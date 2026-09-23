@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.function.{
   FunctionN,
   FunctionWithIdentifier
 }
-import app.softnetwork.elastic.sql.function.cond.Case
+import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
@@ -844,6 +844,34 @@ package object schema {
       column.multiFields.flatMap(temporalErrors)
 
     schema.columns.flatMap(temporalErrors).distinct match {
+      case Nil    =>
+      case errors => return Left(errors.mkString("; "))
+    }
+
+    // 🔴 Issue #382, the LEAD RULING of 2026-09-23 — a `NULLIF` whose two arguments RENDER types
+    // SQL does not compare is a TYPE ERROR, and it is refused HERE for the same two reasons the
+    // temporal check above is: it needs the RESOLVED table (at parse time every column is `Any`,
+    // which matches everything, so `NULLIF(s, 0)` is indistinguishable from `NULLIF(n, 0)`), and
+    // it needs no reference POPULATION, so it sits ABOVE the `isRegular` carve-out -- a
+    // materialized view's computed column is refused too.
+    //
+    // Without it the emitted script fails PER DOCUMENT, and `ScriptProcessor.ignoreFailure`
+    // defaults to `true` in a computed column, so the failure is SWALLOWED and the column simply
+    // DISAPPEARS: HTTP 200 over a document missing the value it asked for. See
+    // `NullIf.typeMismatchError` for the three arms and what each one does wrong.
+    def nullIfErrors(column: Column): Seq[String] =
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.validationExpr)
+        .flatMap {
+          case chain: FunctionChain => NullIf.mismatchesOf(chain)
+          case _                    => Nil
+        }
+        .map(reason => s"Column '${column.path}': $reason") ++
+      column.multiFields.flatMap(nullIfErrors)
+
+    schema.columns.flatMap(nullIfErrors).distinct match {
       case Nil    =>
       case errors => return Left(errors.mkString("; "))
     }

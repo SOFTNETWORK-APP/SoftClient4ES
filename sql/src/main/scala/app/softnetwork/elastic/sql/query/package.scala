@@ -34,8 +34,8 @@ import app.softnetwork.elastic.sql.schema.{
   Table => Schema,
   TableType
 }
-import app.softnetwork.elastic.sql.function.FunctionUtils
-import app.softnetwork.elastic.sql.function.cond.Case
+import app.softnetwork.elastic.sql.function.{FunctionChain, FunctionUtils}
+import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -847,14 +847,29 @@ package object query {
       * measured, and each one names the shape it refuses.
       */
     def validateResolved(): Either[String, Unit] =
-      (where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
-        select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
-        orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
-        groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
-        .flatMap(_.temporalComparisonErrors)
-        .headOption
+      ((where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
+      select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
+      orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
+      groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
+        .flatMap(_.temporalComparisonErrors) ++
+        scriptedExpressions.flatMap(NullIf.mismatchesOf)).headOption
         .map(Left(_))
         .getOrElse(Right(()))
+
+    /** Every expression of this statement that can be emitted as Painless, as the chain it is.
+      *
+      * The SELECT list, both operands of every WHERE / HAVING criterion (`referencedIdentifiers`,
+      * which is what carries `NULLIF(a, b) > 1`'s left side), every ORDER BY sort and every GROUP
+      * BY bucket -- the SAME surface the temporal rule above walks, so a rule added to one cannot
+      * quietly cover less ground than the other. A WHERE subquery's own body is NOT walked: it
+      * crosses the resolution seam as a statement of its own (story 22.2).
+      */
+    private def scriptedExpressions: Seq[FunctionChain] =
+      select.fields.map(_.identifier) ++
+      (where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq)
+        .flatMap(_.referencedIdentifiers) ++
+      orderBy.toSeq.flatMap(_.sorts.map(_.field)) ++
+      groupBy.toSeq.flatMap(_.buckets.map(_.identifier))
 
     override def validate(): Either[String, Unit] = {
       for {

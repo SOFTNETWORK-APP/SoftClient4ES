@@ -19,11 +19,13 @@ package app.softnetwork.elastic.sql.function
 import app.softnetwork.elastic.sql.{
   query,
   Expr,
+  GenericIdentifier,
   Identifier,
   LiteralParam,
   PainlessContext,
   PainlessOperandForm,
   PainlessScript,
+  StringValue,
   TokenRegex,
   Updateable
 }
@@ -34,10 +36,17 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTemporal,
   SQLType,
   SQLTypeUtils,
-  SQLTypes
+  SQLTypes,
+  SQLVarchar
 }
 import app.softnetwork.elastic.sql.parser.Validator
-import app.softnetwork.elastic.sql.query.{Criteria, CriteriaWithConditionalFunction, Expression}
+import app.softnetwork.elastic.sql.schema.Column
+import app.softnetwork.elastic.sql.query.{
+  Criteria,
+  CriteriaWithConditionalFunction,
+  Expression,
+  TemporalLiterals
+}
 
 package object cond {
 
@@ -48,7 +57,22 @@ package object cond {
   case object Coalesce extends Expr("COALESCE") with ConditionalOp
   case object IsNull extends Expr("ISNULL") with ConditionalOp
   case object IsNotNull extends Expr("ISNOTNULL") with ConditionalOp
-  case object NullIf extends Expr("NULLIF") with ConditionalOp
+  case object NullIf extends Expr("NULLIF") with ConditionalOp {
+
+    /** Every `NULLIF` in an operand's chain whose two arguments do not RENDER comparable types, as
+      * the rejection each one earns (issue #382).
+      *
+      * 🔴 Asked of a SCHEMA-RESOLVED expression and of nothing else, for the same reason
+      * [[Case.conditionsOf]] 's consumer is: without a schema a bare column's type is `Any`, which
+      * matches everything, so `NULLIF(s, 0)` is indistinguishable at parse time from a legal
+      * `NULLIF(n, 0)`. `NullIf.validate()` runs there and cannot see it.
+      *
+      * ONE walk, [[functionsOf]], shared with `Case` -- a `NULLIF` nested in another `NULLIF`'s
+      * argument, in a `CASE` branch or under `ABS(...)` is the same `NULLIF`.
+      */
+    def mismatchesOf(chain: FunctionChain): Seq[String] =
+      functionsOf(chain).collect { case n: NullIf => n }.flatMap(_.typeMismatchError)
+  }
   case object Greatest extends Expr("GREATEST") with ConditionalOp
   case object Least extends Expr("LEAST") with ConditionalOp
 
@@ -66,49 +90,58 @@ package object cond {
       * results and the ELSE), so they are unreachable through the chain and have to be read off
       * `conditions` -- which is exactly why nothing had ever looked at them.
       */
-    def conditionsOf(chain: FunctionChain): Seq[Criteria] = {
-      // 🔴 ARGUMENTS as well as the chain, and that is not a refinement — it is the difference
-      // between refusing a wrong answer and shipping one. `transformFunctions` walks the chain
-      // APPLIED TO an operand, so it sees `CASE WHEN … END` but not the CASE inside
-      // `ABS(CASE WHEN … END)` or `(CASE WHEN … END) + 1`. MEASURED: the wrapped form was accepted
-      // and stored `c = 0.0` for every document (the temporal collapse having erased the
-      // `CAST(ts AS TIME)`), while the bare form was correctly refused -- found by review, one
-      // function away from the shape the check did see.
-      def walk(fn: Function, depth: Int): Seq[Criteria] =
-        if (depth > MaxNesting) Nil
-        else
-          (fn match {
-            case c: Case =>
-              c.conditions.collect { case (criteria: Criteria, _) => criteria } ++
-                c.conditions
-                  .collect { case (_, result: FunctionChain) => result }
-                  .flatMap(
-                    from(_, depth + 1)
-                  ) ++
-                c.expression.toSeq
+    def conditionsOf(chain: FunctionChain): Seq[Criteria] =
+      functionsOf(chain).collect { case c: Case => c }.flatMap {
+        _.conditions.collect { case (criteria: Criteria, _) => criteria }
+      }
+
+  }
+
+  /** Every function reachable from `chain`: the chain itself, the arguments of every `FunctionN` in
+    * it, and -- because `Case.args` deliberately excludes them -- a `CASE`'s `THEN` results and its
+    * `CASE <expr>` operand.
+    *
+    * 🔴 ARGUMENTS as well as the chain, and that is not a refinement -- it is the difference
+    * between refusing a wrong answer and shipping one. `transformFunctions` walks the chain APPLIED
+    * TO an operand, so it sees `CASE WHEN ... END` but not the CASE inside `ABS(CASE WHEN ... END)`
+    * or `(CASE WHEN ... END) + 1`. MEASURED (issue #384): the wrapped form was accepted and stored
+    * `c = 0.0` for every document, while the bare form was correctly refused -- found by review,
+    * one function away from the shape the check did see.
+    *
+    * 🔴 ONE walk for every post-resolution rule that asks "where is a node of kind K in this
+    * expression?" -- [[Case.conditionsOf]] (issue #384) and [[NullIf.mismatchesOf]] (issue #382).
+    * Two walks would be two answers to the same question, and the second one would inherit none of
+    * the corrections the first one was given.
+    */
+  private[elastic] def functionsOf(chain: FunctionChain): Seq[Function] = {
+    def from(c: FunctionChain, depth: Int): Seq[Function] =
+      if (depth > MaxNesting) Nil
+      else
+        FunctionUtils.transformFunctions(c).flatMap { fn =>
+          (fn +: (fn match {
+            case cs: Case =>
+              cs.conditions.collect { case (_, result: FunctionChain) => result }.flatMap {
+                from(_, depth + 1)
+              } ++
+                cs.expression.toSeq
                   .collect { case f: FunctionChain => f }
                   .flatMap(from(_, depth + 1))
             case _ => Nil
-          }) ++ (fn match {
+          })) ++ (fn match {
             case n: FunctionN[_, _] =>
               n.args.collect { case f: FunctionChain => f }.flatMap(from(_, depth + 1))
             case _ => Nil
           })
+        }
 
-      def from(c: FunctionChain, depth: Int): Seq[Criteria] =
-        if (depth > MaxNesting) Nil
-        else FunctionUtils.transformFunctions(c).flatMap(walk(_, depth))
-
-      from(chain, 0)
-    }
-
-    /** A depth stop for [[conditionsOf]]. A CASE inside a CASE inside a function is already beyond
-      * anything measured; the bound exists so a cyclic or pathological AST cannot hang validation,
-      * not because the depth is meaningful.
-      */
-    private val MaxNesting = 12
-
+    from(chain, 0)
   }
+
+  /** A depth stop for [[functionsOf]]. A CASE inside a CASE inside a function is already beyond
+    * anything measured; the bound exists so a cyclic or pathological AST cannot hang validation,
+    * not because the depth is meaningful.
+    */
+  private val MaxNesting = 12
 
   case object WHEN extends Expr("WHEN") with TokenRegex
   case object THEN extends Expr("THEN") with TokenRegex
@@ -275,22 +308,135 @@ package object cond {
       * one derivation fixes every venue, and it also stops the expression DESCRIBING itself as a
       * string to a CTAS target mapping.
       *
-      * ⚠️ The repair deliberately stops at the TYPE. It does NOT cover `NULLIF(s, 0)`, where the
-      * operand really is a KEYWORD and the supertype really is VARCHAR; that shape is a type
-      * mismatch, [[validate]] already computes exactly the right `Left` for it, and the reason it
-      * never fires is that validation runs at PARSE time -- before a schema is attached, when `s`
-      * has no type at all. Widening validation to a resolved statement is a separate change and is
-      * RECORDED on #382, not made here. Emitting the comparison without the guard was measured and
-      * REJECTED: it turns the compile error into a PER-DOCUMENT runtime failure
-      * (`wrong_method_type_exception: cannot convert MethodHandle(String,String)int to
-      * (Object,int)Object`), which is strictly worse.
+      * ⚠️ This derivation answers which ARM a comparable pair takes. It says nothing about a pair
+      * that is not comparable at all (`NULLIF(s, 0)`, where the operand really is a KEYWORD): no
+      * arm of [[toPainlessCall]] is right for those, and they are REFUSED by [[typeMismatchError]],
+      * which reads the very same derivation.
       */
-    private[this] def argTypeOf(arg: PainlessScript): SQLType = arg match {
+    private def argTypeOf(arg: PainlessScript): SQLType = arg match {
       case i: Identifier => i.chainType
       case other         => other.out
     }
 
     override def argTypes: List[SQLType] = args.map(argTypeOf)
+
+    /** The rejection this `NULLIF` earns when its two arguments RENDER types SQL does not compare
+      * (issue #382, the LEAD RULING of 2026-09-23).
+      *
+      * 🔴 A type mismatch is not an emission problem; it is a type ERROR, and the engine says so
+      * instead of building a script around it. Every arm of [[toPainlessCall]] is wrong for a
+      * TEXT-against-NUMBER pair and each is wrong in its own way, all MEASURED on ES 8.18.3:
+      *   - the string arm's `compareTo` throws PER DOCUMENT (`wrong_method_type_exception: cannot
+      *     convert MethodHandle(String,String)int to (Object,int)Object`), and in a computed column
+      *     `ScriptProcessor.ignoreFailure` defaults to `true`, so the throw is SWALLOWED and the
+      *     column silently DISAPPEARS -- HTTP 200 over a document missing the value it asked for,
+      *     the #205 family;
+      *   - its `$arg1 != null` guard over a primitive numeric literal does not even compile
+      *     (`class_cast_exception: Cannot cast from [int] to [java.lang.Object]`), which is how
+      *     `NULLIF(CAST(n AS KEYWORD), 0)` used to fail;
+      *   - the numeric arm's `==` compiles for any pair and answers `false` for a `Long` against a
+      *     `String`, so the `NULLIF` would never null anything -- silently.
+      *
+      * Emitting nothing at all was considered and rejected for the same reason: an absent column is
+      * the silent failure, not an escape from it.
+      *
+      * '''The rule is deliberately NARROW''' (lead, 2026-09-23) -- exactly TEXT against NUMBER,
+      * plus the temporal-literal edge below. `SQLTypeUtils.matches` was implemented first and
+      * MEASURED to refuse 540 further shapes in the same corpus, among them TEMPORAL-against-NUMBER
+      * (`NULLIF(d, 0)`) and every BOOLEAN pair (`NULLIF(b, 0)`, `NULLIF(b, 'x')`). Those emit today
+      * exactly what they emitted before and are RECORDED as a known boundary, not refused: no
+      * emission for them was measured to be wrong, and a validator that refuses what it has not
+      * measured is the same mistake in the other direction.
+      *
+      * The comparison is between what each argument RENDERS ([[argTypeOf]]), never between the
+      * COLUMNS' declared types: `NULLIF(CAST(d AS DATE), CAST('2025-01-01' AS DATE))` reports
+      * `List(TIMESTAMP, DATE)` on `out` and `List(DATE, DATE)` on the chain, and it WORKS -- asking
+      * `out` would refuse a shape this engine executes correctly today. And a cast can CREATE the
+      * mismatch as well as cure it: `NULLIF(CAST(n AS KEYWORD), 0)` renders TEXT against NUMBER
+      * over a numeric column, and IS refused.
+      *
+      * 🔴 A `NULL` operand is never refused, and STRUCTURALLY so rather than by a guard: SQL says
+      * `NULLIF(a, NULL)` is UNKNOWN, so the answer is `a`, and `SQLTypes.Null` is neither an
+      * `SQLVarchar` nor an `SQLNumeric`, so no widening of either predicate can start refusing it.
+      * An explicit short-circuit was written first and MEASURED to change no verdict in the whole
+      * corpus -- dead by construction, so it is the invariant that is recorded, not the code.
+      * `NULLIF(s, NULL)` and `NULLIF(NULL, 0)` pin it.
+      */
+    def typeMismatchError: Option[String] = {
+      val left = argTypeOf(expr1)
+      val right = argTypeOf(expr2)
+      def text(t: SQLType) = t.isInstanceOf[SQLVarchar]
+      def number(t: SQLType) = t.isInstanceOf[SQLNumeric]
+      if ((text(left) && number(right)) || (number(left) && text(right)))
+        Some(
+          s"$sql compares ${left.typeId} with ${right.typeId}: NULLIF requires two arguments of " +
+          "comparable types, so cast one of them"
+        )
+      else
+        temporalLiteralError(expr1, left, expr2, right)
+          .orElse(temporalLiteralError(expr2, right, expr1, left))
+    }
+
+    /** The edge the type rule CANNOT decide: a string literal against a date-mapped column.
+      *
+      * 🔴 MEASURED: `NULLIF(d, '2025-01-01')` and `NULLIF(d, 'x')` present IDENTICALLY as
+      * `TIMESTAMP` against `VARCHAR`, so no rule written over types alone can accept the first and
+      * refuse the second -- and refusing both would reject legitimate SQL. The lead's ruling is to
+      * ask the SAME machinery a `WHERE` clause already asks (issue #276's
+      * [[TemporalLiterals.normalizeLiteral]]), against the column's own mapping `format`, so there
+      * is ONE date-literal grammar in the engine and not two.
+      *
+      * It is reachable from both seams because it is a pure function of (literal, field, format)
+      * and the resolved identifier carries its [[Column]]. Only the VERDICT is used: `NULLIF` does
+      * not rewrite its operand the way `WHERE` does, so a space-form literal is accepted and
+      * forwarded exactly as before -- recorded on #382, not changed here.
+      *
+      * `TIME` is excluded by [[TemporalLiterals.isTemporalColumn]] (Elasticsearch has no time-only
+      * mapping), and a function-wrapped operand on EITHER side is excluded: a cast or a function
+      * makes the comparison one between what the CHAINS render, not one against the mapped field.
+      */
+    private def temporalLiteralError(
+      column: PainlessScript,
+      columnType: SQLType,
+      literal: PainlessScript,
+      literalType: SQLType
+    ): Option[String] =
+      if (!columnType.isInstanceOf[SQLTemporal] || !literalType.isInstanceOf[SQLVarchar]) None
+      else
+        for {
+          col   <- mappedColumn(column).filter(c => TemporalLiterals.isTemporalColumn(c.dataType))
+          value <- stringLiteral(literal)
+          field <- Some(column).collect { case id: Identifier => id.name }
+          reason <- TemporalLiterals
+            .normalizeLiteral(value, field, TemporalLiterals.FieldFormat.of(col))
+            .left
+            .toOption
+        } yield reason
+
+    /** The mapped column a BARE operand names, or `None` for anything else.
+      *
+      * 🔴 The parser wraps EVERY operand in an `Identifier`, literals included
+      * (`Parser.functionAsIdentifier`), so "is this a column?" is not `isInstanceOf[Identifier]` --
+      * it is "does it carry a name and no functions, and did the schema attach a [[Column]] to
+      * it?". MEASURED: a first version asked the type only, found `expr2` to be a
+      * `GenericIdentifier(name = "", functions = List(StringValue))`, and the whole temporal edge
+      * silently never fired.
+      */
+    private def mappedColumn(operand: PainlessScript): Option[Column] = operand match {
+      case id: GenericIdentifier if id.name.nonEmpty && id.functions.isEmpty => id.col
+      case _                                                                 => None
+    }
+
+    /** The text of a BARE string literal operand -- `'2025-01-01'`, not `CAST('x' AS DATE)`. */
+    private def stringLiteral(operand: PainlessScript): Option[String] = operand match {
+      case id: GenericIdentifier if id.name.isEmpty =>
+        id.functions match {
+          case List(value: StringValue) => Some(value.value)
+          case _                        => None
+        }
+      case value: StringValue => Some(value.value)
+      case _                  => None
+    }
 
     /** Whether the value `expr1` RENDERS is a `java.time.LocalTime`. `out` and `expr1.out` both
       * report the column's type; `Identifier.chainType` reports the chain's (#367).
@@ -334,9 +480,18 @@ package object cond {
       * ⚠️ With NO context there is no prologue to hoist into. Parentheses are the whole of the
       * association fix, so a context-free EXPRESSION gets them; a rendering that is not an
       * expression at all (a safe cast's `try` / `catch`) is beyond their help and is left exactly
-      * as it was -- pre-existing, and not this repair's to change
-      * ([[app.softnetwork.elastic.sql.operator.math.ArithmeticExpression]]'s `bind` fallback makes
-      * the same distinction).
+      * as it was -- pre-existing, and not this repair's to change.
+      *
+      * 🔴 The `Some(ctx)` branch binds UNCONDITIONALLY, and that is NOT the shape
+      * [[app.softnetwork.elastic.sql.operator.math.ArithmeticExpression]] uses: its `operandOf`
+      * asks `PainlessOperandForm.placeable` BEFORE binding and falls back to the operand's
+      * registered parameter when the rendering is a statement. It can be asked to bind a `try` /
+      * `catch`; this site cannot, and the INVARIANT is why -- '''with a context, a safe cast has
+      * already hoisted itself''', so what arrives in `callArgs` is the parameter NAME (`TRY_CAST(s
+      * AS BIGINT)` renders `def safe1 = null; try {...} catch {...} def param2 = safe1;` into the
+      * prologue and hands this method `param2`). A `placeable` guard here would therefore be an arm
+      * no input can reach. The invariant is not asserted by reading the code: `NullIfOperandSpec`
+      * checks it over the whole operand corpus, in every venue.
       */
     private[this] def operand(rendered: String, context: Option[PainlessContext]): String = {
       val trimmed = rendered.trim
@@ -373,7 +528,20 @@ package object cond {
             s"$arg0 == null || ($arg1 != null && $comparison) ? null : $arg0"
           val expr =
             out match {
-              case SQLTypes.Varchar =>
+              // 🔴 `String.compareTo` takes a `String` and NOTHING else, so this arm is right only
+              // when BOTH operands render text -- and `leastCommonSuperType` answers VARCHAR for a
+              // MIXED pair too (`[BOOLEAN, KEYWORD]`, `[TIMESTAMP, KEYWORD]`). Without the guard
+              // `NULLIF(b, CAST(n AS KEYWORD))` and `NULLIF(d, CAST(i AS VARCHAR))` emitted
+              // `param1.compareTo(param2)` over a `Boolean` / `ZonedDateTime` receiver and threw
+              // PER DOCUMENT on ES 8.18.3 -- which in a computed column `ignoreFailure` SWALLOWS,
+              // so the column silently disappears. MEASURED: 32 corpus rows, all of them shapes
+              // that answered a value before the type fix of this same issue moved the supertype
+              // from the column's type to the chain's. They fall to the `==` arm below, which is
+              // what they emitted before and which Painless applies to any pair without throwing.
+              //
+              // The TEXT-against-NUMBER half of the same population is refused instead, by
+              // [[typeMismatchError]] -- `==` there would be a silent always-false.
+              case SQLTypes.Varchar if argTypes.forall(_.isInstanceOf[SQLVarchar]) =>
                 nullIf(s"$arg0.compareTo($arg1) == 0")
               // 🔴 Keyed on what the RECEIVER's chain RENDERS, not on `out` (issue #373).
               // `LocalTime` has no `isEqual`, and MEASURED on ES 8.18 before this,
