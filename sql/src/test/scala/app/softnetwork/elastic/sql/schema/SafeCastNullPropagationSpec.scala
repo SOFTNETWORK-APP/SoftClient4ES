@@ -79,6 +79,33 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
   private def callParams(source: String): List[String] =
     """def (param\d+) =""".r.findAllMatchIn(source).map(_.group(1)).toList
 
+  /** The parameter whose DECLARATION reads the hoisted safe-cast local -- i.e. the reference the
+    * call actually consumes, found by what it is derived FROM.
+    *
+    * 🔴 Not `callParams.last` (issue #382, found by review). That was a POSITIONAL proxy for
+    * "derived from `safe1`": it happens to coincide today, and stops coinciding the moment an
+    * emitter declares a further parameter after the derived one -- a second column argument, a
+    * future hoist -- at which point the assertion silently targets the wrong name while the
+    * property it claims to guard is unchanged. Assert the mechanism, not its ordinal.
+    */
+  private def derivedFromSafeCast(source: String): Option[String] = {
+    val declarations =
+      """def (param\d+) = ([^;]*)""".r
+        .findAllMatchIn(source)
+        .map(m => m.group(1) -> m.group(2))
+        .toList
+    // 🔴 TRANSITIVE. The chain is `safe1` -> `param2 = safe1` -> `param3 = f(param2)`, and the
+    // guard names its END. Stopping at the first link asserted `param2` where the emission says
+    // `param3` -- the helper has to follow the derivation, which is precisely the property
+    // `params.last` was standing in for.
+    declarations
+      .foldLeft(List("safe1")) { case (derived, (name, rhs)) =>
+        if (derived.exists(d => rhs.contains(d))) derived :+ name else derived
+      }
+      .lastOption
+      .filterNot(_ == "safe1")
+  }
+
   /** Every shape measured as broken on 8.18.3, in one table: the two CONCAT orientations (a wrong
     * VALUE) and the seven that threw (a silently absent column). One repair covers all nine, which
     * is the finding — they share a mechanism, not a symptom.
@@ -104,10 +131,12 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
       withClue(s"[$expr] -> [$source] ") {
         // the safe cast really was hoisted -- without this the rest is about a different script
         source should include("try { safe1")
-        // ... and the guard names the LAST parameter, i.e. the one derived from `safe1`, rather
-        // than stopping at `param1` (the raw `ctx.s`, which is NOT null on the failing row)
+        // ... and the guard names the parameter DERIVED FROM `safe1`, rather than stopping at
+        // `param1` (the raw `ctx.s`, which is NOT null on the failing row)
         params.size should be >= 2
-        guard should include(s"${params.last} == null")
+        val derived = derivedFromSafeCast(source)
+          .getOrElse(fail(s"no parameter is derived from `safe1` in [$source]"))
+        guard should include(s"$derived == null")
       }
     }
   }

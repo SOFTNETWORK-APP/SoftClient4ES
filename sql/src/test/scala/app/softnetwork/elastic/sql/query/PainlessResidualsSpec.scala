@@ -102,6 +102,32 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPr
       .map(i => emitted.substring(math.max(0, i - 24), math.min(emitted.length, i + 12)))
       .toSeq
 
+  /** 🔴 The scanner above is a TEST INSTRUMENT, so it gets its own test (issue #382, found by
+    * review). It was widened -- `} ` joined `; ` as an accepted boundary -- at the same time as the
+    * test that carried its true positive was rewritten to assert `placeable` instead, leaving
+    * NOTHING in the suite able to make it go red. An instrument every caller trusts and no test
+    * exercises is how a guard quietly stops guarding.
+    *
+    * ⚠️ Records the known limit of the widening as well as its purpose: a `}` that closes a block
+    * INSIDE an expression is accepted as a boundary too, which this instrument cannot tell apart
+    * without parsing. No emitter produces that shape today; the row is here so the day one does,
+    * the limitation is already written down rather than discovered.
+    */
+  "the statement-start scanner" should "flag a declaration that follows no boundary at all" in {
+    declarationsOutsideStatementStart("ctx.c = 1 def p = 2") should not be empty
+    declarationsOutsideStatementStart("(a != null ? 1 : 2) def p = 2") should not be empty
+  }
+
+  it should "accept the two boundaries Painless really produces" in {
+    // a `;`, and the brace of a hoisted safe cast -- Painless needs no `;` after a block
+    declarationsOutsideStatementStart("def a = 1; def b = 2") shouldBe empty
+    declarationsOutsideStatementStart(
+      "def safe1 = null; try { safe1 = 1; } catch (Exception e) {} def p = safe1"
+    ) shouldBe empty
+    // ...and the leading declaration is never an offence
+    declarationsOutsideStatementStart("def a = 1") shouldBe empty
+  }
+
   /** Names declared more than once -- Painless rejects a redeclaration in the same scope. */
   protected def duplicateDeclarations(emitted: String): Seq[String] = {
     val names = "def ([A-Za-z_][A-Za-z0-9_]*) =".r.findAllMatchIn(emitted).map(_.group(1)).toSeq

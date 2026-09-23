@@ -631,12 +631,33 @@ package object sql {
       var i = 0
       var quote = '\u0000'
       var continue = true
+      // The last non-whitespace character accepted as CODE. Only `~` can precede a regex literal
+      // (`==~` / `=~`), which is what tells a regex opener apart from division and from a comment.
+      var lastCode = '\u0000'
       while (i < n && continue) {
         val c = rendered.charAt(i)
         if (quote != '\u0000') {
           if (c == '\\') i += 1 else if (c == quote) quote = '\u0000'
         } else if (c == '\'' || c == '"') quote = c
-        else if (c == '/' && i + 1 < n && rendered.charAt(i + 1) == '/') {
+        else if (c == '/' && lastCode == '~') {
+          // 🔴 A Painless REGEX literal, which is neither code nor a comment (issue #382, found by
+          // review). `WHERE path RLIKE 'a/*b'` emits `($p ==~ /a\/*b/)`, so the bytes `/*` appear
+          // OUTSIDE every quoted literal: read as a block-comment opener they have no `*/`, and the
+          // rest of the script -- the trailing `ctx.<column> = ` included -- was blanked. That lost
+          // the processor's identity for `ScriptTarget.of` (the ALTER churn this scanner exists to
+          // stop) and could hide a real `;` from `firstStatementAt`, declaring a STATEMENT
+          // placeable. A pattern merely STARTING with `*` (`RLIKE '*b'`) does it with no escape at
+          // all, so this arm has to precede both comment arms.
+          //
+          // `~` is the whole discriminator and it is sufficient: `==~` and `=~` are the only
+          // operators Painless spells with it, an ordinary division never follows one, and a `/`
+          // preceded by anything else keeps its existing reading.
+          i += 1
+          while (i < n && rendered.charAt(i) != '/') {
+            if (rendered.charAt(i) == '\\') i += 1
+            i += 1
+          }
+        } else if (c == '/' && i + 1 < n && rendered.charAt(i + 1) == '/') {
           // line comment: everything up to (but not including) the newline is not code
           i += 1
           while (i + 1 < n && rendered.charAt(i + 1) != '\n') i += 1
@@ -645,7 +666,10 @@ package object sql {
           i += 2
           while (i + 1 < n && !(rendered.charAt(i) == '*' && rendered.charAt(i + 1) == '/')) i += 1
           i += 1
-        } else continue = at(i)
+        } else {
+          continue = at(i)
+          if (!c.isWhitespace) lastCode = c
+        }
         i += 1
       }
     }

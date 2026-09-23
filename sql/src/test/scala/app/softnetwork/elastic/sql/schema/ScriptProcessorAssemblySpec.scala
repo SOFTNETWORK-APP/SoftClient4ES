@@ -346,7 +346,11 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
 
   "a `}` inside a comment" should "not be read as a statement boundary" in {
     forAll(commentShapes) { (source, why) =>
-      withClue(s"[$source] -- $why ")(ScriptTarget.of(source).map(_.take(1)) shouldBe Some("c"))
+      // 🔴 the WHOLE identity, not `.take(1)` (issue #382, found by review). Every shape above
+      // expects exactly `c`, so truncating to one character bought nothing and let `count`,
+      // `created` or `c_wrong` pass -- in a test whose subject is a processor claiming ANOTHER
+      // column's identity. The sibling assertion in this file already asserts the whole value.
+      withClue(s"[$source] -- $why ")(ScriptTarget.of(source) shouldBe Some("c"))
     }
   }
 

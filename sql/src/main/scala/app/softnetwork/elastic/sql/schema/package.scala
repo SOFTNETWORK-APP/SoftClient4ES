@@ -853,7 +853,13 @@ package object schema {
     // temporal check above is: it needs the RESOLVED table (at parse time every column is `Any`,
     // which matches everything, so `NULLIF(s, 0)` is indistinguishable from `NULLIF(n, 0)`), and
     // it needs no reference POPULATION, so it sits ABOVE the `isRegular` carve-out -- a
-    // materialized view's computed column is refused too.
+    // materialized VIEW's computed column is a regular script, and is refused too.
+    //
+    // ⚠️ `filterNot(_.materialized)` below is NOT that carve-out and does not contradict it: a
+    // `materialized` (`STORED`) script EMITS NOTHING -- `Column.processors` is
+    // `script.filterNot(_.materialized)` -- so there is no Painless for this rule to be right or
+    // wrong about. `STORED` and "materialized view" are different things, and a reviewer read the
+    // two as one, so they are spelled apart here.
     //
     // Without it the emitted script fails PER DOCUMENT, and `ScriptProcessor.ignoreFailure`
     // defaults to `true` in a computed column, so the failure is SWALLOWED and the column simply
@@ -1487,8 +1493,19 @@ package object schema {
 
         val recovered = ps.map(p => key(p) -> p)
         val colliding = collidingKeys(recovered)
+        // 🔴 The fallback may land on a key a NON-colliding processor already holds, and that one
+        // must keep it (issue #382, found by review). With `A`(column x, source recovers c),
+        // `B`(column c, recovers c) and `C`(column x, recovers x), `A`'s fallback is `…-x`, which
+        // is `C`'s untouched key: the residual ordinal below then renamed BOTH to `…-x#0`/`#1`, so
+        // `C` -- unchanged, and still plain `…-x` on the other side, where nothing collides --
+        // stopped matching and was reported Removed + Added. Reserving the keys nobody had to
+        // derive keeps the promise three lines down true: a side with no collision derives nothing.
+        val reserved = recovered.collect { case (k, _) if !colliding.contains(k) => k }.toSet
         val resolved = recovered.map { case (k, p) =>
-          (if (colliding.contains(k)) prefixed(p.column, p) else k) -> p
+          val fallback = prefixed(p.column, p)
+          (if (colliding.contains(k)) {
+             if (reserved.contains(fallback)) s"$fallback~" else fallback
+           } else k) -> p
         }
         // ... and if the fallback ITSELF collides -- two script processors on ONE declared column,
         // the residual 21.8 Part F left open -- a deterministic content ordinal, so that nothing
