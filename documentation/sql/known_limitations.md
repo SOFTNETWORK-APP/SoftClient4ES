@@ -225,8 +225,16 @@ branch. The restriction is not specific to division, and parenthesising does not
 | `a / NULLIF(b, 0)`, `FLOOR(x)`, `CAST(x AS INTEGER)` | Accepted |
 
 The rule is **directional**: arithmetic *over* a function call is fine, a function call *over*
-arithmetic is not. The practical consequences are that there is no single-expression way to write a
-truncated quotient, and no in-expression guard for `%`:
+arithmetic is not.
+
+⚠️ **One spelling parses and then ignores the cast.** `(a / b)::INTEGER` is accepted, but the
+conversion is discarded: it emits exactly what `a / b` emits, so the result is a DOUBLE even though
+the expression reports INTEGER. Do not use it as a workaround for the rejections above — it is the
+one shape in this family that fails *silently* rather than loudly. It is pre-existing and applies to
+any operator (`(a + b)::DOUBLE`, `(d + 1)::INTEGER`).
+
+The practical consequences are that there is no single-expression way to write a truncated quotient,
+and no in-expression guard for `%`:
 
 ```sql
 -- instead of CAST(n / m AS INTEGER), compute the quotient into a column and cast THAT column
