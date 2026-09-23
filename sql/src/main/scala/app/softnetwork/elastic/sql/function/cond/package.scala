@@ -226,6 +226,14 @@ package object cond {
     // Reprend l’idée de SQLValues mais pour n’importe quel token
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
+    /** `COALESCE` returns whichever arm is first non-null, so the type it REPORTS is the common
+      * super type of the arms — the same derivation as [[baseType]], over the arms' own reported
+      * types. This is where widening legitimately happens, and DuckDB 0.10.1 agrees:
+      * `COALESCE(NULLIF(<DATE col>, <TIMESTAMP>), CURRENT_DATE)` is `DATE`, while the same over a
+      * `TIMESTAMP` column is `TIMESTAMP`.
+      */
+    override def reportedType: SQLType = SQLTypeUtils.leastCommonSuperType(reportedArgTypes)
+
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
       else Right(())
@@ -312,13 +320,58 @@ package object cond {
       * that is not comparable at all (`NULLIF(s, 0)`, where the operand really is a KEYWORD): no
       * arm of [[toPainlessCall]] is right for those, and they are REFUSED by [[typeMismatchError]],
       * which reads the very same derivation.
+      *
+      * 🔴 It asks `renderedType`, NOT `chainType`, and the difference is a MEASURED regression this
+      * function shipped with in #382. `chainType` is `functions.head.out` -- it reports what the
+      * OUTERMOST function DECLARES, which is right for a producer (`Cast`) and wrong for an
+      * adjuster, because every adjuster in the temporal family returns its RECEIVER's type (#368)
+      * and so declares the un-narrowed `TEMPORAL`. Measured on `975aa87b` vs `245f45f2`:
+      * {{{
+      * DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY   out=DATE  chainType=TEMPORAL
+      * COALESCE(NULLIF(createdAt, <that>), CURRENT_DATE)       DATE  ->  TIMESTAMP
+      * }}}
+      * so a `DATE` computed column started DECLARING itself a `TIMESTAMP` -- which is what `SHOW
+      * MATERIALIZED VIEW` prints and what JDBC/BI metadata reports for the column. Caught
+      * downstream by softclient4es-extensions' `ExtensionsIntegrationSpec`, not here: no core suite
+      * nested a `NULLIF` over an interval-adjusted operand inside a `COALESCE`.
+      *
+      * [[app.softnetwork.elastic.sql.Identifier.renderedType]] is issue #384's answer to exactly
+      * this question -- it returns `chainType` UNCHANGED for everything non-temporal (so the cast
+      * repair above is untouched) and, for a temporal chain, scans outermost-inward for the first
+      * function that PRODUCES its output type rather than preserving its receiver's. Here that
+      * finds `DateParse`, and the operand reports `DATE` again.
       */
     private def argTypeOf(arg: PainlessScript): SQLType = arg match {
-      case i: Identifier => i.chainType
+      case i: Identifier => i.renderedType
       case other         => other.out
     }
 
     override def argTypes: List[SQLType] = args.map(argTypeOf)
+
+    /** 🔴 `NULLIF` REPORTS THE TYPE OF ITS FIRST ARGUMENT, not the super type of both.
+      *
+      * `NULLIF(a, b)` is `CASE WHEN a = b THEN NULL ELSE a END`: the value is always `a` or NULL,
+      * and `b` is only ever COMPARED. This emitter says so itself — [[toPainlessCall]] renders
+      * `$arg0 == null || ($arg1 != null && <comparison>) ? null : $arg0`, in which `arg1` appears
+      * in no result position. So widening the reported type to include `b` describes a value this
+      * function cannot produce.
+      *
+      * Corroborated on DuckDB 0.10.1, over a table with `d DATE` and `createdAt TIMESTAMP`:
+      * {{{
+      * typeof(NULLIF(d,         strptime('2025-09-11','%Y-%m-%d') - INTERVAL 2 DAY))  -> DATE
+      * typeof(NULLIF(createdAt, strptime('2025-09-11','%Y-%m-%d') - INTERVAL 2 DAY))  -> TIMESTAMP
+      * }}}
+      * i.e. the answer follows the FIRST argument in both, never the pair.
+      *
+      * ⚠️ Deliberately NOT applied to [[baseType]]. `out` is what [[toPainlessCall]] switches on to
+      * pick a COMPARISON, and comparing is the one thing that really does involve both operands --
+      * `NULLIF(CAST(s AS BIGINT), 0)` must take the numeric arm because BOTH sides render numbers.
+      * Two questions, two derivations: `out` says how to compare, `reportedType` says what comes
+      * out. A pair that cannot be compared at all is refused by [[typeMismatchError]] before either
+      * matters.
+      */
+    override def reportedType: SQLType =
+      reportedArgTypes.headOption.getOrElse(baseType)
 
     /** The rejection this `NULLIF` earns when its two arguments RENDER types SQL does not compare
       * (issue #382, the LEAD RULING of 2026-09-23).

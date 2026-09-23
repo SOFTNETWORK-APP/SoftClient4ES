@@ -2731,7 +2731,16 @@ package object schema {
             case _ =>
               Column(
                 name = colName,
-                dataType = field.out
+                // 🔴 The REPORTED type, not `out`. This is core's own place where a column's type
+                // is DERIVED from an expression rather than declared by the user, so it is exactly
+                // the consumer `Token.reportedType` exists for: `out` answers what a QUERY hands
+                // Painless, and for a schema-resolved column that is `runtimeType`, which collapses
+                // every temporal to TIMESTAMP because Elasticsearch has no timestamp type. Writing
+                // that into `_meta.columns.<c>.data_type` recorded `CREATE TABLE x AS SELECT
+                // DATE_TRUNC(d, MONTH) AS c FROM t` as TIMESTAMP for a DATE column `d` -- and since
+                // DATE and TIMESTAMP map to the SAME `date` mapping, the label was the only thing
+                // that ever carried the difference.
+                dataType = field.identifier.reportedType
               )
           }
           cols :+ col

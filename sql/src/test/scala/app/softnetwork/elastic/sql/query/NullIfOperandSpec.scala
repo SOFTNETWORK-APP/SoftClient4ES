@@ -408,6 +408,111 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
     }
   }
 
+  /** The type `NULLIF` DECLARES, which is a different question from which arm it emits — and the
+    * one #382 got wrong in the direction no emission test could see.
+    *
+    * `argTypeOf` asks each `Identifier` operand what it renders. Asking `chainType` — the OUTERMOST
+    * function's declared `out` — is right for a producer and wrong for an adjuster, because every
+    * adjuster in the temporal family returns its RECEIVER's type (#368) and therefore declares the
+    * un-narrowed `TEMPORAL`. So `DATE_PARSE(…) - INTERVAL 2 DAY` reports `out = DATE` but
+    * `chainType = TEMPORAL`, `leastCommonSuperType` widened, and a `DATE` column started declaring
+    * itself a `TIMESTAMP` — what `SHOW MATERIALIZED VIEW` prints and what JDBC/BI metadata reports.
+    *
+    * 🔴 The regression reached a release and was caught DOWNSTREAM, by softclient4es-extensions'
+    * `ExtensionsIntegrationSpec`, because no core suite nested a `NULLIF` over an interval-adjusted
+    * operand inside a `COALESCE`. Measured `975aa87b` -> `245f45f2`: that one shape moved DATE ->
+    * TIMESTAMP and ten sibling shapes did not move at all.
+    *
+    * The row is falsifiable in BOTH directions, which is why the cast case sits beside the temporal
+    * ones rather than in a test of its own:
+    *   - restore `i.chainType` and the two interval rows redden (the regression);
+    *   - restore `_.out` and the cast row reddens (N1, the repair `argTypeOf` exists for).
+    */
+  it should "report the type a consumer should DECLARE, not the one Painless sees" in {
+    forAll(
+      Table(
+        ("expr", "reported"),
+        // NULLIF is typed by its FIRST argument: the emission can only ever return arg0.
+        // A DATE column stays DATE even beside a TIMESTAMP-valued right operand …
+        (
+          "NULLIF(d, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY)",
+          SQLTypes.Date: app.softnetwork.elastic.sql.`type`.SQLType
+        ),
+        // … and a TIMESTAMP column stays TIMESTAMP, so this is narrowing, not a blanket collapse
+        ("NULLIF(ts, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY)", SQLTypes.Timestamp),
+        // COALESCE is where widening legitimately happens: the super type of its ARMS
+        (
+          "COALESCE(NULLIF(d, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE)",
+          SQLTypes.Date
+        ),
+        (
+          "COALESCE(NULLIF(ts, DATE_PARSE('2025-09-11','%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE)",
+          SQLTypes.Timestamp
+        ),
+        // 🔴 THE pair that falsifies "super type of both": it is ASYMMETRIC, so no commutative
+        // derivation can satisfy it. DuckDB 0.10.1 over `d DATE, ts TIMESTAMP` answers exactly
+        // this — typeof(NULLIF(d, ts)) = DATE, typeof(NULLIF(ts, d)) = TIMESTAMP — while
+        // `leastCommonSuperType` gives TIMESTAMP for BOTH.
+        ("NULLIF(d, ts)", SQLTypes.Date),
+        ("NULLIF(ts, d)", SQLTypes.Timestamp),
+        ("COALESCE(NULLIF(d, ts), CURRENT_DATE)", SQLTypes.Date),
+        // a bare column reports its DECLARATION, not runtimeType's collapse of it
+        ("d", SQLTypes.Date),
+        ("ts", SQLTypes.Timestamp),
+        // and a PRODUCER still decides: without #382's repair this reports KEYWORD
+        ("NULLIF(CAST(s AS BIGINT), 0)", SQLTypes.BigInt)
+      )
+    ) { (expr, reported) =>
+      val actual = single(s"SELECT $expr AS c FROM t").select.fields.head.identifier.reportedType
+      withClue(s"[$expr] reported [$actual], expected [$reported] ")(actual shouldBe reported)
+    }
+  }
+
+  /** The UNRESOLVED venue, which every row above misses because [[single]] attaches the schema.
+    *
+    * `SearchApi.resolveWithSchema` declines for a wildcard or comma FROM, for a client that is not
+    * an `IndicesApi`, and for a mapping that failed or is negatively cached — so a statement really
+    * does reach emission with no schema, and its types are then whatever the grammar derived.
+    *
+    * 🔴 There, `argTypeOf`'s choice is observable in `out`: an adjuster declares the un-narrowed
+    * `TEMPORAL` (#368), so asking `chainType` widened this expression from DATE to TIMESTAMP.
+    * MEASURED across the #382 merge — `975aa87b` answered DATE, `245f45f2` answers TIMESTAMP — and
+    * that regression is what `renderedType` undoes. Restore `i.chainType` in `argTypeOf` and this
+    * row reddens; it is the only one that can see it.
+    */
+  it should "not widen a temporal chain when no schema was attached" in {
+    val sql =
+      "SELECT COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), " +
+      "CURRENT_DATE) AS c FROM t"
+    val unresolved = Parser(sql) match {
+      case Right(ss: SingleSearch) => ss
+      case other                   => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+    val out = unresolved.select.fields.head.identifier.out
+    withClue(s"[$sql] out [$out] ")(out shouldBe SQLTypes.Date)
+  }
+
+  /** The companion of the row above, and the reason there are two derivations rather than one:
+    * `out` still answers the EMISSION question, so the arm selection #382 repaired is untouched.
+    * `NULLIF(CAST(s AS BIGINT), 0)` over a KEYWORD column must report a NUMBER here, or the string
+    * arm's `$arg1 != null` guard over a primitive reaches the cluster and refuses to compile.
+    */
+  it should "keep deciding the comparison arm from what BOTH operands render" in {
+    forAll(
+      Table(
+        ("expr", "out"),
+        (
+          "NULLIF(CAST(s AS BIGINT), 0)",
+          SQLTypes.BigInt: app.softnetwork.elastic.sql.`type`.SQLType
+        ),
+        ("NULLIF(CAST(n AS KEYWORD), 'x')", SQLTypes.Varchar)
+      )
+    ) { (expr, expected) =>
+      val actual = single(s"SELECT $expr AS c FROM t").select.fields.head.identifier.out
+      withClue(s"[$expr] out [$actual], expected [$expected] ")(actual shouldBe expected)
+    }
+  }
+
   /** A FUNCTION-wrapped temporal operand is outside the temporal-literal edge: the literal is then
     * compared against what the CHAIN renders (a `LocalTime`), not against the mapped `date` field,
     * so asking the resolver about the field's format would refuse a shape the engine emits.
