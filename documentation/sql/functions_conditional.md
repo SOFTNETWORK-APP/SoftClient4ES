@@ -281,6 +281,21 @@ FROM products
 -- Converts empty strings to NULL after trimming
 ```
 
+**Notes**
+
+- The comparison follows what each argument **renders**, not the type of the column it came from.
+  `NULLIF(CAST(zip_code AS BIGINT), 0)` compares two numbers even though `zip_code` is a `KEYWORD`.
+  Before **0.24.0** it was compared as text and the generated script was rejected by Elasticsearch
+  wherever it appeared — a computed column, a projection or a `WHERE`. A function argument is
+  evaluated once from 0.24.0 as well; `NULLIF(UPPER(name), 'X')` used to call `UPPER` three times,
+  and a `CASE` as the first argument could return the wrong value.
+- The two arguments must be **comparable**. `NULLIF(status, 0)` — text against a number — has no
+  meaning, and Elasticsearch rejects the script it generates (at `CREATE TABLE` for a computed
+  column, as a shard failure in a query). Write the comparison in the type you mean:
+  `NULLIF(status, '0')` or `NULLIF(CAST(status AS BIGINT), 0)`.
+- `expr2` being NULL is not a match: SQL says the comparison is then UNKNOWN, so the answer is
+  `expr1`, not NULL.
+
 ---
 
 ### ISNULL

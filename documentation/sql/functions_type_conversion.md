@@ -382,10 +382,12 @@ is null: `CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, an
 > Before **0.24.0** a safe cast in a computed column produced a malformed script, so the
 > `CREATE TABLE` itself failed.
 >
-> **Known gap in 0.24.0:** `NULLIF` over a cast — safe or plain — is still rejected at
-> `CREATE TABLE` with a script compile error. `NULLIF(TRY_CAST(zip_code AS BIGINT), 0)` and
-> `NULLIF(CAST(zip_code AS BIGINT), 0)` fail identically, while `NULLIF(qty, 0)` over a numeric
-> column works; the limitation belongs to `NULLIF` over a cast and predates the safe-cast repair.
+> From **0.24.0** `NULLIF` over a cast works too — `NULLIF(TRY_CAST(zip_code AS BIGINT), 0)` and
+> `NULLIF(CAST(zip_code AS BIGINT), 0)` alike, in a computed column, a projection and a `WHERE`.
+> Before 0.24.0 both were rejected with a script compile error, because the comparison was decided
+> by the column's declared type (`KEYWORD`) rather than by what the cast RENDERS. See
+> [NULLIF](functions_conditional.md#nullif) for the one shape that is still refused: comparing a
+> value that really is text with a number.
 
 **Safe Boolean Conversions:**
 

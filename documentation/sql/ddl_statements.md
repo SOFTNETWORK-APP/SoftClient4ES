@@ -495,6 +495,23 @@ ran without error before:
 
 Arithmetic with **no cast**, and a cast to the column's **own** type, are unchanged.
 
+**`NULLIF` in a computed column.** From **0.24.0** `NULLIF` follows what each argument renders, the
+same rule as the arithmetic above, and a function argument is evaluated once:
+
+```sql
+CREATE TABLE orders (
+  id INT,
+  zip_code KEYWORD,
+  zip_n BIGINT SCRIPT AS (NULLIF(CAST(zip_code AS BIGINT), 0)),   -- 0 becomes NULL
+  label KEYWORD SCRIPT AS (NULLIF(UPPER(zip_code), 'N/A'))
+);
+```
+
+Before 0.24.0 both columns were rejected at `CREATE TABLE`: the first because the comparison was
+decided by `zip_code`'s declared `KEYWORD` type rather than by the cast, the second because the
+function argument was spliced into the comparison unparenthesised. A `CASE` as the first argument
+compiled and could return the wrong value. See [NULLIF](functions_conditional.md#nullif).
+
 Re-run `CREATE TABLE` / `ALTER TABLE ... SET SCRIPT AS` and reindex for any table whose computed
 column uses one of these shapes; a stored computed column of a moved shape is also reported as
 changed by the next `ALTER TABLE`.
