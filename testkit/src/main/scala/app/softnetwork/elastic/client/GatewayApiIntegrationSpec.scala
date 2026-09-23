@@ -252,6 +252,19 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   /** `intsById`'s exact-valued sibling. #382's Ruling A turns on `2` versus `2.5`, which
     * `toDouble.toLong` erases.
     */
+  /** The column's value as Elasticsearch surfaced it, UNPARSED.
+    *
+    * 🔴 `intsById` and `doublesById` both go through `.toDouble`, which erases the very
+    * int-versus-double distinction a control for the `/` ruling has to observe (issue #382, found
+    * by review). A stored column cannot show it either -- the mapping coerces on index -- so the
+    * only place the emitted type is visible is a `script_fields` projection, read raw.
+    */
+  private def rawById(sql: String, column: String): Map[Long, String] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      String.valueOf(scalarOf(row, column))
+    }.toMap
+
   private def doublesById(sql: String, column: String): Map[Long, Double] =
     collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
       String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
@@ -797,15 +810,31 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
     }
 
-    // 🔴 the control: `%` is NOT part of the ruling and must answer exactly what it always did
+    // 🔴 the control: `%` is NOT part of the ruling and must answer exactly what it always did.
+    //
+    // ⚠️ AMENDED by the #382 review, which found the original control VACUOUS. Both `intsById`
+    // (`.toDouble.toLong`) and `doublesById` (`.toDouble`) erase the int/double distinction this
+    // row exists to detect, and the computed column cannot show it either: `r` is mapped INTEGER,
+    // so Elasticsearch coerces whatever the script produced on index. Widen the ruling to `%` and
+    // every assertion here stayed green.
+    //
+    // A QUERY projection is where it IS observable: `script_fields` returns what Painless
+    // produced, with no mapping to coerce it, so an integer `%` surfaces as `1` and a promoted one
+    // as `1.0`. That is the assertion, and it reddens if `%` ever joins `/`.
     intsById("SELECT id, r FROM div_int", "r") shouldBe Map(1L -> 1L, 2L -> 1L, 3L -> 3L)
-    doublesById("SELECT id, n % m AS r FROM div_int", "r") shouldBe
-    Map(1L -> 1.0, 2L -> 1.0, 3L -> 3.0)
+    rawById("SELECT id, n % m AS r FROM div_int", "r") shouldBe
+    Map(1L -> "1", 2L -> "1", 3L -> "3")
+    // ...and the same projection for `/`, which MUST carry the decimal point — so the row above is
+    // shown to be discriminating rather than merely passing.
+    rawById("SELECT id, n / m AS q FROM div_int", "q") shouldBe
+    Map(1L -> "3.5", 2L -> "2.25", 3L -> "0.375")
 
     // 🔴 the documented way to get a TRUNCATED quotient, executed — because there is no `DIV`
-    // operator and `CAST(n / m AS INTEGER)` is a PARSE ERROR (an arithmetic expression is not yet
-    // accepted as a cast operand, issue #267). The quotient goes into a column and THAT column is
-    // cast, which is what `documentation/sql/operators.md` now tells the reader to do.
+    // operator and `CAST(n / m AS INTEGER)` is a PARSE ERROR: an arithmetic expression is not yet
+    // accepted as the operand of a CAST, of a function or of a CASE branch. That gap is UNFILED —
+    // NOT issue #267, which is a different defect (a bare LITERAL operand) and was closed
+    // 2026-09-04. The quotient goes into a column and THAT column is cast, which is what
+    // `documentation/sql/operators.md` now tells the reader to do.
     doublesById("SELECT id, CAST(c AS INTEGER) AS whole FROM div_int", "whole") shouldBe
     Map(1L -> 3.0, 2L -> 2.0, 3L -> 0.0)
   }
@@ -942,11 +971,22 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     withClue(s"$failing ") {
       failing.size shouldBe 1
       String.valueOf(scalarOf(failing.head, "s")) shouldBe "abc"
-      // stated as the DEFECT, so this row cannot go green on the pre-fix emission
-      failing.head.get("c").map(String.valueOf) should not contain "nullx"
-      failing.head.get("d").map(String.valueOf) should not contain "xnull"
+      // 🔴 Stated as the DEFECT, so this row cannot go green on the pre-fix emission -- and read
+      // through `scalarOf`, which UNWRAPS Elasticsearch's per-field array. Comparing the wrapped
+      // value would have made `List("nullx")` pass this assertion (issue #382, found by review).
+      List("c", "d").foreach { k =>
+        failing.head.get(k).map(v => String.valueOf(scalarOf(failing.head, k))) match {
+          case Some(rendered) =>
+            withClue(s"[$k] ") {
+              rendered should not be "nullx"
+              rendered should not be "xnull"
+            }
+          case None => // absent is the right answer too
+        }
+      }
+      // ...and the column really is SQL NULL, by the same predicate every other row here uses
       List("c", "d", "f").foreach(k =>
-        withClue(s"[$k] ")(failing.head.get(k).filterNot(v => v == null || v == Nil) shouldBe None)
+        withClue(s"[$k] ")(isNullColumn(failing.head, k) shouldBe true)
       )
     }
 
@@ -1158,17 +1198,34 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       }
     }
 
-    // 🔴 The temporal-literal edge, which no type rule can decide: `NULLIF(created, '2024-01-15')`
-    // and `NULLIF(created, 'yesterday')` are BOTH a TIMESTAMP against a VARCHAR, so the verdict
-    // comes from the column's mapping `format` -- #276's resolver, the same one a WHERE uses.
-    val good = client
+    // 🔴 The temporal-literal edge. `NULLIF(created, '2024-01-15')` and
+    // `NULLIF(created, 'yesterday')` are BOTH a TIMESTAMP against a VARCHAR, and BOTH are refused
+    // -- but by DIFFERENT judges, which is the whole point of the row.
+    //
+    // AMENDED by the #382 review. The well-formed literal used to be ACCEPTED here, and the script
+    // it produced compared a `ZonedDateTime` with a `String` using Painless `==`: always `false`,
+    // never failing, so the NULLIF returned `created` for every document and the CREATE answered
+    // 200. Making that comparison WORK needs a `String -> temporal` coercion the engine does not
+    // have (and Elasticsearch date math has no Painless equivalent at all), so it is refused until
+    // its own story lands, and it says so rather than blaming the SQL.
+    val wellFormed = client
       .run("""CREATE TABLE IF NOT EXISTS nullif_date (
              |  id INT,
              |  created DATE,
              |  c DATE SCRIPT AS (NULLIF(created, '2024-01-15'))
              |);""".stripMargin)
       .futureValue
-    assertDdl(System.nanoTime(), good)
+    withClue(s"$wellFormed ") {
+      wellFormed.isFailure shouldBe true
+      val message = String.valueOf(wellFormed)
+      // the ENGINE's message: it names the two types and says what is missing
+      message should include("not supported yet")
+      message should include("TIMESTAMP")
+      message should include("VARCHAR")
+      // ...and NOT the resolver's, which would mean the literal was judged malformed
+      message should not include "as a date/time value for date field"
+    }
+    client.indexExists("nullif_date", pattern = false) shouldBe ElasticSuccess(false)
 
     val bad = client
       .run("""CREATE TABLE IF NOT EXISTS nullif_date_bad (
@@ -1180,8 +1237,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     withClue(s"$bad ") {
       bad.isFailure shouldBe true
       val message = String.valueOf(bad)
+      // the RESOLVER's message: it names the LITERAL and the FIELD, which the type rule cannot
       message should include("yesterday")
       message should include("'created'")
+      message should not include "not supported yet"
     }
     client.indexExists("nullif_date_bad", pattern = false) shouldBe ElasticSuccess(false)
   }
