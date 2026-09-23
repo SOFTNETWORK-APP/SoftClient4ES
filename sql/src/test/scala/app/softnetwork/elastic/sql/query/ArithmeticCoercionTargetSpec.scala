@@ -150,11 +150,22 @@ class ArithmeticCoercionTargetSpec
   /** The control that makes the row above non-vacuous: a genuine widening to a string target must
     * STILL emit `String.valueOf`, or "no concatenation" would be satisfied by a coercion that
     * stopped working altogether.
+    *
+    * 🔴 AMENDED by the #382 review. The control used to be `CONCAT(name, 'ab')`, whose
+    * `String.valueOf` comes from CONCAT's OWN argument rendering and not from
+    * `ArithmeticExpression.coerce` -- so neutering the arithmetic coercion entirely left both the
+    * rows above AND this control green. A control has to exercise the same emitter as the rows it
+    * controls: this one is arithmetic whose target really IS a string, which is the `CAST(n AS
+    * KEYWORD) + 2` characterisation the file already records.
     */
   it should "still widen to a string where a string really is the target" in {
     val emitted =
-      processorOf("CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(name, 'ab')))")
-    withClue(emitted)(emitted should include("String.valueOf("))
+      processorOf("CREATE TABLE t (n BIGINT, c KEYWORD SCRIPT AS (CAST(n AS KEYWORD) + 2))")
+    withClue(emitted) {
+      emitted should include("String.valueOf(")
+      // and it really is the ARITHMETIC that widened: both operands of the `+` are stringified
+      concatenates(emitted) shouldBe true
+    }
   }
 
   /** 🔴 WHAT MOVES, AND WHAT DOES NOT — the honest statement of the repair's blast radius.

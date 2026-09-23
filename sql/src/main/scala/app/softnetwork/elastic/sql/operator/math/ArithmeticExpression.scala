@@ -94,8 +94,21 @@ case class ArithmeticExpression(
     *     7/2. The declared type was ignored; now the expression itself is DOUBLE, so it no longer
     *     has to be consulted.
     *
-    * Restricted to a NUMERIC fold on purpose: `s / 2` over a KEYWORD column folds to VARCHAR and is
+    * The fold must be NUMERIC or UNKNOWN. `s / 2` over a KEYWORD column folds to VARCHAR and is
     * left exactly as it was, so this ruling widens nothing outside arithmetic.
+    *
+    * 🔴 UNKNOWN is not a refinement, it is half the population. A column carries a type only once a
+    * schema is attached, and `SearchApi.resolveWithSchema` DECLINES to attach one for a wildcard
+    * FROM, a comma-separated FROM, a client that is not an `IndicesApi`, and any mapping whose load
+    * failed or is negatively cached. Every column is then `SQLTypes.Any`, and
+    * `leastCommonSuperType` short-circuits `[Any, Any]` to `Any` -- which is not an `SQLNumeric`.
+    * So on a numeric-fold reading alone `SELECT n / m FROM logs_2025` answered 3.5 while the SAME
+    * statement over `logs-*` answered 3, and, worse, [[divisorMayBeZero]] 's guard was not emitted
+    * either: a zero divisor stayed an `arithmetic_exception` in a search and a REJECTED DOCUMENT on
+    * ingest, which is the data-loss bug the guard exists to close. `operators.md` promises both
+    * unconditionally, so the rule has to hold unconditionally. (Found by review; `[Any, BigInt]`
+    * folds to `BigInt` and was already floating, which is why only the both-unresolved shape was
+    * wrong -- and why no schema-bearing test could see it.)
     *
     * ⚠️ There is NO truncating-division spelling today, and this comment says so rather than
     * implying one. Keying [[floatingDivision]] on `out` means an explicit cast over the whole
@@ -114,7 +127,7 @@ case class ArithmeticExpression(
     */
   override def baseType: SQLType = {
     val folded = SQLTypeUtils.leastCommonSuperType(argTypes)
-    if (operator == DIVIDE && folded.isInstanceOf[SQLNumeric]) SQLTypes.Double else folded
+    if (operator == DIVIDE && (folded.isNumber || folded.isUnknown)) SQLTypes.Double else folded
   }
 
   /** Is this the numeric division the ruling above governs? Keyed on the coercion TARGET rather
@@ -150,6 +163,24 @@ case class ArithmeticExpression(
     * `/ 100`, the overwhelming majority -- is proved safe here and emits no guard at all.
     */
   private def divisorMayBeZero: Boolean = numericLiteral(right).forall(_.toDouble == 0.0)
+
+  /** The divisor is a LITERAL zero, so the division is NULL for every document and no guard has to
+    * decide it at runtime.
+    *
+    * 🔴 Folding it is not an optimisation, it is what makes the ruling work on Elasticsearch 6.8
+    * (found by the es6 integration leg, which is the only place it shows). The guard renders as a
+    * parenthesised conditional, and where the division is the WHOLE script -- a constant expression
+    * like `SELECT 1/0`, with no `def param…` statements in front of it -- 6.8's Painless refuses a
+    * body that is nothing but a conditional:
+    * {{{
+    * ((((double) 0) == 0) ? null : (def)(((double) 1) / ((double) 0)))
+    *   illegal_argument_exception: Extraneous conditional statement.     <- ES 6.8 only
+    * }}}
+    * A division over COLUMNS is unaffected on every version, because the parameter declarations
+    * precede the conditional (measured: `n / m` runs on 6.8). So the narrow case is folded rather
+    * than the guard being reshaped for one release, and the answer is identical everywhere.
+    */
+  private def divisorIsLiteralZero: Boolean = numericLiteral(right).exists(_.toDouble == 0.0)
 
   /** 🔴 A numeric literal operand is NOT a `NumericValue`: `TypeParser.identifierWithValue` is
     * `(value ^^ functionAsIdentifier) >> cast`, so `/ 2` arrives as a `GenericIdentifier` with an
@@ -216,16 +247,41 @@ case class ArithmeticExpression(
     * the operand is known non-null.
     */
   private def coercionSkipped(operand: PainlessScript, target: SQLType): Boolean =
-    operand.nullable && renderedType(operand).isInstanceOf[SQLNumeric] &&
-    target.isInstanceOf[SQLNumeric]
+    operand.nullable && renderedType(operand).isNumber && target.isNumber
 
   private def isFloating(t: SQLType): Boolean = t == SQLTypes.Double || t == SQLTypes.Real
 
   /** What the operand will really be EMITTED as: its own rendering where the coercion is skipped,
-    * and `out` where it is not (a non-nullable operand is always coerced to `out`).
+    * and `out` where it is not.
+    *
+    * 🔴 "Where it is not" is NOT the same as "`target`", and the difference is a silent wrong
+    * answer. [[SQLTypeUtils.coerce]] has no arm for an UNKNOWN source -- `(Any, Double)` falls to
+    * its `case _ => return expr` -- so an operand whose rendering is `Any` is emitted UNCHANGED
+    * while this method, reading `target`, believed it came back carrying the float. Visible in the
+    * shipped bridge expectation `(param1 / ((double) 2))`: `param1` is bare, and the answer is
+    * right only because the OTHER operand happens to carry the float.
+    *
+    * Reachable wrong answer: an `unsigned_long` field has no [[SQLTypes]] arm and therefore reports
+    * `Any`, while its doc value is a `long`. Divided by an `integer` column the fold is numeric, so
+    * [[floatingDivision]] is true, but this method answered DOUBLE for the unknown operand,
+    * [[needsDoubleCast]] stood down, and `param1 / param2` divided as INTEGERS inside an expression
+    * the engine reports as DOUBLE -- with the zero guard present, so it looks correct.
+    *
+    * So an unknown rendering answers UNKNOWN, which [[isFloating]] rejects, and the `(double)` is
+    * emitted defensively. It costs a primitive cast on a `def` that already holds a number.
+    *
+    * ⚠️ This is also what kept the nullable ternary safe without a `(def)`: the only non-numeric
+    * rendering that survives `Validator.validateTypesMatching` in a numeric fold is `Any`, and `Any
+    * -> Double` was the identity, so the branch yielded a `def`. Giving `coerce` an `(Any, Double)`
+    * arm later would produce a PRIMITIVE there and break it -- the two facts are one fact, and they
+    * are written down together on purpose.
     */
-  private def emittedType(operand: PainlessScript, target: SQLType): SQLType =
-    if (coercionSkipped(operand, target)) renderedType(operand) else target
+  private def emittedType(operand: PainlessScript, target: SQLType): SQLType = {
+    val rendered = renderedType(operand)
+    if (coercionSkipped(operand, target)) rendered
+    else if (rendered.isUnknown) rendered
+    else target
+  }
 
   /** Does the division need an explicit `(double)` on its left operand?
     *
@@ -342,8 +398,21 @@ case class ArithmeticExpression(
 
       val leftParam =
         if (left.nullable && !isBareName(l)) bind(l, s"lv$idx") else l
+
+      /** 🔴 The divisor is bound when it is not a bare NAME, even if it is not nullable -- because
+        * the zero guard reads it a SECOND time. `$rightParam` appears in `($rightParam == 0)` and
+        * again inside the division, so an operand that is not a name is EVALUATED TWICE, and if it
+        * is not pure the guard tests a different value than the division uses: `x / RANDOM()`
+        * emitted `Math.random() == 0 ? null : (param1 / Math.random())`, two independent draws, so
+        * the guard was decorative. Nullability was the right condition while the guard was the only
+        * reader; it stopped being so when [[divisorMayBeZero]] added a second one.
+        *
+        * A non-nullable, non-name LEFT operand needs no such binding: it is read once.
+        */
       val rightParam =
-        if (right.nullable && !isBareName(r)) bind(r, s"rv$idx") else r
+        if (!isBareName(r) && (right.nullable || (floatingDivision(out) && divisorMayBeZero)))
+          bind(r, s"rv$idx")
+        else r
 
       /** 🔴 ONE guard list, replacing three hand-written branches that said the same thing.
         * `leftParam` IS `l` when the left operand is not nullable and `rightParam` IS `r` when the
@@ -360,9 +429,14 @@ case class ArithmeticExpression(
       val guards =
         (if (left.nullable) List(s"$leftParam == null") else Nil) :::
         (if (right.nullable) List(s"$rightParam == null") else Nil) :::
-        (if (floatingDivision(target) && divisorMayBeZero) List(s"$rightParam == 0") else Nil)
-      expr += s"(${guards.mkString(" || ")}) ? null : ($lhs ${operator
-        .painless(context)} $rightParam)"
+        (if (floatingDivision(target) && divisorMayBeZero && !divisorIsLiteralZero)
+           List(s"$rightParam == 0")
+         else Nil)
+      if (floatingDivision(target) && divisorIsLiteralZero)
+        expr += "null"
+      else
+        expr += s"(${guards.mkString(" || ")}) ? null : ($lhs ${operator
+          .painless(context)} $rightParam)"
       if (group)
         expr = s"($expr)"
       return s"$base$expr"
@@ -385,7 +459,8 @@ case class ArithmeticExpression(
      * story 21.8 hit with a primitive method outside a null guard.
      */
     val expr =
-      if (floatingDivision(target) && divisorMayBeZero) s"(($r == 0) ? null : (def)($core))"
+      if (floatingDivision(target) && divisorIsLiteralZero) "null"
+      else if (floatingDivision(target) && divisorMayBeZero) s"(($r == 0) ? null : (def)($core))"
       else core
     if (group)
       s"($expr)"

@@ -302,8 +302,12 @@ SELECT CAST(10 AS DOUBLE) / 3 AS result;   -- 3.333...
 **Division by Zero:**
 
 Since `0.24.0` the engine handles it for you: **a zero divisor yields NULL** — verified on real
-Elasticsearch in a projection, in a predicate, in an aggregation script and in a computed column
-(an ingest pipeline).
+Elasticsearch in a projection, in a predicate and in a computed column (an ingest pipeline).
+
+> ⚠️ **Aggregations are not covered by that verification.** A division of two aggregates
+> (`SUM(a) / SUM(b)`, `HAVING SUM(a) / SUM(b) > 1`) is rendered as an Elasticsearch
+> `bucket_script` / `bucket_selector`, which is a different execution context and has not been
+> tested against a zero divisor. Guard it in SQL if a bucket can have a zero denominator.
 
 ```sql
 -- no guard needed
@@ -374,11 +378,25 @@ expr1 % expr2
 - Integer (remainder of division)
 
 > ⚠️ **A zero divisor is NOT guarded for `%`.** The `0.24.0` rule that turns `a / 0` into NULL
-> covers `/` only. `a % 0` still throws: a search fails with HTTP 400
-> `arithmetic_exception: / by zero`, and in a computed column the ingest processor's
-> `ignore_failure` swallows it and the column is simply **absent** from the indexed document.
-> Guard it yourself — `CASE WHEN b != 0 THEN a % b END` — or use `NULLIF(b, 0)` *outside* a
+> covers `/` only, and `%` has two distinct failures:
+>
+> - **integer operands** — `a % 0` throws. A search fails with HTTP 400
+>   `arithmetic_exception: / by zero`; in a computed column the ingest processor's
+>   `ignore_failure` swallows it and the column is simply **absent** from the indexed document.
+> - **floating operands** — `a % 0` is `NaN`, and Elasticsearch refuses to index a non-finite
+>   number, so **the whole document is rejected** (`document_parsing_exception: [double] supports
+>   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix, and
+>   it is still open for `%`.
+>
+> ⚠️ **There is no in-expression way to guard it.** `CASE WHEN b != 0 THEN a % b END`,
+> `COALESCE(a % b, 0)` and `FLOOR(a % b)` are all **parse errors** — an arithmetic expression is
+> not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see the note under
+> `/` above; the restriction is not specific to division). And `a % NULLIF(b, 0)` parses but then
+> throws `null_pointer_exception` on exactly the rows the guard is for, exactly as it does for
 > division.
+>
+> Until `%` is covered, keep a zero divisor out of the data — filter it in `WHERE`
+> (`WHERE b <> 0`), or compute the remainder into its own column from an already-filtered index.
 
 **Examples:**
 

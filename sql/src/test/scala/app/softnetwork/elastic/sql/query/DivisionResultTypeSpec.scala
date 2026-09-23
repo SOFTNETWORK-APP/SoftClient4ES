@@ -271,7 +271,11 @@ class DivisionResultTypeSpec extends AnyFlatSpec with Matchers with TableDrivenP
       )
     ) { expr =>
       val script = processorOf(expr)
-      withClue(s"[$expr] -> [$script] ")(script should not include "== 0)")
+      // 🔴 `== 0` unparenthesised, NOT `== 0)` (issue #382, found by review). This file records
+      // that the first, wrong implementation emitted `((double) 2) == 0 ? …` -- which contains no
+      // `== 0)` at all, so the needle this row used could not catch the very emission it exists to
+      // catch. The guard's shape must not decide whether the guard is seen.
+      withClue(s"[$expr] -> [$script] ")(script should not include "== 0")
     }
   }
 
@@ -283,9 +287,25 @@ class DivisionResultTypeSpec extends AnyFlatSpec with Matchers with TableDrivenP
     * to [java.lang.Object]` instead of NULL — MEASURED on 8.18.3, and the same trap story 21.8 hit
     * with a primitive method placed outside a null guard.
     */
-  it should "divide two literals as floating point, and guard a literal zero" in {
+  /** 🔴 AMENDED after the es6 integration leg (issue #382). A divisor that IS a literal zero is
+    * FOLDED to `null` rather than guarded: the answer is NULL for every document, so nothing has to
+    * be decided at runtime -- and the guard's shape is what Elasticsearch 6.8 refuses when the
+    * division is the WHOLE script, with no `def param…` statements in front of it:
+    * {{{
+    * ((((double) 0) == 0) ? null : (def)(((double) 10) / ((double) 0)))
+    *   illegal_argument_exception: Extraneous conditional statement.     <- ES 6.8 only
+    * }}}
+    * Only a CONSTANT division is affected; over columns the parameter declarations precede the
+    * conditional and 6.8 is happy (`n / m` is executed on 6.8 by the integration spec). A unit
+    * suite could not have found this: the emission was well-formed on 8.18 and the byte pin said
+    * so. The cluster is what has an opinion.
+    */
+  it should "divide two literals as floating point, and FOLD a literal zero to null" in {
     fieldOf("10 / 3") shouldBe "((double) 10) / ((double) 3)"
-    fieldOf("10 / 0") shouldBe "((((double) 0) == 0) ? null : (def)(((double) 10) / ((double) 0)))"
+    fieldOf("10 / 0") shouldBe "null"
+    // ...and the fold is about the DIVISOR being a literal zero, not about constants in general:
+    // an un-provable divisor still gets its guard, which is what makes this row discriminating.
+    fieldOf("n / m") should include("== 0")
   }
 
   /** 🔴 The ruling is `/` and ONLY `/`. Measured over the corpus: zero of the 4,056 `+`, `-`, `*`
