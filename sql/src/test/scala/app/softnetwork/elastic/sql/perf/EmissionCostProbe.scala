@@ -67,7 +67,8 @@ object EmissionCostProbe {
       Column("other", SQLTypes.Keyword),
       Column("num", SQLTypes.Keyword),
       Column("amount", SQLTypes.Double),
-      Column("n", SQLTypes.Int)
+      Column("n", SQLTypes.Int),
+      Column("m", SQLTypes.Int)
     )
   )
 
@@ -97,9 +98,15 @@ object EmissionCostProbe {
     "SELECT id FROM t WHERE NULLIF(UPPER(name), 'X') = 'A'",
     "string function (UPPER)" -> "SELECT id FROM t WHERE UPPER(name) = 'A'",
     "math function (ABS)"     -> "SELECT id FROM t WHERE ABS(amount) > 10",
-    "IN, numeric"             -> "SELECT id FROM t WHERE CAST(num AS BIGINT) IN (9, 12)",
-    "IN, strings"             -> "SELECT id FROM t WHERE UPPER(name) IN ('A', 'B')",
-    "both sides"              -> "SELECT id FROM t WHERE YEAR(d) = YEAR(ts)",
+    // #382, the `/` ruling: a division now derives a DOUBLE target, may widen an operand and may
+    // carry a zero-divisor guard. The two forms cost differently -- a column divisor cannot be
+    // proved non-zero and gets the guard, a non-zero literal divisor is proved and gets none -- so
+    // both are timed rather than one standing for the other.
+    "division, two integer columns" -> "SELECT id FROM t WHERE n / m > 1",
+    "division, literal divisor"     -> "SELECT id FROM t WHERE amount / 2 > 1",
+    "IN, numeric"                   -> "SELECT id FROM t WHERE CAST(num AS BIGINT) IN (9, 12)",
+    "IN, strings"                   -> "SELECT id FROM t WHERE UPPER(name) IN ('A', 'B')",
+    "both sides"                    -> "SELECT id FROM t WHERE YEAR(d) = YEAR(ts)",
     "composite AND/OR" ->
     "SELECT id FROM t WHERE WEEKDAY(d) = 0 AND UPPER(name) = 'A' OR ABS(amount) > 10"
   )

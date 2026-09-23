@@ -2726,7 +2726,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "div": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 / 2)"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 / ((double) 2))"
         |      }
         |    },
         |    "mod": {
@@ -2775,6 +2775,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("==", " == ")
       .replaceAll("\\|\\|", " || ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
+      // issue #382: `/` always yields DOUBLE, so the literal divisor is coerced. Same rule the
+      // mathematic-function expectation below already uses -- the whitespace-collapsing normaliser
+      // cannot put the space back inside `((double) 2)` on its own.
+      .replaceAll("\\(double\\)(\\d)", "(double) $1")
   }
 
   it should "handle mathematic function as script field and condition" in {

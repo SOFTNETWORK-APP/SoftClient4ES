@@ -195,6 +195,13 @@ class ArithmeticCoercionTargetSpec
     * ⚠️ Release-note obligation, not a test one: `ScriptProcessor.source` is persisted in `_meta`
     * and `IngestPipeline.diff` compares it, so every STORED computed column of a moved shape
     * reports `ProcessorChanged` on the next ALTER.
+    *
+    * ⚠️ AMENDED 2026-09-23 by the lead's `/` ruling, and the numbers above are left as they were
+    * MEASURED for the OQ-2 commit rather than quietly restated. The DIVISION half of that table no
+    * longer holds: `/` now decides its own result type, so the first two lines are back to what
+    * they were before OQ-2 and the narrowing no longer reaches a division at all. What survives
+    * unchanged is every other operator — the string case the issue was filed for included. The
+    * current tree's own blast radius is measured in [[DivisionResultTypeSpec]].
     */
   it should "leave arithmetic with no cast, and an identity cast, byte-identical" in {
     forAll(
@@ -229,12 +236,21 @@ class ArithmeticCoercionTargetSpec
     )((ddl, expected) => withClue(s"[$ddl] ")(processorOf(ddl) shouldBe expected))
   }
 
-  /** 🔴 The NARROWING cast, pinned in all three venues — the semantic change the lead ruled ships.
+  /** 🔴 The NARROWING cast, pinned in all three venues — the semantic change the lead ruled ships,
+    * shown here on `+` because DIVISION no longer carries it.
     *
-    * Executed on real Elasticsearch 8.18.3 in `GatewayApiIntegrationSpec` ("make a narrowing cast
-    * decide the arithmetic, in BOTH venues"): `x = 5.0` stores `2.5` before and `2` after, and
-    * `WHERE CAST(x AS INTEGER) / 2 > 2` returns a DIFFERENT SET of rows. A byte pin alone would
-    * only say the emission moved; the cluster says which answer is right.
+    * ⚠️ REWRITTEN by the lead's ruling of 2026-09-23 (issue #382). This assertion used to pin
+    * `CAST(x AS INTEGER) / 2` as `(lv1 / 2)` — integer division — and that is now `(lv1 / ((double)
+    * 2))` again: **`/` decides its own result type**, so a narrowing cast in front of it no longer
+    * makes the division integral (see [[DivisionResultTypeSpec]]). The rest of the OQ-2 repair
+    * stands untouched, which is exactly what the `+` rows below say.
+    *
+    * 🔴 And they say something the division rows never did: for a NUMERIC column, `/` was the ONLY
+    * operator whose narrowing was visible in the ANSWER. `CAST(x AS INTEGER) + 2` over `x = 5.7` is
+    * `6` under the old target (`5 + 2.0`) and `6` under the new one (`5 + 2`) — the emission moves,
+    * the number does not. Measured over the whole corpus, not assumed. So the `+` pins are EMISSION
+    * pins by necessity, and the value-level guard for Ruling A lives where a value really changes:
+    * the STRING-source rows at the top of this file.
     *
     * All three venues, because `argTypes` feeds `baseType` feeds `out`, and `out` is the coercion
     * target in `toPainless` (the nullable path) AND in `painless` (the other) — one derivation,
@@ -247,23 +263,56 @@ class ArithmeticCoercionTargetSpec
         (
           "computed column",
           () =>
+            processorOf("CREATE TABLE t (x DOUBLE, c DOUBLE SCRIPT AS (CAST(x AS INTEGER) + 2))"),
+          "def param1 = ctx.x; def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "ctx.c = (lv1 == null) ? null : (lv1 + 2)"
+        ),
+        (
+          "projection",
+          () => fieldOf("SELECT CAST(x AS INTEGER) + 2 AS c FROM t"),
+          "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
+          "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "(lv1 == null) ? null : (lv1 + 2)"
+        ),
+        (
+          "predicate",
+          () => predicateOf("SELECT name FROM t WHERE CAST(x AS INTEGER) + 2 > 2"),
+          "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
+          "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "def left2 = (lv1 == null) ? null : (lv1 + 2); " +
+          "(left2 == null ? false : ((left2 > 2)))"
+        )
+      )
+    )((venue, emitted, expected) => withClue(s"[$venue] ")(emitted() shouldBe expected))
+  }
+
+  /** The other half of the same rewrite, pinned rather than merely deleted: the division the
+    * paragraph above used to own is back to a FLOATING one, in the same three venues.
+    */
+  it should "NOT let a narrowing cast make a division integral any more (#382, 2026-09-23)" in {
+    forAll(
+      Table(
+        ("venue", "emitted", "expected"),
+        (
+          "computed column",
+          () =>
             processorOf("CREATE TABLE t (x DOUBLE, c DOUBLE SCRIPT AS (CAST(x AS INTEGER) / 2))"),
           "def param1 = ctx.x; def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
-          "ctx.c = (lv1 == null) ? null : (lv1 / 2)"
+          "ctx.c = (lv1 == null) ? null : (lv1 / ((double) 2))"
         ),
         (
           "projection",
           () => fieldOf("SELECT CAST(x AS INTEGER) / 2 AS c FROM t"),
           "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
           "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
-          "(lv1 == null) ? null : (lv1 / 2)"
+          "(lv1 == null) ? null : (lv1 / ((double) 2))"
         ),
         (
           "predicate",
           () => predicateOf("SELECT name FROM t WHERE CAST(x AS INTEGER) / 2 > 2"),
           "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
           "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
-          "def left2 = (lv1 == null) ? null : (lv1 / 2); " +
+          "def left2 = (lv1 == null) ? null : (lv1 / ((double) 2)); " +
           "(left2 == null ? false : ((left2 > 2)))"
         )
       )

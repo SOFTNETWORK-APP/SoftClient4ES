@@ -668,31 +668,32 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
-  /** 🔴 The lead's Ruling A, executed. #382's OQ-2 repair moved an `Identifier` operand's declared
-    * type from the COLUMN's (`out`) to the CHAIN's (`chainType`), and that moves the coercion
-    * TARGET for a cast of a NUMERIC column just as much as for a cast of a string one. It is a
-    * SEMANTIC change to queries and to computed columns that work today, and nothing else in the
-    * estate guards it — mutating `ArithmeticExpression.argTypeOf` back to `args.map(_.out)` left
-    * every other assertion in this repo green.
+  /** 🔴 The lead's Ruling A, executed — and AMENDED by the lead's ruling of 2026-09-23, which
+    * supersedes its DIVISION half. #382's OQ-2 repair moved an `Identifier` operand's declared type
+    * from the COLUMN's (`out`) to the CHAIN's (`chainType`), so a cast decides what the operand IS.
+    * That still holds. What no longer holds is that it decides what the DIVISION is: `/` decides
+    * its own result type and always yields DOUBLE (see `DivisionResultTypeSpec`).
     *
-    * MEASURED on real Elasticsearch 8.18.3 for `x DOUBLE`:
+    * MEASURED on real Elasticsearch 8.18.3 for `x DOUBLE`, `CAST(x AS INTEGER) / 2`:
     *
     * {{{
-    *                     emitted right-hand side          CAST(x AS INTEGER) / 2   over x = 5.0
-    *   before #382      (lv1 / ((double) 2))             2.5
-    *   after  #382      (lv1 / 2)                        2
+    *                       emitted right-hand side     x = 5.0   x = 7.5
+    *   main              (lv1 / ((double) 2))         2.5       3.5
+    *   OQ-2 (superseded) (lv1 / 2)                    2         3
+    *   this ruling       (lv1 / ((double) 2))         2.5       3.5
     * }}}
     *
-    * The lead ruled that `CAST(x AS INTEGER) / 2 = 2` is the correct answer — the cast says what
-    * the operand IS, so the arithmetic follows it — and that the two venues must agree. Both are
-    * asserted here: the computed column and the query, over the SAME two rows, so an assertion that
-    * passed because one venue quietly kept the old target cannot hide.
+    * 🔴 So this row is NOT vacuous after the amendment, and the reason is worth stating: the cast
+    * still changes the ANSWER, just not through the division's type. `7.5` narrows to `7`, so
+    * `CAST(x AS INTEGER) / 2` is **3.5** where the uncast `x / 2` is **3.75** — the control table
+    * at the bottom holds exactly that pair. It is the fixture, not the operator, that keeps the
+    * evidence alive.
     *
-    * ⚠️ `7.5` is in the fixture on purpose. `(int) 7.5 = 7`, and `7 / 2` is 3 under the new target
-    * against 3.5 under the old one — a pair of rows that a single-row fixture, or a fixture whose
-    * values happen to divide exactly, would not separate.
+    * ⚠️ `7.5` is in the fixture on purpose, and the predicate threshold is `> 3` rather than `> 2`:
+    * under the superseded integer-division reading the answers were `2` and `3`, so `> 3` matched
+    * NOTHING. A `> 2` threshold would have been satisfied by all three readings.
     */
-  it should "make a narrowing cast decide the arithmetic, in BOTH venues (#382 Ruling A)" in {
+  it should "not let a narrowing cast make a division integral (#382, 2026-09-23)" in {
     val create =
       """CREATE TABLE IF NOT EXISTS cast_narrow (
         |  id INT,
@@ -706,29 +707,28 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       Some(DmlResult(inserted = 2))
     )
 
-    // the DDL venue: integer division, because `CAST(x AS INTEGER)` really is an integer
-    doublesById("SELECT id, c FROM cast_narrow", "c") shouldBe Map(1L -> 2.0, 2L -> 3.0)
+    // the DDL venue: the OPERAND is narrowed (7.5 -> 7) but the DIVISION stays floating
+    doublesById("SELECT id, c FROM cast_narrow", "c") shouldBe Map(1L -> 2.5, 2L -> 3.5)
 
     // the QUERY venue, same expression, same answers -- the agreement is the ruling
     doublesById(
       "SELECT id, CAST(x AS INTEGER) / 2 AS c FROM cast_narrow",
       "c"
-    ) shouldBe Map(1L -> 2.0, 2L -> 3.0)
+    ) shouldBe Map(1L -> 2.5, 2L -> 3.5)
 
-    // ... and in a PREDICATE, where the change is visible as a different ROW SET: under the old
-    // target both rows pass (2.5 > 2 and 3.5 > 2), under the new one only the second does.
+    // ... and in a PREDICATE, where the superseded integer reading is visible as an EMPTY row set:
+    // it answered 2 and 3, and neither is > 3. 3.5 is.
     val filtered = collectRows(
       System.nanoTime(),
-      client.run("SELECT id FROM cast_narrow WHERE CAST(x AS INTEGER) / 2 > 2").futureValue
+      client.run("SELECT id FROM cast_narrow WHERE CAST(x AS INTEGER) / 2 > 3").futureValue
     )
     withClue(s"$filtered ") {
       filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(2L)
     }
 
-    // 🔴 The control that keeps the row above from being satisfied by "the coercion stopped
-    // working": arithmetic with NO cast, and a cast to the column's OWN type, are byte-identical
-    // before and after (measured over 128 and 104 corpus rows respectively, zero moved). If the
-    // repair had simply dropped the coercion these would have moved too.
+    // 🔴 The control that keeps the row above from being satisfied by "the cast stopped working":
+    // the SAME division with no cast answers 3.75 where the cast answers 3.5, so the narrowing is
+    // still doing its job on the OPERAND even though it no longer decides the division's type.
     val control =
       """CREATE TABLE IF NOT EXISTS cast_narrow_ctl (
         |  id INT,
@@ -744,6 +744,147 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     )
     doublesById("SELECT id, c FROM cast_narrow_ctl", "c") shouldBe Map(1L -> 2.5, 2L -> 3.75)
     doublesById("SELECT id, d FROM cast_narrow_ctl", "d") shouldBe Map(1L -> 2.5, 2L -> 3.75)
+  }
+
+  /** 🔴 The lead's ruling of 2026-09-23 on #382, executed: **`/` decides its own result type.**
+    * `SELECT n / m` over two INTEGER columns answered `3` for 7/2 — Java's integer division, not
+    * SQL's — while the SAME statement inside a JOIN answered `3.5`, because a JOIN evaluates its
+    * SELECT list in DuckDB. And `c DOUBLE SCRIPT AS (n / m)` emitted `param1 / param2` with no
+    * coercion at all, so a column the user DECLARED `DOUBLE` stored `3.0`.
+    *
+    * Three rows and three divisors, none of them exact, so a reading that truncated could not
+    * satisfy any of them; and `%` beside them as the control that says the ruling is `/` and only
+    * `/` — `3 % 8` is `3`, which a wholesale "everything is a double now" would still report as
+    * `3.0` but which `7 % 2` and `9 % 4` (both `1`) would not separate from each other.
+    */
+  it should "divide as SQL divides, not as Java does (#382, 2026-09-23)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS div_int (
+        |  id INT,
+        |  n INTEGER,
+        |  m INTEGER,
+        |  c DOUBLE SCRIPT AS (n / m),
+        |  r INTEGER SCRIPT AS (n % m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO div_int (id, n, m) VALUES (1, 7, 2), (2, 9, 4), (3, 3, 8);")
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    // the computed column: a column DECLARED `DOUBLE` finally stores a double
+    doublesById("SELECT id, c FROM div_int", "c") shouldBe
+    Map(1L -> 3.5, 2L -> 2.25, 3L -> 0.375)
+
+    // the query venue, same expression, same answers
+    doublesById("SELECT id, n / m AS c FROM div_int", "c") shouldBe
+    Map(1L -> 3.5, 2L -> 2.25, 3L -> 0.375)
+
+    // a division of two LITERALS, which takes the other rendering path entirely
+    doublesById("SELECT id, 10 / 3 AS c FROM div_int WHERE id = 1", "c").values.head shouldBe
+    (10.0 / 3.0 +- 1e-9)
+
+    // the PREDICATE, where the change is a different ROW SET: the truncating reading answered
+    // 3, 2 and 0, so NOTHING was `> 3`
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM div_int WHERE n / m > 3").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
+
+    // 🔴 the control: `%` is NOT part of the ruling and must answer exactly what it always did
+    intsById("SELECT id, r FROM div_int", "r") shouldBe Map(1L -> 1L, 2L -> 1L, 3L -> 3L)
+    doublesById("SELECT id, n % m AS r FROM div_int", "r") shouldBe
+    Map(1L -> 1.0, 2L -> 1.0, 3L -> 3.0)
+
+    // 🔴 the documented way to get a TRUNCATED quotient, executed — because there is no `DIV`
+    // operator and `CAST(n / m AS INTEGER)` is a PARSE ERROR (an arithmetic expression is not yet
+    // accepted as a cast operand, issue #267). The quotient goes into a column and THAT column is
+    // cast, which is what `documentation/sql/operators.md` now tells the reader to do.
+    doublesById("SELECT id, CAST(c AS INTEGER) AS whole FROM div_int", "whole") shouldBe
+    Map(1L -> 3.0, 2L -> 2.0, 3L -> 0.0)
+  }
+
+  /** 🔴 A zero divisor is NULL, and the document SURVIVES — the half of the ruling that is a
+    * data-loss fix rather than a semantic change, and the reason the guard shipped WITH it.
+    *
+    * MEASURED on real Elasticsearch 8.18.3 before the ruling, for `m = 0`:
+    *
+    * {{{
+    *   n INTEGER / m   ingest   the script THREW; `ignore_failure` swallowed it, column ABSENT
+    *   n INTEGER / m   search   HTTP 400 "all shards failed", `arithmetic_exception: / by zero`
+    *   x DOUBLE  / m   ingest   `Infinity` -> HTTP 400, the WHOLE DOCUMENT REJECTED:
+    *                             "[double] supports only finite values, but got [Infinity]"
+    *   x DOUBLE  / m   search   the string "Infinity" in the result column, and `Infinity > 2`
+    *                             matched the row
+    * }}}
+    *
+    * The third line is the one that costs data: it predates this ruling for every `double` column,
+    * and making integer division floating would have extended it to integer columns too. So the
+    * INSERT below is itself an assertion — on `main` it does not fully land.
+    *
+    * ⚠️ `documentation/sql/operators.md` has always said *"Engine returns NULL for invalid
+    * arithmetic"*. None of the four lines above was NULL. It is true now.
+    */
+  it should "index the document a zero divisor used to destroy (#382, 2026-09-23)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS div_zero (
+        |  id INT,
+        |  n INTEGER,
+        |  m INTEGER,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (n / m),
+        |  d DOUBLE SCRIPT AS (x / m)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    // the assertion is the COUNT: the second row carries `x / 0`, which used to make
+    // Elasticsearch reject the whole document
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO div_zero (id, n, m, x) VALUES (1, 7, 2, 5.0), (2, 7, 0, 5.0);")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val stored =
+      collectRows(System.nanoTime(), client.run("SELECT id, c, d FROM div_zero").futureValue)
+    withClue(s"$stored ") {
+      stored.size shouldBe 2
+      val byId = stored.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+      String.valueOf(scalarOf(byId(1L), "c")).toDouble shouldBe 3.5
+      String.valueOf(scalarOf(byId(1L), "d")).toDouble shouldBe 2.5
+      // the zero-divisor row: NULL, i.e. no value at all -- not `Infinity`, not a lost document
+      isNullColumn(byId(2L), "c") shouldBe true
+      isNullColumn(byId(2L), "d") shouldBe true
+    }
+
+    // the QUERY venue: the whole search used to fail with HTTP 400, so BOTH rows were lost to the
+    // caller, not just the one with the zero divisor
+    val projected = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, n / m AS c FROM div_zero").futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 2
+      val byId = projected.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+      String.valueOf(scalarOf(byId(1L), "c")).toDouble shouldBe 3.5
+      isNullColumn(byId(2L), "c") shouldBe true
+    }
+
+    // ... and the PREDICATE, where `Infinity > 1` used to MATCH the zero-divisor row
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM div_zero WHERE x / m > 1").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
   }
 
   /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,
@@ -2269,6 +2410,19 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     * pre-existing divergence, recorded by story 21.3), so unwrap a single-element list before
     * asserting the VALUE. What matters here is the TYPE and the value, not the wrapper.
     */
+  /** A column whose value is SQL NULL, however the client surfaced it: absent from the row, a bare
+    * `null`, or Elasticsearch's per-field ARRAY wrapping of one — `script_fields` values come back
+    * wrapped on every path, so `List(null)` is the shape a null script field really takes.
+    */
+  private def isNullColumn(row: Map[String, Any], key: String): Boolean =
+    row.get(key) match {
+      case None                             => true
+      case Some(null)                       => true
+      case Some(s: Seq[_])                  => s.isEmpty || s.forall(_ == null)
+      case Some(a: java.util.Collection[_]) => a.isEmpty || a.toArray.forall(_ == null)
+      case _                                => false
+    }
+
   private def scalarOf(row: Map[String, Any], key: String): Any =
     row.getOrElse(key, fail(s"no column [$key] in $row")) match {
       case Seq(one)  => one
@@ -3063,10 +3217,25 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
   }
 
   it should "fail loudly at execution on a broken constant script" in {
-    // SELECT 1/0 PARSES (no local evaluation any more) and fails on ES with a script error —
-    // loud, inherited FROM-ful semantics. Message deliberately unpinned (grammar/ES-internal).
-    val res = client.run("SELECT 1/0").futureValue
-    res.isFailure shouldBe true
+    // A constant script that really is broken PARSES (no local evaluation any more) and fails on
+    // ES with a script error — loud, inherited FROM-ful semantics. Message deliberately unpinned
+    // (grammar/ES-internal).
+    //
+    // ⚠️ AMENDED by the lead's `/` ruling of 2026-09-23 (issue #382). This row used to use
+    // `SELECT 1/0`, which is no longer broken: a zero DIVISOR is NULL, in every venue, which is
+    // what `documentation/sql/operators.md` has always promised. `%` was deliberately left out of
+    // that ruling and still throws, so it carries the property this row is about — and the pair
+    // below states the asymmetry rather than hiding it.
+    client.run("SELECT 1 % 0").futureValue.isFailure shouldBe true
+
+    // ... and the ruling itself, at its smallest: a literal division by a literal zero is NULL and
+    // HTTP 200, where it used to be an `arithmetic_exception: / by zero` that failed the whole
+    // request.
+    val divided = assertQueryRows(System.nanoTime(), client.run("SELECT 1/0 AS c").futureValue)
+    withClue(s"$divided ") {
+      divided.size shouldBe 1
+      isNullColumn(divided.head, "c") shouldBe true
+    }
   }
 
   it should "keep the handshake index invisible to SHOW TABLES while it exists" in {
