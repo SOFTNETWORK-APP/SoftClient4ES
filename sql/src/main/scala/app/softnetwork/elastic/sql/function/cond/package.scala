@@ -231,6 +231,16 @@ package object cond {
     }
   }
 
+  /** A rendering that may be spliced into [[NullIf]] 's templates exactly as it stands: a Painless
+    * NAME, or a LITERAL (a number, a quoted string, `true` / `false` / `null` -- all of which the
+    * name pattern already covers). Everything else is COMPOUND and must be bound, so the pattern is
+    * deliberately narrow: answering "simple" about a compound rendering is the defect, while
+    * answering "compound" about a name costs one redundant local. Compiled ONCE, here, rather than
+    * per AST node.
+    */
+  private val simpleOperand =
+    """(?:[A-Za-z_][A-Za-z0-9_]*|-?\d+(?:\.\d+)?[lLfFdD]?|"(?:[^"\\]|\\.)*")""".r
+
   case class NullIf(expr1: PainlessScript, expr2: PainlessScript)
       extends ConditionalFunction[SQLAny] {
     override def conditionalOp: ConditionalOp = NullIf
@@ -297,15 +307,6 @@ package object cond {
 
     override def checkIfNullable: Boolean =
       false //checkIfExpressionNullable(expr1) || checkIfExpressionNullable(expr2)
-
-    /** A rendering that may be spliced into the templates below exactly as it stands: a Painless
-      * NAME, or a LITERAL (a number, a quoted string, `true` / `false` / `null` -- all of which the
-      * name pattern already covers). Everything else is COMPOUND and must be bound, so the pattern
-      * is deliberately narrow: answering "simple" about a compound rendering is the defect, while
-      * answering "compound" about a name costs one redundant local.
-      */
-    private[this] val simpleOperand =
-      """(?:[A-Za-z_][A-Za-z0-9_]*|-?\d+(?:\.\d+)?[lLfFdD]?|"(?:[^"\\]|\\.)*")""".r
 
     /** Bind an argument's rendering to a prologue local unless it is already a simple operand.
       *
