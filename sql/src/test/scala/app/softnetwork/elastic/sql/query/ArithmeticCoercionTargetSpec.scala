@@ -61,6 +61,8 @@ class ArithmeticCoercionTargetSpec
       Column("name", SQLTypes.Keyword),
       Column("n", SQLTypes.Int),
       Column("m", SQLTypes.BigInt),
+      // a DOUBLE source, so a cast to INTEGER is a genuine NARROWING (issue #382, Ruling A)
+      Column("x", SQLTypes.Double),
       Column("d", SQLTypes.Date)
     )
   )
@@ -155,25 +157,137 @@ class ArithmeticCoercionTargetSpec
     withClue(emitted)(emitted should include("String.valueOf("))
   }
 
-  /** The other control: arithmetic over a cast of a NUMERIC column was always right, and the repair
-    * must not move a byte of it.
+  /** 🔴 WHAT MOVES, AND WHAT DOES NOT — the honest statement of the repair's blast radius.
+    *
+    * An earlier version of this file claimed the repair "leaves arithmetic over a numeric source
+    * byte-identical" and pinned two shapes that happen not to move. That is FALSE, and the lead has
+    * ruled the new behaviour SHIPS (Ruling A), so the guard has to state what is true instead.
+    *
+    * MEASURED by a differential probe — the branch against a control whose only difference is
+    * `argTypeOf` restored to `args.map(_.out)` — over 1,792 emissions (two cast spellings x four
+    * source columns x four target types x four operators x four right-hand sides, in the DDL, the
+    * predicate and the projection venue, plus the reversed-operand and no-cast orientations):
+    *
+    * {{{
+    *   no cast at all                     128 rows, 0 moved
+    *   cast to the column's OWN type      104 rows, 0 moved
+    *   cast to a DIFFERENT type           596 rows moved
+    * }}}
+    *
+    * So the rule is exactly this: a cast whose target DIFFERS from the column's declared type now
+    * decides the arithmetic. In both directions, which is what makes it more than the string case
+    * #382 was filed for:
+    *
+    * {{{
+    *   x DOUBLE   CAST(x AS INTEGER) / 2   (lv1 / ((double) 2))  ->  (lv1 / 2)
+    *   n INTEGER  CAST(n AS DOUBLE)  / 2   (lv1 / 2)             ->  (lv1 / ((double) 2))
+    *   s KEYWORD  CAST(s AS BIGINT)  + m   String.valueOf(lv1)   ->  lv1          (the filed bug)
+    *   n INTEGER  CAST(n AS KEYWORD) + 2   Long.parseLong(...)   ->  String.valueOf(...)
+    * }}}
+    *
+    * The last line is a family the issue never named and the one to watch: a numeric column cast to
+    * a string used to be silently parsed BACK to a number, so `CAST(n AS KEYWORD) + 2` computed
+    * arithmetic. It now concatenates, which is self-consistent — the arithmetic follows the cast in
+    * this direction too — and under `-`, `*` and `/` it becomes a runtime failure on a String
+    * receiver instead of a silently un-done cast. Recorded on #382 for the lead; pinned below as
+    * CHARACTERISATION so it cannot drift unnoticed either way.
+    *
+    * ⚠️ Release-note obligation, not a test one: `ScriptProcessor.source` is persisted in `_meta`
+    * and `IngestPipeline.diff` compares it, so every STORED computed column of a moved shape
+    * reports `ProcessorChanged` on the next ALTER.
     */
-  it should "leave arithmetic over a numeric source byte-identical" in {
+  it should "leave arithmetic with no cast, and an identity cast, byte-identical" in {
     forAll(
       Table(
         ("ddl", "expected"),
+        // no cast: the coercion target is the column's type, which is also what it renders
         (
-          "CREATE TABLE t (n INTEGER, m BIGINT, c BIGINT SCRIPT AS (CAST(n AS BIGINT) + m))",
+          "CREATE TABLE t (n INTEGER, m BIGINT, c BIGINT SCRIPT AS (n + m))",
           "def param1 = ctx.n; def param2 = ctx.m; " +
-          "def lv1 = (param1 != null ? (def)(((long) param1)) : null); " +
-          "ctx.c = (lv1 == null || param2 == null) ? null : (lv1 + param2)"
+          "ctx.c = (param1 == null || param2 == null) ? null : (param1 + param2)"
         ),
+        (
+          "CREATE TABLE t (x DOUBLE, c DOUBLE SCRIPT AS (x / 2))",
+          "def param1 = ctx.x; ctx.c = (param1 == null) ? null : (param1 / ((double) 2))"
+        ),
+        // an IDENTITY cast: `chainType` and `out` agree, so there is nothing to move
+        (
+          "CREATE TABLE t (n INTEGER, m BIGINT, c BIGINT SCRIPT AS (CAST(n AS INTEGER) + m))",
+          "def param1 = ctx.n; def param2 = ctx.m; " +
+          "ctx.c = (param1 == null || param2 == null) ? null : (param1 + param2)"
+        ),
+        (
+          "CREATE TABLE t (x DOUBLE, c DOUBLE SCRIPT AS (CAST(x AS DOUBLE) / 2))",
+          "def param1 = ctx.x; ctx.c = (param1 == null) ? null : (param1 / ((double) 2))"
+        ),
+        // ... and a function chain with no cast, which reads its own `out` and never did move
         (
           "CREATE TABLE t (name KEYWORD, c BIGINT SCRIPT AS (LENGTH(name) + 1))",
           "def param1 = ctx.name; ctx.c = (param1 == null) ? null : param1.length() + 1"
         )
       )
     )((ddl, expected) => withClue(s"[$ddl] ")(processorOf(ddl) shouldBe expected))
+  }
+
+  /** 🔴 The NARROWING cast, pinned in all three venues — the semantic change the lead ruled ships.
+    *
+    * Executed on real Elasticsearch 8.18.3 in `GatewayApiIntegrationSpec` ("make a narrowing cast
+    * decide the arithmetic, in BOTH venues"): `x = 5.0` stores `2.5` before and `2` after, and
+    * `WHERE CAST(x AS INTEGER) / 2 > 2` returns a DIFFERENT SET of rows. A byte pin alone would
+    * only say the emission moved; the cluster says which answer is right.
+    *
+    * All three venues, because `argTypes` feeds `baseType` feeds `out`, and `out` is the coercion
+    * target in `toPainless` (the nullable path) AND in `painless` (the other) — one derivation,
+    * three renderings, and a repair at a single local would have fixed only one of them.
+    */
+  it should "let a narrowing cast decide the coercion target, in every venue" in {
+    forAll(
+      Table(
+        ("venue", "emitted", "expected"),
+        (
+          "computed column",
+          () =>
+            processorOf("CREATE TABLE t (x DOUBLE, c DOUBLE SCRIPT AS (CAST(x AS INTEGER) / 2))"),
+          "def param1 = ctx.x; def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "ctx.c = (lv1 == null) ? null : (lv1 / 2)"
+        ),
+        (
+          "projection",
+          () => fieldOf("SELECT CAST(x AS INTEGER) / 2 AS c FROM t"),
+          "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
+          "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "(lv1 == null) ? null : (lv1 / 2)"
+        ),
+        (
+          "predicate",
+          () => predicateOf("SELECT name FROM t WHERE CAST(x AS INTEGER) / 2 > 2"),
+          "def param1 = (doc['x'].size() == 0 ? null : doc['x'].value); " +
+          "def lv1 = (param1 != null ? (def)(((int) param1)) : null); " +
+          "def left2 = (lv1 == null) ? null : (lv1 / 2); " +
+          "(left2 == null ? false : ((left2 > 2)))"
+        )
+      )
+    )((venue, emitted, expected) => withClue(s"[$venue] ")(emitted() shouldBe expected))
+  }
+
+  /** The WIDENING direction, which the same derivation produces and which no other assertion
+    * covers: an INTEGER column cast to DOUBLE now widens the literal it is divided by.
+    */
+  it should "let a widening cast decide the coercion target too" in {
+    processorOf("CREATE TABLE t (n INTEGER, c DOUBLE SCRIPT AS (CAST(n AS DOUBLE) / 2))") shouldBe
+    "def param1 = ctx.n; def lv1 = (param1 != null ? (def)(((double) param1)) : null); " +
+    "ctx.c = (lv1 == null) ? null : (lv1 / ((double) 2))"
+  }
+
+  /** CHARACTERISATION, not an endorsement: a NUMERIC column cast to a STRING. Recorded on #382 for
+    * the lead — it is the mirror image of the filed bug, the same rule produces it, and the lead
+    * ruled only on the numeric-target direction.
+    */
+  it should "make a numeric column cast to a string CONCATENATE (recorded, #382)" in {
+    processorOf("CREATE TABLE t (n INTEGER, c KEYWORD SCRIPT AS (CAST(n AS KEYWORD) + 2))") shouldBe
+    "def param1 = ctx.n; " +
+    "def lv1 = String.valueOf((param1 != null ? String.valueOf(param1) : null)); " +
+    "ctx.c = (lv1 == null) ? null : (lv1 + String.valueOf(2))"
   }
 
   /** The type the expression REPORTS, not only the one it emits — the mechanism itself, asked of

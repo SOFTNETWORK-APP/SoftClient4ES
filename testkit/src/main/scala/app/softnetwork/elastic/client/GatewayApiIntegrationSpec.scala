@@ -249,6 +249,15 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       String.valueOf(scalarOf(row, column)).toDouble.toLong
     }.toMap
 
+  /** `intsById`'s exact-valued sibling. #382's Ruling A turns on `2` versus `2.5`, which
+    * `toDouble.toLong` erases.
+    */
+  private def doublesById(sql: String, column: String): Map[Long, Double] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      String.valueOf(scalarOf(row, column)).toDouble
+    }.toMap
+
   private def pipelineNames(): Seq[Any] =
     assertQueryRows(System.nanoTime(), client.run("SHOW PIPELINES").futureValue).map(_("name"))
 
@@ -657,6 +666,84 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     withClue(s"$filtered ") {
       filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
     }
+  }
+
+  /** 🔴 The lead's Ruling A, executed. #382's OQ-2 repair moved an `Identifier` operand's declared
+    * type from the COLUMN's (`out`) to the CHAIN's (`chainType`), and that moves the coercion
+    * TARGET for a cast of a NUMERIC column just as much as for a cast of a string one. It is a
+    * SEMANTIC change to queries and to computed columns that work today, and nothing else in the
+    * estate guards it — mutating `ArithmeticExpression.argTypeOf` back to `args.map(_.out)` left
+    * every other assertion in this repo green.
+    *
+    * MEASURED on real Elasticsearch 8.18.3 for `x DOUBLE`:
+    *
+    * {{{
+    *                     emitted right-hand side          CAST(x AS INTEGER) / 2   over x = 5.0
+    *   before #382      (lv1 / ((double) 2))             2.5
+    *   after  #382      (lv1 / 2)                        2
+    * }}}
+    *
+    * The lead ruled that `CAST(x AS INTEGER) / 2 = 2` is the correct answer — the cast says what
+    * the operand IS, so the arithmetic follows it — and that the two venues must agree. Both are
+    * asserted here: the computed column and the query, over the SAME two rows, so an assertion that
+    * passed because one venue quietly kept the old target cannot hide.
+    *
+    * ⚠️ `7.5` is in the fixture on purpose. `(int) 7.5 = 7`, and `7 / 2` is 3 under the new target
+    * against 3.5 under the old one — a pair of rows that a single-row fixture, or a fixture whose
+    * values happen to divide exactly, would not separate.
+    */
+  it should "make a narrowing cast decide the arithmetic, in BOTH venues (#382 Ruling A)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS cast_narrow (
+        |  id INT,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (CAST(x AS INTEGER) / 2)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_narrow (id, x) VALUES (1, 5.0), (2, 7.5);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // the DDL venue: integer division, because `CAST(x AS INTEGER)` really is an integer
+    doublesById("SELECT id, c FROM cast_narrow", "c") shouldBe Map(1L -> 2.0, 2L -> 3.0)
+
+    // the QUERY venue, same expression, same answers -- the agreement is the ruling
+    doublesById(
+      "SELECT id, CAST(x AS INTEGER) / 2 AS c FROM cast_narrow",
+      "c"
+    ) shouldBe Map(1L -> 2.0, 2L -> 3.0)
+
+    // ... and in a PREDICATE, where the change is visible as a different ROW SET: under the old
+    // target both rows pass (2.5 > 2 and 3.5 > 2), under the new one only the second does.
+    val filtered = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM cast_narrow WHERE CAST(x AS INTEGER) / 2 > 2").futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(2L)
+    }
+
+    // 🔴 The control that keeps the row above from being satisfied by "the coercion stopped
+    // working": arithmetic with NO cast, and a cast to the column's OWN type, are byte-identical
+    // before and after (measured over 128 and 104 corpus rows respectively, zero moved). If the
+    // repair had simply dropped the coercion these would have moved too.
+    val control =
+      """CREATE TABLE IF NOT EXISTS cast_narrow_ctl (
+        |  id INT,
+        |  x DOUBLE,
+        |  c DOUBLE SCRIPT AS (x / 2),
+        |  d DOUBLE SCRIPT AS (CAST(x AS DOUBLE) / 2)
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(control).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO cast_narrow_ctl (id, x) VALUES (1, 5.0), (2, 7.5);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    doublesById("SELECT id, c FROM cast_narrow_ctl", "c") shouldBe Map(1L -> 2.5, 2L -> 3.75)
+    doublesById("SELECT id, d FROM cast_narrow_ctl", "d") shouldBe Map(1L -> 2.5, 2L -> 3.75)
   }
 
   /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,

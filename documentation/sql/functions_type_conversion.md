@@ -362,7 +362,7 @@ FROM dates_table;
 **In a computed column:**
 
 ```sql
--- convert what can be converted, leave the rest without a value
+-- convert what can be converted, leave the rest NULL
 CREATE TABLE orders (
   id INT,
   zip_code KEYWORD,
@@ -370,12 +370,22 @@ CREATE TABLE orders (
 );
 ```
 
-`'75001'` stores `zip_n = 75001`; `'N/A'` is indexed with **no value** for `zip_n`. The document is
-always stored — the failed conversion never rejects it. See
+`'75001'` stores `zip_n = 75001`; `'N/A'` is indexed with `zip_n` set to `NULL` — the `_source`
+carries `"zip_n": null` and no doc value is written, so the row is skipped by
+`WHERE zip_n IS NOT NULL` and by any aggregation over `zip_n`. The document is always stored. See
 [DDL statements](ddl_statements.md#computed-columns-script-as-and-stored).
 
+A failed safe cast is a NULL operand for whatever wraps it, following the same rule as a column that
+is null: `CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, and so are
+`UPPER(...)`, `LENGTH(...)`, `ABS(...)` and `ROUND(...)` over it.
+
 > Before **0.24.0** a safe cast in a computed column produced a malformed script, so the
-> `CREATE TABLE` itself failed. It works in every shape from 0.24.0 on.
+> `CREATE TABLE` itself failed.
+>
+> **Known gap in 0.24.0:** `NULLIF` over a cast — safe or plain — is still rejected at
+> `CREATE TABLE` with a script compile error. `NULLIF(TRY_CAST(zip_code AS BIGINT), 0)` and
+> `NULLIF(CAST(zip_code AS BIGINT), 0)` fail identically, while `NULLIF(qty, 0)` over a numeric
+> column works; the limitation belongs to `NULLIF` over a cast and predates the safe-cast repair.
 
 **Safe Boolean Conversions:**
 
