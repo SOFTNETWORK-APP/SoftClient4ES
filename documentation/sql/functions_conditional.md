@@ -289,10 +289,27 @@ FROM products
   wherever it appeared — a computed column, a projection or a `WHERE`. A function argument is
   evaluated once from 0.24.0 as well; `NULLIF(UPPER(name), 'X')` used to call `UPPER` three times,
   and a `CASE` as the first argument could return the wrong value.
-- The two arguments must be **comparable**. `NULLIF(status, 0)` — text against a number — has no
-  meaning, and Elasticsearch rejects the script it generates (at `CREATE TABLE` for a computed
-  column, as a shard failure in a query). Write the comparison in the type you mean:
+- The two arguments must be **comparable**, and from **0.24.0** the engine says so itself. Text
+  against a number has no meaning, so `NULLIF(status, 0)` is refused with
+
+  ```
+  NULLIF(status, 0) compares KEYWORD with BIGINT: NULLIF requires two arguments of comparable
+  types, so cast one of them
+  ```
+
+  — at `CREATE TABLE` / `ALTER TABLE … SET SCRIPT AS` for a computed column, and before the query
+  is sent for a projection or a `WHERE`. Earlier versions built a script around the mismatch
+  instead: in a query Elasticsearch rejected it, and in a computed column the ingest processor's
+  `ignore_failure` swallowed the failure, so **the column was simply missing from every document**
+  and the `CREATE TABLE` still answered `200`. Write the comparison in the type you mean:
   `NULLIF(status, '0')` or `NULLIF(CAST(status AS BIGINT), 0)`.
+
+  A cast can *create* the mismatch as well as cure it: `NULLIF(CAST(qty AS KEYWORD), 0)` renders
+  text against a number and is refused, even though `qty` is numeric.
+
+- A **string literal against a `date` column** is checked against that column's mapping `format`,
+  the same way a `WHERE` comparison is: `NULLIF(created_at, '2024-01-15')` is accepted,
+  `NULLIF(created_at, 'yesterday')` is refused with a message naming the literal and the field.
 - `expr2` being NULL is not a match: SQL says the comparison is then UNKNOWN, so the answer is
   `expr1`, not NULL.
 
