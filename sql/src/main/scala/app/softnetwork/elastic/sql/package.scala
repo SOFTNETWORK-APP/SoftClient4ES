@@ -315,6 +315,31 @@ package object sql {
     def isTemporal: Boolean = out.isInstanceOf[SQLTemporal]
     def isAggregation: Boolean = false
     def hasAggregation: Boolean = isAggregation
+
+    /** The type a consumer that DECLARES a column for this expression should use — what SQL
+      * consumers are TOLD, as opposed to what Painless renders.
+      *
+      * 🔴 The third of three questions that had been sharing one answer, and the one nothing asked
+      * until a materialized view had to name the type of a computed column:
+      *
+      *   - [[Token.out]] / `baseType` — the type a QUERY hands Painless. For a schema-resolved
+      *     column that is `SQLTypeUtils.runtimeType(declared)`, which collapses every temporal to
+      *     `Timestamp`, because Elasticsearch has no timestamp type: every temporal column is a
+      *     `date` and `doc['f'].value` is a `ZonedDateTime` whatever the user wrote. Right for
+      *     emission and `coerce`, which is all `GenericIdentifier.baseType`'s scaladoc claims.
+      *   - [[Identifier.declaredType]] — what the LEAF column was declared as, which an INGEST
+      *     script needs because it reads raw JSON (`ZonedDateTime.parse` refuses `"2025-01-10"`).
+      *   - `reportedType` — this one. Declaring a column is neither emission nor coercion, so the
+      *     runtime collapse has no claim on it. And because Elasticsearch has no timestamp type,
+      *     DATE and TIMESTAMP map to the SAME `date` mapping: reporting TIMESTAMP changes nothing
+      *     about storage or the script, and destroys the distinction in the one place still
+      *     carrying it — what `SHOW MATERIALIZED VIEW`, JDBC and BI metadata report.
+      *
+      * Defaults to `out`, so every expression answers exactly what it answers today until a
+      * function overrides it. The derivation runs in PARALLEL to `baseType` rather than replacing
+      * it — story 21.5 tried to fix this at the mapping layer and the consequences cascaded.
+      */
+    def reportedType: SQLType = out
     def shouldBeScripted: Boolean = false
   }
 
@@ -339,6 +364,7 @@ package object sql {
       */
     def painless(context: Option[PainlessContext] = None): String
     def nullValue: String = "null"
+
   }
 
   /** Trait for tokens that can be used as parameters in painless scripts
@@ -1816,8 +1842,45 @@ package object sql {
 
     /** The type the column was DECLARED as, where that differs from what a query hands Painless.
       * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.
+      *
+      * ⚠️ This is the LEAF question — what THIS column says it is — and the ingest venue depends on
+      * it being exactly that (`SQLTypeUtils.processorTemporal` asks it to decide how to parse
+      * `ctx.<field>`). It is deliberately NOT chain-aware; the chain question is [[reportedType]].
       */
     def declaredType: SQLType = baseType
+
+    /** This identifier's own contribution to [[reportedType]], before any function applies. Split
+      * out so `GenericIdentifier` can supply the column's DECLARATION without `reportedType` having
+      * to know whether a schema was attached.
+      */
+    def reportedLeafType: SQLType = baseType
+
+    /** What a consumer that DECLARES a column for this expression should report (see
+      * [[PainlessScript.reportedType]]).
+      *
+      * The chain answers it: the outermost function decides, computing from its arguments' own
+      * `reportedType`, so the leaf declarations propagate outward instead of the runtime collapse
+      * doing. With no functions this IS the leaf.
+      *
+      * ⚠️ An AGGREGATE reports `out`, for the reason [[chainType]] already records.
+      */
+    override def reportedType: SQLType =
+      functions.headOption match {
+        case Some(f) if !isAggregation =>
+          // 🔴 A function that has NOT refined the question answers `out`, and taking that verbatim
+          // would be a LOSS: the outermost function's own `out` is coarser than the chain's for the
+          // whole adjuster family, which declares the un-narrowed TEMPORAL (#368). So
+          // `DATE_PARSE(…) - INTERVAL 2 DAY` would report TEMPORAL where the chain says DATE. Only
+          // a function that actually says something different gets to override.
+          //
+          // 🔴 And the fallback is [[renderedType]], NOT `out`: on a schema-resolved identifier
+          // `out` reports the COLUMN's type rather than the chain's, which is the very defect #382
+          // repaired -- `CAST(s AS BIGINT)` over a KEYWORD column answers KEYWORD there. MEASURED:
+          // falling back to `out` reported `NULLIF(CAST(s AS BIGINT), 0)` as KEYWORD.
+          val refined = f.reportedType
+          if (refined == f.out) renderedType else refined
+        case _ => reportedLeafType
+      }
 
     override def painless(context: Option[PainlessContext]): String = {
       // A context-free rendering of an AGGREGATE is a bucket-pipeline rendering (`bucket_selector`
@@ -2048,6 +2111,12 @@ package object sql {
       * and `ZonedDateTime.parse` REFUSES a date without a time (measured on ES 8.18.3).
       */
     override def declaredType: SQLType = col.map(_.dataType).getOrElse(baseType)
+
+    /** The LEAF of the reported-type derivation: the column's declaration, NOT
+      * `runtimeType(declaration)`. A bare `DATE` column is reported as `DATE`, which is what the
+      * user wrote and what DuckDB answers for the same column.
+      */
+    override def reportedLeafType: SQLType = col.map(_.dataType).getOrElse(super.reportedLeafType)
 
     def update(request: SingleSearch): Identifier = {
       val bucketPath: String =

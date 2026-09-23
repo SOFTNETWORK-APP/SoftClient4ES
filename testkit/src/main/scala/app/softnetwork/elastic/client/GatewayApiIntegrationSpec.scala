@@ -325,6 +325,71 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     pipelineNames() should not contain "ccr_projected_ddl_default_pipeline"
   }
 
+  /** A CTAS target column's type is DERIVED from the expression, which makes `mergeWithSearch` the
+    * one place in core where the engine — not the user — decides what a column is called.
+    *
+    * 🔴 It read `field.out`, the type a QUERY hands Painless. For a schema-resolved column that is
+    * `SQLTypeUtils.runtimeType`, which collapses every temporal to TIMESTAMP because Elasticsearch
+    * has no timestamp type. So a DATE column projected through any function chain was recorded as
+    * TIMESTAMP in `_meta.columns.<c>.data_type`, and since DATE and TIMESTAMP map to the SAME
+    * `date` mapping, that label was the only thing carrying the difference — nothing about storage
+    * or the script would ever have contradicted it.
+    *
+    * 🔴 Which is exactly why this row has to run on a cluster. The type is round-tripped through
+    * `_meta` and read back by `SHOW TABLE`; a parsed schema would assert our own derivation against
+    * itself. DuckDB 0.10.1 is the external witness for the expected values: over `d DATE` and `ts
+    * TIMESTAMP`, `typeof(COALESCE(d, CURRENT_DATE))` is DATE and `typeof(COALESCE(ts,
+    * CURRENT_DATE))` is TIMESTAMP — COALESCE takes the super type of its arms, and the arms keep
+    * the declarations rather than the runtime collapse.
+    */
+  it should "derive a CTAS column's type from what the expression REPORTS, not what Painless sees" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS ctas_types_src (
+        |  id INT,
+        |  d DATE,
+        |  ts TIMESTAMP
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO ctas_types_src (id, d, ts) VALUES (1, '2024-03-15', '2024-03-15T10:00:00');"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    // 🔴 COALESCE and not NULLIF, deliberately: `NULLIF(<date column>, <literal chain>)` emits
+    // `param1.isEqual(param2)` with a `ZonedDateTime` receiver and a `LocalDate` argument, which
+    // Elasticsearch refuses (`all shards failed`) BEFORE and AFTER this change — issue #373's
+    // mixed-temporal comparison, measured here on ES 8.18.3 and out of scope. The NULLIF half of
+    // the derivation is asserted in `NullIfOperandSpec`, which needs no script to run; what NEEDS
+    // a cluster is the round trip of the DERIVED type through `_meta`, and COALESCE exercises that
+    // with a shape the engine can actually execute.
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE ctas_types_target AS SELECT id, " +
+          "COALESCE(d, CURRENT_DATE) AS eff_date, " +
+          "COALESCE(ts, CURRENT_DATE) AS eff_ts FROM ctas_types_src"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    val ddl =
+      assertShowTable(System.nanoTime(), client.run("SHOW TABLE ctas_types_target").futureValue).ddl
+        .replaceAll("\\s+", " ")
+    withClue(s"[$ddl] ") {
+      // the DATE column stays a DATE …
+      ddl should include("eff_date DATE")
+      // … and the TIMESTAMP one stays a TIMESTAMP, so this is narrowing and not a blanket collapse
+      ddl should include("eff_ts TIMESTAMP")
+    }
+  }
+
   it should "keep the script, and keep it WORKING, when the projection carries the operand (#385)" in {
     // 🔴 The control, and the row that reddens if the drop rule is too eager. `d` IS projected, so
     // the script survives the projection and the target's own pipeline must still compute `c`.

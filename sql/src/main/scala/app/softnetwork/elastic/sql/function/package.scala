@@ -291,6 +291,12 @@ package object function {
 
     def argTypes: List[SQLType] = args.map(_.out)
 
+    /** [[argTypes]] 's counterpart for [[PainlessScript.reportedType]]: each argument's REPORTED
+      * type, so a function that derives its own from its arguments can do so without the runtime
+      * collapse leaking in from the leaves.
+      */
+    def reportedArgTypes: List[SQLType] = args.map(_.reportedType)
+
     def argsSeparator: String = ", "
 
     def inputType: In
