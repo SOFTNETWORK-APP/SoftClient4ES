@@ -166,8 +166,8 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
     * defect, so it flips rather than being deleted — and it still asserts the same INVARIANT, that
     * the two cast spellings agree, which is what makes `TRY_CAST` no worse than `CAST`.
     *
-    * Executed in `GatewayApiIntegrationSpec` ("compute NULLIF over a cast, not compare a string"),
-    * because this module cannot see a compile error.
+    * Executed in `GatewayApiIntegrationSpec` ("compile and run NULLIF over a cast, and compute
+    * (#382 N1)"), because this module cannot see a compile error.
     */
   it should "emit NULLIF over a SAFE cast exactly as over a plain one (#382)" in {
     val safe = processorOf(ddlOf("NULLIF(TRY_CAST(s AS BIGINT), 0)", "BIGINT"))

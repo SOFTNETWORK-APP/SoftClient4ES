@@ -969,6 +969,82 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
+  /** 🔴 Issue #382, the LEAD RULING of 2026-09-23 — a `NULLIF` that compares TEXT with a NUMBER is
+    * a TYPE ERROR, and the engine refuses it instead of building a script around it.
+    *
+    * Executed, because the thing being asserted is that NOTHING is deployed and NOTHING is stored.
+    * Before the ruling, the DDL form of this statement answered `200`, created the table, and then
+    * the ingest processor threw once per document -- which `ScriptProcessor.ignoreFailure` (`true`
+    * by default) swallowed, so the computed column was simply ABSENT from every document with no
+    * error anywhere. A `sql` byte pin cannot tell that story; the cluster can.
+    *
+    * ⚠️ The error is asserted, NOT a stored value: the message has to name the expression, the
+    * column and BOTH rendered types, or a future regression that merely produces some other `Left`
+    * would satisfy the row (story 21.4's lesson).
+    */
+  it should "refuse a NULLIF that compares text with a number, in every venue (#382)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_mismatch (
+        |  id INT,
+        |  s KEYWORD,
+        |  n BIGINT,
+        |  c BIGINT SCRIPT AS (NULLIF(s, 0))
+        |);""".stripMargin
+    val ddl = client.run(create).futureValue
+    withClue(s"$ddl ") {
+      ddl.isFailure shouldBe true
+      val message = String.valueOf(ddl)
+      message should include("NULLIF(s, 0)")
+      message should include("KEYWORD")
+      message should include("BIGINT")
+      message should include("Column 'c'")
+    }
+    // ...and the table it would have created does not exist, so nothing was deployed half-way
+    client.indexExists("nullif_mismatch", pattern = false) shouldBe ElasticSuccess(false)
+
+    // the QUERY venue of the same rule: a projection and a predicate over a table that DOES exist
+    Seq(
+      "SELECT id, NULLIF(s, 0) AS c FROM nullif_fn",
+      "SELECT id FROM nullif_fn WHERE ISNOTNULL(NULLIF(s, 0))"
+    ).foreach { sql =>
+      val res = client.run(sql).futureValue
+      withClue(s"[$sql] $res ") {
+        res.isFailure shouldBe true
+        val message = String.valueOf(res)
+        message should include("NULLIF(s, 0)")
+        message should include("KEYWORD")
+        message should include("BIGINT")
+      }
+    }
+
+    // 🔴 The temporal-literal edge, which no type rule can decide: `NULLIF(created, '2024-01-15')`
+    // and `NULLIF(created, 'yesterday')` are BOTH a TIMESTAMP against a VARCHAR, so the verdict
+    // comes from the column's mapping `format` -- #276's resolver, the same one a WHERE uses.
+    val good = client
+      .run("""CREATE TABLE IF NOT EXISTS nullif_date (
+             |  id INT,
+             |  created DATE,
+             |  c DATE SCRIPT AS (NULLIF(created, '2024-01-15'))
+             |);""".stripMargin)
+      .futureValue
+    assertDdl(System.nanoTime(), good)
+
+    val bad = client
+      .run("""CREATE TABLE IF NOT EXISTS nullif_date_bad (
+             |  id INT,
+             |  created DATE,
+             |  c DATE SCRIPT AS (NULLIF(created, 'yesterday'))
+             |);""".stripMargin)
+      .futureValue
+    withClue(s"$bad ") {
+      bad.isFailure shouldBe true
+      val message = String.valueOf(bad)
+      message should include("yesterday")
+      message should include("'created'")
+    }
+    client.indexExists("nullif_date_bad", pattern = false) shouldBe ElasticSuccess(false)
+  }
+
   // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------
