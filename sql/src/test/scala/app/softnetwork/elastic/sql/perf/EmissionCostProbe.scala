@@ -87,9 +87,14 @@ object EmissionCostProbe {
     "expression function (DATE_FORMAT)" -> "SELECT id FROM t WHERE DATE_FORMAT(d, 'yyyy') = '2025'",
     "expression function (LAST_DAY)" ->
     "SELECT id FROM t WHERE LAST_DAY(d) = CAST('2025-01-31' AS DATE)",
-    "conversion (CAST)"       -> "SELECT id FROM t WHERE CAST(num AS INT) = 9",
-    "conversion (TRY_CAST)"   -> "SELECT id FROM t WHERE TRY_CAST(num AS INT) = 9",
-    "conditional (ISNULL)"    -> "SELECT id FROM t WHERE ISNULL(name) = true",
+    "conversion (CAST)"     -> "SELECT id FROM t WHERE CAST(num AS INT) = 9",
+    "conversion (TRY_CAST)" -> "SELECT id FROM t WHERE TRY_CAST(num AS INT) = 9",
+    "conditional (ISNULL)"  -> "SELECT id FROM t WHERE ISNULL(name) = true",
+    // #382: NULLIF binds a COMPOUND argument to a prologue local, so the two argument forms are
+    // separate shapes -- a name (bound by nothing) and a rendering that has to be hoisted.
+    "conditional (NULLIF, cast)" -> "SELECT id FROM t WHERE NULLIF(CAST(num AS BIGINT), 0) > 1",
+    "conditional (NULLIF, function)" ->
+    "SELECT id FROM t WHERE NULLIF(UPPER(name), 'X') = 'A'",
     "string function (UPPER)" -> "SELECT id FROM t WHERE UPPER(name) = 'A'",
     "math function (ABS)"     -> "SELECT id FROM t WHERE ABS(amount) > 10",
     "IN, numeric"             -> "SELECT id FROM t WHERE CAST(num AS BIGINT) IN (9, 12)",

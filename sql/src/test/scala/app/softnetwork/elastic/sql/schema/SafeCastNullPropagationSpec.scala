@@ -157,28 +157,32 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
     "ctx.c = (param1 == null || param3 == null) ? null : \"x\" + String.valueOf(param3)"
   }
 
-  /** 🔴 RECORDED, NOT FIXED — and MEASURED as pre-existing, so it is not a regression of #382.
+  /** The same three shapes, now that the gap they RECORDED is closed (issue #382, the NULLIF
+    * addendum). An earlier round of this branch published *"Known gap: NULLIF over any cast — safe
+    * or plain — is still rejected at CREATE TABLE"* and pinned it here as a characterisation; the
+    * gap was `NullIf.argTypes` reading each operand's `out` (the COLUMN's type) instead of what it
+    * RENDERS, so a cast of a KEYWORD reported KEYWORD and the string arm's `0 != null` guard
+    * reached Elasticsearch. 🔴 A characterisation that survives its own fix is a test MANDATING a
+    * defect, so it flips rather than being deleted — and it still asserts the same INVARIANT, that
+    * the two cast spellings agree, which is what makes `TRY_CAST` no worse than `CAST`.
     *
-    * `NULLIF` over ANY cast fails `CREATE TABLE` with a script compile error: it renders
-    * `param2.compareTo(0)` on a `def` whose runtime type is a boxed Long against an int literal,
-    * plus `0 != null`, which Painless refuses. `NULLIF(CAST(s AS BIGINT), 0)` fails identically to
-    * `NULLIF(TRY_CAST(s AS BIGINT), 0)` while `NULLIF(n, 0)` works, so the defect belongs to
-    * `NULLIF` over a cast and predates both #382 and the safe-cast hoist.
-    *
-    * Asserted on the CAUSE — that the two cast spellings emit the same shape, and the bare column
-    * does not — rather than on a compile error this module cannot observe. It is the record that
-    * makes the claim "pre-existing" falsifiable.
+    * Executed in `GatewayApiIntegrationSpec` ("compute NULLIF over a cast, not compare a string"),
+    * because this module cannot see a compile error.
     */
-  it should "emit NULLIF over a SAFE cast exactly as over a plain one (recorded, #382)" in {
+  it should "emit NULLIF over a SAFE cast exactly as over a plain one (#382)" in {
     val safe = processorOf(ddlOf("NULLIF(TRY_CAST(s AS BIGINT), 0)", "BIGINT"))
     val plain = processorOf(ddlOf("NULLIF(CAST(s AS BIGINT), 0)", "BIGINT"))
     val bare = processorOf(ddlOf("NULLIF(n, 0)", "BIGINT"))
     withClue(s"safe=[$safe] plain=[$plain] bare=[$bare] ") {
-      // the shape NULLIF renders over a cast, identical for both spellings
-      safe should include("compareTo(0) == 0")
-      plain should include("compareTo(0) == 0")
-      // ... and NOT what it renders over a bare numeric column, which works
+      // a cast that RENDERS a number takes the numeric arm, exactly like the bare numeric column
+      safe should not include "compareTo"
+      plain should not include "compareTo"
       bare should not include "compareTo"
+      safe should include("== 0 ? null : ")
+      plain should include("== 0 ? null : ")
+      // ... and the guard Painless refuses over a primitive literal is gone from both
+      safe should not include "0 != null"
+      plain should not include "0 != null"
     }
   }
 }

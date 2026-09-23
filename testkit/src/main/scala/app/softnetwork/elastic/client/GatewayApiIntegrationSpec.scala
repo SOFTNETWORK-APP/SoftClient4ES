@@ -821,6 +821,154 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
+  /** 🔴 Issue #382's NULLIF addendum, N1 — executed, because the defect was a script Elasticsearch
+    * REFUSED and a `sql` byte pin cannot say that one compiles.
+    *
+    * `NullIf.argTypes` answered each operand's `out`, which for a schema-resolved identifier is the
+    * COLUMN's type — so a cast of a KEYWORD reported KEYWORD, the supertype came out VARCHAR, and
+    * the string arm guarded a primitive literal:
+    *
+    * {{{
+    *   def param3 = param2 == null || (0 != null && param2.compareTo(0) == 0) ? null : param2;
+    *     class_cast_exception: Cannot cast from [int] to [java.lang.Object].
+    * }}}
+    *
+    * so `CREATE TABLE` itself failed and no document could be indexed. `CAST`, `TRY_CAST` and `::`
+    * failed identically, and so did the projection and the predicate venues.
+    *
+    * ⚠️ `v` is the shape that MOVED while already working: `NULLIF(CAST(raw AS BIGINT), n)` used to
+    * take the string arm and compare with `compareTo`, which compiled by the luck of `def` dispatch
+    * over two boxed Longs. It now takes the numeric arm its corrected types name — the one
+    * `NULLIF(n, 0)` has always used — and the values it produces are asserted here on both sides of
+    * the move.
+    */
+  it should "compile and run NULLIF over a cast, and compute (#382 N1)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_cast (
+        |  id INT,
+        |  raw KEYWORD,
+        |  n BIGINT,
+        |  c BIGINT SCRIPT AS (NULLIF(CAST(raw AS BIGINT), 0)),
+        |  t BIGINT SCRIPT AS (NULLIF(TRY_CAST(raw AS BIGINT), 0)),
+        |  v BIGINT SCRIPT AS (NULLIF(CAST(raw AS BIGINT), n))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO nullif_cast (id, raw, n) VALUES (1, '125', 7), (2, '0', 1), (3, '42', 42);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+
+    // the sentinel row is NULL and the others keep their value — two surviving values, so a script
+    // that computed nothing, or nulled everything, cannot satisfy this
+    intsById("SELECT id, c FROM nullif_cast WHERE id <> 2", "c") shouldBe Map(1L -> 125L, 3L -> 42L)
+    intsById("SELECT id, t FROM nullif_cast WHERE id <> 2", "t") shouldBe Map(1L -> 125L, 3L -> 42L)
+    // ... and `v` nulls a DIFFERENT row, so the two columns cannot be confused for one another
+    intsById("SELECT id, v FROM nullif_cast WHERE id <> 3", "v") shouldBe Map(1L -> 125L, 2L -> 0L)
+
+    val sentinel = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, raw, c, t, v FROM nullif_cast WHERE id = 2").futureValue
+    )
+    withClue(s"$sentinel ") {
+      sentinel.size shouldBe 1
+      String.valueOf(scalarOf(sentinel.head, "raw")) shouldBe "0"
+      List("c", "t").foreach(k =>
+        withClue(s"[$k] ")(sentinel.head.get(k).filterNot(v => v == null || v == Nil) shouldBe None)
+      )
+    }
+
+    // the QUERY venue of the same derivation: a projection and a predicate, on the same table
+    val projected = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id, NULLIF(CAST(raw AS BIGINT), 0) AS c FROM nullif_cast WHERE id = 1")
+        .futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 1
+      String.valueOf(scalarOf(projected.head, "c")).toDouble.toLong shouldBe 125L
+    }
+    val filtered = collectRows(
+      System.nanoTime(),
+      client
+        .run("SELECT id FROM nullif_cast WHERE NULLIF(CAST(raw AS BIGINT), 0) > 100")
+        .futureValue
+    )
+    withClue(s"$filtered ") {
+      filtered.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L)
+    }
+  }
+
+  /** 🔴 Issue #382's NULLIF addendum, N2 — and the half a compile error could not have caught.
+    *
+    * `arg0` was spliced RAW three times into `$arg0 == null || ($arg1 != null && $comparison) ?
+    * null : $arg0`, and `&&` / `||` / `==` all bind tighter than `?:`. `u` was the LOUD symptom
+    * (`Cannot cast null to a primitive type [boolean]`), but `w` is the reason this row exists: on
+    * the numeric arm the same re-association COMPILED and answered wrongly.
+    *
+    * {{{
+    *   NULLIF(CASE WHEN n > 1 THEN 1 ELSE 2 END, 1)
+    *     param2 ? 1 : 2 == 1 ? null : param2 ? 1 : 2      reads as  param2 ? 1 : ((2 == 1) ? …)
+    *     n = 5  ->  stored c = 1   where SQL says NULL, HTTP 200
+    * }}}
+    *
+    * ⚠️ `l` is the pre-existing shape whose BYTES moved with the repair (it gains the bound local
+    * and is evaluated once instead of twice); its values are asserted so the move is settled on a
+    * cluster and not on an emission.
+    */
+  it should "compile and run NULLIF over a function, and answer NULL where SQL says NULL (#382 N2)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS nullif_fn (
+        |  id INT,
+        |  s KEYWORD,
+        |  n BIGINT,
+        |  u KEYWORD SCRIPT AS (NULLIF(UPPER(s), 'X')),
+        |  l BIGINT SCRIPT AS (NULLIF(LENGTH(s), 2)),
+        |  w BIGINT SCRIPT AS (NULLIF(CASE WHEN n > 1 THEN 1 ELSE 2 END, 1))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO nullif_fn (id, s, n) VALUES (1, 'x', 5), (2, 'yy', 0);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val rows = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, s, u, l, w FROM nullif_fn").futureValue
+    )
+    val byId = rows.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+    withClue(s"$rows ") {
+      byId.keySet shouldBe Set(1L, 2L)
+      // id 1: UPPER('x') = 'X' equals the sentinel -> NULL; LENGTH = 1, kept
+      byId(1L).get("u").filterNot(v => v == null || v == Nil) shouldBe None
+      String.valueOf(scalarOf(byId(1L), "l")).toDouble.toLong shouldBe 1L
+      // 🔴 the SILENT one: the CASE yields 1, which IS the sentinel, so SQL says NULL. Before the
+      // repair this stored 1.
+      byId(1L).get("w").filterNot(v => v == null || v == Nil) shouldBe None
+
+      // id 2: the mirror image, so neither column can be satisfied by a script that always nulls
+      String.valueOf(scalarOf(byId(2L), "u")) shouldBe "YY"
+      byId(2L).get("l").filterNot(v => v == null || v == Nil) shouldBe None
+      String.valueOf(scalarOf(byId(2L), "w")).toDouble.toLong shouldBe 2L
+    }
+
+    // the QUERY venue of the same splice
+    val projected = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, NULLIF(UPPER(s), 'X') AS u FROM nullif_fn WHERE id = 2").futureValue
+    )
+    withClue(s"$projected ") {
+      projected.size shouldBe 1
+      String.valueOf(scalarOf(projected.head, "u")) shouldBe "YY"
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------
