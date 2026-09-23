@@ -59,6 +59,11 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
     """"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'""".r
       .replaceAllIn(source, m => " " * m.matched.length)
 
+  /** A Painless BLOCK COMMENT around `body`. Assembled rather than written literally: Scala
+    * comments NEST, so the delimiters cannot appear inside the scaladoc that explains them.
+    */
+  private def blockComment(body: String): String = "/" + "* " + body + " *" + "/"
+
   private def columnsOf(ddl: String): List[Column] =
     Parser(ddl) match {
       case Right(ct: CreateTable) => ct.schema.columns
@@ -291,4 +296,75 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
       }
     }
   }
+
+  // -- issue #382, F3: a `}` inside a COMMENT is not a statement boundary -----------------------
+
+  /** 🔴 #382 widened `ScriptTarget.of`'s boundary set with `}` — a hoisted `try { … } catch
+    * (Exception e) {} ` is a statement with no `;`, so the assignment that follows one is preceded
+    * by `} ` — and a `}` inside a Painless COMMENT was then read as code. Found by independent
+    * review; MEASURED, `of` on `ctx.c = 1` followed by a block comment holding `} ctx.zzz = 9`:
+    *
+    * {{{
+    *   before #382   Some(c)
+    *   after  #382   Some(zzz)     <- the processor claims another column's identity
+    * }}}
+    *
+    * `IngestPipeline.diff` keys a processor by this, so a wrong identity is a COLLISION, and the
+    * map that indexes them DROPS the loser. Comments are reachable from SQL today: both `ALTER
+    * PIPELINE … ADD PROCESSOR SCRIPT(source = '…')` and `CREATE PIPELINE … WITH PROCESSORS
+    * (SCRIPT(…))` take a hand-authored source.
+    *
+    * Fixed at the seam that already answers the same question for string literals — `is this
+    * character CODE?` — rather than by narrowing the regex, so the two answers cannot drift.
+    *
+    * ⚠️ The two rows whose comment sits BEFORE the assignment used to answer `None` (no boundary
+    * was recognised at all, so the caller fell back to a content-addressed identity). They answer
+    * correctly now; that is a bonus, not the point, and they are here so a future narrowing of the
+    * scanner is visible.
+    */
+  private val commentShapes = Table(
+    ("source", "why"),
+    ("ctx.c = 1 " + blockComment("} ctx.zzz = 9"), "a `}` in a block comment AFTER the assignment"),
+    ("ctx.c = 1 // } ctx.zzz = 9", "a `}` in a line comment"),
+    (blockComment("ctx.zzz = 9") + " ctx.c = 1", "a whole assignment inside a block comment"),
+    ("// ctx.zzz = 1\nctx.c = 2", "a whole assignment inside a line comment"),
+    (
+      "ctx.c = 1 " + blockComment("a ' b"),
+      "an apostrophe in a comment, which must not open a literal"
+    ),
+    ("ctx.c = 1 /* unterminated", "an unterminated block comment swallows the rest"),
+    ("def p = ctx.a; ctx.c = p", "the control: no comment at all"),
+    (
+      "def safe1 = null; try { safe1 = 1; } catch (Exception e) {} ctx.c = safe1",
+      "the control: the `}` boundary #382 added, which must keep working"
+    ),
+    (
+      "if (ctx.s != null) { ctx.flag = true } ctx.c = 2",
+      "a FOREIGN source whose assignment follows a real block"
+    )
+  )
+
+  "a `}` inside a comment" should "not be read as a statement boundary" in {
+    forAll(commentShapes) { (source, why) =>
+      withClue(s"[$source] -- $why ")(ScriptTarget.of(source).map(_.take(1)) shouldBe Some("c"))
+    }
+  }
+
+  /** The counter-property: blanking comments must not blank CODE. A `/` that opens nothing is
+    * division, and a comment delimiter inside a STRING LITERAL is data.
+    */
+  it should "leave a bare `/` and a delimiter inside a literal alone" in {
+    forAll(
+      Table(
+        ("source", "expected"),
+        ("ctx.c = 1 / 2", Some("c")),
+        ("ctx.c = \"/* } ctx.zzz = 9 */\"", Some("c")),
+        ("ctx.c = '// } ctx.zzz = 9'", Some("c")),
+        // ... and a source this object did NOT write still answers None, so the caller keeps its
+        // content-addressed fallback rather than being handed an invented identity
+        ("def x = 1", None)
+      )
+    )((source, expected) => withClue(s"[$source] ")(ScriptTarget.of(source) shouldBe expected))
+  }
+
 }

@@ -572,9 +572,14 @@ package object sql {
         parts.take(n).toArray
       }
 
-    /** `rendered` with every string literal blanked out, character for character, so a caller can
-      * ask a question about CODE only. Indices and length are preserved, so a match on the result
-      * carries the same offsets and the same captured text as one on the original.
+    /** `rendered` with every string literal AND every comment blanked out, character for character,
+      * so a caller can ask a question about CODE only. Indices and length are preserved, so a match
+      * on the result carries the same offsets and the same captured text as one on the original.
+      *
+      * ⚠️ The name is historical: comments joined the literals in issue #382, for the same reason
+      * and at the same seam (see [[scanOutsideLiterals]]). Blanking a comment cannot change any
+      * emission this repo produces -- no emitter writes one -- and it changes the reading of a
+      * HAND-AUTHORED processor source, which is the only place a comment can arrive from.
       *
       * 🔴 `ScriptTarget.of` recovers "which column does this ingest script feed" by taking the LAST
       * `ctx.<name> = ` in the source. A literal is allowed to contain that text -- `CONCAT(name, ';
@@ -593,23 +598,54 @@ package object sql {
       new String(out)
     }
 
-    /** Walks `rendered` once and hands the caller every index lying OUTSIDE a string literal.
+    /** Walks `rendered` once and hands the caller every index that is CODE -- i.e. lies outside
+      * both a string literal and a comment.
       *
-      * 🔴 The literal handling lives HERE and nowhere else. `firstStatementAt` and
+      * 🔴 The literal and comment handling lives HERE and nowhere else. `firstStatementAt` and
       * `splitStatements` must agree about what a `;` inside a literal is -- one decides whether a
       * fragment may sit in an operand slot, the other decides where an ingest script's last
       * statement begins -- and two copies of this loop would be free to drift apart.
+      *
+      * 🔴 COMMENTS ARE NOT CODE (issue #382, found by independent review). `ScriptTarget.of` reads
+      * an ingest script's identity off the last `ctx.<name> = ` that follows a statement boundary,
+      * and #382 widened that boundary set with `}` because a hoisted `try { … } catch (Exception e)
+      * {} ` is a statement with no `;`. A `}` inside a Painless BLOCK COMMENT was then read as a
+      * boundary: `ctx.c = 1` followed by a block comment holding the text `} ctx.zzz = 9` reported
+      * column **zzz** -- a processor claiming another column's identity, which is the collision
+      * `IngestPipeline.diff` resolves by DROPPING one side (measured; `Some(c)` before #382,
+      * `Some(zzz)` after; the line-comment spelling is identical). A comment is reachable from SQL
+      * today: `ALTER PIPELINE … ADD PROCESSOR SCRIPT(source = '…')` and `CREATE PIPELINE … WITH
+      * PROCESSORS (SCRIPT(…))` both take a hand-authored source.
+      *
+      * Fixed at the same seam that already solves it for literals rather than by narrowing the
+      * regex, because it is the same question -- "is this character code?" -- and two answers to it
+      * would drift. Two shapes that used to answer `None` (a comment BEFORE the assignment, so no
+      * boundary was recognised at all) now answer correctly, which is a bonus, not the point.
+      *
+      * A `/` that opens nothing is ordinary division and is emitted; an unterminated block-comment
+      * opener swallows the rest, the same LOUD-direction convention an unterminated literal already
+      * follows.
       */
     private def scanOutsideLiterals(rendered: String)(at: Int => Boolean): Unit = {
+      val n = rendered.length
       var i = 0
       var quote = '\u0000'
       var continue = true
-      while (i < rendered.length && continue) {
+      while (i < n && continue) {
         val c = rendered.charAt(i)
         if (quote != '\u0000') {
           if (c == '\\') i += 1 else if (c == quote) quote = '\u0000'
         } else if (c == '\'' || c == '"') quote = c
-        else continue = at(i)
+        else if (c == '/' && i + 1 < n && rendered.charAt(i + 1) == '/') {
+          // line comment: everything up to (but not including) the newline is not code
+          i += 1
+          while (i + 1 < n && rendered.charAt(i + 1) != '\n') i += 1
+        } else if (c == '/' && i + 1 < n && rendered.charAt(i + 1) == '*') {
+          // block comment: skip to the closing `*/`, or to the end if there is none
+          i += 2
+          while (i + 1 < n && !(rendered.charAt(i) == '*' && rendered.charAt(i + 1) == '/')) i += 1
+          i += 1
+        } else continue = at(i)
         i += 1
       }
     }

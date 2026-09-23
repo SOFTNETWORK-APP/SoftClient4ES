@@ -1419,8 +1419,70 @@ package object schema {
       def key(p: IngestProcessor) =
         s"${p.pipelineType.name}-${p.processorType.name}-${identity(p)}"
 
-      val desiredMap = desired.map(p => key(p) -> p).toMap
-      val actualMap = actual.map(p => key(p) -> p).toMap
+      /** 🔴 `Seq.toMap` DROPS the loser of a key collision, and the loser is a REAL processor: the
+        * whole diff for it vanishes and the ALTER silently applies fewer changes than were asked
+        * for (issue #382, F3, found by independent review).
+        *
+        * Two processors can share a key. A GENERATED script processor for column `c` sits beside a
+        * hand-authored `ALTER PIPELINE … ADD PROCESSOR SCRIPT(… ctx.c = 2)`, and `identity`
+        * recovers `c` from both -- correctly, since both really do assign that column. Issue #382
+        * ENLARGED the population by widening the boundary set with `}`, so a foreign source whose
+        * assignment follows a block now recovers an identity where it used to fall back to the
+        * anonymous one; the CLASS pre-existed (a foreign source ending `…; ctx.c = 2` collided
+        * before #382 too), so the repair is here, where the drop happens, rather than in the
+        * boundary set -- and it closes the pre-existing half with it.
+        *
+        * 🔴 THE FALLBACK IS `p.column`, and the asymmetry is the whole design. Disambiguating a
+        * colliding group by CONTENT looked right and is WRONG: only ONE side collides, so the
+        * generated processor gained a suffix on the actual side that its unchanged counterpart on
+        * the desired side did not, and a change became an add plus two removals (measured). A
+        * colliding member falls back instead to the identity it had BEFORE the recovery --
+        * `p.column`, which is the real column for a processor this codebase wrote and is already
+        * content-addressed (`anonymous_<hash>`) for one it did not. Both sides derive it the same
+        * way, and a side with no collision derives nothing at all, so an unchanged pair still
+        * MATCHES.
+        *
+        * ⚠️ Keys that do not collide are untouched, so this is a no-op for every pipeline nobody
+        * has hand-edited -- and the 21.8 Part F round trip stays an identity.
+        *
+        * ⚠️ RECORDED BOUNDARY: on Elasticsearch 6.8 a stored processor has no `description`, so the
+        * GENERATED one reads back anonymous too and its fallback is a content hash rather than `c`.
+        * A collision on 6.8 therefore still churns (remove + add) rather than reporting a change.
+        * It no longer DROPS anything, which is what this repair is for; telling the two apart on
+        * 6.8 would need content matching, which is a heuristic and a lead call.
+        */
+      def keyed(ps: Seq[IngestProcessor]): Map[String, IngestProcessor] = {
+        def prefixed(id: String, p: IngestProcessor): String =
+          s"${p.pipelineType.name}-${p.processorType.name}-$id"
+        def collidingKeys(in: Seq[(String, IngestProcessor)]): Set[String] =
+          in.groupBy(_._1).collect { case (k, group) if group.size > 1 => k }.toSet
+
+        val recovered = ps.map(p => key(p) -> p)
+        val colliding = collidingKeys(recovered)
+        val resolved = recovered.map { case (k, p) =>
+          (if (colliding.contains(k)) prefixed(p.column, p) else k) -> p
+        }
+        // ... and if the fallback ITSELF collides -- two script processors on ONE declared column,
+        // the residual 21.8 Part F left open -- a deterministic content ordinal, so that nothing
+        // is ever silently dropped even there.
+        val residual = collidingKeys(resolved)
+        resolved
+          .groupBy(_._1)
+          .toSeq
+          .flatMap {
+            case (k, group) if residual.contains(k) =>
+              group
+                .map(_._2)
+                .sortBy(p => mapper.writeValueAsString(p.node))
+                .zipWithIndex
+                .map { case (p, i) => s"$k#$i" -> p }
+            case (k, group) => Seq(k -> group.head._2)
+          }
+          .toMap
+      }
+
+      val desiredMap = keyed(desired)
+      val actualMap = keyed(actual)
 
       val diffs = scala.collection.mutable.ListBuffer[PipelineDiff]()
 
