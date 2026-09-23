@@ -320,25 +320,40 @@ class DivisionResultTypeSpec extends AnyFlatSpec with Matchers with TableDrivenP
 
   /** 🔴 CHARACTERISATION, and the reason `documentation/sql/operators.md` cannot promise the
     * truncation idiom every other engine spells `DIV` or `//`: **the grammar rejects an arithmetic
-    * expression as the operand of a CAST or of a function.** Verified on `origin/main` as well as
-    * here, so it is pre-existing (issue #267's family) and not a consequence of this ruling.
+    * expression as the operand of a function, of a `CAST` or of a `CASE` branch.** Verified on a
+    * clean clone at `origin/main` as well as here, so it is pre-existing and not a consequence of
+    * this ruling. It is UNFILED, and cited by BEHAVIOUR rather than by an issue number on purpose:
+    * the obvious candidate — #267, *"CAST accepts no bare literal operand"* — is a DIFFERENT defect
+    * that was closed and really is fixed (`CAST('125' AS BIGINT)` parses today).
     *
-    * What DOES work is dividing by a literal that is already integral and casting the COLUMN, or
-    * computing the quotient into a column and casting that — both are in the documentation. This
-    * row exists so that the day the grammar learns these operands, the doc is known to be stale.
+    * 🔴 The rule is DIRECTIONAL, which is what a reader needs in order to predict which rewrite
+    * works: `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is accepted. It is also not about
+    * division — ANY arithmetic operand is refused, `+` included — and parenthesising does not help.
+    *
+    * What DOES work is computing the quotient into a column and casting THAT column, which is in
+    * the documentation and EXECUTED in `GatewayApiIntegrationSpec`. This row exists so that the day
+    * the grammar learns these operands, the doc is known to be stale.
     */
-  it should "still REJECT an arithmetic operand inside CAST or a function (#267, recorded)" in {
+  it should "still REJECT an arithmetic operand inside a function, CAST or CASE (recorded)" in {
     forAll(
       Table(
         ("statement", "accepted"),
         ("SELECT CAST(n / m AS INTEGER) AS c FROM t", false),
+        // not about DIVISION: any arithmetic operand is refused
+        ("SELECT CAST(n + m AS INTEGER) AS c FROM t", false),
+        // ... and parenthesising does not help
+        ("SELECT CAST((n / m) AS INTEGER) AS c FROM t", false),
         ("SELECT FLOOR(n / m) AS c FROM t", false),
         ("SELECT ABS(n / m) AS c FROM t", false),
+        ("SELECT COALESCE(n / m, 0) AS c FROM t", false),
+        ("SELECT CASE WHEN n > 1 THEN n / m ELSE 0 END AS c FROM t", false),
         // 🔴 the positive controls, without which "everything is rejected" would satisfy the row:
-        // the SAME functions over a plain operand parse, and so does a cast INSIDE the division
+        // the SAME functions over a plain operand parse, a cast INSIDE the division parses, and --
+        // the direction that matters -- arithmetic OVER a function call is fine
         ("SELECT CAST(n AS INTEGER) / 2 AS c FROM t", true),
         ("SELECT FLOOR(x) / 2 AS c FROM t", true),
-        ("SELECT ABS(n) AS c FROM t", true)
+        ("SELECT ABS(n) AS c FROM t", true),
+        ("SELECT n / NULLIF(m, 0) AS c FROM t", true)
       )
     )((sql, accepted) => withClue(s"[$sql] ")(Parser(sql).isRight shouldBe accepted))
   }

@@ -99,9 +99,17 @@ case class ArithmeticExpression(
     *
     * ⚠️ There is NO truncating-division spelling today, and this comment says so rather than
     * implying one. Keying [[floatingDivision]] on `out` means an explicit cast over the whole
-    * division would turn the rule back off with no arm of its own -- but `CAST(a / b AS INTEGER)`,
-    * `FLOOR(a / b)` and `COALESCE(a / b, 0)` are all PARSE ERRORS (issue #267's family, verified on
-    * `origin/main` too), so that is a property of the design, not a reachable path. The documented
+    * division would turn the rule back off with no arm of its own -- but the grammar rejects an
+    * ARITHMETIC EXPRESSION as the operand of a function, of a `CAST` or of a `CASE` branch, so that
+    * is a property of the design, not a reachable path:
+    * {{{
+    * CAST(a / b AS INTEGER)   CAST(a + b AS INTEGER)   CAST((a / b) AS INTEGER)   REJECTED
+    * FLOOR(a / b)             COALESCE(a / b, 0)       CASE WHEN … THEN a / b END REJECTED
+    * FLOOR(x)                 a / NULLIF(b, 0)                                    ACCEPTED
+    * }}}
+    * The rule is DIRECTIONAL -- `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is fine -- and
+    * it is not about division: ANY arithmetic operand is refused, and parenthesising does not help.
+    * Measured on a clean clone at `origin/main`, so it is pre-existing and UNFILED. The documented
     * way to truncate is to compute the quotient into a column and cast THAT column.
     */
   override def baseType: SQLType = {

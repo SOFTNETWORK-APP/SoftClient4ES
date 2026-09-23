@@ -276,10 +276,19 @@ SELECT CAST(10 AS DOUBLE) / 3 AS result;   -- 3.333...
 > `CREATE TABLE u (n INTEGER, m INTEGER, c DOUBLE SCRIPT AS (n / m))` stored `3.0` for 7/2 before
 > `0.24.0`; it stores `3.5`.
 >
-> ⚠️ **There is no truncating-division operator.** Other engines spell it `DIV` (MySQL) or `//`
-> (DuckDB); this engine has neither, and `CAST(a / b AS INTEGER)`, `FLOOR(a / b)` and `ABS(a / b)`
-> are **rejected by the parser** — an arithmetic expression is not yet accepted as the operand of a
-> cast or of a function ([issue #267](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues/267)).
+> ⚠️ **There is no truncating-division operator, and no single expression that produces one.**
+> Other engines spell truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither — and the
+> obvious rewrites are **parse errors**, because an arithmetic expression is not accepted as the
+> operand of a function, of a `CAST` or of a `CASE` branch:
+>
+> ```sql
+> CAST(a / b AS INTEGER)     CAST(a + b AS INTEGER)     CAST((a / b) AS INTEGER)   -- ✗ rejected
+> FLOOR(a / b)               ABS(a / b)                 COALESCE(a / b, 0)         -- ✗ rejected
+> FLOOR(x)                   a / NULLIF(b, 0)                                      -- ✓ accepted
+> ```
+>
+> The rule is **directional**: `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is fine. It is
+> not specific to division — any arithmetic operand is refused — and parenthesising does not help.
 > To get an integral quotient today, compute it into a column and cast **that** column:
 >
 > ```sql
@@ -319,11 +328,10 @@ pipeline silently left the computed column out of the document), while floating 
 >   identically before and after `0.24.0`. **Since `0.24.0` you do not need it for division: write
 >   `total / order_count`.**
 
-⚠️ **Corrected in `0.24.0`: the other guards this page used to recommend do not parse.** An
-arithmetic expression is not yet accepted as the operand of a function, of a `CAST` or of a `CASE`
-branch ([issue #267](https://github.com/SOFTNETWORK-APP/SoftClient4ES/issues/267)), so all three of
-these are **parse errors**, not slower alternatives — they were published in error and are measured
-rejections today:
+⚠️ **Corrected in `0.24.0`: the other guards this page used to recommend do not parse.** As above,
+an arithmetic expression is not accepted as the operand of a function, of a `CAST` or of a `CASE`
+branch, so all three of these are **parse errors**, not slower alternatives — they were published
+in error and are measured rejections today:
 
 ```sql
 -- ✗ parse error: "')' expected but '/' found"
