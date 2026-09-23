@@ -56,7 +56,7 @@ compose nested queries — where the tool lets you:
 ## Works in this release
 
 - **Cross-index JOINs**: `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS`, plus `JOIN UNNEST` on nested arrays — something Elasticsearch cannot do natively. (See the [JOIN matrix walkthrough](joins.md) for the per-tier rows and worked examples.)
-- **Aggregations** + `GROUP BY` / `HAVING`.
+- **Aggregations** + `GROUP BY` / `HAVING`. (A `HAVING` whose aggregate is wrapped in a function is dropped — see [`HAVING` over a function of an aggregate](#having-over-a-function-of-an-aggregate--the-clause-is-dropped).)
 - **Analytical SQL**: `ROW_NUMBER` / `RANK` / `DENSE_RANK`; the `STDDEV` / `VARIANCE` family (`STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`); `PERCENTILE_CONT` / `PERCENTILE_DISC`; window aggregates and `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` over `OVER (PARTITION BY …)`.
 - **Conditionals & null handling**: `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` / `ISNULL` / `ISNOTNULL`.
 - `ORDER BY … NULLS FIRST | NULLS LAST`.
@@ -185,6 +185,39 @@ driver builds on drops the aggregation script on that line (elastic4s#4100) and 
 unmaintained, so the fix cannot reach it; until this rule, the query silently returned the statistic
 of the **raw** field. Aggregate over a raw field there, or use Elasticsearch 7+. That refusal is
 permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
+
+## `HAVING` over a **function of an aggregate** — the clause is dropped
+
+A `HAVING` predicate whose aggregate is wrapped in a function is **silently discarded**: the
+generated Elasticsearch query carries no `bucket_selector`, so no group is filtered out and the
+query returns **every** group. Nothing fails, and the answer is simply wrong.
+
+| `SELECT status, COUNT(*) AS c FROM t GROUP BY status …` | Result |
+|---|---|
+| `HAVING COUNT(*) > 1` | Works — the filter is applied |
+| `HAVING NULLIF(COUNT(*), 0) > 1` | **Dropped — every group returned** |
+| `HAVING COALESCE(COUNT(*), 0) > 1` | **Dropped — every group returned** |
+| `HAVING ABS(COUNT(*)) > 1` | **Dropped — every group returned** |
+| `HAVING NULLIF(c, 0) > 1` (the `SELECT` alias) | **Dropped — every group returned** |
+| `HAVING COUNT(*) + 1 > 2` | Refused at parse time — loud, and a different gap |
+
+**Workaround: state the predicate on the bare aggregate.** The wrappers people reach for are
+usually protecting against a null or a zero that a `HAVING` on a `terms` bucket cannot produce
+anyway — `min_doc_count` is `1`, so an empty group is never returned:
+
+```sql
+-- instead of  HAVING NULLIF(COUNT(*), 0) > 1   or   HAVING COALESCE(COUNT(*), 0) > 1
+SELECT status, COUNT(*) AS c FROM t GROUP BY status HAVING COUNT(*) > 1
+```
+
+Both forms mean the same thing here, and the second one is applied.
+
+Until this is fixed, treat a `HAVING` that wraps its aggregate as unsupported rather than as a
+filter that happens to be permissive — a report built on one is over-counting its groups. A quick
+check: a `HAVING` clause that never removes any group is the symptom.
+
+This is not permanent and it is not specific to `NULLIF`; it is any function over an aggregate,
+including one reached through its `SELECT` alias. Tracked as issue #389, with the measured queries.
 
 ## Coming in the upcoming release (Quarter 1 2027)
 
