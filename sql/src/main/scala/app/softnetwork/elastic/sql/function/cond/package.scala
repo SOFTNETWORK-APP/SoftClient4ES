@@ -22,6 +22,7 @@ import app.softnetwork.elastic.sql.{
   Identifier,
   LiteralParam,
   PainlessContext,
+  PainlessOperandForm,
   PainlessScript,
   TokenRegex,
   Updateable
@@ -242,6 +243,45 @@ package object cond {
 
     override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
 
+    /** The type an argument's rendering really PRODUCES -- the question [[receiverIsTime]] three
+      * lines below already asks of the receiver, asked here of BOTH arguments (issue #382).
+      *
+      * 🔴 `FunctionN.argTypes` answers `_.out`, and a schema-resolved `Identifier.out` reports the
+      * COLUMN's type, not the chain's. So `NULLIF(CAST(s AS BIGINT), 0)` over a KEYWORD column
+      * reported `List(KEYWORD, BIGINT)`, `leastCommonSuperType` came out VARCHAR, and
+      * [[toPainlessCall]] took its `case SQLTypes.Varchar` arm -- whose `$arg1 != null` guard over
+      * a primitive numeric literal Elasticsearch refuses to compile:
+      * {{{
+      * def param3 = param2 == null || (0 != null && param2.compareTo(0) == 0) ? null : param2;
+      *   class_cast_exception: Cannot cast from [int] to [java.lang.Object].
+      * }}}
+      * MEASURED on ES 8.18.3, and identical for `CAST`, `TRY_CAST` and `::`. With the chain's type
+      * the arm is the numeric one, `param2 == 0 ? null : param2`, which compiles and answers `null`
+      * / `125` / `null` for `"0"` / `"125"` / a missing column.
+      *
+      * This is [[app.softnetwork.elastic.sql.operator.math.ArithmeticExpression]] 's `argTypeOf`
+      * (the same issue's OQ-2) in a second function: `argTypes` is the single input to
+      * [[baseType]], `baseType` feeds `out`, and `out` is what [[toPainlessCall]] switches on -- so
+      * one derivation fixes every venue, and it also stops the expression DESCRIBING itself as a
+      * string to a CTAS target mapping.
+      *
+      * ⚠️ The repair deliberately stops at the TYPE. It does NOT cover `NULLIF(s, 0)`, where the
+      * operand really is a KEYWORD and the supertype really is VARCHAR; that shape is a type
+      * mismatch, [[validate]] already computes exactly the right `Left` for it, and the reason it
+      * never fires is that validation runs at PARSE time -- before a schema is attached, when `s`
+      * has no type at all. Widening validation to a resolved statement is a separate change and is
+      * RECORDED on #382, not made here. Emitting the comparison without the guard was measured and
+      * REJECTED: it turns the compile error into a PER-DOCUMENT runtime failure
+      * (`wrong_method_type_exception: cannot convert MethodHandle(String,String)int to
+      * (Object,int)Object`), which is strictly worse.
+      */
+    private[this] def argTypeOf(arg: PainlessScript): SQLType = arg match {
+      case i: Identifier => i.chainType
+      case other         => other.out
+    }
+
+    override def argTypes: List[SQLType] = args.map(argTypeOf)
+
     /** Whether the value `expr1` RENDERS is a `java.time.LocalTime`. `out` and `expr1.out` both
       * report the column's type; `Identifier.chainType` reports the chain's (#367).
       */
@@ -258,12 +298,67 @@ package object cond {
     override def checkIfNullable: Boolean =
       false //checkIfExpressionNullable(expr1) || checkIfExpressionNullable(expr2)
 
+    /** A rendering that may be spliced into the templates below exactly as it stands: a Painless
+      * NAME, or a LITERAL (a number, a quoted string, `true` / `false` / `null` -- all of which the
+      * name pattern already covers). Everything else is COMPOUND and must be bound, so the pattern
+      * is deliberately narrow: answering "simple" about a compound rendering is the defect, while
+      * answering "compound" about a name costs one redundant local.
+      */
+    private[this] val simpleOperand =
+      """(?:[A-Za-z_][A-Za-z0-9_]*|-?\d+(?:\.\d+)?[lLfFdD]?|"(?:[^"\\]|\\.)*")""".r
+
+    /** Bind an argument's rendering to a prologue local unless it is already a simple operand.
+      *
+      * 🔴 Issue #382. `arg0` appears THREE times in the guarded template and `arg1` twice, both
+      * spliced RAW -- and `&&`, `||` and `==` all bind tighter than `?:`, so a COMPOUND rendering
+      * re-associates across the template. Two measured consequences, both on ES 8.18.3:
+      * {{{
+      * NULLIF(UPPER(s), 'X')                         -- arg0 renders `(p == null) ? null : p.toUpperCase()`
+      *   (p == null) ? null : p.toUpperCase() == null || ("X" != null && (p == null) ? null : ...)
+      *   illegal_argument_exception: Cannot cast null to a primitive type [boolean].   LOUD
+      *
+      * NULLIF(CASE WHEN n > 1 THEN 1 ELSE 2 END, 1)  -- the NUMERIC arm, `$arg0 == $arg1 ? null : $arg0`
+      *   param2 ? 1 : 2 == 1 ? null : param2 ? 1 : 2
+      *   reads as `param2 ? 1 : ((2 == 1) ? null : …)`, so n = 5 stored c = 1 where SQL says NULL.
+      *   HTTP 200 -- SILENT, the #205 family.                                          SILENT
+      * }}}
+      * The silent one is why this cannot be narrowed to the arms that fail loudly: the numeric arm
+      * is correct only when the compound rendering happens to be a `guard ? null : value`, which is
+      * luck, not a rule. Binding is applied at the ONE place both templates read their operands
+      * from, so the two cannot drift.
+      *
+      * Binding also evaluates the operand ONCE (#373 item 9's "duplicated guarded expression"
+      * family) -- `NULLIF(UPPER(s), 'X')` called `toUpperCase()` three times per document.
+      *
+      * ⚠️ With NO context there is no prologue to hoist into. Parentheses are the whole of the
+      * association fix, so a context-free EXPRESSION gets them; a rendering that is not an
+      * expression at all (a safe cast's `try` / `catch`) is beyond their help and is left exactly
+      * as it was -- pre-existing, and not this repair's to change
+      * ([[app.softnetwork.elastic.sql.operator.math.ArithmeticExpression]]'s `bind` fallback makes
+      * the same distinction).
+      */
+    private[this] def operand(rendered: String, context: Option[PainlessContext]): String = {
+      val trimmed = rendered.trim
+      // An EMPTY rendering is what an AGGREGATE answers in a script venue (`NULLIF(COUNT(*), 0)`),
+      // and the surrounding emission is already degenerate there. Binding it would only add `def
+      // nif1 = ;` to it, so it is left exactly as it was -- pre-existing, recorded on #382.
+      if (trimmed.isEmpty || simpleOperand.pattern.matcher(trimmed).matches()) trimmed
+      else
+        context match {
+          case Some(ctx)                                      => ctx.bindLocal(trimmed, "nif")
+          case None if PainlessOperandForm.placeable(trimmed) => s"($trimmed)"
+          case None                                           => trimmed
+        }
+    }
+
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(arg0, arg1) =>
+        case List(rendered0, rendered1) =>
+          val arg0 = operand(rendered0, context)
+          val arg1 = operand(rendered1, context)
           // 🔴 The SECOND argument is guarded too (issue #373, found by review) -- the same hole
           // `checkCase` had, one method up in this file. `NULLIF(CAST(d AS TIME), CAST(ts AS
           // TIME))` called the comparison with a null `arg1` for any document missing `ts`:
