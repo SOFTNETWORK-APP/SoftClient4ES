@@ -659,6 +659,81 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
+  /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,
+    * and the function wrapping it guarded the raw COLUMN parameter — which is not null — so the
+    * null reached the call. MEASURED on real Elasticsearch 8.18.3 over `s = 'abc'`:
+    *
+    * {{{
+    *   CONCAT(TRY_CAST(s AS BIGINT), 'x')   ->  "nullx"     <- the literal text, stored
+    *   CONCAT('x', TRY_CAST(s AS BIGINT))   ->  "xnull"
+    *   ROUND(TRY_CAST(s AS DOUBLE), 1)      ->  NPE, swallowed by `ignore_failure` => no column
+    * }}}
+    *
+    * The first two are a wrong VALUE — Painless `String.valueOf(null)` — not an absent column, and
+    * that is what makes this worth a cluster row: nothing throws, Elasticsearch answers 200, and a
+    * `keyword` mapping stores the word `null` as happily as any other. The repair guards the
+    * reference the CALL reads as well as the raw parameter, so a failed safe cast is a NULL operand
+    * and the whole call is NULL — the rule `CONCAT(s, 'x')` over a null `s` already followed.
+    *
+    * ⚠️ `'125'` is in the fixture so the row cannot be satisfied by a script that computes nothing:
+    * the castable row must still produce the concatenation.
+    */
+  it should "make a failed safe cast NULL, not the text \"null\" (#382 Ruling B)" in {
+    val create =
+      """CREATE TABLE IF NOT EXISTS trycast_null (
+        |  id INT,
+        |  s KEYWORD,
+        |  c KEYWORD SCRIPT AS (CONCAT(TRY_CAST(s AS BIGINT), 'x')),
+        |  d KEYWORD SCRIPT AS (CONCAT('x', TRY_CAST(s AS BIGINT))),
+        |  f DOUBLE SCRIPT AS (ROUND(TRY_CAST(s AS DOUBLE), 1))
+        |);""".stripMargin
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO trycast_null (id, s) VALUES (1, '125'), (2, 'abc');").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    // the castable row: the conversion ran and the call really did concatenate
+    val ok = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, c, d, f FROM trycast_null WHERE id = 1").futureValue
+    )
+    withClue(s"$ok ") {
+      ok.size shouldBe 1
+      String.valueOf(scalarOf(ok.head, "c")) shouldBe "125x"
+      String.valueOf(scalarOf(ok.head, "d")) shouldBe "x125"
+      String.valueOf(scalarOf(ok.head, "f")).toDouble shouldBe 125.0
+    }
+
+    // the UNCASTABLE row: no value at all, and above all NOT the words `nullx` / `xnull`
+    val failing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, s, c, d, f FROM trycast_null WHERE id = 2").futureValue
+    )
+    withClue(s"$failing ") {
+      failing.size shouldBe 1
+      String.valueOf(scalarOf(failing.head, "s")) shouldBe "abc"
+      // stated as the DEFECT, so this row cannot go green on the pre-fix emission
+      failing.head.get("c").map(String.valueOf) should not contain "nullx"
+      failing.head.get("d").map(String.valueOf) should not contain "xnull"
+      List("c", "d", "f").foreach(k =>
+        withClue(s"[$k] ")(failing.head.get(k).filterNot(v => v == null || v == Nil) shouldBe None)
+      )
+    }
+
+    // 🔴 What the documentation promises about a NULL computed column, measured rather than
+    // assumed: the row IS returned by a plain SELECT (above, `failing.size shouldBe 1`) and IS
+    // skipped by an existence test, because a null writes no doc value.
+    val existing = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+    )
+    withClue(s"$existing ") {
+      existing.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // DROP TABLE
   // ---------------------------------------------------------------------------

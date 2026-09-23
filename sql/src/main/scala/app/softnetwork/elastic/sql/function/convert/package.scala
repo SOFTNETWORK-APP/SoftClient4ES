@@ -66,6 +66,13 @@ package object convert {
       */
     override def producesOutputJavaType: Boolean = true
 
+    /** A SAFE conversion turns a non-null operand into a null when the conversion fails: the
+      * hoisted local stays at its initial `null` and nothing throws. That is a nullability source
+      * the raw column parameter does not carry, and `FunctionN.painless` guards on it (issue #382).
+      * A plain `CAST` throws instead, so it does not qualify.
+      */
+    override def rendersNullOnFailure: Boolean = safe
+
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
