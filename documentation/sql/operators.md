@@ -252,6 +252,35 @@ SELECT CAST(10 AS DOUBLE) / 3 AS result;
 -- Result: 3.333...
 ```
 
+> **A cast decides the arithmetic around it — an engine decision, since `0.24.0`.**
+>
+> An operand's type is what it **renders**, not what its column is declared as, so a cast changes
+> the arithmetic that follows it in both directions:
+>
+> ```sql
+> -- price DOUBLE, value 5.0
+> SELECT CAST(price AS INTEGER) / 2 AS c FROM t;   -- 2   (both operands are integers)
+> SELECT price / 2 AS c FROM t;                    -- 2.5 (unchanged)
+> SELECT CAST(qty AS DOUBLE) / 2 AS c FROM t;      -- 2.5 for an INTEGER qty
+> ```
+>
+> Before `0.24.0` the target type came from the **column**, which had two consequences: a narrowing
+> cast did not affect the division (`CAST(price AS INTEGER) / 2` gave `2.5`), and — the reason this
+> changed — a cast of a **text** column was ignored entirely, so `CAST(amount_str AS BIGINT) + fee`
+> CONCATENATED: `'125' + 7` stored `1257` instead of `132`. One rule fixes both, and it is the same
+> rule the engine already applied to the source of every coercion.
+>
+> **Where this puts us.** `CAST(5.0 AS INTEGER) / 2` is `2` in **PostgreSQL**, and `2.5` in
+> **MySQL** and **DuckDB**, which treat `/` as always-decimal and spell truncation `DIV` and `//`.
+> We follow PostgreSQL. If you want the fractional result, cast to a floating type
+> (`CAST(price AS DOUBLE) / 2`) or divide by a decimal literal (`/ 2.0`) — both work on every
+> engine and say what you mean.
+>
+> ⚠️ **One place still answers the other way.** A query containing a **JOIN** evaluates its
+> SELECT-list expressions in DuckDB, so `CAST(price AS INTEGER) / 2` returns `2.5` there while the
+> same expression without a JOIN returns `2`. Cast explicitly when a query mixes the two paths.
+
+
 **Division by Zero Protection:**
 ```sql
 -- Using NULLIF (recommended)
