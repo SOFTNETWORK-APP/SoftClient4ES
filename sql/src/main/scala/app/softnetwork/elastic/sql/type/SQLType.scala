@@ -19,6 +19,37 @@ package app.softnetwork.elastic.sql.`type`
 sealed trait SQLType {
   def typeId: String
   override def toString: String = typeId
+
+  /** The type-family predicates, asked of the type itself rather than re-spelled as
+    * `isInstanceOf[SQL...]` at each site.
+    *
+    * 🔴 They live HERE, on the sealed trait, because the families are what this file DECLARES: a
+    * predicate written beside the hierarchy cannot fall out of step with it, and a new member of a
+    * family is answered for by every caller at once. Before issue #382 the same four questions were
+    * spelled out at 22 sites across six files (`function/cond`, `query/Where`, `SQLTypeUtils`,
+    * `operator/math/ArithmeticExpression`, `sql/package`), and the ones that disagreed are exactly
+    * where the defects were -- `leastCommonSuperType` had already learnt that `contains(Varchar)`
+    * misses `Text` and `Keyword` while `isInstanceOf[SQLVarchar]` does not, and that lesson had to
+    * be relearnt in `coerce` a hundred lines below.
+    *
+    * ⚠️ [[isText]] is `SQLVarchar` and NOT `SQLChar`, which is a sibling under `SQLLiteral` rather
+    * than a subtype. That is what every one of the 22 sites meant, so the extraction preserves it
+    * exactly; whether `CHAR` should be text is a separate decision with its own blast radius, and
+    * making it here would have changed behaviour under cover of a refactor.
+    */
+  def isText: Boolean = this.isInstanceOf[SQLVarchar]
+
+  def isNumber: Boolean = this.isInstanceOf[SQLNumeric]
+
+  def isTemporal: Boolean = this.isInstanceOf[SQLTemporal]
+
+  def isBoolean: Boolean = this.isInstanceOf[SQLBool]
+
+  /** No type is known here: an unresolved column (`SQLTypes.Any`, what every column reports before
+    * a schema is attached) or a NULL literal. A rule that REFUSES must treat this as "cannot judge"
+    * and accept, or it rejects legitimate SQL on every schema-less path.
+    */
+  def isUnknown: Boolean = this.isInstanceOf[SQLAny]
 }
 
 trait SQLAny extends SQLType
