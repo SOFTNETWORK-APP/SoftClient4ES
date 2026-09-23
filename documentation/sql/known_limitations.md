@@ -212,6 +212,46 @@ emission of the whole date-format family in every venue, and that needs its own 
 See [DATE_FORMAT](functions_date_time.md#date_format) and
 [DATETIME_FORMAT](functions_date_time.md#datetime_format).
 
+## Arithmetic is not accepted inside a function, a `CAST` or a `CASE` branch
+
+An arithmetic expression cannot be the **operand** of a function call, of a `CAST` or of a `CASE`
+branch. The restriction is not specific to division, and parenthesising does not help:
+
+| Written | Verdict |
+|---------|---------|
+| `CAST(a / b AS INTEGER)`, `CAST(a + b AS INTEGER)`, `CAST((a / b) AS INTEGER)` | Parse error |
+| `FLOOR(a / b)`, `ABS(a / b)`, `COALESCE(a / b, 0)` | Parse error |
+| `CASE WHEN b != 0 THEN a / b ELSE 0 END` | Parse error |
+| `a / NULLIF(b, 0)`, `FLOOR(x)`, `CAST(x AS INTEGER)` | Accepted |
+
+The rule is **directional**: arithmetic *over* a function call is fine, a function call *over*
+arithmetic is not. The practical consequences are that there is no single-expression way to write a
+truncated quotient, and no in-expression guard for `%`:
+
+```sql
+-- instead of CAST(n / m AS INTEGER), compute the quotient into a column and cast THAT column
+CREATE TABLE t (n INTEGER, m INTEGER, q DOUBLE SCRIPT AS (n / m));
+SELECT CAST(q AS INTEGER) AS whole FROM t;
+```
+
+## `%` by zero is not guarded
+
+The `0.24.0` rule that makes `a / 0` yield NULL covers `/` only. With integer operands `a % 0`
+throws — HTTP 400 in a search, and in a computed column the ingest processor's `ignore_failure`
+swallows it so the column is simply absent. With **floating** operands it produces `NaN`, which
+Elasticsearch refuses to index, so **the whole document is rejected**.
+
+Because of the restriction above there is no in-expression guard, and `a % NULLIF(b, 0)` throws a
+`null_pointer_exception` on exactly the rows the guard is for. Keep a zero divisor out of the data
+instead — filter it in `WHERE`, or compute the remainder from an already-filtered index. See
+[operators](operators.md#-mod).
+
+## `ORDER BY` over arithmetic on a nullable column
+
+`ORDER BY <arithmetic over a nullable column>` fails. The bridge emits a `number`-typed script sort,
+and Elasticsearch rejects a sort script that can return null. Order by a stored column instead, or
+make the expression a computed column and sort on that.
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).
