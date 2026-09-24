@@ -20,6 +20,21 @@ import app.softnetwork.elastic.sql.{Expr, Identifier, TokenRegex, Updateable}
 
 case object Having extends Expr("HAVING") with TokenRegex {
 
+  /** The SELECT items a bare name in a `HAVING` may resolve to: aggregates AND arithmetic over
+    * aggregates (`MAX(x) - MIN(x) AS d`), the latter being a `bucket_script` that a
+    * `bucket_selector` may read as a sibling pipeline aggregation by name.
+    *
+    * ONE derivation, read by [[resolveAggregateAliases]] (which SUBSTITUTES a bare reference) and
+    * by `SingleSearch.validate()` (which REFUSES a reference substitution cannot reach, issue #389:
+    * `HAVING NULLIF(c, 0) > 1` hides the alias inside a function ARGUMENT, where the substitution
+    * below -- deliberately scoped to an operand -- does not go).
+    */
+  private[query] def aggregateAliases(request: SingleSearch): Map[String, Identifier] =
+    request.select.fields.collect {
+      case f if (f.isAggregation || f.isBucketScript) && f.fieldAlias.isDefined =>
+        f.fieldAlias.get.alias -> f.identifier
+    }.toMap
+
   /** `HAVING cnt > 1` where `cnt` aliases a SELECT aggregate (`COUNT(name) AS cnt`). The bare
     * identifier carries no aggregate function of its own, so the selector rendering saw no metric
     * in the condition and the whole HAVING degenerated to `1 == 1`: every group came back — the
@@ -34,12 +49,7 @@ case object Having extends Expr("HAVING") with TokenRegex {
     criteria: Criteria,
     request: SingleSearch
   ): Criteria = {
-    // Aggregates AND arithmetic over aggregates (`MAX(x) - MIN(x) AS d`): the latter is a
-    // `bucket_script`, and a `bucket_selector` may read a sibling pipeline aggregation by name.
-    val aliased: Map[String, Identifier] = request.select.fields.collect {
-      case f if (f.isAggregation || f.isBucketScript) && f.fieldAlias.isDefined =>
-        f.fieldAlias.get.alias -> f.identifier
-    }.toMap
+    val aliased: Map[String, Identifier] = aggregateAliases(request)
     if (aliased.isEmpty) return criteria
 
     def substitute(id: Identifier): Identifier =
@@ -104,6 +114,13 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
 
   def nestedElements: Seq[NestedElement] =
     criteria.map(_.nestedElements).getOrElse(Seq.empty).groupBy(_.path).map(_._2.head).toList
+
+  /** Every condition of this clause the engine cannot express as a `bucket_selector` (issue #389),
+    * in statement order. Refused by name in `SingleSearch.validate()`; EMPTY is the only shape that
+    * reaches emission.
+    */
+  private[query] def unrepresentable: Seq[MetricSelector.Unrepresentable] =
+    criteria.toSeq.flatMap(MetricSelectorScript.unrepresentable)
 
   def script: Option[String] = criteria.flatMap { criteria =>
     val fullScript = MetricSelectorScript

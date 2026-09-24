@@ -778,8 +778,33 @@ ORDER BY COUNT(*) DESC;
   price_range > 10`); `BETWEEN`, `IN` and `NOT` apply to aggregates as to columns.
 - Rejected with an explicit error: arithmetic over aggregates written inline in `HAVING`
   (`HAVING MAX(price) - MIN(price) > 10` — alias it in `SELECT` and reference the alias), an
-  aggregate function inside `WHERE` (use `HAVING`), and an alias that names one aggregate in
-  `SELECT` and a different one in `HAVING` / `ORDER BY`.
+  aggregate function inside `WHERE` (use `HAVING`, and this covers a wrapped one such as
+  `WHERE ABS(COUNT(*)) > 1`), and an alias that names one aggregate in `SELECT` and a different one
+  in `HAVING` / `ORDER BY`.
+- A **function of an aggregate** in `HAVING` is applied to the group, or the statement is rejected
+  by name — it is never ignored. `COALESCE`, `GREATEST`, `LEAST` and `SIGN` over an aggregate filter
+  the groups (`HAVING COALESCE(COUNT(*), 0) > 30`, `HAVING GREATEST(MAX(price), 0) > 100`), on
+  either side of the comparison and under `BETWEEN`, `IN` and `NOT`. Everything Elasticsearch
+  cannot evaluate as a group filter is refused with the reason:
+  - a rendering that can be NULL — `HAVING NULLIF(COUNT(*), 0) > 1`;
+  - a rendering that needs a local variable — `HAVING ROUND(SUM(price), 2) > 10`;
+  - a rendering that boxes a number — `HAVING ABS(COUNT(*)) > 1` and the rest of the numeric
+    function family (`FLOOR`, `CEIL`, `SQRT`, `EXP`, `LOG`, `POWER`); Elasticsearch's group-filter
+    script context does not compile the conversion, even though the same function works in `WHERE`,
+    in the `SELECT` list and in `ORDER BY`;
+  - `CASE ... END` in `HAVING`, which needs a document and a group filter has none;
+  - a function applied to a `SELECT` aggregate **alias** — `COUNT(*) AS c ... HAVING NULLIF(c, 0) > 1`.
+
+  In every refused case the remedy is the same: **compare the aggregate itself** —
+  `HAVING SUM(price) > 10` rather than `HAVING ROUND(SUM(price), 2) > 10` — and apply the function
+  to the result outside the query. Aliasing the expression in `SELECT` does NOT help: a function of
+  an aggregate is not a valid `SELECT` item under a `GROUP BY` either
+  (`SELECT ABS(COUNT(*)) AS a ... GROUP BY city` is rejected as a non-aggregated field). That
+  differs from arithmetic over aggregates, which IS a valid `SELECT` item
+  (`MAX(price) - MIN(price) AS price_range`) and is the reason the rule above tells you to alias
+  THAT one.
+- One un-expressible condition rejects the whole `HAVING`, never just its own half: a statement is
+  answered with every condition it was written with, or with an error.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
   script null-checks every metric before comparing it.

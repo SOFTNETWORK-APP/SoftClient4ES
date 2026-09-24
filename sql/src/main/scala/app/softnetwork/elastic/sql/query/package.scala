@@ -909,6 +909,53 @@ package object query {
           }
         }
         _ <- {
+          // 🔴 Issue #389 -- a HAVING over a FUNCTION of an aggregate must FILTER, or FAIL. It used
+          // to VANISH: a function never looks inside its own arguments, so `ABS(COUNT(*)) > 1` was
+          // invisible to the bucket-metric detection, the selector degenerated to `1 == 1` and
+          // every group came back with HTTP 200 (the #205 / #209 / #253 silent-wrong-answer
+          // family). Everything the engine can express is now emitted; everything it cannot is
+          // refused HERE, inside `Parser.apply`, so every venue sees it -- the REPL, JDBC, Flight,
+          // the materialized-view extension and the bridge's own emission path alike.
+          //
+          // ⚠️ A PARTIAL emission counts as a wrong answer: one un-expressible conjunct refuses the
+          // whole statement rather than silently filtering on the other half.
+          having.map(_.unrepresentable).getOrElse(Nil).headOption match {
+            case Some(u) => Left(u.message)
+            case None    => Right(())
+          }
+        }
+        _ <- {
+          // The residual of the rule above, and the reason it needs the STATEMENT rather than the
+          // clause: `HAVING NULLIF(c, 0) > 1` names a SELECT aggregate by its ALIAS from inside a
+          // function ARGUMENT. `Having.resolveAggregateAliases` substitutes an OPERAND only, so `c`
+          // stays a bare column, the predicate references no aggregate at all, and the rule above
+          // cannot see it -- it renders `arg0 == 0 ? null : arg0 > 1`, reading a context parameter
+          // no bucket pipeline binds. MEASURED: dropped silently on `main`.
+          //
+          // ⚠️ The alias set is read from `Having.aggregateAliases`, the SAME map the substitution
+          // uses, so the two cannot disagree about which bare names are aggregate references. A
+          // COLUMN that happens to share a SELECT aggregate's alias is therefore refused here for
+          // exactly the reason it is SUBSTITUTED there -- one ambiguity, one reading.
+          having.flatMap(_.criteria) match {
+            case None => Right(())
+            case Some(criteria) =>
+              val aliases = Having.aggregateAliases(this).keySet
+              criteria.referencedIdentifiers
+                .filter(id => id.functions.nonEmpty && id.bucketMetrics.isEmpty)
+                .flatMap(id =>
+                  FunctionUtils.funIdentifiers(id).map(_.name).filter(aliases.contains).map(id -> _)
+                )
+                .headOption match {
+                case Some((id, alias)) =>
+                  Left(
+                    s"HAVING cannot apply a function to the aggregate alias '$alias' (${id.sql}); " +
+                    "compare the aggregate itself"
+                  )
+                case None => Right(())
+              }
+          }
+        }
+        _ <- {
           // A HAVING / ORDER BY aggregate whose derived name equals a SELECT alias of a DIFFERENT
           // aggregate (`SELECT MIN(x) AS max_x ... HAVING MAX(x) > 3`) would read the wrong metric
           // under that name -- reject instead of colliding.

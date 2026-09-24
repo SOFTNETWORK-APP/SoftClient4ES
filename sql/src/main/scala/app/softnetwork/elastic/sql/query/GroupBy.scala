@@ -18,6 +18,8 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.operator._
+import scala.util.Try
+import scala.util.matching.Regex
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
   Expr,
@@ -347,48 +349,119 @@ case class BucketPath(buckets: Seq[Bucket]) {
   override def toString: String = path
 }
 
+/** What a `HAVING` criterion contributes to a bucket pipeline. THREE values, because `""` used to
+  * mean two things and the caller could not tell them apart (issue #389): "this level has nothing
+  * to filter" and "I cannot express this filter" both came back as the empty string, and the second
+  * was read as the first -- so a predicate the engine could not emit was silently DROPPED and every
+  * group came back with HTTP 200.
+  */
+sealed trait MetricSelector
+
+object MetricSelector {
+
+  /** Nothing for the bucket pipeline to do at this level. Legitimate and common: a predicate over
+    * the bucket KEY is honoured by the `terms` `include` / `exclude` instead (`HAVING status =
+    * 'A'`), and a condition reading another level's metric belongs to that level.
+    */
+  case object NoFilter extends MetricSelector
+
+  /** A `bucket_selector` `script.source`: ONE boolean expression reading published metrics. */
+  case class Filter(script: String) extends MetricSelector
+
+  /** The predicate references an aggregate and the engine cannot express it as a `bucket_selector`.
+    * It is REFUSED by name at `Having.validate()`, never dropped.
+    */
+  case class Unrepresentable(expression: String, reason: String) extends MetricSelector {
+
+    /** 🔴 The remedy is "compare the aggregate itself", NOT "alias it in SELECT". The sibling rule
+      * on inline arithmetic (`HAVING MAX(x) - MIN(x) > 10`) does say to alias it, and that advice
+      * does NOT transfer: MEASURED, `SELECT ABS(COUNT(*)) AS a ... GROUP BY city` is itself
+      * rejected ("Non-aggregated fields ... cannot be selected when GROUP BY is present") for every
+      * member of this family, so the borrowed wording would send the user to a dead end.
+      */
+    def message: String =
+      s"HAVING cannot be applied to $expression: $reason. " +
+      "Compare the aggregate itself (HAVING SUM(x) > 10 rather than HAVING ROUND(SUM(x), 2) > 10), " +
+      "or apply the function to the result outside the query."
+  }
+}
+
 object MetricSelectorScript {
 
-  def metricSelector(expr: Criteria): String = expr match {
-    case Predicate(left, op, right, maybeNot, group) =>
-      val leftStr = metricSelector(left)
-      val rightStr = metricSelector(right)
+  import MetricSelector._
 
-      // Filtering all "1 == 1"
-      if (leftStr == "1 == 1" && rightStr == "1 == 1") {
-        "1 == 1"
-      } else if (leftStr == "1 == 1") {
-        rightStr
-      } else if (rightStr == "1 == 1") {
-        leftStr
-      } else {
-        val opStr = op match {
-          case AND | OR => op.painless(None)
-          case _        => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
-        }
-        // `A AND NOT B`: the parser attaches the NOT to the RIGHT criteria (`Predicate.sql` and
-        // `asFilter` agree); this used to prefix the LEFT one -- the exact complement of what was
-        // asked. The negation is pushed INTO the right-hand expression when it is a single one
-        // (`NOT MAX(x) > 45` renders `(params.max_x == null ? false : (params.max_x <= 45))`), so a
-        // bucket whose metric is missing still fails the test -- `!(guard ? false : ...)` would let
-        // it through, against SQL's three-valued NOT and the AC 4b contract. A compound right side
-        // falls back to `!( ... )`.
-        maybeNot match {
-          case Some(_) =>
-            right.negated match {
-              case Some(n) => s"($leftStr) $opStr ${metricSelector(n)}"
-              // Grammar-unreachable today (`NOT (A AND B)` in HAVING is a parse rejection); kept
-              // as the total fallback for a compound right side.
-              case None => s"($leftStr) $opStr !($rightStr)"
-            }
-          case None if group => s"($leftStr) $opStr ($rightStr)"
-          case None          => s"$leftStr $opStr $rightStr"
-        }
+  /** The bucket-pipeline script of a `HAVING` criterion, or `"1 == 1"` when there is nothing to
+    * filter at this level.
+    *
+    * 🔴 It THROWS on an [[MetricSelector.Unrepresentable]] criterion, and that is the point:
+    * returning `""` is what let a predicate vanish. `Having.validate()` refuses every such
+    * statement inside `Parser.apply`, so no venue can reach this throw with a parsed statement --
+    * it is the invariant's second line of defence, for a `SingleSearch` assembled in code and
+    * emitted without validation.
+    */
+  def metricSelector(expr: Criteria): String = selector(expr) match {
+    case NoFilter           => "1 == 1"
+    case Filter(script)     => script
+    case u: Unrepresentable => throw new IllegalStateException(u.message)
+  }
+
+  /** Every `HAVING` criterion of this tree the engine cannot express, in statement order. Read by
+    * `Having.validate()`; empty for every criterion tree [[metricSelector]] can render.
+    */
+  def unrepresentable(expr: Criteria): Seq[MetricSelector.Unrepresentable] = expr match {
+    case Predicate(left, _, right, maybeNot, _) =>
+      unrepresentable(left) ++ (maybeNot match {
+        case Some(_) => right.negated.map(unrepresentable).getOrElse(unrepresentable(right))
+        case None    => unrepresentable(right)
+      })
+    case relation: ElasticRelation => unrepresentable(relation.criteria)
+    case _ =>
+      selector(expr) match {
+        case u: Unrepresentable => Seq(u)
+        case _                  => Nil
+      }
+  }
+
+  private def selector(expr: Criteria): MetricSelector = expr match {
+    case Predicate(left, op, right, maybeNot, group) =>
+      // The RIGHT criterion as it is really rendered: a `NOT` on the predicate is pushed INTO it
+      // when it can carry one, so the verdict must be taken on the SAME node the script is built
+      // from -- otherwise a refusal could be decided on a criterion nothing emits.
+      val effectiveRight = maybeNot.flatMap(_ => right.negated).getOrElse(right)
+      val leftSel = selector(left)
+      val rightSel = selector(effectiveRight)
+      (leftSel, rightSel) match {
+        case (u: Unrepresentable, _) => u
+        case (_, u: Unrepresentable) => u
+        // Filtering all "1 == 1"
+        case (NoFilter, NoFilter) => NoFilter
+        case (NoFilter, r)        => r
+        case (l, NoFilter)        => l
+        case (Filter(leftStr), Filter(rightStr)) =>
+          val opStr = op match {
+            case AND | OR => op.painless(None)
+            case _ => throw new IllegalArgumentException(s"Unsupported logical operator: $op")
+          }
+          // `A AND NOT B`: the parser attaches the NOT to the RIGHT criteria (`Predicate.sql` and
+          // `asFilter` agree); this used to prefix the LEFT one -- the exact complement of what was
+          // asked. The negation is pushed INTO the right-hand expression when it is a single one
+          // (`NOT MAX(x) > 45` renders `(params.max_x == null ? false : (params.max_x <= 45))`), so
+          // a bucket whose metric is missing still fails the test -- `!(guard ? false : ...)` would
+          // let it through, against SQL's three-valued NOT and the AC 4b contract. A compound right
+          // side falls back to `!( ... )`.
+          Filter(maybeNot match {
+            case Some(_) if right.negated.isDefined => s"($leftStr) $opStr $rightStr"
+            // Grammar-unreachable today (`NOT (A AND B)` in HAVING is a parse rejection); kept
+            // as the total fallback for a compound right side.
+            case Some(_)       => s"($leftStr) $opStr !($rightStr)"
+            case None if group => s"($leftStr) $opStr ($rightStr)"
+            case None          => s"$leftStr $opStr $rightStr"
+          })
       }
 
-    case relation: ElasticRelation => metricSelector(relation.criteria)
+    case relation: ElasticRelation => selector(relation.criteria)
 
-    case _: MultiMatchCriteria => "1 == 1"
+    case _: MultiMatchCriteria => NoFilter
 
     case e: Expression if e.isAggregation || e.referencesBucketMetric =>
       // NO FILTERING: the script is generated for all metrics. The context-free rendering of an
@@ -397,9 +470,162 @@ object MetricSelectorScript {
       // already converted to epoch millis. It used to be converted HERE by appending
       // `.toInstant().toEpochMilli()` to the rendered predicate -- which only reached the literal
       // because the predicate happened to end with it.
-      e.painless(None)
-    case _ => "1 == 1"
+      Filter(e.painless(None))
+
+    // 🔴 Issue #389 -- the predicate reads an aggregate through a FUNCTION (`ABS(COUNT(*)) > 1`,
+    // `COALESCE(COUNT(*), 0) > 1`, `1 < ABS(COUNT(*))`). Neither flag above sees it, because a
+    // function never looks inside its own arguments, so it fell to the `1 == 1` catch-all below
+    // and the whole condition VANISHED. Emitted when the rendering is provably a single boolean
+    // expression; refused BY NAME when it is not. Never dropped.
+    case e: Expression if e.bucketMetrics.nonEmpty =>
+      representable(e) match {
+        case Left(reason)  => Unrepresentable(e.sql, reason)
+        case Right(script) => Filter(script)
+      }
+
+    case _ => NoFilter
   }
+
+  /** This predicate's `bucket_selector` script, or the reason the engine cannot express it.
+    *
+    * ONE rendering: the verdict and the script it authorises come out of the same call, so the
+    * emission can never be the second render of a tree whose FIRST render was the one vetted.
+    *
+    * 🔴 The verdict is taken on the RENDERING, never on a list of function names. A name list is a
+    * fourth derivation of what the renderer does and would disagree with it the first time a
+    * rendering changed (`project_type_derivations_runtime_declared_reported`); the rendering is the
+    * thing Elasticsearch actually compiles. And it is a POSITIVE proof -- everything this method
+    * cannot account for is refused, because a `HAVING` that cannot be expressed must fail, never
+    * silently return every group (`feedback_nonsense_input_fails_loudly`).
+    *
+    * The four disqualifiers, each MEASURED on a real rendering:
+    *   1. it cannot be rendered at all without a document context -- `CASE WHEN ... END` throws; 2.
+    *      it carries a STATEMENT, not an expression -- `ROUND(MAX(x), 2)` renders `def arg1 =
+    *      Math.pow(10, 2); ...`, and a `bucket_selector` source is one expression; 3. it can
+    *      evaluate to NULL -- `NULLIF(COUNT(*), 0) > 1` renders `(params.c) == 0 ? null :
+    *      (params.c) > 1`, which hands Elasticsearch a `null` where a boolean is required. `? null
+    *      :` is the renderer's OWN null-producing idiom and is already the marker the repo's
+    *      null-safety guard keys on; 4. its rendering BOXES a number -- `ABS(COUNT(*)) > 1` renders
+    *      `Double.valueOf(Math.abs(params.c)) > 1`, and the bucket-pipeline script context does not
+    *      compile it; 5. it reads a local nothing binds -- `NULLIF(c, 0) > 1` over a SELECT alias
+    *      renders `arg0 == 0 ? null : arg0 > 1`, and `arg0` is a `PainlessContext` parameter that
+    *      no bucket pipeline declares. Every free lower-case word is refused unless it is a
+    *      Painless literal (`null` / `true` / `false`) or the `params` map itself: a Painless
+    *      expression has no free functions, so a method call is always preceded by a `.` and a
+    *      class is capitalised.
+    *
+    * 🔴 Rule 4 is the one NO amount of reading could have produced, and it is why the acceptance
+    * bar for this issue was EXECUTION and not a byte pin
+    * (`feedback_assert_the_mechanism_not_a_proxy`
+    * -- PARSES != RENDERS != RUNS). The spec asserted that `Double.valueOf(Math.abs(params.c)) > 1`
+    * was "legal as a bucket_selector source"; MEASURED on a real Elasticsearch 8.18.3 it is a
+    * `class_cast_exception: Cannot cast from [java.lang.Double] to [int]` at COMPILE time, and the
+    * whole search fails. The rule is DERIVED, not guessed: eighteen shapes were rendered and
+    * executed, and `.valueOf(` separates the nine that run from the nine that do not, exactly. The
+    * same call compiles in the QUERY script context (`WHERE ABS(x) > 1` runs), so this is a
+    * property of the bucket-pipeline context, not of the rendering alone -- which is precisely why
+    * a syntactic gate needs a measured rule here and cannot derive one.
+    *
+    * Rule 5's complement also proves rule 3 is not the only null route, and rules 2-5 are decided
+    * on the rendering with every STRING LITERAL blanked, so a `;`, a `?` or a word inside one is
+    * never read as code.
+    */
+  private[query] def representable(e: Expression): Either[String, String] =
+    Try(e.functionBucketPipelinePainless).toOption match {
+      case None =>
+        Left("it cannot be rendered without a document, and a bucket pipeline has none")
+      case Some(rendering) => disqualifyRendering(rendering).toLeft(rendering)
+    }
+
+  /** Rules 2-6 of [[representable]], asked of a RENDERING rather than of an expression.
+    *
+    * Exposed as its own function because it is a pure function of a string and is therefore the
+    * only surface on which each rule can be falsified INDIVIDUALLY
+    * (`feedback_assert_the_mechanism_not_a_proxy`): the rules overlap on real SQL -- every shape
+    * that trips the top-level-conditional rule also renders a `? null :` -- so a mutation matrix
+    * driven by statements alone reports a live rule as unguarded. The end-to-end rows stay; these
+    * are what keep each rule honest.
+    */
+  private[query] def disqualifyRendering(rendering: String): Option[String] =
+    disqualify(blankStringLiterals(rendering))
+
+  private def disqualify(code: String): Option[String] = {
+    if (code.contains(";") || code.contains("def "))
+      Some(
+        "its rendering needs a local declaration, and a bucket_selector source is one expression"
+      )
+    else if (code.contains("? null :"))
+      Some("its rendering can evaluate to NULL, and a bucket_selector source must be a boolean")
+    else if (conditionalAtTopLevel(code))
+      Some(
+        "its outermost operator is a conditional rather than a comparison, so it does not render a boolean"
+      )
+    else if (code.contains(".valueOf("))
+      Some(
+        "its rendering boxes a number, which the bucket-pipeline script context does not compile"
+      )
+    else
+      freeLocal(code).map(name =>
+        s"its rendering reads '$name', which nothing binds in a bucket pipeline"
+      )
+  }
+
+  /** The same string with the CONTENT of every Painless string literal replaced by spaces, so the
+    * scanners above read code and only code. Length-preserving, so an index into the result is an
+    * index into the original.
+    */
+  private def blankStringLiterals(s: String): String = {
+    val out = new StringBuilder(s)
+    var i = 0
+    while (i < s.length) {
+      val c = s.charAt(i)
+      if (c == '"' || c == '\'') {
+        var j = i + 1
+        while (j < s.length && s.charAt(j) != c) {
+          if (s.charAt(j) == '\\') { out.setCharAt(j, ' '); j += 1 }
+          if (j < s.length) { out.setCharAt(j, ' '); j += 1 }
+        }
+        i = j + 1
+      } else i += 1
+    }
+    out.toString
+  }
+
+  /** Is there a `?` outside every parenthesis? Then the comparison is not the outermost operator
+    * and the expression's value is whatever the branches are -- not necessarily a boolean.
+    */
+  private def conditionalAtTopLevel(code: String): Boolean = {
+    var depth = 0
+    var i = 0
+    while (i < code.length) {
+      code.charAt(i) match {
+        case '(' => depth += 1
+        case ')' => depth -= 1
+        case '?' => if (depth <= 0) return true
+        case _   =>
+      }
+      i += 1
+    }
+    false
+  }
+
+  private val FreeWord: Regex = """(?<![\w.$])([a-z_][A-Za-z0-9_]*)""".r
+
+  /** The first lower-case word the rendering uses as a value of its own: not a method (those follow
+    * a `.`), not a call, not a Painless literal, not the `params` map.
+    */
+  private def freeLocal(code: String): Option[String] =
+    FreeWord
+      .findAllMatchIn(code)
+      .collectFirst {
+        case m
+            if !PainlessLiterals.contains(m.group(1)) &&
+              m.group(1) != "params" &&
+              !(m.end < code.length && code.charAt(m.end) == '(') =>
+          m.group(1)
+      }
+
+  private val PainlessLiterals: Set[String] = Set("null", "true", "false")
 
 }
 
