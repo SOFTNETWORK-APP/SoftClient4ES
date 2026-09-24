@@ -244,10 +244,10 @@ sealed trait Criteria extends Updateable with PainlessScript {
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes =
     this match {
-      case Predicate(left, _, right, n, _) =>
+      case p @ Predicate(left, _, right, _, _) =>
         right.includes(
           bucket,
-          (!not && n.isDefined) || (not && n.isEmpty),
+          p.includePolarityOfRight(not),
           left.includes(bucket, not, bucketIncludesExcludes)
         )
       case relation: ElasticRelation =>
@@ -367,6 +367,19 @@ case class Predicate(
   else leftCriteria} $operator${not
     .map(_ => " NOT")
     .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
+
+  /** The polarity the RIGHT criterion inherits when a `terms` include/exclude traversal walks this
+    * predicate. The predicate's own `NOT` binds the RIGHT operand, and this IS its fold: the
+    * criterion is evaluated over the same bucket with the sense flipped, so `notConsumed` holds by
+    * construction and nothing downstream has to negate it again.
+    *
+    * 🔴 Named because it has TWO readers -- `Criteria.includes` and
+    * `SingleSearch.keyChannelConflict` -- and the round-5 regression this replaces was exactly one
+    * derivation written for one of two call sites that are the same function.
+    */
+  private[query] def includePolarityOfRight(not: Boolean): Boolean =
+    (!not && this.not.isDefined) || (not && this.not.isEmpty)
+
   override def update(request: SingleSearch): Criteria = {
     val updatedPredicate = this.copy(
       leftCriteria = leftCriteria.update(request),

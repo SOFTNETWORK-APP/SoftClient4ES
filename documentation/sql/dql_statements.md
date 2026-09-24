@@ -829,8 +829,21 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 ```
 
-- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — and an `OR` of
-  them, which the filter unions into one list (`HAVING city = 'Paris' OR city = 'Lyon'`).
+- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE`.
+- ⚠️ **Which COMBINATIONS are supported follows from how Elasticsearch applies them.** The `terms`
+  filter carries one list of kept values and one list of removed values, and each is a UNION:
+
+  | combination | supported | why |
+  |---|---|---|
+  | `city = 'Paris' OR city = 'Lyon'` | ✅ | the kept list is a union, i.e. a disjunction |
+  | `city <> 'Paris' AND city <> 'Lyon'` | ✅ | not-in-A and not-in-B is not-in-(A ∪ B) |
+  | `city = 'Paris' AND city <> 'Lyon'` | ✅ | one kept list and one removed list, applied together |
+  | `city <> 'Paris' OR city <> 'Lyon'` | ❌ refused | a union of removals is a conjunction, so this would be executed as one |
+  | `city = 'Paris' AND city = 'Lyon'` | ❌ refused | a union of kept values is a disjunction, so this would be executed as one |
+  | `city = 'Paris' OR city <> 'Lyon'` | ❌ refused | the two lists are applied together, i.e. ANDed |
+
+  The refused rows previously returned a plausible-looking but WRONG set of groups. Split the query,
+  or restate the condition as an `OR` of equalities or an `AND` of inequalities.
 - ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
   `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
   alternatives are unsound: filtering documents instead would keep or drop a multi-valued document

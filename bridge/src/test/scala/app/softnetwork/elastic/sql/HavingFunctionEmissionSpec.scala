@@ -232,6 +232,57 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // The include/exclude CHANNEL -- it unions, it never intersects (rule b2)
+  //
+  // 🔴 `excludes` IS `includes(bucket, !not, …)`. Every assertion above this point is include-side,
+  // which is how an inverted rule once shipped: it reasoned about the include sense and was applied
+  // by a method that is also the exclude sense. These cells are the EXCLUDE side, derived.
+  // ---------------------------------------------------------------------------------------------
+
+  "an AND of inequalities" should "union into ONE exclude list, exactly as on 455433ae" in {
+    queryOf(group + "status <> 'a' AND status <> 'b'") should include(
+      """"exclude":["a","b"]"""
+    )
+    queryOf(group + "status NOT IN ('a','b') AND status <> 'c'") should include(
+      """"exclude":["a","b","c"]"""
+    )
+  }
+
+  it should "keep working beside a metric, which is a different mechanism" in {
+    val q = queryOf(group + "status <> 'a' AND COUNT(*) > 1")
+    q should include(""""exclude":["a"]""")
+    q should include("bucket_selector")
+  }
+
+  "a combination the channel cannot express" should "never reach emission" in {
+    // Each of these emitted a SILENT WRONG ANSWER on `455433ae` -- measured:
+    //   `<> a OR <> b`  -> exclude:["a","b"], though the disjunction is true for EVERY bucket
+    //   `= a AND = b`   -> include:["a","b"], though the SQL means NO bucket
+    //   `= a OR <> b`   -> include:["a"] AND exclude:["b"], a conjunction where SQL says OR
+    //   `LIKE a% AND LIKE b%` -> include:"a.*" only, the second pattern dropped
+    Seq(
+      "status <> 'a' OR status <> 'b'",
+      "status NOT IN ('a','b') OR status <> 'c'",
+      "status = 'a' AND status = 'b'",
+      "status = 'a' OR status <> 'b'",
+      "status LIKE 'a%' AND status LIKE 'b%'"
+    ).foreach { p =>
+      withClue(s"[$p] ") {
+        Parser(group + p) match {
+          case Left(e)  => e.msg should startWith("HAVING cannot")
+          case Right(_) => fail(s"accepted; it emitted ${queryOf(group + p)}")
+        }
+      }
+    }
+  }
+
+  it should "still allow one include and one exclude under a conjunction" in {
+    val q = queryOf(group + "status IN ('a','b') AND status <> 'c'")
+    q should include(""""include":["a","b"]""")
+    q should include(""""exclude":["c"]""")
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // S7 -- a conjunction emits BOTH halves (AC-3). On `main` the second one VANISHED.
   // ---------------------------------------------------------------------------------------------
 

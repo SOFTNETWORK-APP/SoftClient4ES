@@ -923,6 +923,92 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
   }
 
+  // -----------------------------------------------------------------------------------------
+  // The include/exclude CHANNEL, EXECUTED (rule b2)
+  //
+  // 🔴 `excludes` IS `includes(bucket, !not, …)` -- one method, two senses -- and every other row
+  // in this file exercises the INCLUDE sense. These are the exclude-side cells, each against a
+  // bucket set computed by hand from the fixture: `cat_i` holds exactly `i` documents, 37 groups.
+  // -----------------------------------------------------------------------------------------
+
+  private def categoriesOf(having: String): Seq[String] =
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        s"SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category $having"
+      )
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category).sorted
+      case ElasticFailure(error) => fail(s"[$having] failed: ${error.message}")
+    }
+
+  private def categoryRefusal(having: String): String =
+    Await.result(
+      client.run(
+        s"SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category $having"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"[$having] was accepted and answered $result")
+      case ElasticFailure(error)  => error.message
+    }
+
+  private lazy val allCategories: Seq[String] = (1 to categories).map(c => f"cat_$c%02d").sorted
+
+  "an AND of inequalities on the GROUP BY key" should "remove exactly those groups" in {
+    // NOT-in-A and NOT-in-B is NOT-in-(A ∪ B): the exclude list IS that union, so this is correct
+    // on `455433ae` and must stay byte-identical.
+    categoriesOf("HAVING category <> 'cat_36' AND category <> 'cat_37'") shouldBe
+    allCategories.filterNot(Set("cat_36", "cat_37"))
+    categoriesOf(
+      "HAVING category NOT IN ('cat_36','cat_37') AND category <> 'cat_35'"
+    ) shouldBe allCategories.filterNot(Set("cat_35", "cat_36", "cat_37"))
+    // three leaves, the same union one level deeper
+    categoriesOf(
+      "HAVING category <> 'cat_35' AND category <> 'cat_36' AND category <> 'cat_37'"
+    ) shouldBe allCategories.filterNot(Set("cat_35", "cat_36", "cat_37"))
+  }
+
+  it should "still combine with an aggregate condition, which is a different mechanism" in {
+    categoriesOf("HAVING category <> 'cat_37' AND COUNT(*) > 35") shouldBe Seq("cat_36")
+  }
+
+  "an OR of inequalities" should "be REFUSED, because the exclude list would execute it as an AND" in {
+    // 🔴 MEASURED on `455433ae` and on this cluster: it emitted the SAME `exclude:["cat_36",
+    // "cat_37"]` as the AND above. The disjunction is true for EVERY one of the 37 groups, and two
+    // were dropped -- HTTP 200, no error. Live on `main` today.
+    categoryRefusal(
+      "HAVING category <> 'cat_36' OR category <> 'cat_37'"
+    ) should include("cannot combine")
+    categoryRefusal(
+      "HAVING category NOT IN ('cat_36','cat_37') OR category <> 'cat_35'"
+    ) should include("cannot combine")
+  }
+
+  "an AND of equalities" should "be REFUSED, because the include list means OR" in {
+    // `include:["cat_36","cat_37"]` keeps two groups; the SQL means none.
+    categoryRefusal(
+      "HAVING category = 'cat_36' AND category = 'cat_37'"
+    ) should include("cannot combine")
+  }
+
+  "a MIXED pair under OR" should "be REFUSED, because the two lists are ANDed" in {
+    categoryRefusal(
+      "HAVING category = 'cat_37' OR category <> 'cat_36'"
+    ) should include("cannot combine")
+  }
+
+  it should "still honour one include and one exclude under AND" in {
+    // ⚠️ Both lists carry SEVERAL values on purpose. RESIDUAL, pre-existing and ES-6-ONLY, found
+    // by this matrix: the es6 bridge renders a SINGLE-element list as a bare string
+    // (`"exclude":"c"`), which ES 6.8 reads as a REGEX, and mixing a set-based include with a
+    // regex-based exclude is rejected with HTTP 400 `Cannot mix a set-based include with a
+    // regex-based method`. The emission is byte-identical to `455433ae`; it is recorded, not fixed
+    // here.
+    categoriesOf(
+      "HAVING category IN ('cat_35','cat_36','cat_37') AND category NOT IN ('cat_35','cat_36')"
+    ) shouldBe Seq("cat_37")
+  }
+
   it should "REFUSE a HAVING on a column that is neither grouped nor aggregated" in {
     Await.result(
       client.run(

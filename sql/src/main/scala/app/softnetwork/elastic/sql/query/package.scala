@@ -822,6 +822,65 @@ package object query {
           "Compare the key itself, or filter in WHERE."
         )
 
+    /** The first `HAVING` combination whose halves cannot BOTH reach the `terms` filter, or `None`
+      * when every combination is a union the channel expresses. See rule (b2) in `validate()`.
+      *
+      * The analysis is per bucket and follows `Criteria.includes` exactly -- same polarity
+      * threading, same contribution test, both senses:
+      *   - the INCLUDE list is a union, so it expresses a DISJUNCTION. Two halves that both
+      *     contribute includes under a conjunction are not expressible.
+      *   - the EXCLUDE list is a union of negations, so it expresses a CONJUNCTION. Anything
+      *     excluded under a disjunction is not expressible -- including the mixed shape `= 'a' OR
+      *     <> 'b'`, where the emission would AND an include with an exclude.
+      *
+      * The polarity is still threaded, because a `NOT` before a LEAF decides which channel that
+      * leaf feeds -- `= 'a' AND NOT = 'b'` is an include and an exclude, and expressible.
+      */
+    private[query] def keyChannelConflict: Option[String] = {
+      val empty = BucketIncludesExcludes()
+      def conflict(c: Criteria, bucket: Bucket, not: Boolean): Option[Criteria] = c match {
+        case p @ Predicate(left, op, right, _, _) =>
+          // ONE derivation of the polarity, shared with `Criteria.includes` -- see
+          // `Predicate.includePolarityOfRight`.
+          val rightNot = p.includePolarityOfRight(not)
+          val leftIncludes = left.includes(bucket, not, empty)
+          val leftExcludes = left.excludes(bucket, not, empty)
+          val rightIncludes = right.includes(bucket, rightNot, empty)
+          val rightExcludes = right.excludes(bucket, rightNot, empty)
+          // 🔴 No De Morgan arm here, and that is MEASURED, not assumed: `Predicate.maybeNot`
+          // negates the RIGHT OPERAND only, and `NOT ( … )` around a group is rejected by the
+          // grammar (`end of input expected`, on this branch and on `455433ae`). So no `Predicate`
+          // is ever reached with a flipped polarity -- probed over the parseable shapes -- and an
+          // arm dualising `op` would be unreachable for every possible input. Round 3 shipped
+          // exactly such an arm and had to delete it; one is enough.
+          val leftContributes = leftIncludes != empty || leftExcludes != empty
+          val rightContributes = rightIncludes != empty || rightExcludes != empty
+          val here =
+            if (op == AND && leftIncludes != empty && rightIncludes != empty) Some(p: Criteria)
+            else if (
+              op == OR && leftContributes && rightContributes &&
+              (leftExcludes != empty || rightExcludes != empty)
+            ) Some(p: Criteria)
+            else None
+          here
+            .orElse(conflict(left, bucket, not))
+            .orElse(conflict(right, bucket, rightNot))
+        case relation: ElasticRelation => conflict(relation.criteria, bucket, not)
+        case _                         => None
+      }
+      having.flatMap(_.criteria).flatMap { criteria =>
+        buckets.view
+          .flatMap(bucket => conflict(criteria, bucket, not = false))
+          .headOption
+          .map(c =>
+            s"HAVING cannot combine the conditions in ${c.sql} on one GROUP BY key: Elasticsearch " +
+            "applies one list of kept values and one list of removed values, and each is a union, " +
+            "so this combination would be executed as a different one. Split the query, or " +
+            "restate it as an OR of equalities or an AND of inequalities."
+          )
+      }
+    }
+
     /** Does this key predicate read a NESTED bucket? Asked of the bucket the leaf RESOLVES to. */
     private[query] def readsNestedKey(e: Expression): Boolean =
       e.nested || namedLeavesOf(e).exists(l => keyBucketOf(l).exists(_.nestedElement.isDefined))
@@ -1149,6 +1208,30 @@ package object query {
             .map(keyPredicateOutcome)
             .collectFirst { case KeyPredicateOutcome.Refused(reason) => Left(reason) }
             .getOrElse(Right(()))
+        }
+        _ <- {
+          // (b2) 🔴 The `terms` filter carries ONE include list and ONE exclude list, and each is a
+          // UNION of its members. So the channel can express a union and NEVER an intersection --
+          // and which of the two a combination needs depends on the OPERATOR *and* on the
+          // POLARITY, because `excludes` IS `includes(bucket, !not, …)`: the same method, read in
+          // the other sense.
+          //
+          // MEASURED on `455433ae` and on real ES 8.18.3:
+          //   `HAVING city <> 'Paris' AND city <> 'Lyon'` -> `exclude:["Lyon","Paris"]`, CORRECT:
+          //      NOT-in-A and NOT-in-B is NOT-in-(A∪B).
+          //   `HAVING city <> 'Paris' OR  city <> 'Lyon'` -> the SAME `exclude:["Lyon","Paris"]`,
+          //      a SILENT WRONG ANSWER: the disjunction is true for every bucket, and two are
+          //      dropped. HTTP 200.
+          //   `HAVING city = 'a' AND city = 'b'` -> `include:["a","b"]`, also a silent wrong
+          //      answer: the include list means `a OR b`, the SQL means no bucket at all.
+          //   `HAVING city = 'a' OR city = 'b'` -> `include:["a","b"]`, CORRECT.
+          //
+          // 🔴 This rule is ONE derivation that asks BOTH methods about BOTH sides. The defect it
+          // replaces (a round-5 regression, reverted with the rest of that work) was a rule
+          // written for the include sense only and applied by a method that is also the exclude
+          // sense -- so it inverted every `<>`. A rule about these two channels that consults only
+          // one of them is wrong by construction.
+          keyChannelConflict.map(Left(_)).getOrElse(Right(()))
         }
         _ <- {
           // (c) 🔴 An OR is honoured by ONE mechanism or by none: a `bucket_selector` script cannot

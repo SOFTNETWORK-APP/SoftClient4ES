@@ -460,6 +460,126 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
   }
 
   // -------------------------------------------------------------------------------------------
+  // The include/exclude CHANNEL -- it unions, it never intersects (rule b2)
+  //
+  // 🔴 `Criteria.excludes` IS `Criteria.includes(bucket, !not, …)`: one method read in two senses.
+  // A rule about these channels written for one sense is wrong for the other by construction --
+  // that is exactly how an abandoned round shipped an inverted rule that turned `<> a OR <> b`
+  // from a dropped predicate into a WRONG answer. So the matrix below is DERIVED and covers both
+  // senses; the population, not the assertion, is what was missing.
+  // -------------------------------------------------------------------------------------------
+
+  /** Both halves of the matrix, as the predicate text and which channel the leaf feeds. */
+  private val includeSide = Seq(
+    "status = 'a'"        -> "status = 'b'",
+    "status IN ('a','x')" -> "status = 'b'",
+    "status LIKE 'a%'"    -> "status LIKE 'b%'"
+  )
+  private val excludeSide = Seq(
+    "status <> 'a'"           -> "status <> 'b'",
+    "status NOT IN ('a','x')" -> "status <> 'b'",
+    "status NOT LIKE 'a%'"    -> "status NOT LIKE 'b%'"
+  )
+
+  "the terms channel" should "express every DERIVED combination of key predicates, or refuse it" in {
+    // The verdict is DERIVED from the principle, never listed by hand: the include list is a union
+    // and therefore a DISJUNCTION; the exclude list is a union of negations and therefore a
+    // CONJUNCTION. So two leaves are expressible only as an OR of includes or an AND of excludes.
+    val cells =
+      for {
+        (leftSide, leftName)   <- Seq(includeSide -> "include", excludeSide -> "exclude")
+        (left, right)          <- leftSide
+        (rightSide, rightName) <- Seq(includeSide -> "include", excludeSide -> "exclude")
+        combiner               <- Seq("AND", "OR")
+      } yield {
+        // pair each left with the OTHER side's matching right, so mixed cells exist too
+        val other = rightSide(leftSide.indexOf((left, right)))._2
+        val rhs = if (rightName == leftName) right else other
+        val sql = s"$left $combiner $rhs"
+        val sameChannel = leftName == rightName
+        val expressible =
+          // same channel: the include list is a disjunction, the exclude list a conjunction ...
+          (sameChannel && leftName == "include" && combiner == "OR") ||
+          (sameChannel && leftName == "exclude" && combiner == "AND") ||
+          // ... and the two channels are themselves ANDed by Elasticsearch, so one of each under
+          // a conjunction is exactly what they mean together.
+          (!sameChannel && combiner == "AND")
+        (sql, expressible)
+      }
+    cells.distinct.size should be >= 20
+    cells.distinct.foreach { case (predicate, expressible) =>
+      withClue(s"[$predicate] expressible=$expressible ") {
+        Parser(group + predicate).isRight shouldBe expressible
+      }
+    }
+  }
+
+  it should "leave a SINGLE key predicate of either sense alone" in {
+    (includeSide ++ excludeSide).flatMap { case (l, r) => Seq(l, r) }.distinct.foreach { p =>
+      withClue(s"[$p] ")(Parser(group + p).isRight shouldBe true)
+    }
+  }
+
+  it should "keep the AND of inequalities that works on `455433ae`, byte for byte" in {
+    // 🔴 The row this rule must NOT move: `exclude:["a","b"]` is CORRECT, because NOT-in-A and
+    // NOT-in-B is NOT-in-(A ∪ B). An earlier, inverted rule refused it -- a regression against
+    // `main` that the docs then contradicted.
+    val st = parsed(group + "status <> 'a' AND status <> 'b'")
+    st.buckets
+      .map(b => havingOf(st, "and").excludes(b, not = false, BucketIncludesExcludes()).values)
+      .toSet shouldBe Set(Set("a", "b"))
+    // ... and the three-leaf chain, which is the same union one level deeper.
+    val three = parsed(group + "status <> 'a' AND status <> 'b' AND status <> 'c'")
+    three.buckets
+      .map(b => havingOf(three, "and3").excludes(b, not = false, BucketIncludesExcludes()).values)
+      .toSet shouldBe Set(Set("a", "b", "c"))
+  }
+
+  it should "refuse the OR of inequalities that is WRONG on `455433ae`" in {
+    // 🔴 MEASURED on `455433ae` and on ES 8.18.3: `<> 'a' OR <> 'b'` emitted the SAME
+    // `exclude:["a","b"]` as the AND. The disjunction is true for EVERY bucket, and two were
+    // dropped, HTTP 200. Live on `main` today.
+    rejection(group + "status <> 'a' OR status <> 'b'") should include("cannot combine")
+    rejection(group + "status NOT IN ('a','b') OR status <> 'c'") should include("cannot combine")
+  }
+
+  it should "refuse the AND of equalities, whose include list means OR" in {
+    // `include:["a","b"]` keeps two buckets; the SQL means none. DECISION: refused, not
+    // "corrected" to an empty result -- a loud refusal is the contract this issue is about.
+    rejection(group + "status = 'a' AND status = 'b'") should include("cannot combine")
+  }
+
+  it should "refuse a MIXED pair under OR, which the emission would AND" in {
+    // `= 'a' OR <> 'b'` emitted `include:["a"]` AND `exclude:["b"]` on `455433ae` -- a conjunction
+    // where the SQL says disjunction.
+    rejection(group + "status = 'a' OR status <> 'b'") should include("cannot combine")
+  }
+
+  it should "not refuse a conjunction the channels express SEPARATELY" in {
+    // One include and one exclude under AND is exactly what the two lists mean together.
+    Parser(group + "status = 'a' AND status <> 'b'").isRight shouldBe true
+    Parser(group + "status IN ('a','b') AND status <> 'c'").isRight shouldBe true
+    // ... and a key predicate beside a METRIC is a different mechanism, not a second channel.
+    Parser(group + "status <> 'a' AND COUNT(*) > 1").isRight shouldBe true
+  }
+
+  it should "still place a NOT before a LEAF in the right channel" in {
+    // The polarity threading that IS reachable: `NOT = 'b'` feeds the EXCLUDE list, so the pair is
+    // one include and one exclude under a conjunction -- expressible.
+    val st = parsed(group + "status = 'a' AND NOT status = 'b'")
+    st.buckets
+      .map(b => havingOf(st, "notleaf").includes(b, not = false, BucketIncludesExcludes()).values)
+      .toSet shouldBe Set(Set("a"))
+    st.buckets
+      .map(b => havingOf(st, "notleaf").excludes(b, not = false, BucketIncludesExcludes()).values)
+      .toSet shouldBe Set(Set("b"))
+    // 🔴 And the shape that would need De Morgan does not exist: `NOT ( … )` around a group is
+    // rejected by the grammar, here and on `455433ae`. MEASURED -- which is why the rule carries
+    // no arm for it.
+    Parser(group + "NOT (status = 'x' OR status = 'y')").isLeft shouldBe true
+  }
+
+  // -------------------------------------------------------------------------------------------
   // The OR rule -- homogeneity of MECHANISM (round 3)
   // -------------------------------------------------------------------------------------------
 
