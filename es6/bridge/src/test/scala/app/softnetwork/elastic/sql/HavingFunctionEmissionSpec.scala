@@ -13,9 +13,10 @@ import scala.jdk.CollectionConverters._
 /** Issue #389 -- the EMITTED Elasticsearch query for a `HAVING` over a FUNCTION of an aggregate,
   * measured against the HAND-MAINTAINED es6 bridge (AC-7).
   *
-  * 🔴 The whole fix lives in the `sql` module: no line of either `ElasticAggregation.scala` moved.
-  * This twin is what PROVES that -- it is the same matrix, asserted against a different elastic4s
-  * major, and the only expectation that differs is elastic4s 6's bare-string `terms` `exclude`.
+  * 🔴 One line of each bridge changed (the query seam now reads `searchCriteria`); everything else
+  * lives in `sql`. This twin is what PROVES it -- the same derived matrix and the same pins against
+  * a different elastic4s major, with two expectations differing (elastic4s 6 renders a single-value
+  * `terms` `include` / `exclude` as a bare string).
   *
   * The `sql` half (detection, the representability gate, the refusals) is pinned in
   * `HavingOverAggregateFunctionSpec`. What is measured HERE is what Elasticsearch is actually sent:
@@ -53,11 +54,104 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     select.query
   }
 
+  private val paramRef = "params\\.([A-Za-z_][A-Za-z0-9_]*)".r
+
+  private def valuesOf(node: JsonNode, key: String): Seq[JsonNode] = {
+    val here = Option(node.get(key)).toSeq
+    val below = node.elements().asScala.toSeq.flatMap(valuesOf(_, key))
+    here ++ below
+  }
+
   private val terms = """"terms":{"field":"status","size":65536,"min_doc_count":1}"""
   private val group = "SELECT status, COUNT(*) AS c FROM t GROUP BY status HAVING "
 
-  /** Every shape this file emits -- the input of the structural invariant at the bottom, so the
-    * guard is computed over the material it guards rather than over a hand-picked subset.
+  // ---------------------------------------------------------------------------------------------
+  // The matrix is DERIVED, not enumerated
+  //
+  // 🔴 The first version of this file carried two hand-written literal lists, and BOTH excluded the
+  // whole family in which the left operand is a bare aggregate and the RIGHT one carries the
+  // function -- which is exactly the family that emitted four HTTP-400 scripts and one
+  // `Internal parser error`. A count over a hand-written list is a literal asserting itself
+  // (`feedback_assert_the_mechanism_not_a_proxy`): the population has to be derived, and every cell
+  // has to get a VERDICT.
+  // ---------------------------------------------------------------------------------------------
+
+  private val wrappers: Seq[String => String] = Seq(
+    a => s"COALESCE($a, 0)",
+    a => s"GREATEST($a, 0)",
+    a => s"LEAST($a, 99)",
+    a => s"SIGN($a)",
+    a => s"ABS($a)",
+    a => s"FLOOR($a)",
+    a => s"ROUND($a, 2)",
+    a => s"NULLIF($a, 0)",
+    a => s"CASE WHEN $a > 1 THEN 1 ELSE 0 END"
+  )
+
+  private val aggregates = Seq("COUNT(*)", "MAX(amount)", "SUM(amount)")
+
+  /** Every operand POSITION a wrapped aggregate can occupy. The second and third are the ones the
+    * hand-written lists missed.
+    */
+  private val positions: Seq[String => String] = Seq(
+    w => s"$w > 1",
+    w => s"1 < $w",
+    w => s"COUNT(*) > $w",
+    w => s"NOT $w > 1",
+    w => s"$w BETWEEN 1 AND 5",
+    w => s"$w IN (1, 2)",
+    w => s"COUNT(*) > 1 AND $w > 2",
+    w => s"COUNT(*) > 1 OR $w > 2"
+  )
+
+  private val matrix: Seq[String] =
+    for {
+      wrap <- wrappers
+      agg  <- aggregates
+      pos  <- positions
+    } yield group + pos(wrap(agg))
+
+  "every cell of the derived matrix" should "either emit a filter or be refused by name -- never both, never neither" in {
+    // 🔴 The verdict, not the shape. On `main` 149 of the 247 statements of this family answered
+    // HTTP 200 with the predicate SILENTLY DROPPED; the contract is that NONE does.
+    val silent = matrix.filter { sql =>
+      Parser(sql) match {
+        case Left(_) => false
+        case Right(_) =>
+          val root = mapper.readTree(queryOf(sql))
+          valuesOf(root, "bucket_selector").isEmpty
+      }
+    }
+    withClue(
+      s"${silent.size} statements emit NO filter and no refusal:\n${silent.take(8).mkString("\n")}\n"
+    )(
+      silent shouldBe empty
+    )
+  }
+
+  it should "name the HAVING clause in every refusal" in {
+    val refusals = matrix.flatMap(sql => Parser(sql).left.toOption.map(sql -> _.msg))
+    // Non-vacuity computed over the material: the matrix MUST contain refusals, or the assertion
+    // above could pass on an all-emitting set.
+    refusals.size should be >= 100
+    refusals.foreach { case (sql, msg) =>
+      withClue(s"[$sql] ") {
+        msg should startWith("HAVING cannot")
+        msg should not startWith Parser.InternalParseFailure
+      }
+    }
+  }
+
+  it should "cover both operand sides, so the right-hand family cannot go missing again" in {
+    // The guard on the guard: if `positions` ever loses the right-operand rows, this reddens.
+    val rightHand = matrix.filter(_.contains("COUNT(*) > COALESCE"))
+    rightHand should not be empty
+    val bounds = matrix.filter(_.contains("BETWEEN 1 AND 5"))
+    bounds should not be empty
+  }
+
+  /** The shapes whose EXACT emission is pinned below, each executed against a real cluster. The
+    * structural invariants at the bottom run over these AND over the derived matrix above.
     */
   private val emitted: Seq[String] = Seq(
     group + "COUNT(*) > 1",
@@ -104,6 +198,38 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       """"script":{"source":"(params.c == null ? false : """,
       """(Math.max(params.c, 0) > 1))"}}}}}}}"""
     ).mkString
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The GROUP BY key push-down (lead ruling 2026-09-24)
+  //
+  // 🔴 These assert the WIRING, not the derivation. `SingleSearch.searchCriteria` computing the
+  // right thing proves nothing if the bridge still reads `where.criteria` -- a mutation doing
+  // exactly that left the whole `sql` suite green.
+  // ---------------------------------------------------------------------------------------------
+
+  "a HAVING over a function of the GROUP BY key" should "reach the QUERY, not the aggregation" in {
+    val q = queryOf(group + "UPPER(status) = 'A'")
+    q should not include """"query":{"match_all":{}}"""
+    q should include("toUpperCase")
+    // ... and it must NOT become a bucket_selector: it is a different mechanism.
+    q should not include "having_filter"
+  }
+
+  it should "AND with the WHERE clause rather than replace it" in {
+    val q = queryOf(
+      "SELECT status, COUNT(*) AS c FROM t WHERE amount > 1 GROUP BY status " +
+      "HAVING UPPER(status) = 'A'"
+    )
+    q should include(""""amount"""")
+    q should include("toUpperCase")
+  }
+
+  it should "leave a key predicate the terms filter already expresses in the terms filter" in {
+    // Byte-identical to `main` for every shipped `HAVING <key> = <v>`: no query filter appears.
+    val q = queryOf(group + "status = 'a'")
+    q should include(""""include":"a"""")
+    q should include(""""query":{"match_all":{}}""")
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -237,14 +363,6 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   // ---------------------------------------------------------------------------------------------
   // The structural invariant (AD-2 item 3)
   // ---------------------------------------------------------------------------------------------
-
-  private val paramRef = "params\\.([A-Za-z_][A-Za-z0-9_]*)".r
-
-  private def valuesOf(node: JsonNode, key: String): Seq[JsonNode] = {
-    val here = Option(node.get(key)).toSeq
-    val below = node.elements().asScala.toSeq.flatMap(valuesOf(_, key))
-    here ++ below
-  }
 
   "every emitted bucket pipeline" should "read exactly the metrics its buckets_path declares" in {
     emitted.foreach { sql =>

@@ -70,8 +70,13 @@ class InPredicateRenderSpec extends AnyFlatSpec with Matchers {
     s"SELECT x FROM t WHERE $name(a) IN (1, 2)",
     s"SELECT x FROM t WHERE $name(a) IN ('u', 'v')",
     s"SELECT x FROM t WHERE $name(a) NOT IN (1, 2)",
-    s"SELECT id FROM t GROUP BY id HAVING $name(a) IN (1, 2)",
-    s"SELECT id FROM t GROUP BY id HAVING $name(a) NOT IN (1, 2)"
+    // 🔴 `GROUP BY a`, not `GROUP BY id`: since issue #389 a HAVING predicate must read either an
+    // aggregate or a GROUP BY KEY -- `HAVING f(a) ...` over a non-grouped `a` is not constant
+    // within a bucket and is now refused by name instead of being silently dropped. Grouping by the
+    // column the function is applied to keeps this sweep exercising the HAVING venue, which is the
+    // half that carried #365's loud failure (`COUNT(x)(COUNT(x))`).
+    s"SELECT a FROM t GROUP BY a HAVING $name(a) IN (1, 2)",
+    s"SELECT a FROM t GROUP BY a HAVING $name(a) NOT IN (1, 2)"
   )
 
   /** A statement is IN SCOPE only if it parses; a function that needs other arity or types simply

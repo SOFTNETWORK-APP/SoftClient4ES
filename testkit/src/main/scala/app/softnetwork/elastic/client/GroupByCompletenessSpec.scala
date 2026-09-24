@@ -831,13 +831,103 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
       "HAVING ROUND(SUM(amount), 2) > 30",
       "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
-      "HAVING COUNT(*) > 30 AND NULLIF(COUNT(*), 0) > 1"
+      "HAVING COUNT(*) > 30 AND NULLIF(COUNT(*), 0) > 1",
+      // 🔴 The RIGHT-operand family (F1): the left operand is a bare aggregate, so the gate used to
+      // be skipped entirely and these reached Elasticsearch as HTTP 400 / an internal-error label.
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > ROUND(SUM(amount), 2)",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > NULLIF(SUM(amount), 0)",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) BETWEEN 1 AND ABS(SUM(amount))",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > CASE WHEN SUM(amount) > 1 THEN 1 ELSE 0 END"
     ).foreach { sql =>
       Await.result(client.run(sql), 60.seconds) match {
         case ElasticSuccess(result) => fail(s"[$sql] was accepted and answered $result")
         case ElasticFailure(error) =>
           withClue(s"[$sql] ") { error.message should include("HAVING cannot") }
       }
+    }
+  }
+
+  it should "filter on a FUNCTION of the GROUP BY key, not ignore it" in {
+    // 🔴 Lead ruling 2026-09-24. A function of the key is CONSTANT within a group, so the condition
+    // is pushed into the query and whole groups are kept or dropped. MEASURED on `main`: this
+    // returned all 37 groups with HTTP 200 -- the condition was honoured by no mechanism at all.
+    // `cat_i` holds exactly `i` documents and every key is `cat_NN`, so `LENGTH(category) = 6` is
+    // every group and `SUBSTRING(category, 5, 2) = '37'` is exactly one.
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING SUBSTRING(category, 5, 2) = '37'"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(r => r.category -> r.cnt) shouldBe Seq("cat_37" -> categories.toLong)
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "leave a surviving group's metrics EXACTLY as they were without the key filter" in {
+    // 🔴 THE property the push-down rests on. Filtering documents may not change what a surviving
+    // group reports, or the optimisation would be a silent wrong answer. Asserted against the
+    // UNFILTERED run of the same grouping, not against a literal.
+    def counts(res: ElasticResult[Seq[CategoryCount]]): Map[String, Long] = res match {
+      case ElasticSuccess(rows)  => rows.map(r => r.category -> r.cnt).toMap
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+    val unfiltered = counts(
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category"
+      )
+    )
+    val filtered = counts(
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING UPPER(category) = 'CAT_37'"
+      )
+    )
+    filtered.keySet shouldBe Set("cat_37")
+    filtered("cat_37") shouldBe unfiltered("cat_37")
+  }
+
+  it should "combine a key condition with an aggregate condition as an AND" in {
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > 35 AND SUBSTRING(category, 5, 1) = '3'"
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category).toSet shouldBe Set("cat_36", "cat_37")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "REFUSE an OR between a key condition and an aggregate condition" in {
+    // 🔴 PRE-EXISTING silent wrong answer: the key became a terms `include` and the aggregate a
+    // `bucket_selector`, so the OR was EXECUTED AS AN AND. MEASURED on `main` over a 4-document
+    // fixture: `HAVING COUNT(*) > 1 OR status = 'b'` returned NO groups where the disjunction is
+    // two of them.
+    Await.result(
+      client.run(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING COUNT(*) > 35 OR category = 'cat_01'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"the OR was accepted and answered $result")
+      case ElasticFailure(error)  => error.message should include("cannot OR a GROUP BY key")
+    }
+  }
+
+  it should "REFUSE a HAVING on a column that is neither grouped nor aggregated" in {
+    Await.result(
+      client.run(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING UPPER(id) = 'X'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"accepted and answered $result")
+      case ElasticFailure(error) =>
+        error.message should include("can only filter on a GROUP BY key")
     }
   }
 

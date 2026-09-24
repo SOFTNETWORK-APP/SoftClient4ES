@@ -463,14 +463,25 @@ object MetricSelectorScript {
 
     case _: MultiMatchCriteria => NoFilter
 
+    // The context-free rendering of an aggregate predicate IS the bucket-pipeline rendering
+    // (`Expression.bucketPipelinePainless`): `params.<metric>` reads, null-guarded, one
+    // parenthesised expression, temporal literal already converted to epoch millis.
+    //
+    // 🔴 It goes through the SAME gate as the arm below, and that is not symmetry for its own sake.
+    // This arm keys on the LEFT operand being an aggregate and says nothing about the RIGHT one, so
+    // every disqualifier refused below was EMITTED here. MEASURED and EXECUTED on Elasticsearch
+    // 8.18.3, all four with a bare `COUNT(*)` on the left:
+    //   `> ROUND(MAX(a), 2)`      -> `invalid sequence of tokens near ['def']`   HTTP 400
+    //   `> NULLIF(MAX(a), 0)`     -> `Cannot cast from [boolean] to [int]`       HTTP 400
+    //   `BETWEEN 1 AND ABS(MAX(a))` -> `Unknown call [ABS] with [1] arguments`   HTTP 400
+    //                                  (the BOUND leaked RAW SQL into the Painless source)
+    //   `> CASE WHEN MAX(a) > 1 …`  -> `painless(None)` THREW inside `validate()`, surfacing
+    //                                  `Internal parser error: …` to the user (issue #250's family)
     case e: Expression if e.isAggregation || e.referencesBucketMetric =>
-      // NO FILTERING: the script is generated for all metrics. The context-free rendering of an
-      // aggregate predicate IS the bucket-pipeline rendering (`Expression.bucketPipelinePainless`):
-      // `params.<metric>` reads, null-guarded, one parenthesised expression, temporal literal
-      // already converted to epoch millis. It used to be converted HERE by appending
-      // `.toInstant().toEpochMilli()` to the rendered predicate -- which only reached the literal
-      // because the predicate happened to end with it.
-      Filter(e.painless(None))
+      representable(e) match {
+        case Left(reason)  => Unrepresentable(e.sql, reason)
+        case Right(script) => Filter(script)
+      }
 
     // 🔴 Issue #389 -- the predicate reads an aggregate through a FUNCTION (`ABS(COUNT(*)) > 1`,
     // `COALESCE(COUNT(*), 0) > 1`, `1 < ABS(COUNT(*))`). Neither flag above sees it, because a
@@ -563,6 +574,21 @@ object MetricSelectorScript {
     else if (code.contains(".valueOf("))
       Some(
         "its rendering boxes a number, which the bucket-pipeline script context does not compile"
+      )
+    else if (code.contains(".compareTo(\"") && code.contains("params."))
+      // 🔴 A metric arrives from `buckets_path` as a NUMBER -- a date metric as epoch millis -- so a
+      // rendering that compares it as a STRING cannot run. MEASURED on Elasticsearch 8.18.3:
+      // `HAVING COALESCE(MAX(d), '2020-01-01') > '2019-01-01'` renders
+      // `(params.max_d != null ? params.max_d : "2020-01-01").compareTo("2019-01-01") > 0` and
+      // fails with `cannot explicitly cast def [java.lang.String] to java.lang.Double`.
+      //
+      // The RENDERER defect is pre-existing and wider than this issue -- the bare
+      // `HAVING MAX(d) > '2019-01-01'` renders byte-identically on the control and fails the same
+      // way -- but a raw Painless class-cast reaching the user is not "refused by name", so the
+      // shape is refused here until the rendering is fixed.
+      Some(
+        "its rendering compares a metric as text, and a bucket pipeline reads every metric as a " +
+        "number (a date metric as epoch millis)"
       )
     else
       freeLocal(code).map(name =>

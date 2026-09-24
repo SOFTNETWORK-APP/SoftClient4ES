@@ -121,14 +121,4 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
     */
   private[query] def unrepresentable: Seq[MetricSelector.Unrepresentable] =
     criteria.toSeq.flatMap(MetricSelectorScript.unrepresentable)
-
-  def script: Option[String] = criteria.flatMap { criteria =>
-    val fullScript = MetricSelectorScript
-      .metricSelector(criteria)
-      .replaceAll("1 == 1 &&", "")
-      .replaceAll("&& 1 == 1", "")
-      .replaceAll("1 == 1", "")
-      .trim
-    if (fullScript.nonEmpty) Some(fullScript) else None
-  }
 }
