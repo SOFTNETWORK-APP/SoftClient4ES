@@ -884,7 +884,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             Future.successful(
               ElasticResult.failure(
                 ElasticError(
-                  message = s"SQL query does not contain a valid search request: ${statement.sql}",
+                  message = invalidSearchRequest(statement, statement.sql),
                   operation = Some("searchAsync")
                 )
               )
@@ -933,7 +933,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         Future.successful(
           ElasticResult.failure(
             ElasticError(
-              message = s"SQL query does not contain a valid search request: $query",
+              message = invalidSearchRequest(statement, query),
               operation = Some("searchAsync")
             )
           )
@@ -1462,7 +1462,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         )
         ElasticResult.failure(
           ElasticError(
-            message = s"SQL query does not contain a valid search request: ${sql.query}",
+            message = invalidSearchRequest(sql, sql.query),
             operation = Some("searchWithInnerHits")
           )
         )

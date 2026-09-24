@@ -118,7 +118,40 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
   /** Every condition of this clause the engine cannot express as a `bucket_selector` (issue #389),
     * in statement order. Refused by name in `SingleSearch.validate()`; EMPTY is the only shape that
     * reaches emission.
+    *
+    * 🔴 PUBLIC on purpose. `softclient4es-extensions` builds the materialized-view transform's
+    * `TransformBucketSelectorConfig` from [[script]] and has no other way to tell "this clause has
+    * nothing to filter" from "this clause cannot be expressed" -- which is #389's conflation, live
+    * inside MV enrichment. This is the reason it needs, and the only thing core can give it until
+    * it is rebuilt against a published `0.24.0`.
     */
-  private[query] def unrepresentable: Seq[MetricSelector.Unrepresentable] =
+  def unrepresentable: Seq[MetricSelector.Unrepresentable] =
     criteria.toSeq.flatMap(MetricSelectorScript.unrepresentable)
+
+  /** The `bucket_selector` source for this clause, or `None` when there is nothing to filter.
+    *
+    * 🔴 NOT dead code -- round 1 recorded it as having no production caller and that was WRONG:
+    * `softclient4es-extensions`'s `graph/Stage.scala:291` reads it to build a materialized view's
+    * `TransformBucketSelectorConfig`. That is a FIFTH HAVING mechanism, outside this repo.
+    *
+    * ⚠️ It still answers `None` for a clause the engine cannot express, which is exactly the
+    * conflation #389 closed everywhere else -- so a materialized view over such a HAVING is
+    * enriched with NO filter. Core cannot fix that from here: switching this to
+    * `MetricSelectorScript.metricSelector` would THROW inside the extension (a 500), and the
+    * extension must decide for itself. [[unrepresentable]] is public so it can. See `§9` of the
+    * story artifact (§10.B) for the exact change extensions needs once `0.24.0` is published.
+    */
+  @deprecated("read `unrepresentable` first, then `MetricSelectorScript.metricSelector`", "0.24.0")
+  def script: Option[String] = criteria.flatMap { criteria =>
+    if (unrepresentable.nonEmpty) None
+    else {
+      val fullScript = MetricSelectorScript
+        .metricSelector(criteria)
+        .replaceAll("1 == 1 &&", "")
+        .replaceAll("&& 1 == 1", "")
+        .replaceAll("1 == 1", "")
+        .trim
+      if (fullScript.nonEmpty) Some(fullScript) else None
+    }
+  }
 }

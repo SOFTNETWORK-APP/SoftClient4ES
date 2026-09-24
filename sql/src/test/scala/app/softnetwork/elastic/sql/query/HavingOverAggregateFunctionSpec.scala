@@ -405,103 +405,118 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     Parser(group + "status = 'A'").isRight shouldBe true
   }
 
-  "a HAVING over a function of the GROUP BY KEY" should "be PUSHED into the query, not dropped" in {
-    // 🔴 This test used to PIN the silent drop. Lead ruling 2026-09-24: make it WORK. A function of
-    // the key is CONSTANT within a bucket, so filtering the documents by it keeps exactly the
-    // buckets that satisfy it -- EXECUTED on Elasticsearch 8.18.3 over `a` x2 / `b` / `cc`:
-    // `UPPER(status) = 'A'` returned [a, b, cc] before and returns [a] now, with `a`'s doc_count
-    // and every metric byte-identical to the unfiltered run.
-    //
-    // It contributes NOTHING to the bucket selector -- that is the point: it is a different
-    // mechanism, and the selector is left alone.
-    script(group + "UPPER(status) = 'A'") shouldBe "1 == 1"
-    val pushed = parsed(group + "UPPER(status) = 'A'").pushedHavingKeys
-    pushed.map(_.sql) shouldBe Seq("UPPER(status) = 'A'")
-    parsed(group + "UPPER(status) = 'A'").searchCriteria.map(_.sql) shouldBe
-    Some("UPPER(status) = 'A'")
+  // -------------------------------------------------------------------------------------------
+  // The GROUP BY key population (round 3 -- the document push-down is GONE)
+  // -------------------------------------------------------------------------------------------
+
+  "a key predicate the terms filter expresses" should "be classified TermsFilter and left to it" in {
+    // The ONE classifier both emission paths read. `TermsFilter` means the existing `terms`
+    // include/exclude call applies it, so the selector sees nothing.
+    val st = parsed(group + "status = 'a'")
+    val leaf = st.havingLeaves.head
+    st.keyPredicateOutcome(leaf) shouldBe st.KeyPredicateOutcome.TermsFilter
+    script(group + "status = 'a'") shouldBe "1 == 1"
   }
 
-  it should "AND with the WHERE clause rather than replace it" in {
-    val s = parsed(
-      "SELECT status, COUNT(*) AS c FROM t WHERE amount > 1 GROUP BY status " +
-      "HAVING UPPER(status) = 'A'"
-    )
-    s.searchCriteria.map(_.sql) shouldBe Some("amount > 1 AND UPPER(status) = 'A'")
+  "a key predicate neither bucket mechanism expresses" should "be REFUSED, never applied to documents" in {
+    // 🔴 ROUND 3. This used to be pushed into the QUERY as a document filter, and that is unsound
+    // twice over -- MEASURED on Elasticsearch 8.18.3:
+    //   `GROUP BY DAY(d) HAVING YEAR(d) = 2025` kept bucket `3` and changed its count 3 -> 1;
+    //   `GROUP BY tags HAVING UPPER(tags) = 'A'` kept bucket `b`, which FAILS the predicate,
+    //   because a multi-valued document is kept or dropped whole.
+    // The second is strictly less sound than the `include` path it was meant to generalise.
+    Seq("UPPER(status) = 'A'", "LENGTH(status) = 1", "SUBSTRING(status, 1, 1) = 'a'").foreach { p =>
+      withClue(s"[$p] ") {
+        rejection(group + p) should include("terms filter, which can only express")
+      }
+    }
   }
 
-  it should "leave the key predicates the terms filter already expresses alone" in {
-    // ⚠️ `HAVING status = 'A'` is a `terms` include TODAY. Pushing it as well would be correct and
-    // would move the emitted bytes of every shipped statement of that shape for nothing, so the
-    // eligibility test ASKS the real `Expression.includes` rather than re-deriving its rules.
-    parsed(group + "status = 'a'").pushedHavingKeys shouldBe empty
-    parsed(group + "status LIKE 'a%'").pushedHavingKeys shouldBe empty
-    parsed(group + "status = 'a'").searchCriteria shouldBe None
+  it should "be refused on a FUNCTION-of-column key too, where the push-down silently miscounted" in {
+    rejection(
+      "SELECT DAY(d) AS dd, COUNT(*) AS c FROM t GROUP BY DAY(d) HAVING YEAR(d) = 2025"
+    ) should include("HAVING cannot filter on")
   }
 
-  it should "still leave the selector to the aggregate half of a conjunction" in {
-    script(group + "COUNT(*) > 1 AND UPPER(status) = 'A'") shouldBe
-    "(params.c == null ? false : (params.c > 1))"
-    parsed(group + "COUNT(*) > 1 AND UPPER(status) = 'A'").pushedHavingKeys.map(_.sql) shouldBe
-    Seq("UPPER(status) = 'A'")
+  it should "name the nested case separately" in {
+    rejection(
+      "SELECT e.name FROM t JOIN UNNEST(t.emails) AS e GROUP BY e.name HAVING UPPER(e.name) = 'X'"
+    ) should include("nested object")
   }
 
   "a HAVING that reads neither an aggregate nor a GROUP BY key" should "be refused by name" in {
-    // It is not constant within a bucket, so no mechanism can honour it -- and pushing it into the
-    // query would filter DOCUMENTS and silently change every metric of every surviving group.
     rejection(group + "UPPER(name) = 'X'") should include("can only filter on a GROUP BY key")
     rejection(group + "name = 'x'") should include("can only filter on a GROUP BY key")
   }
 
-  "an OR that mixes a GROUP BY key with an aggregate" should "be refused, because it executes as an AND" in {
-    // 🔴 PRE-EXISTING silent wrong answer, closed by the ruling. MEASURED on `main` over the same
-    // fixture: `HAVING COUNT(*) > 1 OR status = 'b'` returned NO buckets where the disjunction is
-    // [a, b] -- the key became a terms `include` (removing `a`) and the metric a `bucket_selector`
-    // (removing `b`), so the OR answered the empty AND.
-    rejection(group + "COUNT(*) > 1 OR status = 'b'") should include("cannot OR a GROUP BY key")
-    rejection(group + "COUNT(*) > 1 OR UPPER(status) = 'B'") should include(
-      "cannot OR a GROUP BY key"
+  it should "be refused with NO GROUP BY as well" in {
+    // 🔴 Review MEDIUM-4: the rule was gated on `groupBy.isDefined`, so S8's original hole stayed
+    // open for a FUNCTION of a column. MEASURED: `SELECT COUNT(*) AS c FROM t HAVING
+    // UPPER(status) = 'A'` answered `{"c":{"value":4}}` with the predicate gone, while the bare
+    // `HAVING status = 'a'` was correctly refused.
+    rejection("SELECT COUNT(*) AS c FROM t HAVING UPPER(status) = 'A'") should include(
+      "can only filter on a GROUP BY key"
     )
   }
 
-  it should "still accept an OR of key predicates the terms filter can union" in {
-    // The complement: `include: [a, b]` IS the disjunction, so this must not be swept up.
-    Parser(group + "status = 'a' OR status = 'b'").isRight shouldBe true
-    parsed(group + "status = 'a' OR status = 'b'").pushedHavingKeys shouldBe empty
+  // -------------------------------------------------------------------------------------------
+  // The OR rule -- homogeneity of MECHANISM (round 3)
+  // -------------------------------------------------------------------------------------------
+
+  "an OR whose branches need different mechanisms" should "be refused, because it executes as an AND" in {
+    // 🔴 MEASURED on `main`: `HAVING COUNT(*) > 1 OR status = 'b'` returned NO buckets where the
+    // disjunction is two of them -- the key became a terms `include` (removing one) and the metric
+    // a `bucket_selector` (removing the other), so the OR answered the empty AND.
+    val msg = rejection(group + "COUNT(*) > 1 OR status = 'b'")
+    msg should include("different mechanisms")
+    msg should include("key")
+    msg should include("metric")
   }
 
-  "a HAVING inside a NESTED relation" should "keep its own mechanism" in {
-    // 🔴 HAVING has FOUR mechanisms, not two. A relation-scoped predicate is turned into a `filter`
-    // aggregation by the bridge, and scoping the new rules past it refused the repo's own shipped
-    // "complex query" fixture -- caught by that fixture going red.
-    Parser(
-      "SELECT inner_products.category AS cat, MIN(inner_products.price) AS p FROM stores store " +
-      "JOIN UNNEST(store.products) AS inner_products GROUP BY inner_products.category " +
-      "HAVING inner_products.deleted = false"
-    ).isRight shouldBe true
+  it should "name the mechanisms it actually found, not an aggregate that is not there" in {
+    // 🔴 Review MEDIUM-5: the old message said "cannot OR a GROUP BY key with an aggregate" even
+    // for a statement containing NO aggregate. The message now names what it found.
+    rejection(group + "COUNT(*) > 1 OR status = 'b'") should include("mixes key and metric")
+    // ... and a key predicate neither mechanism expresses is refused for its OWN reason first,
+    // which is the more actionable one.
+    rejection(group + "status = 'a' OR UPPER(status) = 'B'") should include(
+      "terms filter, which can only express"
+    )
   }
 
-  "a function of a NESTED grouping key" should "be refused, because the push-down is not equivalent there" in {
-    // 🔴 The equivalence that licenses the push-down -- "the key is constant within a bucket, so
-    // filtering documents keeps whole buckets" -- does NOT hold for a nested key: the bucket is an
-    // inner object and a document filter keeps the whole PARENT, so a parent holding one matching
-    // and one non-matching object would still produce BOTH buckets.
+  it should "close the NESTED pair too, which the round-2 rule left executing as an AND" in {
+    // 🔴 The nested filter aggregation is a THIRD mechanism. The round-2 rule dropped `_.nested`
+    // leaves before counting, so this pair was invisible to it and still executed as an AND.
     rejection(
-      "SELECT e.name FROM t JOIN UNNEST(t.emails) AS e GROUP BY e.name HAVING UPPER(e.name) = 'X'"
-    ) should include("nested grouping key")
+      "SELECT e.name, COUNT(*) AS c FROM t JOIN UNNEST(t.emails) AS e GROUP BY e.name " +
+      "HAVING COUNT(*) > 1 OR e.name = 'x'"
+    ) should include("mixes metric and nested")
   }
 
-  "the representability gate" should "be re-asked of the RESOLVED statement" in {
-    // 🔴 `validate()` runs schema-less inside `Parser.apply`, and `update(Some(schema))` can change
-    // what a HAVING renders. Re-asking at `validateResolved()` is what keeps a post-resolution
-    // divergence a 400 naming the clause instead of an `IllegalStateException` escaping into the
-    // bridge (issue #250's family). Asserted on the ONE surface core calls.
-    val refused = unvalidated(group + "NULLIF(COUNT(*), 0) > 1")
-    refused.validateResolved() match {
-      case Left(msg) => msg should include("HAVING cannot be applied to")
-      case Right(_)  => fail("the resolved statement accepted a HAVING the parser refuses")
-    }
-    // ... and it does not fire on a statement the gate accepts.
-    unvalidated(group + "GREATEST(COUNT(*), 0) > 1").validateResolved() shouldBe Right(())
+  it should "accept an OR the terms filter UNIONS into one include list" in {
+    // 🔴 The complement, and the mutation-killer for the rule's second clause: `include: [a, b]`
+    // IS the disjunction.
+    Parser(group + "status = 'a' OR status = 'b'").isRight shouldBe true
+  }
+
+  it should "accept an OR of two metric conditions" in {
+    Parser(group + "COUNT(*) > 1 OR COUNT(*) > 5").isRight shouldBe true
+  }
+
+  "Having.script" should "answer None for a clause the gate refuses, never a partial filter" in {
+    // 🔴 NOT dead code: `softclient4es-extensions` reads it to build a materialized view's
+    // `TransformBucketSelectorConfig` (`graph/Stage.scala:291`). Round 1 recorded it as having no
+    // production caller and that was WRONG -- it is a FIFTH HAVING mechanism, outside this repo.
+    //
+    // The contract core can offer: never hand the extension a script for a clause the engine
+    // cannot express (a PARTIAL filter inside an MV), and never THROW (a 500 inside the extension).
+    // `unrepresentable` is public so the extension can refuse for itself.
+    val refused = unvalidated(group + "NULLIF(COUNT(*), 0) > 1").having.get
+    refused.unrepresentable should not be empty
+    refused.script shouldBe None
+    val ok = unvalidated(group + "COUNT(*) > 1").having.get
+    ok.unrepresentable shouldBe empty
+    ok.script shouldBe Some("(params.c == null ? false : (params.c > 1))")
   }
 
   "a metric computed outside the nested grouping" should "be refused rather than vanish" in {

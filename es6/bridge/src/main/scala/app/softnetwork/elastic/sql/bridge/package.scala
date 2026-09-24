@@ -533,14 +533,7 @@ package object bridge {
     val nestedWithoutCriteriaQuery: Option[Query] = requestToNestedWithoutCriteriaQuery(request)
 
     var _search: SearchRequest = search("") query {
-      // 🔴 `searchCriteria`, NOT `where.criteria` (issue #389, lead ruling 2026-09-24): the WHERE
-      // clause conjoined with every HAVING predicate over a GROUP BY KEY. A function of the key is
-      // CONSTANT within a bucket, so filtering the DOCUMENTS by it keeps exactly the buckets that
-      // satisfy it and changes no surviving bucket's metrics -- which is what the `terms`
-      // `include` / `exclude` already does for the shapes it can spell, and this generalises it to
-      // the ones it cannot (`HAVING UPPER(status) = 'A'`). `sql` owns the rule and `validate()`
-      // refuses what the equivalence does not cover, so this is ONE line in each bridge copy.
-      searchCriteria.map(_.asQuery()) match {
+      where.flatMap(_.criteria.map(_.asQuery())) match {
         case Some(c) =>
           val baseQuery = c
           nestedWithoutCriteriaQuery match {

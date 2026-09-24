@@ -13,10 +13,10 @@ import scala.jdk.CollectionConverters._
 /** Issue #389 -- the EMITTED Elasticsearch query for a `HAVING` over a FUNCTION of an aggregate,
   * measured against the HAND-MAINTAINED es6 bridge (AC-7).
   *
-  * 🔴 One line of each bridge changed (the query seam now reads `searchCriteria`); everything else
-  * lives in `sql`. This twin is what PROVES it -- the same derived matrix and the same pins against
-  * a different elastic4s major, with two expectations differing (elastic4s 6 renders a single-value
-  * `terms` `include` / `exclude` as a bare string).
+  * 🔴 NO bridge file changed in round 3 — the whole rule lives in `sql`. This twin is what PROVES
+  * it: the same derived matrix and the same pins against a different elastic4s major, with two
+  * expectations differing (elastic4s 6 renders a single-value `terms` `include` / `exclude` as a
+  * bare string).
   *
   * The `sql` half (detection, the representability gate, the refusals) is pinned in
   * `HavingOverAggregateFunctionSpec`. What is measured HERE is what Elasticsearch is actually sent:
@@ -201,35 +201,40 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // The GROUP BY key push-down (lead ruling 2026-09-24)
+  // The GROUP BY key population -- BUCKET level only (round 3)
   //
-  // 🔴 These assert the WIRING, not the derivation. `SingleSearch.searchCriteria` computing the
-  // right thing proves nothing if the bridge still reads `where.criteria` -- a mutation doing
-  // exactly that left the whole `sql` suite green.
+  // 🔴 The round-2 document push-down is GONE. Its licence ("a function of the key is constant
+  // within a bucket") is false when the KEY is a function of the column and the predicate reads the
+  // column, and false again on a MULTI-VALUED field where one document belongs to several buckets.
+  // Both were measured as HTTP 200 wrong answers on Elasticsearch 8.18.3.
   // ---------------------------------------------------------------------------------------------
 
-  "a HAVING over a function of the GROUP BY key" should "reach the QUERY, not the aggregation" in {
-    val q = queryOf(group + "UPPER(status) = 'A'")
-    q should not include """"query":{"match_all":{}}"""
-    q should include("toUpperCase")
-    // ... and it must NOT become a bucket_selector: it is a different mechanism.
+  "a key predicate the terms filter expresses" should "stay in the terms filter and touch nothing else" in {
+    val q = queryOf(group + "status = 'a'")
+    q should include(""""include":"a"""")
+    // 🔴 No query filter: the round-2 push-down put one here, and that is what made a multi-valued
+    // grouping wrong.
+    q should include(""""query":{"match_all":{}}""")
     q should not include "having_filter"
   }
 
-  it should "AND with the WHERE clause rather than replace it" in {
+  it should "leave the WHERE clause exactly as written" in {
     val q = queryOf(
-      "SELECT status, COUNT(*) AS c FROM t WHERE amount > 1 GROUP BY status " +
-      "HAVING UPPER(status) = 'A'"
+      "SELECT status, COUNT(*) AS c FROM t WHERE amount > 1 GROUP BY status HAVING status = 'a'"
     )
-    q should include(""""amount"""")
-    q should include("toUpperCase")
+    q should include(""""include":"a"""")
+    q should not include "toUpperCase"
   }
 
-  it should "leave a key predicate the terms filter already expresses in the terms filter" in {
-    // Byte-identical to `main` for every shipped `HAVING <key> = <v>`: no query filter appears.
-    val q = queryOf(group + "status = 'a'")
-    q should include(""""include":"a"""")
-    q should include(""""query":{"match_all":{}}""")
+  "a key predicate the terms filter cannot express" should "never reach emission at all" in {
+    Seq("UPPER(status) = 'A'", "LENGTH(status) = 1").foreach { p =>
+      withClue(s"[$p] ") {
+        Parser(group + p) match {
+          case Left(e)  => e.msg should startWith("HAVING cannot")
+          case Right(_) => fail(s"accepted; it emitted ${queryOf(group + p)}")
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -255,8 +260,7 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     // The key predicate is a `terms` exclude, the aggregate one a `bucket_selector`. Neither may
     // cost the other.
     val q = queryOf(group + "COALESCE(COUNT(*), 0) > 1 AND status <> 'x'")
-    // elastic4s 6 renders a single-value `exclude` as a bare string, 7+ as an array -- the ONE
-    // documented emission difference this matrix touches.
+    // elastic4s 6 renders a single-value `exclude` as a bare string, 7+ as an array.
     q should include(""""exclude":"x"""")
     q should include("""(params.c != null ? params.c : 0) > 1""")
   }

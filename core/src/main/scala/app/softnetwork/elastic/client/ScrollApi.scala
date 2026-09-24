@@ -282,8 +282,16 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             scroll(multiple, config)
 
           case None =>
+            // Issue #389 / F7 -- carry the parser's OWN reason. A whole family of SEMANTIC refusals
+            // reaches this branch, each naming a clause and a remedy; the generic sentence threw
+            // every one of them away.
             Source.failed(
-              new IllegalArgumentException("SQL query does not contain a valid search request")
+              new IllegalArgumentException(
+                (statement match {
+                  case s: SelectStatement => s.parseError
+                  case _                  => None
+                }).getOrElse("SQL query does not contain a valid search request")
+              )
             )
         }
 

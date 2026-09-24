@@ -795,8 +795,6 @@ ORDER BY COUNT(*) DESC;
     over-approximation: the boxing conversion compiles in *some* positions of a group-filter script
     and not others, so the engine refuses it in all of them rather than guess. The same functions
     work normally in `WHERE`, in the `SELECT` list and in `ORDER BY`;
-  - a rendering that compares a metric as text — `HAVING COALESCE(MAX(created), '2020-01-01') >
-    '2019-01-01'`. A group filter reads every metric as a number (a date as epoch milliseconds);
   - `CASE ... END` in `HAVING`, which needs a document and a group filter has none;
   - a function applied to a `SELECT` aggregate **alias** — `COUNT(*) AS c ... HAVING NULLIF(c, 0) > 1`;
   - an aggregate computed outside a nested grouping — `... JOIN UNNEST(t.emails) AS e GROUP BY
@@ -811,22 +809,41 @@ ORDER BY COUNT(*) DESC;
   differs from arithmetic over aggregates, which IS a valid `SELECT` item
   (`MAX(price) - MIN(price) AS price_range`) and is the reason the rule above tells you to alias
   THAT one.
-- A **function of the `GROUP BY` key** in `HAVING` filters the groups: `HAVING UPPER(city) = 'PARIS'`,
-  `HAVING LENGTH(status) = 1`, `HAVING SUBSTRING(code, 1, 1) = 'A'`. A function of the key has the
-  same value for every document of a group, so the condition is applied to the documents and whole
-  groups are kept or dropped — every surviving group's counts and metrics are exactly what they
-  would have been without it.
-  - A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is
-    refused (`HAVING UPPER(name) = 'X'` when the grouping is by `city`): it is not constant within a
-    group, so it would have to filter documents and silently change every metric. Put it in `WHERE`,
-    or add the column to the `GROUP BY`.
-  - ⚠️ An `OR` between a key condition and an aggregate condition is refused
-    (`HAVING COUNT(*) > 1 OR status = 'b'`). The two are different mechanisms — a key filter and a
-    group filter — and their disjunction cannot be expressed; before this was refused it was
-    **executed as an `AND`**. An `OR` of key conditions (`HAVING status = 'a' OR status = 'b'`) is
-    supported.
-- One un-expressible condition rejects the whole `HAVING`, never just its own half: a statement is
-  answered with every condition it was written with, or with an error.
+
+#### Comparing a DATE aggregate
+
+⚠️ **A comparison between a date aggregate and a date literal is refused**, function or not:
+`HAVING MAX(created) > '2019-01-01'` and `HAVING MIN(created) < '2020-01-01'` are rejected at parse
+time. A group filter reads every metric as a number — a date as epoch milliseconds — so the
+generated comparison is text against a number and Elasticsearch fails the whole search with a
+`class_cast_exception`. Compare in `WHERE` instead, or filter the result outside the query.
+
+### Conditions on the GROUP BY key
+
+A `HAVING` condition over the grouping key filters GROUPS, and it is applied by the `terms` filter —
+so it is correct for a multi-valued field, where one document belongs to several groups.
+
+```sql
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city = 'Paris';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
+```
+
+- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — and an `OR` of
+  them, which the filter unions into one list (`HAVING city = 'Paris' OR city = 'Lyon'`).
+- ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
+  `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
+  alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
+  WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
+  the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
+  `WHERE`.
+- A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
+  (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
+- ⚠️ An `OR` whose branches need **different mechanisms** is refused: a group filter
+  (`bucket_selector`), a key filter (`terms`) and a nested filter are separate stages, so
+  `HAVING COUNT(*) > 1 OR city = 'Paris'` would be executed as a conjunction. An `OR` within one
+  mechanism is supported.
+- An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
   script null-checks every metric before comparing it.
