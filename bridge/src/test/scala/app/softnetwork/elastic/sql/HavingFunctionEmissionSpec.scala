@@ -282,6 +282,43 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     q should include(""""exclude":["c"]""")
   }
 
+  it should "refuse a pattern meeting a value list in the SAME channel" in {
+    // 🔴 MEASURED on ES 8.18.3 over the buckets `a`, `b1`, `c`: `= 'a' OR LIKE 'b%'` emitted
+    // `include:"b.*"` and returned ['b1'] where the SQL means ['a','b1']. The emission keeps the
+    // PATTERN and discards the value list, and a second pattern is lost to `orElse`.
+    Seq(
+      "status = 'a' OR status LIKE 'b%'",
+      "status LIKE 'a%' OR status LIKE 'b%'",
+      "status <> 'a' AND status NOT LIKE 'b%'"
+    ).foreach { p =>
+      withClue(s"[$p] ") {
+        Parser(group + p) match {
+          case Left(e)  => e.msg should include("a pattern replaces the list")
+          case Right(_) => fail(s"accepted; it emitted ${queryOf(group + p)}")
+        }
+      }
+    }
+    // ... while a pattern in EACH channel is fine: they are different lists.
+    val q = queryOf(group + "status LIKE 'a%' AND status NOT LIKE 'b%'")
+    q should include(""""include":"a.*"""")
+    q should include(""""exclude":"b.*"""")
+  }
+
+  "an OR across TWO grouping levels" should "never reach emission" in {
+    // 🔴 MEASURED on ES 8.18.3 over (a,a) (a,b) (x,b) (x,y): Elasticsearch NESTS the two `terms`
+    // aggregations, so `status = 'a' OR city = 'b'` emitted
+    // `terms status include:["a"] > terms city include:["b"]` and returned ONE group where the
+    // SQL means THREE. The AND is exactly what the nesting means, and still emits.
+    val two = "SELECT status, city, COUNT(*) AS c FROM t GROUP BY status, city HAVING "
+    Parser(two + "status = 'a' OR city = 'b'") match {
+      case Left(e)  => e.msg should include("DIFFERENT GROUP BY keys")
+      case Right(_) => fail(s"accepted; it emitted ${queryOf(two + "status = 'a' OR city = 'b'")}")
+    }
+    val q = queryOf(two + "status = 'a' AND city = 'b'")
+    q should include(""""include":["a"]""")
+    q should include(""""include":["b"]""")
+  }
+
   // ---------------------------------------------------------------------------------------------
   // S7 -- a conjunction emits BOTH halves (AC-3). On `main` the second one VANISHED.
   // ---------------------------------------------------------------------------------------------

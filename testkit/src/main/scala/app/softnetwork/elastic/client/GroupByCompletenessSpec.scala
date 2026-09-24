@@ -1009,6 +1009,45 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     ) shouldBe Seq("cat_37")
   }
 
+  "a pattern meeting a value list on the same key" should "be REFUSED, not half-applied" in {
+    // 🔴 MEASURED on ES 8.18.3 over a three-bucket fixture: `= 'a' OR LIKE 'b%'` emitted
+    // `include:"b.*"` and returned only the pattern's bucket -- the value list is DISCARDED by the
+    // emission when a pattern is present, and a second pattern is lost to `orElse`.
+    // ⚠️ the client caps a relayed parse message at 200 characters (#262), so the assertion
+    // anchors on the TAIL of the reason, not its middle.
+    categoryRefusal(
+      "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+    ) should include("Use a single RLIKE")
+    // ... and the pattern ALONE still works: cat_30 .. cat_37.
+    categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe
+    (30 to 37).map(c => f"cat_$c%02d")
+  }
+
+  "an OR across TWO grouping levels" should "be REFUSED, because Elasticsearch NESTS them" in {
+    // 🔴 The two `terms` aggregations are nested, which IS a conjunction: an OR across them
+    // returned the intersection. Measured on a two-key fixture; here the refusal is asserted
+    // end-to-end, and the AND -- which is exactly what the nesting means -- still answers.
+    Await.result(
+      client.run(
+        "SELECT category, id, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category, id " +
+        "HAVING category = 'cat_02' OR id = 'cat_02_1'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"the OR was accepted and answered $result")
+      case ElasticFailure(error)  => error.message should include("DIFFERENT GROUP BY keys")
+    }
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category, id " +
+        "HAVING category = 'cat_02' AND id = 'cat_02_1'"
+      )
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category) shouldBe Seq("cat_02")
+      case ElasticFailure(error) => fail(s"the AND failed: ${error.message}")
+    }
+  }
+
   it should "REFUSE a HAVING on a column that is neither grouped nor aggregated" in {
     Await.result(
       client.run(

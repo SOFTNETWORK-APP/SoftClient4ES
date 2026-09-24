@@ -838,12 +838,21 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   | `city = 'Paris' OR city = 'Lyon'` | ✅ | the kept list is a union, i.e. a disjunction |
   | `city <> 'Paris' AND city <> 'Lyon'` | ✅ | not-in-A and not-in-B is not-in-(A ∪ B) |
   | `city = 'Paris' AND city <> 'Lyon'` | ✅ | one kept list and one removed list, applied together |
+  | `city LIKE 'P%' AND city NOT LIKE 'L%'` | ✅ | one pattern in each of the two lists |
   | `city <> 'Paris' OR city <> 'Lyon'` | ❌ refused | a union of removals is a conjunction, so this would be executed as one |
   | `city = 'Paris' AND city = 'Lyon'` | ❌ refused | a union of kept values is a disjunction, so this would be executed as one |
   | `city = 'Paris' OR city <> 'Lyon'` | ❌ refused | the two lists are applied together, i.e. ANDed |
+  | `city = 'Paris' OR city LIKE 'L%'` | ❌ refused | ⚠️ a pattern REPLACES the list — see below |
+  | `city LIKE 'P%' OR city LIKE 'L%'` | ❌ refused | one list holds one pattern, so the second is lost |
 
-  The refused rows previously returned a plausible-looking but WRONG set of groups. Split the query,
-  or restate the condition as an `OR` of equalities or an `AND` of inequalities.
+  ⚠️ **Being a union is necessary but not sufficient.** Each of the two lists holds either a set of
+  values or ONE pattern (`LIKE` / `RLIKE`), and a pattern replaces the set — so a pattern meeting
+  anything else in the SAME list loses a side, even where the combination itself is a disjunction.
+  `HAVING city = 'Paris' OR city LIKE 'L%'` used to return only the `L…` groups. Use a single
+  `RLIKE` covering both alternatives, or split the query.
+
+  The refused rows previously returned a plausible-looking but WRONG set of groups. Otherwise:
+  split the query, or restate the condition as an `OR` of equalities or an `AND` of inequalities.
 - ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
   `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
   alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
@@ -852,10 +861,14 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   `WHERE`.
 - A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
   (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
-- ⚠️ An `OR` whose branches need **different mechanisms** is refused: a group filter
-  (`bucket_selector`), a key filter (`terms`) and a nested filter are separate stages, so
-  `HAVING COUNT(*) > 1 OR city = 'Paris'` would be executed as a conjunction. An `OR` within one
-  mechanism is supported.
+- ⚠️ An `OR` whose branches need **different stages** is refused, because Elasticsearch applies
+  the stages one inside the other, which is a conjunction:
+  - different MECHANISMS — a group filter (`bucket_selector`), a key filter (`terms`) and a nested
+    filter: `HAVING COUNT(*) > 1 OR city = 'Paris'`;
+  - different GROUPING KEYS — the two `terms` aggregations are NESTED, so
+    `GROUP BY country, city HAVING country = 'FR' OR city = 'Paris'` would return only the groups
+    matching BOTH. An `OR` on ONE key, within one mechanism, is supported subject to the table
+    above; the corresponding `AND` is always fine, because the nesting IS the conjunction.
 - An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter

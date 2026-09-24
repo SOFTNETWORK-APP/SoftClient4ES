@@ -469,44 +469,51 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
   // senses; the population, not the assertion, is what was missing.
   // -------------------------------------------------------------------------------------------
 
-  /** Both halves of the matrix, as the predicate text and which channel the leaf feeds. */
-  private val includeSide = Seq(
-    "status = 'a'"        -> "status = 'b'",
-    "status IN ('a','x')" -> "status = 'b'",
-    "status LIKE 'a%'"    -> "status LIKE 'b%'"
-  )
-  private val excludeSide = Seq(
-    "status <> 'a'"           -> "status <> 'b'",
-    "status NOT IN ('a','x')" -> "status <> 'b'",
-    "status NOT LIKE 'a%'"    -> "status NOT LIKE 'b%'"
+  /** Every key operator, with the CHANNEL it feeds and the FORM it puts there.
+    *
+    * 🔴 The first version of this matrix paired each operator with a fixed partner (`=` with `=`,
+    * `IN` with `=`, `LIKE` with `LIKE`) and varied only channel × combiner, so `=` was NEVER
+    * crossed with `LIKE` -- which is exactly where the defect lived. The operators are CROSSED now.
+    * Every defect found on this branch was a hole in the population, never in the assertions.
+    */
+  private val keyOperators = Seq(
+    ("status = 'a'", "include", "values"),
+    ("status IN ('a','x')", "include", "values"),
+    ("status LIKE 'a%'", "include", "regex"),
+    ("status <> 'a'", "exclude", "values"),
+    ("status NOT IN ('a','x')", "exclude", "values"),
+    ("status NOT LIKE 'a%'", "exclude", "regex")
   )
 
-  "the terms channel" should "express every DERIVED combination of key predicates, or refuse it" in {
-    // The verdict is DERIVED from the principle, never listed by hand: the include list is a union
-    // and therefore a DISJUNCTION; the exclude list is a union of negations and therefore a
-    // CONJUNCTION. So two leaves are expressible only as an OR of includes or an AND of excludes.
+  /** The second operand, so a crossed cell never repeats its partner verbatim. */
+  private def partnerOf(predicate: String): String =
+    predicate.replace("'a'", "'b'").replace("'a%'", "'b%'").replace("('b','x')", "('b','x')")
+
+  "the terms channel" should "express every CROSSED combination of key predicates, or refuse it" in {
+    // The verdict is DERIVED from two properties of the channel, never listed by hand:
+    //   1. the kept list is a union (a DISJUNCTION) and the removed list a union of negations (a
+    //      CONJUNCTION), so two same-channel leaves need OR and AND respectively;
+    //   2. a channel holds ONE list and ONE pattern, and the pattern REPLACES the list -- so a
+    //      pattern meeting anything else in the same channel loses a side whatever the operator.
     val cells =
       for {
-        (leftSide, leftName)   <- Seq(includeSide -> "include", excludeSide -> "exclude")
-        (left, right)          <- leftSide
-        (rightSide, rightName) <- Seq(includeSide -> "include", excludeSide -> "exclude")
-        combiner               <- Seq("AND", "OR")
+        (left, leftChannel, leftForm)    <- keyOperators
+        (right, rightChannel, rightForm) <- keyOperators
+        combiner                         <- Seq("AND", "OR")
       } yield {
-        // pair each left with the OTHER side's matching right, so mixed cells exist too
-        val other = rightSide(leftSide.indexOf((left, right)))._2
-        val rhs = if (rightName == leftName) right else other
-        val sql = s"$left $combiner $rhs"
-        val sameChannel = leftName == rightName
+        val rhs = partnerOf(right)
+        val sameChannel = leftChannel == rightChannel
+        val collides =
+          sameChannel && (leftForm == "regex" || rightForm == "regex")
         val expressible =
-          // same channel: the include list is a disjunction, the exclude list a conjunction ...
-          (sameChannel && leftName == "include" && combiner == "OR") ||
-          (sameChannel && leftName == "exclude" && combiner == "AND") ||
-          // ... and the two channels are themselves ANDed by Elasticsearch, so one of each under
-          // a conjunction is exactly what they mean together.
-          (!sameChannel && combiner == "AND")
-        (sql, expressible)
+          !collides && (
+            (sameChannel && leftChannel == "include" && combiner == "OR") ||
+            (sameChannel && leftChannel == "exclude" && combiner == "AND") ||
+            (!sameChannel && combiner == "AND")
+          )
+        (s"$left $combiner $rhs", expressible)
       }
-    cells.distinct.size should be >= 20
+    cells.distinct.size shouldBe 72
     cells.distinct.foreach { case (predicate, expressible) =>
       withClue(s"[$predicate] expressible=$expressible ") {
         Parser(group + predicate).isRight shouldBe expressible
@@ -514,8 +521,53 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     }
   }
 
+  it should "refuse a pattern that meets a value list in the SAME channel" in {
+    // 🔴 MEASURED on ES 8.18.3 over the buckets `a`, `b1`, `c`:
+    //   `HAVING status = 'a' OR status LIKE 'b%'` emitted `include:"b.*"` and returned ['b1'];
+    //   the SQL means ['a','b1']. The emission keeps the PATTERN and discards the list.
+    // ⚠️ It is an OR of two KEPT-value contributions -- the very row "the kept list is a union"
+    // blesses -- so the union property alone is NOT sufficient, and an earlier draft of this
+    // branch's own documentation said it was.
+    Seq(
+      "status = 'a' OR status LIKE 'b%'",
+      "status LIKE 'b%' OR status IN ('a','c')",
+      "status <> 'a' AND status NOT LIKE 'b%'",
+      "status NOT LIKE 'b%' AND status NOT IN ('a','c')",
+      "status LIKE 'a%' OR status LIKE 'b%'"
+    ).foreach { p =>
+      withClue(s"[$p] ") {
+        rejection(group + p) should include("a pattern replaces the list")
+      }
+    }
+  }
+
+  it should "still allow a pattern in EACH channel, which do not collide" in {
+    Parser(group + "status LIKE 'a%' AND status NOT LIKE 'b%'").isRight shouldBe true
+  }
+
+  "an OR across TWO GROUP BY keys" should "be refused, because the levels are NESTED" in {
+    // 🔴 MEASURED on ES 8.18.3 over (a,a) (a,b) (x,b) (x,y):
+    //   `GROUP BY status, city HAVING status = 'a' OR city = 'b'`
+    //     -> terms status include:["a"] > terms city include:["b"] -> ONE group (a,b),
+    //        and the SQL means THREE.
+    // `mechanismOf` labels every grouping level "key", so the round-3 rule saw one mechanism and
+    // passed. Nesting two `terms` aggregations IS the conjunction that rule exists to catch.
+    val two = "SELECT status, city, COUNT(*) AS c FROM t GROUP BY status, city HAVING "
+    val msg = rejection(two + "status = 'a' OR city = 'b'")
+    msg should include("DIFFERENT GROUP BY keys")
+    msg should include("nests one grouping level inside the other")
+    // ... and the message must NOT reuse the mechanism wording, which is about a group filter,
+    // a key filter and a nested filter -- not about two grouping levels.
+    msg should not include "different mechanisms"
+  }
+
+  it should "still allow an AND across two grouping keys, which IS the nesting" in {
+    val two = "SELECT status, city, COUNT(*) AS c FROM t GROUP BY status, city HAVING "
+    Parser(two + "status = 'a' AND city = 'b'").isRight shouldBe true
+  }
+
   it should "leave a SINGLE key predicate of either sense alone" in {
-    (includeSide ++ excludeSide).flatMap { case (l, r) => Seq(l, r) }.distinct.foreach { p =>
+    keyOperators.map(_._1).foreach { p =>
       withClue(s"[$p] ")(Parser(group + p).isRight shouldBe true)
     }
   }

@@ -838,46 +838,70 @@ package object query {
       */
     private[query] def keyChannelConflict: Option[String] = {
       val empty = BucketIncludesExcludes()
-      def conflict(c: Criteria, bucket: Bucket, not: Boolean): Option[Criteria] = c match {
-        case p @ Predicate(left, op, right, _, _) =>
-          // ONE derivation of the polarity, shared with `Criteria.includes` -- see
-          // `Predicate.includePolarityOfRight`.
-          val rightNot = p.includePolarityOfRight(not)
-          val leftIncludes = left.includes(bucket, not, empty)
-          val leftExcludes = left.excludes(bucket, not, empty)
-          val rightIncludes = right.includes(bucket, rightNot, empty)
-          val rightExcludes = right.excludes(bucket, rightNot, empty)
-          // 🔴 No De Morgan arm here, and that is MEASURED, not assumed: `Predicate.maybeNot`
-          // negates the RIGHT OPERAND only, and `NOT ( … )` around a group is rejected by the
-          // grammar (`end of input expected`, on this branch and on `455433ae`). So no `Predicate`
-          // is ever reached with a flipped polarity -- probed over the parseable shapes -- and an
-          // arm dualising `op` would be unreachable for every possible input. Round 3 shipped
-          // exactly such an arm and had to delete it; one is enough.
-          val leftContributes = leftIncludes != empty || leftExcludes != empty
-          val rightContributes = rightIncludes != empty || rightExcludes != empty
-          val here =
-            if (op == AND && leftIncludes != empty && rightIncludes != empty) Some(p: Criteria)
-            else if (
-              op == OR && leftContributes && rightContributes &&
-              (leftExcludes != empty || rightExcludes != empty)
-            ) Some(p: Criteria)
-            else None
-          here
-            .orElse(conflict(left, bucket, not))
-            .orElse(conflict(right, bucket, rightNot))
-        case relation: ElasticRelation => conflict(relation.criteria, bucket, not)
-        case _                         => None
-      }
+      def unionOnlyReason(c: Criteria): String =
+        s"HAVING cannot combine the conditions in ${c.sql} on one GROUP BY key: Elasticsearch " +
+        "applies one list of kept values and one list of removed values, and each is a union, " +
+        "so this combination would be executed as a different one. Split the query, or restate " +
+        "it as an OR of equalities or an AND of inequalities."
+      def conflict(c: Criteria, bucket: Bucket, not: Boolean): Option[(Criteria, String)] =
+        c match {
+          case p @ Predicate(left, op, right, _, _) =>
+            // ONE derivation of the polarity, shared with `Criteria.includes` -- see
+            // `Predicate.includePolarityOfRight`.
+            val rightNot = p.includePolarityOfRight(not)
+            val leftIncludes = left.includes(bucket, not, empty)
+            val leftExcludes = left.excludes(bucket, not, empty)
+            val rightIncludes = right.includes(bucket, rightNot, empty)
+            val rightExcludes = right.excludes(bucket, rightNot, empty)
+            // 🔴 No De Morgan arm here, and that is MEASURED, not assumed: `Predicate.maybeNot`
+            // negates the RIGHT OPERAND only, and `NOT ( … )` around a group is rejected by the
+            // grammar (`end of input expected`, on this branch and on `455433ae`). So no `Predicate`
+            // is ever reached with a flipped polarity -- probed over the parseable shapes -- and an
+            // arm dualising `op` would be unreachable for every possible input. Round 3 shipped
+            // exactly such an arm and had to delete it; one is enough.
+            val leftContributes = leftIncludes != empty || leftExcludes != empty
+            val rightContributes = rightIncludes != empty || rightExcludes != empty
+            // 🔴 A channel holds ONE list of values and ONE pattern, and the emission keeps the
+            // PATTERN and discards the values (`ElasticAggregation`, both bridges), while a second
+            // pattern is lost to `orElse`. So two contributors COLLIDE whenever a pattern meets
+            // anything else in the same channel -- whatever the operator, and even where the
+            // combination itself is a union. MEASURED on ES 8.18.3 over `a`, `b1`, `c`:
+            //   `HAVING status = 'a' OR status LIKE 'b%'` -> `include:"b.*"` -> ['b1'], and the
+            //   SQL means ['a','b1'].
+            // ⚠️ This is the claim an earlier draft of §12.F got wrong: `= 'a' OR LIKE 'b%'` IS an
+            // OR of two kept-value contributions -- the row the documentation blesses -- so
+            // "the kept list is a union" is not sufficient on its own.
+            def collides(a: BucketIncludesExcludes, b: BucketIncludesExcludes): Boolean =
+              (a.regex.nonEmpty && b.regex.nonEmpty && a.regex != b.regex) ||
+              (a.regex.nonEmpty && b.values.nonEmpty) ||
+              (b.regex.nonEmpty && a.values.nonEmpty)
+            val here =
+              if (collides(leftIncludes, rightIncludes) || collides(leftExcludes, rightExcludes))
+                Some(
+                  (p: Criteria) ->
+                  (s"HAVING cannot combine the conditions in ${p.sql} on one GROUP BY key: a key " +
+                  "filter carries one list of values and one pattern, and a pattern replaces the " +
+                  "list, so one side would be silently dropped. Use a single RLIKE that covers " +
+                  "both, or split the query.")
+                )
+              else if (op == AND && leftIncludes != empty && rightIncludes != empty)
+                Some((p: Criteria) -> unionOnlyReason(p))
+              else if (
+                op == OR && leftContributes && rightContributes &&
+                (leftExcludes != empty || rightExcludes != empty)
+              ) Some((p: Criteria) -> unionOnlyReason(p))
+              else None
+            here
+              .orElse(conflict(left, bucket, not))
+              .orElse(conflict(right, bucket, rightNot))
+          case relation: ElasticRelation => conflict(relation.criteria, bucket, not)
+          case _                         => None
+        }
       having.flatMap(_.criteria).flatMap { criteria =>
         buckets.view
           .flatMap(bucket => conflict(criteria, bucket, not = false))
           .headOption
-          .map(c =>
-            s"HAVING cannot combine the conditions in ${c.sql} on one GROUP BY key: Elasticsearch " +
-            "applies one list of kept values and one list of removed values, and each is a union, " +
-            "so this combination would be executed as a different one. Split the query, or " +
-            "restate it as an OR of equalities or an AND of inequalities."
-          )
+          .map { case (_, reason) => reason }
       }
     }
 
@@ -1270,24 +1294,51 @@ package object query {
             case e: Expression             => Seq(e)
             case _                         => Nil
           }
-          def firstMixedOr(c: Criteria): Option[(Criteria, Seq[String])] = c match {
+          // 🔴 The STAGE, not just the mechanism. `mechanismOf` collapses every grouping level
+          // to the single label "key", so an OR across TWO GROUP BY keys looked homogeneous --
+          // and Elasticsearch NESTS the two `terms` aggregations, which IS the conjunction this
+          // rule exists to catch. MEASURED on ES 8.18.3 over (a,a) (a,b) (x,b) (x,y):
+          //   `GROUP BY status, city HAVING status = 'a' OR city = 'b'`
+          //     -> terms status include:["a"] > terms city include:["b"] -> ONE group (a,b),
+          //        and the SQL means THREE.
+          // A leaf's stage is its mechanism PLUS, for a key predicate, the bucket it addresses.
+          def levelOf(e: Expression): String =
+            if (e.nested || havingScopeOf(e) != HavingScope.GroupKey) ""
+            else namedLeavesOf(e).flatMap(keyBucketOf).map(_.name).distinct.sorted.mkString(",")
+          def firstMixedOr(c: Criteria): Option[(Criteria, Seq[String], Boolean)] = c match {
             case p @ Predicate(l, op, r, _, _) =>
               val here =
                 if (op == OR) {
-                  val kinds = leavesUnder(p).map(mechanismOf).distinct
-                  if (kinds.size > 1) Some((p: Criteria, kinds)) else None
+                  val leaves = leavesUnder(p)
+                  val kinds = leaves.map(mechanismOf).distinct
+                  val stages = leaves.map(e => (mechanismOf(e), levelOf(e))).distinct
+                  if (stages.size > 1)
+                    Some(
+                      (
+                        p: Criteria,
+                        if (kinds.size > 1) kinds.sorted else stages.map(_._2).sorted,
+                        kinds.size > 1
+                      )
+                    )
+                  else None
                 } else None
               here.orElse(firstMixedOr(l)).orElse(firstMixedOr(r))
             case relation: ElasticRelation => firstMixedOr(relation.criteria)
             case _                         => None
           }
           having.flatMap(_.criteria).filter(_ => groupBy.isDefined).flatMap(firstMixedOr) match {
-            case Some((p, kinds)) =>
+            case Some((p, names, differentMechanisms)) =>
               Left(
-                s"HAVING cannot OR conditions that Elasticsearch applies with different mechanisms " +
-                s"(${p.sql} mixes ${kinds.sorted.mkString(" and ")}): a group filter, a key filter " +
-                "and a nested filter are separate stages, so their disjunction would be executed " +
-                "as a conjunction. Split the query, or restate the condition as an AND."
+                if (differentMechanisms)
+                  s"HAVING cannot OR conditions that Elasticsearch applies with different " +
+                  s"mechanisms (${p.sql} mixes ${names.mkString(" and ")}): a group filter, a key " +
+                  "filter and a nested filter are separate stages, so their disjunction would be " +
+                  "executed as a conjunction. Split the query, or restate the condition as an AND."
+                else
+                  s"HAVING cannot OR conditions on DIFFERENT GROUP BY keys (${p.sql} spans " +
+                  s"${names.mkString(" and ")}): Elasticsearch nests one grouping level inside " +
+                  "the other, so filtering both would be executed as a conjunction. Split the " +
+                  "query, or restate the condition as an AND."
               )
             case None => Right(())
           }
