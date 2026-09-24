@@ -62,6 +62,21 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
   private def script(sql: String): String =
     MetricSelectorScript.metricSelector(having(sql))
 
+  /** The pattern the `terms` filter would carry, asked of the REAL derivation. */
+  private def includeOf(sql: String): Option[String] = {
+    val st = parsed(sql)
+    st.buckets.iterator
+      .map(b => havingOf(st, sql).includes(b, not = false, BucketIncludesExcludes()).regex)
+      .collectFirst { case Some(r) => r }
+  }
+
+  private def excludeOf(sql: String): Option[String] = {
+    val st = parsed(sql)
+    st.buckets.iterator
+      .map(b => havingOf(st, sql).excludes(b, not = false, BucketIncludesExcludes()).regex)
+      .collectFirst { case Some(r) => r }
+  }
+
   private val group = "SELECT status, COUNT(*) AS c FROM t GROUP BY status HAVING "
 
   // -------------------------------------------------------------------------------------------
@@ -487,7 +502,7 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
 
   /** The second operand, so a crossed cell never repeats its partner verbatim. */
   private def partnerOf(predicate: String): String =
-    predicate.replace("'a'", "'b'").replace("'a%'", "'b%'").replace("('b','x')", "('b','x')")
+    predicate.replace("'a'", "'b'").replace("'a%'", "'b%'")
 
   "the terms channel" should "express every CROSSED combination of key predicates, or refuse it" in {
     // The verdict is DERIVED from two properties of the channel, never listed by hand:
@@ -503,6 +518,10 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
       } yield {
         val rhs = partnerOf(right)
         val sameChannel = leftChannel == rightChannel
+        // ⚠️ COARSER THAN PRODUCTION, deliberately. `keyChannelConflict` exempts two IDENTICAL
+        // patterns (one pattern expresses both); this model cannot express that, and is sound
+        // here only because `partnerOf` makes every crossed partner differ. Do not read it as the
+        // production rule -- the exemption has its own test above.
         val collides =
           sameChannel && (leftForm == "regex" || rightForm == "regex")
         val expressible =
@@ -539,6 +558,40 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
         rejection(group + p) should include("a pattern replaces the list")
       }
     }
+  }
+
+  "a LIKE pattern on the key" should "go through the SHARED translation, not a third private one" in {
+    // 🔴 The terms channel was a THIRD derivation of LIKE -> regex: `value.replaceAll("%", ".*")`.
+    // It neither translated `_` nor escaped a metacharacter, while the query-DSL path uses the
+    // shared `toRegex` -- and `metricSelector`'s own scaladoc asserts the shared one is used.
+    // MEASURED on ES 8.18.3 over the buckets `a.bZ`, `axbZ`, `ab`, `a1`:
+    //   `status LIKE 'a_'`   WHERE -> [a1, ab]  HAVING -> NO BUCKETS
+    //   `status LIKE 'a.b%'` WHERE -> [a.bZ]    HAVING -> [a.bZ, axbZ]
+    // Pre-existing and byte-identical to `455433ae`; fixed here because it is a silent wrong
+    // answer in the very channel this branch reasons about.
+    includeOf(group + "status LIKE 'a_'").value shouldBe "a."
+    includeOf(group + "status LIKE 'a.b%'").value shouldBe "a\\.b.*"
+    includeOf(group + "status LIKE 'a+b%'").value shouldBe "a\\+b.*"
+    excludeOf(group + "status NOT LIKE 'a_b'").value shouldBe "a.b"
+    // ... and the shapes with neither stay byte-identical.
+    includeOf(group + "status LIKE 'a%'").value shouldBe "a.*"
+    includeOf(group + "status LIKE '%a%'").value shouldBe ".*a.*"
+  }
+
+  it should "leave RLIKE alone, which is RAW regex by definition" in {
+    includeOf(group + "status RLIKE 'a.b'").value shouldBe "a.b"
+    excludeOf(group + "status NOT RLIKE 'a.*'").value shouldBe "a.*"
+  }
+
+  "two IDENTICAL patterns on one key" should "NOT collide, because one pattern expresses both" in {
+    // 🔴 F4: the `a.regex != b.regex` exemption in `collides` was live and correct but unpinned.
+    // `LIKE 'a%' OR LIKE 'a%'` is one pattern twice: nothing is dropped, so nothing is refused.
+    Parser(group + "status LIKE 'a%' OR status LIKE 'a%'").isRight shouldBe true
+    includeOf(group + "status LIKE 'a%' OR status LIKE 'a%'").value shouldBe "a.*"
+    // ... while two DIFFERENT patterns in one channel do collide.
+    rejection(group + "status LIKE 'a%' OR status LIKE 'b%'") should include(
+      "a pattern replaces the list"
+    )
   }
 
   it should "still allow a pattern in EACH channel, which do not collide" in {

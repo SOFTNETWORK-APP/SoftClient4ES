@@ -1023,6 +1023,15 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     (30 to 37).map(c => f"cat_$c%02d")
   }
 
+  "a LIKE pattern on the key" should "treat _ as a wildcard, like every other LIKE" in {
+    // 🔴 EXECUTED. The terms channel had its own LIKE translation that left `_` literal, so this
+    // matched NOTHING on `455433ae` -- there is no category named `cat_0_`. With the shared
+    // translation `_` is one character, so it selects cat_01 .. cat_09.
+    categoriesOf("HAVING category LIKE 'cat_0_'") shouldBe (1 to 9).map(c => f"cat_0$c%d")
+    // ... and the plain wildcard form is unchanged.
+    categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe (30 to 37).map(c => f"cat_$c%02d")
+  }
+
   "an OR across TWO grouping levels" should "be REFUSED, because Elasticsearch NESTS them" in {
     // 🔴 The two `terms` aggregations are nested, which IS a conjunction: an OR across them
     // returned the intersection. Measured on a two-key fixture; here the refusal is asserted

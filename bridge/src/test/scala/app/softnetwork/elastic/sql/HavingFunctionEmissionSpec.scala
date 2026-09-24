@@ -304,6 +304,19 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     q should include(""""exclude":"b.*"""")
   }
 
+  "a LIKE pattern on the key" should "use the SHARED translation" in {
+    // 🔴 The terms channel had a THIRD private LIKE -> regex translation that neither handled `_`
+    // nor escaped a metacharacter, while the query-DSL path used the shared `toRegex`. MEASURED
+    // on ES 8.18.3: `LIKE 'a_'` matched NO buckets where the WHERE form matched two, and
+    // `LIKE 'a.b%'` matched `axbZ` as well as `a.bZ`.
+    queryOf(group + "status LIKE 'a_'") should include(""""include":"a."""")
+    queryOf(group + "status LIKE 'a.b%'") should include(""""include":"a\\.b.*"""")
+    // ... RLIKE is RAW regex by definition and must NOT be translated.
+    queryOf(group + "status RLIKE 'a.b'") should include(""""include":"a.b"""")
+    // ... and a pattern with neither is byte-identical to `455433ae`.
+    queryOf(group + "status LIKE 'a%'") should include(""""include":"a.*"""")
+  }
+
   "an OR across TWO grouping levels" should "never reach emission" in {
     // 🔴 MEASURED on ES 8.18.3 over (a,a) (a,b) (x,b) (x,y): Elasticsearch NESTS the two `terms`
     // aggregations, so `status = 'a' OR city = 'b'` emitted

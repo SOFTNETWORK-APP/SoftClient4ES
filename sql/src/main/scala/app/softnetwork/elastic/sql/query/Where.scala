@@ -600,8 +600,18 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
                 case Some(v: StringValue) if v.value.nonEmpty =>
+                  // 🔴 The SHARED `toRegex`, not a third private translation. This line used to
+                  // read `v.value.replaceAll("%", ".*")`, which neither translates `_` nor escapes
+                  // a regex metacharacter -- while `metricSelector`'s scaladoc asserts the shared
+                  // one is used and the query-DSL path really does use it. MEASURED on ES 8.18.3
+                  // over the buckets `a.bZ`, `axbZ`, `ab`, `a1`:
+                  //   `status LIKE 'a_'`   WHERE -> [a1, ab]   HAVING -> NO BUCKETS
+                  //   `status LIKE 'a.b%'` WHERE -> [a.bZ]     HAVING -> [a.bZ, axbZ]
+                  // Pre-existing and byte-identical to `455433ae`, so not a regression -- but a
+                  // silent wrong answer found while working on this very channel.
+                  // ⚠️ `RLIKE` below is RAW regex by definition and must NOT be translated.
                   bucketIncludesExcludes.copy(regex =
-                    bucketIncludesExcludes.regex.orElse(Option(v.value.replaceAll("%", ".*")))
+                    bucketIncludesExcludes.regex.orElse(Option(toRegex(v.value)))
                   )
                 case _ => bucketIncludesExcludes
               }

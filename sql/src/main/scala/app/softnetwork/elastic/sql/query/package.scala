@@ -1302,8 +1302,16 @@ package object query {
           //     -> terms status include:["a"] > terms city include:["b"] -> ONE group (a,b),
           //        and the SQL means THREE.
           // A leaf's stage is its mechanism PLUS, for a key predicate, the bucket it addresses.
+          // 🔴 No `e.nested ||` guard here, and its removal is DELIBERATE (final review F4). It
+          // made two leaves on DIFFERENT nested grouping levels collapse to one stage while two
+          // flat levels are refused -- the very asymmetry this rule exists to remove -- and it was
+          // unobservable: with no schema attached, `GROUP BY e.name` under `JOIN UNNEST` emits no
+          // `terms` at all, on this tree or on `455433ae`. An unobservable, unpinnable guard in a
+          // symmetry rule is worse than no guard, so the rule is symmetric by construction
+          // instead. A leaf that is not a GROUP BY key still has no level, which is what the
+          // second half says.
           def levelOf(e: Expression): String =
-            if (e.nested || havingScopeOf(e) != HavingScope.GroupKey) ""
+            if (havingScopeOf(e) != HavingScope.GroupKey) ""
             else namedLeavesOf(e).flatMap(keyBucketOf).map(_.name).distinct.sorted.mkString(",")
           def firstMixedOr(c: Criteria): Option[(Criteria, Seq[String], Boolean)] = c match {
             case p @ Predicate(l, op, r, _, _) =>
