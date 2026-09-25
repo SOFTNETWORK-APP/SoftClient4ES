@@ -1564,15 +1564,60 @@ package object sql {
 
     def bucketPath: String
 
-    lazy val allMetricsPath: Map[String, String] = {
-      metricName match {
-        case Some(name) => Map(name -> name)
-        // The alias of a SELECT `bucket_script` item referenced from HAVING (`... AS d ... HAVING
-        // d > 3`): the selector reads the sibling pipeline aggregation by that name.
-        case _ if hasAggregation && fieldAlias.isDefined => Map(aliasOrName -> aliasOrName)
-        case _                                           => Map.empty
+    /** Every aggregate this identifier's expression references ANYWHERE -- its own chain, the
+      * ARGUMENTS of every function in it, a `CASE`'s `THEN` results and its `WHEN` conditions
+      * (issue #389).
+      *
+      * 🔴 A function never looked inside its own arguments: [[FunctionChain.hasAggregation]] is
+      * `functions.exists(_.hasAggregation)` over the chain's OWN links, so `COUNT(*)` written
+      * inside `ABS(...)` / `COALESCE(...)` / `NULLIF(...)` made the whole tree answer "no aggregate
+      * here". That one fact is why the aggregation was never created, why `buckets_path` published
+      * nothing, and why the `bucket_selector` degenerated to `1 == 1` and every group came back.
+      *
+      * Two walks, because the grammar hides the aggregate in two different places and neither walk
+      * sees the other's: [[FunctionUtils.funIdentifiers]] descends `FunctionN.args` and the chain
+      * (so it reaches a `CASE`'s `THEN` result, which IS an argument), while a `CASE`'s `WHEN`
+      * conditions are deliberately excluded from `Case.args` and are reachable only through
+      * [[app.softnetwork.elastic.sql.function.cond.Case.conditionsOf]]. MEASURED: `CASE WHEN
+      * COUNT(*) > 1 THEN 1 ELSE 0 END` yields NO aggregate from `funIdentifiers` alone.
+      *
+      * Deduplicated by [[metricPathKey]] -- which for every element here IS [[metricName]], since
+      * `isAggregation` means `aggregateFunction.isDefined` and `metricName` is defined exactly
+      * then. Stating it as `metricPathKey` keeps ONE notion of metric identity across this
+      * derivation and `Expression.bucketMetrics`.
+      */
+    lazy val referencedAggregates: Seq[Identifier] = {
+      val fromChain = FunctionUtils.funIdentifiers(this).filter(_.isAggregation)
+      val fromCaseConditions = function.cond.Case
+        .conditionsOf(this)
+        .flatMap(_.referencedIdentifiers)
+        .flatMap(id => if (id.isAggregation) Seq(id) else id.referencedAggregates)
+      // Deduplicated by [[metricPathKey]] -- the SAME key `Expression.bucketMetrics` dedups by,
+      // so the two cannot disagree about what "the same metric" means.
+      (fromChain ++ fromCaseConditions).foldLeft(Seq.empty[Identifier]) { (acc, id) =>
+        if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
       }
     }
+
+    /** The aggregations a bucket pipeline reading THIS identifier addresses, in order -- the ONE
+      * derivation behind [[allMetricsPath]] (what `buckets_path` publishes), behind
+      * `Criteria.extractAggregationFields` (which aggregations are created) and behind the
+      * `bucket_selector` null guard. Three answers to one question would be three answers that
+      * drift (`project_self_join_alias_resolution`).
+      *
+      * Three arms, and the third is issue #389's:
+      *   1. the identifier IS an aggregate -- one metric, itself; 2. it is the alias of a SELECT
+      *      `bucket_script` item referenced from HAVING (`MAX(x) - MIN(x) AS d ... HAVING d > 3`)
+      * -- the selector reads that sibling pipeline aggregation by name and NOT its operands, so the
+      * operands must not be published here; 3. otherwise, every aggregate it references through a
+      * function argument or a `CASE`.
+      */
+    lazy val bucketMetrics: Seq[Identifier] =
+      if (metricName.isDefined || (hasAggregation && fieldAlias.isDefined)) Seq(this)
+      else referencedAggregates
+
+    lazy val allMetricsPath: Map[String, String] =
+      bucketMetrics.map(id => id.metricPathKey -> id.metricPathKey).toMap
 
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
@@ -1666,10 +1711,16 @@ package object sql {
         }
       }
 
+    /** The `buckets_path` key this identifier is addressed by: its derived [[metricName]] when it
+      * is an aggregate, else the alias a SELECT `bucket_script` item published it under. ONE
+      * derivation, read by [[metricParam]] and by [[allMetricsPath]].
+      */
+    lazy val metricPathKey: String = metricName.getOrElse(aliasOrName)
+
     /** How a bucket pipeline script reads this aggregate: the metric Elasticsearch already
       * computed, published under `buckets_path` as [[metricName]].
       */
-    lazy val metricParam: String = s"params.${metricName.getOrElse(aliasOrName)}"
+    lazy val metricParam: String = s"params.$metricPathKey"
 
     lazy val script: Option[String] =
       if (isTemporal) {

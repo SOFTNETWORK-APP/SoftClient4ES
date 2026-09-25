@@ -74,21 +74,30 @@ class InPredicateRenderSpec extends AnyFlatSpec with Matchers {
     s"SELECT id FROM t GROUP BY id HAVING $name(a) NOT IN (1, 2)"
   )
 
-  /** A statement is IN SCOPE only if it parses; a function that needs other arity or types simply
-    * is not exercised by this shape. That makes the sweep partial, which is why the next test
-    * asserts what it must contain.
+  /** A statement is IN SCOPE only if the GRAMMAR accepts it; a function that needs other arity or
+    * types simply is not exercised by this shape. That makes the sweep partial, which is why the
+    * next test asserts what it must contain.
+    *
+    * 🔴 `parseUnvalidated`, not `apply` (issue #389, round 3). This file measures a RENDER property
+    * -- does a statement survive its own `.sql`? -- and that is a property of the AST, not of
+    * whether a validation rule admits the statement. Keying it on `apply` coupled it to
+    * `validate()`: when #389 taught HAVING which key predicates a bucket filter can express, ~120
+    * rows silently dropped OUT of the sweep and the HAVING venue -- the half that carried #365's
+    * loud failure (`COUNT(x)(COUNT(x))`) -- stopped being exercised at all, while the file stayed
+    * green. `parseUnvalidated` is `Parser.single`'s own action, so the AST is built exactly as
+    * `apply` builds it; only the validation pass is skipped.
     */
   private def accepted: List[(String, String)] =
     for {
       name <- spellings
       sql  <- statements(name)
-      if Parser(sql).isRight
+      if Parser.parseUnvalidated(sql).isRight
     } yield (name, sql)
 
   "the render of a function on the left of IN" should "re-parse to the same statement" in {
     val broken = accepted.flatMap { case (_, sql) =>
-      val rendered = Parser(sql).map(_.sql).getOrElse("")
-      Parser(rendered) match {
+      val rendered = Parser.parseUnvalidated(sql).map(_.sql).getOrElse("")
+      Parser.parseUnvalidated(rendered) match {
         case Left(e) =>
           Some(s"  $sql\n    renders  $rendered\n    re-parse REJECTED: ${e.toString.take(70)}")
         case Right(again) if again.sql != rendered =>

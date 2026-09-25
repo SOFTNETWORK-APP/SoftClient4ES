@@ -778,8 +778,98 @@ ORDER BY COUNT(*) DESC;
   price_range > 10`); `BETWEEN`, `IN` and `NOT` apply to aggregates as to columns.
 - Rejected with an explicit error: arithmetic over aggregates written inline in `HAVING`
   (`HAVING MAX(price) - MIN(price) > 10` — alias it in `SELECT` and reference the alias), an
-  aggregate function inside `WHERE` (use `HAVING`), and an alias that names one aggregate in
-  `SELECT` and a different one in `HAVING` / `ORDER BY`.
+  aggregate function inside `WHERE` (use `HAVING`, and this covers a wrapped one such as
+  `WHERE ABS(COUNT(*)) > 1`), and an alias that names one aggregate in `SELECT` and a different one
+  in `HAVING` / `ORDER BY`.
+- A **function of an aggregate** in `HAVING` is applied to the group, or the statement is rejected
+  by name — it is never ignored. `COALESCE`, `GREATEST`, `LEAST` and `SIGN` over an aggregate filter
+  the groups (`HAVING COALESCE(COUNT(*), 0) > 30`, `HAVING GREATEST(MAX(price), 0) > 100`), on
+  either side of the comparison and under `NOT`; `BETWEEN` and `IN` support them in the tested
+  POSITION (`GREATEST(COUNT(*), 0) BETWEEN 1 AND 5`) but not as a BOUND
+  (`COUNT(*) BETWEEN 1 AND ABS(MAX(price))` is refused). Everything the engine cannot evaluate as a
+  group filter is refused with the reason:
+  - a rendering that can be NULL — `HAVING NULLIF(COUNT(*), 0) > 1`;
+  - a rendering that needs a local variable — `HAVING ROUND(SUM(price), 2) > 10`;
+  - a rendering that boxes a number — `HAVING ABS(COUNT(*)) > 1` and the rest of the numeric
+    function family (`FLOOR`, `CEIL`, `SQRT`, `EXP`, `LOG`, `POWER`). This is a deliberate
+    over-approximation: the boxing conversion compiles in *some* positions of a group-filter script
+    and not others, so the engine refuses it in all of them rather than guess. The same functions
+    work normally in `WHERE`, in the `SELECT` list and in `ORDER BY`;
+  - `CASE ... END` in `HAVING`, which needs a document and a group filter has none;
+  - a function applied to a `SELECT` aggregate **alias** — `COUNT(*) AS c ... HAVING NULLIF(c, 0) > 1`;
+  - an aggregate computed outside a nested grouping — `... JOIN UNNEST(t.emails) AS e GROUP BY
+    e.name HAVING COALESCE(MAX(amount), 0) > 1`, where no level of the aggregation can read the
+    metric.
+
+  In every refused case the remedy is the same: **compare the aggregate itself** —
+  `HAVING SUM(price) > 10` rather than `HAVING ROUND(SUM(price), 2) > 10` — and apply the function
+  to the result outside the query. Aliasing the expression in `SELECT` does NOT help: a function of
+  an aggregate is not a valid `SELECT` item under a `GROUP BY` either
+  (`SELECT ABS(COUNT(*)) AS a ... GROUP BY city` is rejected as a non-aggregated field). That
+  differs from arithmetic over aggregates, which IS a valid `SELECT` item
+  (`MAX(price) - MIN(price) AS price_range`) and is the reason the rule above tells you to alias
+  THAT one.
+
+#### Comparing a DATE aggregate
+
+⚠️ **A comparison between a date aggregate and a date literal is refused**, function or not:
+`HAVING MAX(created) > '2019-01-01'` and `HAVING MIN(created) < '2020-01-01'` are rejected at parse
+time. A group filter reads every metric as a number — a date as epoch milliseconds — so the
+generated comparison is text against a number and Elasticsearch fails the whole search with a
+`class_cast_exception`. Compare in `WHERE` instead, or filter the result outside the query.
+
+### Conditions on the GROUP BY key
+
+A `HAVING` condition over the grouping key filters GROUPS, and it is applied by the `terms` filter —
+so it is correct for a multi-valued field, where one document belongs to several groups.
+
+```sql
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city = 'Paris';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
+```
+
+- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE`.
+- ⚠️ **Which COMBINATIONS are supported follows from how Elasticsearch applies them.** The `terms`
+  filter carries one list of kept values and one list of removed values, and each is a UNION:
+
+  | combination | supported | why |
+  |---|---|---|
+  | `city = 'Paris' OR city = 'Lyon'` | ✅ | the kept list is a union, i.e. a disjunction |
+  | `city <> 'Paris' AND city <> 'Lyon'` | ✅ | not-in-A and not-in-B is not-in-(A ∪ B) |
+  | `city = 'Paris' AND city <> 'Lyon'` | ✅ | one kept list and one removed list, applied together |
+  | `city LIKE 'P%' AND city NOT LIKE 'L%'` | ✅ | one pattern in each of the two lists |
+  | `city <> 'Paris' OR city <> 'Lyon'` | ❌ refused | a union of removals is a conjunction, so this would be executed as one |
+  | `city = 'Paris' AND city = 'Lyon'` | ❌ refused | a union of kept values is a disjunction, so this would be executed as one |
+  | `city = 'Paris' OR city <> 'Lyon'` | ❌ refused | the two lists are applied together, i.e. ANDed |
+  | `city = 'Paris' OR city LIKE 'L%'` | ❌ refused | ⚠️ a pattern REPLACES the list — see below |
+  | `city LIKE 'P%' OR city LIKE 'L%'` | ❌ refused | one list holds one pattern, so the second is lost |
+
+  ⚠️ **Being a union is necessary but not sufficient.** Each of the two lists holds either a set of
+  values or ONE pattern (`LIKE` / `RLIKE`), and a pattern replaces the set — so a pattern meeting
+  anything else in the SAME list loses a side, even where the combination itself is a disjunction.
+  `HAVING city = 'Paris' OR city LIKE 'L%'` used to return only the `L…` groups. Use a single
+  `RLIKE` covering both alternatives, or split the query.
+
+  The refused rows previously returned a plausible-looking but WRONG set of groups. Otherwise:
+  split the query, or restate the condition as an `OR` of equalities or an `AND` of inequalities.
+- ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
+  `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
+  alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
+  WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
+  the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
+  `WHERE`.
+- A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
+  (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
+- ⚠️ An `OR` whose branches need **different stages** is refused, because Elasticsearch applies
+  the stages one inside the other, which is a conjunction:
+  - different MECHANISMS — a group filter (`bucket_selector`), a key filter (`terms`) and a nested
+    filter: `HAVING COUNT(*) > 1 OR city = 'Paris'`;
+  - different GROUPING KEYS — the two `terms` aggregations are NESTED, so
+    `GROUP BY country, city HAVING country = 'FR' OR city = 'Paris'` would return only the groups
+    matching BOTH. An `OR` on ONE key, within one mechanism, is supported subject to the table
+    above; the corresponding `AND` is always fine, because the nesting IS the conjunction.
+- An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
   script null-checks every metric before comparing it.

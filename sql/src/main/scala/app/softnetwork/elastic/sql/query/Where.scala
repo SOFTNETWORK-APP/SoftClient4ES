@@ -217,10 +217,15 @@ sealed trait Criteria extends Updateable with PainlessScript {
       case Predicate(left, _, right, _, _) =>
         left.extractAggregationFields ++ right.extractAggregationFields
       case relation: ElasticRelation => relation.criteria.extractAggregationFields
+      // 🔴 Issue #389 -- `bucketMetrics`, not `aggregations.nonEmpty` + `metricName`. An aggregate
+      // written inside a function ARGUMENT (`HAVING ABS(COUNT(*)) > 1`) is not the identifier's own
+      // aggregate, so `metricName` was `None` and NO aggregation was created for it: the selector
+      // had no `params.count_all` to read even once it was taught to read one. It is also the
+      // aggregate on the RIGHT of the comparison (`HAVING COUNT(*) > ABS(MAX(x))` emitted a script
+      // reading `params.max_x` with no `max_x` aggregation anywhere -- MEASURED on `main`).
       case e: Expression =>
-        val identifiers = Seq(e.identifier) ++ e.maybeValue.collect { case id: Identifier => id }
-        identifiers
-          .filter(_.aggregations.nonEmpty)
+        (Seq(e.identifier) ++ e.maybeValue.collect { case id: Identifier => id })
+          .flatMap(_.bucketMetrics)
           .flatMap { id =>
             id.metricName.map(name => Field(id, Some(Alias(name))))
           }
@@ -239,10 +244,10 @@ sealed trait Criteria extends Updateable with PainlessScript {
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes =
     this match {
-      case Predicate(left, _, right, n, _) =>
+      case p @ Predicate(left, _, right, _, _) =>
         right.includes(
           bucket,
-          (!not && n.isDefined) || (not && n.isEmpty),
+          p.includePolarityOfRight(not),
           left.includes(bucket, not, bucketIncludesExcludes)
         )
       case relation: ElasticRelation =>
@@ -362,6 +367,19 @@ case class Predicate(
   else leftCriteria} $operator${not
     .map(_ => " NOT")
     .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
+
+  /** The polarity the RIGHT criterion inherits when a `terms` include/exclude traversal walks this
+    * predicate. The predicate's own `NOT` binds the RIGHT operand, and this IS its fold: the
+    * criterion is evaluated over the same bucket with the sense flipped, so `notConsumed` holds by
+    * construction and nothing downstream has to negate it again.
+    *
+    * 🔴 Named because it has TWO readers -- `Criteria.includes` and
+    * `SingleSearch.keyChannelConflict` -- and the round-5 regression this replaces was exactly one
+    * derivation written for one of two call sites that are the same function.
+    */
+  private[query] def includePolarityOfRight(not: Boolean): Boolean =
+    (!not && this.not.isDefined) || (not && this.not.isEmpty)
+
   override def update(request: SingleSearch): Criteria = {
     val updatedPredicate = this.copy(
       leftCriteria = leftCriteria.update(request),
@@ -582,8 +600,18 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
                 case Some(v: StringValue) if v.value.nonEmpty =>
+                  // 🔴 The SHARED `toRegex`, not a third private translation. This line used to
+                  // read `v.value.replaceAll("%", ".*")`, which neither translates `_` nor escapes
+                  // a regex metacharacter -- while `metricSelector`'s scaladoc asserts the shared
+                  // one is used and the query-DSL path really does use it. MEASURED on ES 8.18.3
+                  // over the buckets `a.bZ`, `axbZ`, `ab`, `a1`:
+                  //   `status LIKE 'a_'`   WHERE -> [a1, ab]   HAVING -> NO BUCKETS
+                  //   `status LIKE 'a.b%'` WHERE -> [a.bZ]     HAVING -> [a.bZ, axbZ]
+                  // Pre-existing and byte-identical to `455433ae`, so not a regression -- but a
+                  // silent wrong answer found while working on this very channel.
+                  // ⚠️ `RLIKE` below is RAW regex by definition and must NOT be translated.
                   bucketIncludesExcludes.copy(regex =
-                    bucketIncludesExcludes.regex.orElse(Option(v.value.replaceAll("%", ".*")))
+                    bucketIncludesExcludes.regex.orElse(Option(toRegex(v.value)))
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -1253,11 +1281,56 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case IS_NULL     => s"$param == null"
       case IS_NOT_NULL => s"$param != null"
       case _ =>
-        val metrics: Seq[Identifier] =
-          identifier +: maybeValue.collect { case id: Identifier if id.isAggregation => id }.toSeq
-        val guard = metrics.map(id => s"${id.metricParam} == null").mkString(" || ")
+        val guard = bucketMetrics.map(id => s"${id.metricParam} == null").mkString(" || ")
         s"($guard ? false : $painlessNot(${bucketPipelineCheck(param)}))"
     }
+  }
+
+  /** Every metric THIS predicate reads, left operand and right operand alike, deduplicated and in
+    * order -- the guard set of [[bucketPipelinePainless]] and of [[functionBucketPipelinePainless]]
+    * alike, and the same derivation `Criteria.extractAggregationFields` creates the aggregations
+    * from and `extractAllMetricsPath` publishes.
+    *
+    * 🔴 It used to be `identifier +: maybeValue.collect { case id if id.isAggregation }`, which
+    * misses an aggregate reached through a function: `HAVING COUNT(*) > ABS(MAX(x))` emitted
+    * `params.max_x` UNGUARDED (issue #389, measured on `main` -- `Math.abs(null)` fails the
+    * search).
+    */
+  private[query] def bucketMetrics: Seq[Identifier] =
+    (identifier.bucketMetrics ++ maybeValue.toSeq
+      .collect { case id: Identifier =>
+        id
+      }
+      .flatMap(_.bucketMetrics)).foldLeft(Seq.empty[Identifier]) { (acc, id) =>
+      if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
+    }
+
+  /** The bucket-pipeline rendering of a predicate that reads an aggregate through a FUNCTION
+    * (`HAVING COALESCE(COUNT(*), 0) > 1`, issue #389).
+    *
+    * Unlike [[bucketPipelinePainless]] there is no `params.<metric>` to compare directly: the
+    * aggregate is an operand of a function, and the CONTEXT-FREE rendering of that function already
+    * reads it as `params.<metric>` (measured: `ABS(COUNT(*)) > 1` renders
+    * `Double.valueOf(Math.abs(params.c)) > 1`). So the rendering IS the script -- once it has been
+    * proved to be a single boolean expression ([[MetricSelectorScript.representable]]) and once
+    * every metric it dereferences is null-guarded.
+    *
+    * 🔴 The guard is added only for a metric the rendering does not already test. `COALESCE` exists
+    * precisely to decide what a null means, and forcing `false` on it would make `COALESCE(MAX(x),
+    * 99) > 1` answer `false` where SQL says `true`. A rendering that does NOT test the metric
+    * (`Math.abs(params.c)`) would throw on a null instead, and SQL's answer for it is UNKNOWN --
+    * which is the `false` this guard supplies, exactly as `bucketPipelinePainless` supplies it for
+    * a bare aggregate.
+    */
+  private[query] def functionBucketPipelinePainless: String = {
+    val rendering = painless(None)
+    val unguarded = bucketMetrics.filterNot { id =>
+      rendering.contains(s"${id.metricParam} == null") ||
+      rendering.contains(s"${id.metricParam} != null")
+    }
+    if (unguarded.isEmpty) rendering
+    else
+      s"(${unguarded.map(id => s"${id.metricParam} == null").mkString(" || ")} ? false : ($rendering))"
   }
 
   /** The comparison body of the bucket-pipeline rendering, `param` (= `params.<metric>`) against

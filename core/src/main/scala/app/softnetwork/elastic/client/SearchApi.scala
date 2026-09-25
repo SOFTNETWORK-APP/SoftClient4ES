@@ -477,6 +477,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   // PUBLIC METHODS
   // ========================================================================
 
+  /** The client's refusal for a statement that did not parse -- WITH the parser's own reason when
+    * there is one (issue #389 / F7).
+    *
+    * 🔴 `SelectStatement.statement` is an `Option`, so a rejection arriving through it used to be
+    * reported as the generic sentence below and the reason -- computed, formatted, and naming the
+    * clause and its remedy -- was thrown away. Tolerable while the rejections were syntax errors
+    * the user can see; a whole family of SEMANTIC refusals now lands here.
+    */
+  private def invalidSearchRequest(statement: SearchStatement, query: String): String =
+    (statement match {
+      case s: SelectStatement => s.parseError
+      case _                  => None
+    }).getOrElse(s"SQL query does not contain a valid search request\n$query")
+
   /** Search for documents / aggregations matching the SQL query.
     *
     * @param statement
@@ -502,7 +516,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             )
             ElasticResult.failure(
               ElasticError(
-                message = s"SQL query does not contain a valid search request\n$query",
+                message = invalidSearchRequest(statement, query),
                 operation = Some("search")
               )
             )
@@ -559,7 +573,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         )
         ElasticResult.failure(
           ElasticError(
-            message = s"SQL query does not contain a valid search request\n$query",
+            message = invalidSearchRequest(statement, query),
             operation = Some("search")
           )
         )
@@ -870,7 +884,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             Future.successful(
               ElasticResult.failure(
                 ElasticError(
-                  message = s"SQL query does not contain a valid search request: ${statement.sql}",
+                  message = invalidSearchRequest(statement, statement.sql),
                   operation = Some("searchAsync")
                 )
               )
@@ -919,7 +933,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         Future.successful(
           ElasticResult.failure(
             ElasticError(
-              message = s"SQL query does not contain a valid search request: $query",
+              message = invalidSearchRequest(statement, query),
               operation = Some("searchAsync")
             )
           )
@@ -1448,7 +1462,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         )
         ElasticResult.failure(
           ElasticError(
-            message = s"SQL query does not contain a valid search request: ${sql.query}",
+            message = invalidSearchRequest(sql, sql.query),
             operation = Some("searchWithInnerHits")
           )
         )

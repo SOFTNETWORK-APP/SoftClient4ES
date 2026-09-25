@@ -29,6 +29,8 @@ import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.concurrent.Await
+import scala.concurrent.duration._
 import scala.language.implicitConversions
 
 case class CategoryCount(category: String, cnt: Long)
@@ -694,6 +696,390 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         "SELECT COUNT(*) AS \"COL\" FROM \"group_by_completeness\" \"g\" " +
         "HAVING COUNT(*) > 0 AND SUM(amount) > 99999"
       ) shouldBe empty
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Issue #389 -- a HAVING over a FUNCTION of an aggregate must FILTER, or FAIL.
+  //
+  // MEASURED on `main`: every shape below parsed, ran, and returned EVERY group with HTTP 200 --
+  // the `bucket_selector` was never emitted because a function does not look inside its own
+  // arguments. These rows EXECUTE the emitted script against a real cluster, because the claim is
+  // that Elasticsearch COMPILES and RUNS it: `cat_i` holds exactly `i` documents, so the filtered
+  // answer and the unfiltered one differ by construction (7 groups against 37).
+  //
+  // 🔴 EXECUTION is what set the emittable population, not reading. `ABS(COUNT(*)) > 1` renders a
+  // perfectly good-looking boolean expression and Elasticsearch REFUSES to compile it
+  // (`Double.valueOf` in a bucket-pipeline script). It is in the refusal list below, where the
+  // cluster put it.
+  // ------------------------------------------------------------------
+
+  private val over30 = 7 // cat_31 .. cat_37
+
+  "a HAVING over a function of an aggregate" should "filter the groups it names" in {
+    // ⚠️ Unrolled, not looped: `searchAs` is a macro and needs a compile-time constant SQL string.
+    def check(label: String, result: ElasticResult[Seq[CategoryCount]], expected: Int): Unit =
+      result match {
+        case ElasticSuccess(rows) =>
+          withClue(s"[$label] rows=${rows.map(_.category).sorted}: ") {
+            rows should have size expected.toLong
+            rows.map(_.category).toSet shouldBe
+            (categories - expected + 1 to categories).map(c => f"cat_$c%02d").toSet
+          }
+        case ElasticFailure(error) => fail(s"[$label] Query failed: ${error.message}")
+      }
+
+    check(
+      "GREATEST over an aggregate",
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING GREATEST(COUNT(*), 0) > 30"
+      ),
+      over30
+    )
+    check(
+      "COALESCE over an aggregate",
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING COALESCE(COUNT(*), 0) > 30"
+      ),
+      over30
+    )
+    check(
+      "the aggregate on the RIGHT of the comparison",
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING 30 < GREATEST(COUNT(*), 0)"
+      ),
+      over30
+    )
+    check(
+      "BETWEEN over a function of an aggregate",
+      client.searchAs[CategoryCount](
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING GREATEST(COUNT(*), 0) BETWEEN 31 AND 37"
+      ),
+      over30
+    )
+  }
+
+  it should "emit BOTH halves of a conjunction" in {
+    // 🔴 On `main` the second conjunct was DROPPED, so this returned 37 groups: a PARTIAL filter,
+    // which looks filtered and is wrong. The oracle (cat_31..cat_34) differs from BOTH the
+    // unfiltered answer (37) and from either conjunct alone (7 and 34).
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > 30 AND GREATEST(COUNT(*), 0) < 35"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.category).toSet shouldBe Set("cat_31", "cat_32", "cat_33", "cat_34")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "create the aggregation when the aggregate appears ONLY in the HAVING function" in {
+    // No SELECT aggregate at all: on `main` there was no `count_all` aggregation for the script to
+    // read, so even a corrected script would have had nothing to compare.
+    client.searchAs[CategoryOnly](
+      "SELECT category FROM group_by_completeness GROUP BY category HAVING GREATEST(COUNT(*), 0) > 30"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.category).toSet shouldBe
+          (categories - over30 + 1 to categories).map(c => f"cat_$c%02d").toSet
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "filter the implicit whole-table group too" in {
+    implicit val wholeCtx: ConversionContext = NativeContext
+    // 703 documents in total: the TRUE predicate keeps the single row, the FALSE one removes it.
+    client.search(
+      SelectStatement(
+        "SELECT COUNT(*) AS c FROM group_by_completeness HAVING GREATEST(COUNT(*), 0) > 700"
+      )
+    ) match {
+      case ElasticSuccess(response) => response.results should have size 1
+      case ElasticFailure(error)    => fail(s"Query failed: ${error.message}")
+    }
+    client.search(
+      SelectStatement(
+        "SELECT COUNT(*) AS c FROM group_by_completeness HAVING GREATEST(COUNT(*), 0) > 9999"
+      )
+    ) match {
+      case ElasticSuccess(response) => response.results shouldBe empty
+      case ElasticFailure(error)    => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "REFUSE the shapes it cannot express, rather than return every group" in {
+    // 🔴 The whole point of the issue: a predicate the engine cannot emit used to come back as
+    // HTTP 200 over UNFILTERED groups. Each of these must now be an error.
+    //
+    // ⚠️ Asserted through `run`, not `search(SelectStatement(...))`: `SelectStatement` yields
+    // `statement = None` on a rejection and the client reports its own generic "does not contain a
+    // valid search request" message, which would hide WHICH rule fired. `run` is the REPL / JDBC /
+    // Flight route and relays the parser's reason (#262).
+    Seq(
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING ABS(COUNT(*)) > 30",
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING NULLIF(COUNT(*), 0) > 30",
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING NULLIF(cnt, 0) > 30",
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING CASE WHEN COUNT(*) > 30 THEN 1 ELSE 0 END = 1",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING ROUND(SUM(amount), 2) > 30",
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > 30 AND NULLIF(COUNT(*), 0) > 1",
+      // 🔴 The RIGHT-operand family (F1): the left operand is a bare aggregate, so the gate used to
+      // be skipped entirely and these reached Elasticsearch as HTTP 400 / an internal-error label.
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > ROUND(SUM(amount), 2)",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > NULLIF(SUM(amount), 0)",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) BETWEEN 1 AND ABS(SUM(amount))",
+      "SELECT category, SUM(amount) AS s FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > CASE WHEN SUM(amount) > 1 THEN 1 ELSE 0 END"
+    ).foreach { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticSuccess(result) => fail(s"[$sql] was accepted and answered $result")
+        case ElasticFailure(error) =>
+          withClue(s"[$sql] ") { error.message should include("HAVING cannot") }
+      }
+    }
+  }
+
+  it should "REFUSE a key condition the terms filter cannot express, rather than answer wrongly" in {
+    // 🔴 ROUND 3. Round 2 pushed these into the QUERY as a document filter. That is unsound twice,
+    // both MEASURED on real Elasticsearch: with a key that is a FUNCTION of the column a SURVIVING
+    // bucket's count changed (`GROUP BY DAY(d) HAVING YEAR(d) = 2025` kept bucket 3 and moved its
+    // count 3 -> 1), and on a MULTI-VALUED field a bucket that FAILS the predicate survived,
+    // because a document in several buckets is kept or dropped whole. The `terms` `include` path
+    // answers such a grouping correctly, so the push-down was strictly LESS sound than the
+    // mechanism it was meant to generalise.
+    Seq(
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING UPPER(category) = 'CAT_37'",
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING SUBSTRING(category, 5, 2) = '37'"
+    ).foreach { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticSuccess(result) => fail(s"[$sql] was accepted and answered $result")
+        case ElasticFailure(error) =>
+          withClue(s"[$sql] ") { error.message should include("HAVING cannot filter on") }
+      }
+    }
+  }
+
+  it should "still apply a key condition the terms filter DOES express" in {
+    // The complement: this is the mechanism the refusal above defers to, and it must keep working.
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING category = 'cat_37'"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(r => r.category -> r.cnt) shouldBe Seq("cat_37" -> categories.toLong)
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "combine a key condition with an aggregate condition as an AND" in {
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > 35 AND category <> 'cat_36'"
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category).toSet shouldBe Set("cat_37")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "REFUSE an OR whose branches need different mechanisms" in {
+    // 🔴 PRE-EXISTING silent wrong answer: the key became a terms `include` and the aggregate a
+    // `bucket_selector`, so the OR was EXECUTED AS AN AND. Measured on `main` over a 4-document
+    // fixture: `HAVING COUNT(*) > 1 OR status = 'b'` returned NO groups where the disjunction is
+    // two of them.
+    Await.result(
+      client.run(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING COUNT(*) > 35 OR category = 'cat_01'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"the OR was accepted and answered $result")
+      case ElasticFailure(error)  => error.message should include("different mechanisms")
+    }
+  }
+
+  it should "still accept an OR the terms filter unions into one include list" in {
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING category = 'cat_36' OR category = 'cat_37'"
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(_.category).toSet shouldBe Set("cat_36", "cat_37")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // The include/exclude CHANNEL, EXECUTED (rule b2)
+  //
+  // 🔴 `excludes` IS `includes(bucket, !not, …)` -- one method, two senses -- and every other row
+  // in this file exercises the INCLUDE sense. These are the exclude-side cells, each against a
+  // bucket set computed by hand from the fixture: `cat_i` holds exactly `i` documents, 37 groups.
+  // -----------------------------------------------------------------------------------------
+
+  private def categoriesOf(having: String): Seq[String] =
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        s"SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category $having"
+      )
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category).sorted
+      case ElasticFailure(error) => fail(s"[$having] failed: ${error.message}")
+    }
+
+  private def categoryRefusal(having: String): String =
+    Await.result(
+      client.run(
+        s"SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category $having"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"[$having] was accepted and answered $result")
+      case ElasticFailure(error)  => error.message
+    }
+
+  private lazy val allCategories: Seq[String] = (1 to categories).map(c => f"cat_$c%02d").sorted
+
+  "an AND of inequalities on the GROUP BY key" should "remove exactly those groups" in {
+    // NOT-in-A and NOT-in-B is NOT-in-(A ∪ B): the exclude list IS that union, so this is correct
+    // on `455433ae` and must stay byte-identical.
+    categoriesOf("HAVING category <> 'cat_36' AND category <> 'cat_37'") shouldBe
+    allCategories.filterNot(Set("cat_36", "cat_37"))
+    categoriesOf(
+      "HAVING category NOT IN ('cat_36','cat_37') AND category <> 'cat_35'"
+    ) shouldBe allCategories.filterNot(Set("cat_35", "cat_36", "cat_37"))
+    // three leaves, the same union one level deeper
+    categoriesOf(
+      "HAVING category <> 'cat_35' AND category <> 'cat_36' AND category <> 'cat_37'"
+    ) shouldBe allCategories.filterNot(Set("cat_35", "cat_36", "cat_37"))
+  }
+
+  it should "still combine with an aggregate condition, which is a different mechanism" in {
+    categoriesOf("HAVING category <> 'cat_37' AND COUNT(*) > 35") shouldBe Seq("cat_36")
+  }
+
+  "an OR of inequalities" should "be REFUSED, because the exclude list would execute it as an AND" in {
+    // 🔴 MEASURED on `455433ae` and on this cluster: it emitted the SAME `exclude:["cat_36",
+    // "cat_37"]` as the AND above. The disjunction is true for EVERY one of the 37 groups, and two
+    // were dropped -- HTTP 200, no error. Live on `main` today.
+    categoryRefusal(
+      "HAVING category <> 'cat_36' OR category <> 'cat_37'"
+    ) should include("cannot combine")
+    categoryRefusal(
+      "HAVING category NOT IN ('cat_36','cat_37') OR category <> 'cat_35'"
+    ) should include("cannot combine")
+  }
+
+  "an AND of equalities" should "be REFUSED, because the include list means OR" in {
+    // `include:["cat_36","cat_37"]` keeps two groups; the SQL means none.
+    categoryRefusal(
+      "HAVING category = 'cat_36' AND category = 'cat_37'"
+    ) should include("cannot combine")
+  }
+
+  "a MIXED pair under OR" should "be REFUSED, because the two lists are ANDed" in {
+    categoryRefusal(
+      "HAVING category = 'cat_37' OR category <> 'cat_36'"
+    ) should include("cannot combine")
+  }
+
+  it should "still honour one include and one exclude under AND" in {
+    // ⚠️ Both lists carry SEVERAL values on purpose. RESIDUAL, pre-existing and ES-6-ONLY, found
+    // by this matrix: the es6 bridge renders a SINGLE-element list as a bare string
+    // (`"exclude":"c"`), which ES 6.8 reads as a REGEX, and mixing a set-based include with a
+    // regex-based exclude is rejected with HTTP 400 `Cannot mix a set-based include with a
+    // regex-based method`. The emission is byte-identical to `455433ae`; it is recorded, not fixed
+    // here.
+    categoriesOf(
+      "HAVING category IN ('cat_35','cat_36','cat_37') AND category NOT IN ('cat_35','cat_36')"
+    ) shouldBe Seq("cat_37")
+  }
+
+  "a pattern meeting a value list on the same key" should "be REFUSED, not half-applied" in {
+    // 🔴 MEASURED on ES 8.18.3 over a three-bucket fixture: `= 'a' OR LIKE 'b%'` emitted
+    // `include:"b.*"` and returned only the pattern's bucket -- the value list is DISCARDED by the
+    // emission when a pattern is present, and a second pattern is lost to `orElse`.
+    // ⚠️ the client caps a relayed parse message at 200 characters (#262), so the assertion
+    // anchors on the TAIL of the reason, not its middle.
+    categoryRefusal(
+      "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+    ) should include("Use a single RLIKE")
+    // ... and the pattern ALONE still works: cat_30 .. cat_37.
+    categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe
+    (30 to 37).map(c => f"cat_$c%02d")
+  }
+
+  "a LIKE pattern on the key" should "treat _ as a wildcard, like every other LIKE" in {
+    // 🔴 EXECUTED. The terms channel had its own LIKE translation that left `_` literal, so this
+    // matched NOTHING on `455433ae` -- there is no category named `cat_0_`. With the shared
+    // translation `_` is one character, so it selects cat_01 .. cat_09.
+    categoriesOf("HAVING category LIKE 'cat_0_'") shouldBe (1 to 9).map(c => f"cat_0$c%d")
+    // ... and the plain wildcard form is unchanged.
+    categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe (30 to 37).map(c => f"cat_$c%02d")
+  }
+
+  "an OR across TWO grouping levels" should "be REFUSED, because Elasticsearch NESTS them" in {
+    // 🔴 The two `terms` aggregations are nested, which IS a conjunction: an OR across them
+    // returned the intersection. Measured on a two-key fixture; here the refusal is asserted
+    // end-to-end, and the AND -- which is exactly what the nesting means -- still answers.
+    Await.result(
+      client.run(
+        "SELECT category, id, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category, id " +
+        "HAVING category = 'cat_02' OR id = 'cat_02_1'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"the OR was accepted and answered $result")
+      case ElasticFailure(error)  => error.message should include("DIFFERENT GROUP BY keys")
+    }
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category, id " +
+        "HAVING category = 'cat_02' AND id = 'cat_02_1'"
+      )
+    ) match {
+      case ElasticSuccess(rows)  => rows.map(_.category) shouldBe Seq("cat_02")
+      case ElasticFailure(error) => fail(s"the AND failed: ${error.message}")
+    }
+  }
+
+  it should "REFUSE a HAVING on a column that is neither grouped nor aggregated" in {
+    Await.result(
+      client.run(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING UPPER(id) = 'X'"
+      ),
+      60.seconds
+    ) match {
+      case ElasticSuccess(result) => fail(s"accepted and answered $result")
+      case ElasticFailure(error) =>
+        error.message should include("can only filter on a GROUP BY key")
+    }
+  }
+
+  it should "still return every group when the un-expressible predicate is NOT there" in {
+    // 🔴 Non-vacuity for the refusals above: the same statements WITHOUT the offending function
+    // are accepted, so the rejection is about the predicate and not about the fixture.
+    client.searchAs[CategoryCount](
+      "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+      "HAVING COUNT(*) > 30"
+    ) match {
+      case ElasticSuccess(rows)  => rows should have size over30.toLong
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
     }
   }
 

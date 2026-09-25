@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.operator.{SetOperator, UNION}
+import app.softnetwork.elastic.sql.operator.{AND, OR, SetOperator, UNION}
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   validateScriptReferences,
@@ -162,12 +162,25 @@ package object query {
 
     override def withoutNestedExplosion: SelectStatement = this.copy(explodeNested = false)
 
-    lazy val statement: Option[SearchStatement] = {
-      queryToStatement(query) match {
-        case Some(s: SearchStatement) => Some(if (!explodeNested) s.withoutNestedExplosion else s)
-        case _                        => None
-      }
+    /** ONE parse. `statement` and [[parseError]] are two readings of it, so asking for the reason
+      * costs nothing and cannot disagree with the verdict.
+      */
+    private lazy val parsed: Either[parser.ParserError, Statement] = parser.Parser(query)
+
+    lazy val statement: Option[SearchStatement] = parsed match {
+      case Right(s: SearchStatement) => Some(if (!explodeNested) s.withoutNestedExplosion else s)
+      case _                         => None
     }
+
+    /** Why this statement did not parse, when it did not (issue #389 / F7).
+      *
+      * 🔴 `statement` is an `Option`, so every rejection reaching a caller through it used to be
+      * reported as the client's generic "SQL query does not contain a valid search request" -- the
+      * reason was computed, formatted and then thrown away. That was tolerable while the rejections
+      * were syntax errors the user could see for themselves; a whole family of SEMANTIC refusals
+      * now lands here, each naming a clause and a remedy, and none of them could reach the caller.
+      */
+    lazy val parseError: Option[String] = parsed.left.toOption.map(_.msg)
 
     override def sql: SQL =
       statement match {
@@ -697,6 +710,227 @@ package object query {
       )
     }
 
+    /** Where a `HAVING` leaf predicate can be evaluated (issue #389).
+      *
+      * 🔴 ROUND 3 -- the DOCUMENT push-down this used to authorise is GONE. Its licence was "a
+      * function of the GROUP BY key is constant within a bucket, so filtering the documents keeps
+      * whole buckets", and that is false twice over, both MEASURED on Elasticsearch 8.18.3:
+      *
+      *   - the key can be a FUNCTION of the column, and the predicate can read the COLUMN. Over
+      *     `2024-01-03, 2024-02-03, 2025-03-03, 2025-04-05`: `GROUP BY DAY(d)` -> dd=3 c=3 · dd=5
+      *     c=1 `GROUP BY DAY(d) HAVING YEAR(d) = 2025` -> dd=3 c=1 · dd=5 c=1 HTTP 200 A SURVIVING
+      *     bucket's count changed -- the exact wrong answer the push-down was supposed to be immune
+      *     to.
+      *   - a MULTI-VALUED field puts one document in several buckets, and a document filter keeps
+      *     or drops it WHOLE. Over `tags = ["a","b"], ["b"], ["c"], ["a"]`: `GROUP BY tags HAVING
+      *     UPPER(tags) = 'A'` kept bucket `b`, which fails the predicate. The `terms` `include`
+      *     path answers `a` alone, so the push-down was strictly LESS sound than the mechanism it
+      *     was meant to generalise.
+      *
+      * A key predicate is therefore honoured at the BUCKET level or not at all.
+      */
+    private[query] sealed trait HavingScope
+    private[query] object HavingScope {
+
+      /** Reads an aggregate: the `bucket_selector` population. */
+      case object Metric extends HavingScope
+
+      /** Reads only GROUP BY keys. Honoured by [[keyPredicateOutcome]], never by a document filter.
+        */
+      case object GroupKey extends HavingScope
+
+      /** Neither -- it names a column that is not a grouping key, so it is not constant within a
+        * bucket and NO mechanism can honour it. Refused; it used to be silently dropped.
+        */
+      case object Unscoped extends HavingScope
+    }
+
+    /** How a GROUP BY key predicate is honoured -- the ONE classifier both emission paths read.
+      *
+      * 🔴 Two mechanisms for one feature is two derivations that can disagree
+      * (`project_self_join_alias_resolution`), so neither emission path re-decides: they read this
+      * value. `TermsFilter` means "the `terms` `include` / `exclude` path already expresses it" and
+      * is answered by the REAL `Expression.includes` / `excludes`, never by a copy of their rules.
+      */
+    private[query] sealed trait KeyPredicateOutcome
+    private[query] object KeyPredicateOutcome {
+
+      /** The `terms` `include` / `exclude` filter expresses this predicate. Emission is unchanged:
+        * the bridge's existing include/exclude call is what applies it.
+        */
+      case object TermsFilter extends KeyPredicateOutcome
+
+      /** Neither bucket-level mechanism can express it, so the statement is refused by name.
+        *
+        * ⚠️ The lead's round-3 ruling specifies a THIRD outcome here -- a scripted `terms` source
+        * whose script returns only the key values satisfying the predicate, which is correct on a
+        * multi-valued field and on a function-of-column key by construction. It is NOT BUILT: see
+        * `§10.A.3` of the story artifact for the design, the Painless it must emit (verified
+        * running on a real cluster) and what remains. Until it exists this arm carries that
+        * population, so the predicate is REFUSED rather than silently dropped or wrongly applied.
+        */
+      case class Refused(reason: String) extends KeyPredicateOutcome
+    }
+
+    private[query] def keyBucketOf(leaf: Identifier): Option[Bucket] = {
+      // 🔴 Resolve through THIS statement's bucket list, never through `Identifier.bucket`, which
+      // is a COPY attached during `update()` and deliberately NOT re-updated (the story-21.3 / #253
+      // desync class) -- MEASURED reporting `nestedElement = None` for a bucket the statement lists
+      // as nested.
+      val byName = buckets.find(b => b.identifier.name.nonEmpty && b.identifier.name == leaf.name)
+      byName.orElse(leaf.bucket.flatMap(attached => buckets.find(_.name == attached.name)))
+    }
+
+    private[query] def namedLeavesOf(e: Expression): Seq[Identifier] =
+      e.referencedIdentifiers
+        .flatMap(id => FunctionUtils.funIdentifiers(id))
+        .filter(_.name.nonEmpty)
+        .distinct
+
+    private[query] def havingScopeOf(e: Expression): HavingScope =
+      if (e.referencedIdentifiers.exists(_.bucketMetrics.nonEmpty)) HavingScope.Metric
+      else {
+        val leaves = namedLeavesOf(e)
+        if (leaves.nonEmpty && leaves.forall(l => keyBucketOf(l).isDefined)) HavingScope.GroupKey
+        else HavingScope.Unscoped
+      }
+
+    /** Does the `terms` `include` / `exclude` path express this key predicate?
+      *
+      * 🔴 Asked of the REAL function, never of a copy of its rules -- a second derivation of "which
+      * key predicates the terms filter can spell" is the story-21.3 desync class and would silently
+      * change every shipped `HAVING <key> = <value>` the first time the two disagreed.
+      */
+    private[query] def keyExpressibleByTerms(e: Expression): Boolean = {
+      val empty = BucketIncludesExcludes()
+      buckets.exists(b =>
+        e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty
+      )
+    }
+
+    private[query] def keyPredicateOutcome(e: Expression): KeyPredicateOutcome =
+      if (keyExpressibleByTerms(e)) KeyPredicateOutcome.TermsFilter
+      else if (readsNestedKey(e))
+        KeyPredicateOutcome.Refused(
+          s"HAVING cannot filter on ${e.sql}: the grouping key is a nested object, and a bucket " +
+          "filter over it is not expressible. Filter it in WHERE, or group by a field of the parent."
+        )
+      else
+        KeyPredicateOutcome.Refused(
+          s"HAVING cannot filter on ${e.sql}: a condition over the GROUP BY key is applied by the " +
+          "terms filter, which can only express a direct comparison of the key (=, <>, LIKE, IN). " +
+          "Compare the key itself, or filter in WHERE."
+        )
+
+    /** The first `HAVING` combination whose halves cannot BOTH reach the `terms` filter, or `None`
+      * when every combination is a union the channel expresses. See rule (b2) in `validate()`.
+      *
+      * The analysis is per bucket and follows `Criteria.includes` exactly -- same polarity
+      * threading, same contribution test, both senses:
+      *   - the INCLUDE list is a union, so it expresses a DISJUNCTION. Two halves that both
+      *     contribute includes under a conjunction are not expressible.
+      *   - the EXCLUDE list is a union of negations, so it expresses a CONJUNCTION. Anything
+      *     excluded under a disjunction is not expressible -- including the mixed shape `= 'a' OR
+      *     <> 'b'`, where the emission would AND an include with an exclude.
+      *
+      * The polarity is still threaded, because a `NOT` before a LEAF decides which channel that
+      * leaf feeds -- `= 'a' AND NOT = 'b'` is an include and an exclude, and expressible.
+      */
+    private[query] def keyChannelConflict: Option[String] = {
+      val empty = BucketIncludesExcludes()
+      def unionOnlyReason(c: Criteria): String =
+        s"HAVING cannot combine the conditions in ${c.sql} on one GROUP BY key: Elasticsearch " +
+        "applies one list of kept values and one list of removed values, and each is a union, " +
+        "so this combination would be executed as a different one. Split the query, or restate " +
+        "it as an OR of equalities or an AND of inequalities."
+      def conflict(c: Criteria, bucket: Bucket, not: Boolean): Option[(Criteria, String)] =
+        c match {
+          case p @ Predicate(left, op, right, _, _) =>
+            // ONE derivation of the polarity, shared with `Criteria.includes` -- see
+            // `Predicate.includePolarityOfRight`.
+            val rightNot = p.includePolarityOfRight(not)
+            val leftIncludes = left.includes(bucket, not, empty)
+            val leftExcludes = left.excludes(bucket, not, empty)
+            val rightIncludes = right.includes(bucket, rightNot, empty)
+            val rightExcludes = right.excludes(bucket, rightNot, empty)
+            // 🔴 No De Morgan arm here, and that is MEASURED, not assumed: `Predicate.maybeNot`
+            // negates the RIGHT OPERAND only, and `NOT ( … )` around a group is rejected by the
+            // grammar (`end of input expected`, on this branch and on `455433ae`). So no `Predicate`
+            // is ever reached with a flipped polarity -- probed over the parseable shapes -- and an
+            // arm dualising `op` would be unreachable for every possible input. Round 3 shipped
+            // exactly such an arm and had to delete it; one is enough.
+            val leftContributes = leftIncludes != empty || leftExcludes != empty
+            val rightContributes = rightIncludes != empty || rightExcludes != empty
+            // 🔴 A channel holds ONE list of values and ONE pattern, and the emission keeps the
+            // PATTERN and discards the values (`ElasticAggregation`, both bridges), while a second
+            // pattern is lost to `orElse`. So two contributors COLLIDE whenever a pattern meets
+            // anything else in the same channel -- whatever the operator, and even where the
+            // combination itself is a union. MEASURED on ES 8.18.3 over `a`, `b1`, `c`:
+            //   `HAVING status = 'a' OR status LIKE 'b%'` -> `include:"b.*"` -> ['b1'], and the
+            //   SQL means ['a','b1'].
+            // ⚠️ This is the claim an earlier draft of §12.F got wrong: `= 'a' OR LIKE 'b%'` IS an
+            // OR of two kept-value contributions -- the row the documentation blesses -- so
+            // "the kept list is a union" is not sufficient on its own.
+            def collides(a: BucketIncludesExcludes, b: BucketIncludesExcludes): Boolean =
+              (a.regex.nonEmpty && b.regex.nonEmpty && a.regex != b.regex) ||
+              (a.regex.nonEmpty && b.values.nonEmpty) ||
+              (b.regex.nonEmpty && a.values.nonEmpty)
+            val here =
+              if (collides(leftIncludes, rightIncludes) || collides(leftExcludes, rightExcludes))
+                Some(
+                  (p: Criteria) ->
+                  (s"HAVING cannot combine the conditions in ${p.sql} on one GROUP BY key: a key " +
+                  "filter carries one list of values and one pattern, and a pattern replaces the " +
+                  "list, so one side would be silently dropped. Use a single RLIKE that covers " +
+                  "both, or split the query.")
+                )
+              else if (op == AND && leftIncludes != empty && rightIncludes != empty)
+                Some((p: Criteria) -> unionOnlyReason(p))
+              else if (
+                op == OR && leftContributes && rightContributes &&
+                (leftExcludes != empty || rightExcludes != empty)
+              ) Some((p: Criteria) -> unionOnlyReason(p))
+              else None
+            here
+              .orElse(conflict(left, bucket, not))
+              .orElse(conflict(right, bucket, rightNot))
+          case relation: ElasticRelation => conflict(relation.criteria, bucket, not)
+          case _                         => None
+        }
+      having.flatMap(_.criteria).flatMap { criteria =>
+        buckets.view
+          .flatMap(bucket => conflict(criteria, bucket, not = false))
+          .headOption
+          .map { case (_, reason) => reason }
+      }
+    }
+
+    /** Does this key predicate read a NESTED bucket? Asked of the bucket the leaf RESOLVES to. */
+    private[query] def readsNestedKey(e: Expression): Boolean =
+      e.nested || namedLeavesOf(e).exists(l => keyBucketOf(l).exists(_.nestedElement.isDefined))
+
+    /** Every leaf `Expression` of the FLAT part of the HAVING tree, in statement order.
+      *
+      * 🔴 A predicate scoped to a NESTED relation is deliberately NOT here, the same boundary the
+      * whole-table block below draws: it has its OWN mechanism (`requestToNestedFilterAggregation`
+      * turns it into a `filter` aggregation scoped to the inner-hits path). MEASURED: without this
+      * exclusion the repo's own "complex query" fixture is refused. HAVING has FIVE mechanisms --
+      * the `bucket_selector`, the `terms` include/exclude, this nested filter, the extensions'
+      * materialized-view transform (see `Having.script`), and the scripted `terms` source that the
+      * round-3 ruling specifies and that is not built yet.
+      *
+      * A `lazy val`: three validation rules and the key logic all walk it (review LOW-9).
+      */
+    private[query] lazy val havingLeaves: Seq[Expression] = {
+      def leaves(c: Criteria): Seq[Expression] = c match {
+        case Predicate(l, _, r, _, _) => leaves(l) ++ leaves(r)
+        case _: ElasticRelation       => Nil
+        case e: Expression            => Seq(e).filterNot(_.nested)
+        case _                        => Nil
+      }
+      having.flatMap(_.criteria).toSeq.flatMap(leaves)
+    }
+
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
     lazy val sources: Seq[String] = from.tables.map(_.name)
@@ -847,14 +1081,27 @@ package object query {
       * measured, and each one names the shape it refuses.
       */
     def validateResolved(): Either[String, Unit] =
-      ((where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
-      select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
-      orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
-      groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
-        .flatMap(_.temporalComparisonErrors) ++
+      // 🔴 Issue #389 / F4 -- the representability gate runs AGAIN here, on the RESOLVED statement.
+      // `validate()` runs schema-less inside `Parser.apply`, and `update(Some(schema))` CAN change
+      // what a HAVING renders (measured divergence on three shapes, e.g.
+      // `COALESCE(MAX(d), CURRENT_DATE) > CURRENT_DATE` gains `.atStartOfDay(ZoneId.of('Z'))`).
+      // No shape was found that trips a disqualifier only after resolution, so this is latent
+      // rather than demonstrated -- and it is closed the cheap way: re-asking the question at the
+      // ONE seam that produces a resolved statement turns any such divergence into the same 400
+      // every other refusal takes. The alternative (letting `MetricSelectorScript.metricSelector`'s
+      // `IllegalStateException` escape into the bridge) would surface a 500 with no clause named,
+      // which is issue #250's family. That throw stays as the last-resort invariant; this is what
+      // makes it unreachable in practice.
+      having.map(_.unrepresentable).getOrElse(Nil).headOption.map(u => Left(u.message)).getOrElse {
+        ((where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
+        select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
+        orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
+        groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
+          .flatMap(_.temporalComparisonErrors) ++
         scriptedExpressions.flatMap(NullIf.mismatchesOf)).headOption
-        .map(Left(_))
-        .getOrElse(Right(()))
+          .map(Left(_))
+          .getOrElse(Right(()))
+      }
 
     /** Every expression of this statement that can be emitted as Painless, as the chain it is.
       *
@@ -906,6 +1153,238 @@ package object query {
                 s"HAVING cannot combine aggregates arithmetically inline (${id.sql}); alias the expression in SELECT and reference the alias"
               )
             case None => Right(())
+          }
+        }
+        _ <- {
+          // 🔴 Issue #389 -- a HAVING over a FUNCTION of an aggregate must FILTER, or FAIL. It used
+          // to VANISH: a function never looks inside its own arguments, so `ABS(COUNT(*)) > 1` was
+          // invisible to the bucket-metric detection, the selector degenerated to `1 == 1` and
+          // every group came back with HTTP 200 (the #205 / #209 / #253 silent-wrong-answer
+          // family). Everything the engine can express is now emitted; everything it cannot is
+          // refused HERE, inside `Parser.apply`, so every venue sees it -- the REPL, JDBC, Flight,
+          // the materialized-view extension and the bridge's own emission path alike.
+          //
+          // ⚠️ A PARTIAL emission counts as a wrong answer: one un-expressible conjunct refuses the
+          // whole statement rather than silently filtering on the other half.
+          having.map(_.unrepresentable).getOrElse(Nil).headOption match {
+            case Some(u) => Left(u.message)
+            case None    => Right(())
+          }
+        }
+        _ <- {
+          // The residual of the rule above, and the reason it needs the STATEMENT rather than the
+          // clause: `HAVING NULLIF(c, 0) > 1` names a SELECT aggregate by its ALIAS from inside a
+          // function ARGUMENT. `Having.resolveAggregateAliases` substitutes an OPERAND only, so `c`
+          // stays a bare column, the predicate references no aggregate at all, and the rule above
+          // cannot see it -- it renders `arg0 == 0 ? null : arg0 > 1`, reading a context parameter
+          // no bucket pipeline binds. MEASURED: dropped silently on `main`.
+          //
+          // ⚠️ The alias set is read from `Having.aggregateAliases`, the SAME map the substitution
+          // uses, so the two cannot disagree about which bare names are aggregate references. A
+          // COLUMN that happens to share a SELECT aggregate's alias is therefore refused here for
+          // exactly the reason it is SUBSTITUTED there -- one ambiguity, one reading.
+          having.flatMap(_.criteria) match {
+            case None => Right(())
+            case Some(criteria) =>
+              val aliases = Having.aggregateAliases(this).keySet
+              criteria.referencedIdentifiers
+                .filter(id => id.functions.nonEmpty && id.bucketMetrics.isEmpty)
+                .flatMap(id =>
+                  FunctionUtils.funIdentifiers(id).map(_.name).filter(aliases.contains).map(id -> _)
+                )
+                .headOption match {
+                case Some((id, alias)) =>
+                  Left(
+                    s"HAVING cannot apply a function to the aggregate alias '$alias' (${id.sql}); " +
+                    "compare the aggregate itself"
+                  )
+                case None => Right(())
+              }
+          }
+        }
+        _ <- {
+          // 🔴 Issue #389 -- (a) a predicate that reads neither an aggregate NOR a grouping key is
+          // not constant within a bucket, so NO mechanism can honour it: the terms filter cannot
+          // spell it, the selector cannot read a document, and filtering documents would silently
+          // change every metric of every surviving group. MEASURED as a silent wrong answer on
+          // `main` and refused since.
+          //
+          // ⚠️ NOT gated on `groupBy.isDefined` (review MEDIUM-4). With no GROUP BY there are no
+          // buckets, so every named leaf is `Unscoped` and every aggregate leaf is `Metric` -- the
+          // whole-table block below refuses a BARE column (`HAVING status = 'a'`) but its
+          // `filter(_.name.nonEmpty)` probe cannot see a FUNCTION of one, which is S8's original
+          // hole. MEASURED: `SELECT COUNT(*) AS c FROM t HAVING UPPER(status) = 'A'` answered
+          // `{"c":{"value":4}}` with the predicate gone.
+          havingLeaves.filter(e => havingScopeOf(e) == HavingScope.Unscoped).headOption match {
+            case Some(e) =>
+              Left(
+                s"HAVING can only filter on a GROUP BY key or on an aggregate; ${e.sql} is " +
+                "neither. Move it to WHERE, or add its column to the GROUP BY."
+              )
+            case None => Right(())
+          }
+        }
+        _ <- {
+          // (b) ... and a key predicate neither bucket-level mechanism can express is refused by
+          // the ONE classifier both emission paths read.
+          havingLeaves
+            .filter(e => groupBy.isDefined && havingScopeOf(e) == HavingScope.GroupKey)
+            .map(keyPredicateOutcome)
+            .collectFirst { case KeyPredicateOutcome.Refused(reason) => Left(reason) }
+            .getOrElse(Right(()))
+        }
+        _ <- {
+          // (b2) 🔴 The `terms` filter carries ONE include list and ONE exclude list, and each is a
+          // UNION of its members. So the channel can express a union and NEVER an intersection --
+          // and which of the two a combination needs depends on the OPERATOR *and* on the
+          // POLARITY, because `excludes` IS `includes(bucket, !not, …)`: the same method, read in
+          // the other sense.
+          //
+          // MEASURED on `455433ae` and on real ES 8.18.3:
+          //   `HAVING city <> 'Paris' AND city <> 'Lyon'` -> `exclude:["Lyon","Paris"]`, CORRECT:
+          //      NOT-in-A and NOT-in-B is NOT-in-(A∪B).
+          //   `HAVING city <> 'Paris' OR  city <> 'Lyon'` -> the SAME `exclude:["Lyon","Paris"]`,
+          //      a SILENT WRONG ANSWER: the disjunction is true for every bucket, and two are
+          //      dropped. HTTP 200.
+          //   `HAVING city = 'a' AND city = 'b'` -> `include:["a","b"]`, also a silent wrong
+          //      answer: the include list means `a OR b`, the SQL means no bucket at all.
+          //   `HAVING city = 'a' OR city = 'b'` -> `include:["a","b"]`, CORRECT.
+          //
+          // 🔴 This rule is ONE derivation that asks BOTH methods about BOTH sides. The defect it
+          // replaces (a round-5 regression, reverted with the rest of that work) was a rule
+          // written for the include sense only and applied by a method that is also the exclude
+          // sense -- so it inverted every `<>`. A rule about these two channels that consults only
+          // one of them is wrong by construction.
+          keyChannelConflict.map(Left(_)).getOrElse(Right(()))
+        }
+        _ <- {
+          // (c) 🔴 An OR is honoured by ONE mechanism or by none: a `bucket_selector` script cannot
+          // read the bucket KEY, the `terms` filter cannot read a metric, and the nested filter
+          // aggregation is a third scope entirely. An OR whose branches need different mechanisms
+          // is therefore EXECUTED AS AN AND -- measured on `main` over a 4-document fixture,
+          // `HAVING COUNT(*) > 1 OR status = 'b'` returned NO buckets where the disjunction is two
+          // of them, because the key became a terms `include` (removing one) and the metric a
+          // `bucket_selector` (removing the other).
+          //
+          // ⚠️ Review MEDIUM-5: the rule is stated as HOMOGENEITY, and its message names the real
+          // cause. It used to say "cannot OR a GROUP BY key with an aggregate" even when no
+          // aggregate was present. An OR of key predicates the terms filter UNIONS
+          // (`status = 'a' OR status = 'b'` -> `include: [a, b]`) is supported; an OR mixing a
+          // TermsFilter key with a scripted-or-refused one is not, because only the first is a
+          // union.
+          //
+          // ⚠️ Relation-scoped leaves are counted HERE, unlike everywhere else: an OR spanning the
+          // nested filter and any other mechanism has exactly the same defect, and excluding them
+          // would leave `HAVING COUNT(*) > 1 OR <nested predicate>` executing as an AND.
+          def mechanismOf(e: Expression): String =
+            if (e.nested) "nested"
+            else
+              havingScopeOf(e) match {
+                case HavingScope.Metric   => "metric"
+                case HavingScope.Unscoped => "unscoped"
+                // 🔴 Every GroupKey leaf reaching here is a `TermsFilter`: rule (b) above refuses
+                // the rest before this rule runs. Distinguishing them was DEAD -- deleting the
+                // distinction reddened nothing (round-3 mutation T5, and the same mutation was
+                // green in round 2).
+                case HavingScope.GroupKey => "key"
+              }
+          def leavesUnder(c: Criteria): Seq[Expression] = c match {
+            case Predicate(l, _, r, _, _)  => leavesUnder(l) ++ leavesUnder(r)
+            case relation: ElasticRelation => leavesUnder(relation.criteria)
+            case e: Expression             => Seq(e)
+            case _                         => Nil
+          }
+          // 🔴 The STAGE, not just the mechanism. `mechanismOf` collapses every grouping level
+          // to the single label "key", so an OR across TWO GROUP BY keys looked homogeneous --
+          // and Elasticsearch NESTS the two `terms` aggregations, which IS the conjunction this
+          // rule exists to catch. MEASURED on ES 8.18.3 over (a,a) (a,b) (x,b) (x,y):
+          //   `GROUP BY status, city HAVING status = 'a' OR city = 'b'`
+          //     -> terms status include:["a"] > terms city include:["b"] -> ONE group (a,b),
+          //        and the SQL means THREE.
+          // A leaf's stage is its mechanism PLUS, for a key predicate, the bucket it addresses.
+          // 🔴 No `e.nested ||` guard here, and its removal is DELIBERATE (final review F4). It
+          // made two leaves on DIFFERENT nested grouping levels collapse to one stage while two
+          // flat levels are refused -- the very asymmetry this rule exists to remove -- and it was
+          // unobservable: with no schema attached, `GROUP BY e.name` under `JOIN UNNEST` emits no
+          // `terms` at all, on this tree or on `455433ae`. An unobservable, unpinnable guard in a
+          // symmetry rule is worse than no guard, so the rule is symmetric by construction
+          // instead. A leaf that is not a GROUP BY key still has no level, which is what the
+          // second half says.
+          def levelOf(e: Expression): String =
+            if (havingScopeOf(e) != HavingScope.GroupKey) ""
+            else namedLeavesOf(e).flatMap(keyBucketOf).map(_.name).distinct.sorted.mkString(",")
+          def firstMixedOr(c: Criteria): Option[(Criteria, Seq[String], Boolean)] = c match {
+            case p @ Predicate(l, op, r, _, _) =>
+              val here =
+                if (op == OR) {
+                  val leaves = leavesUnder(p)
+                  val kinds = leaves.map(mechanismOf).distinct
+                  val stages = leaves.map(e => (mechanismOf(e), levelOf(e))).distinct
+                  if (stages.size > 1)
+                    Some(
+                      (
+                        p: Criteria,
+                        if (kinds.size > 1) kinds.sorted else stages.map(_._2).sorted,
+                        kinds.size > 1
+                      )
+                    )
+                  else None
+                } else None
+              here.orElse(firstMixedOr(l)).orElse(firstMixedOr(r))
+            case relation: ElasticRelation => firstMixedOr(relation.criteria)
+            case _                         => None
+          }
+          having.flatMap(_.criteria).filter(_ => groupBy.isDefined).flatMap(firstMixedOr) match {
+            case Some((p, names, differentMechanisms)) =>
+              Left(
+                if (differentMechanisms)
+                  s"HAVING cannot OR conditions that Elasticsearch applies with different " +
+                  s"mechanisms (${p.sql} mixes ${names.mkString(" and ")}): a group filter, a key " +
+                  "filter and a nested filter are separate stages, so their disjunction would be " +
+                  "executed as a conjunction. Split the query, or restate the condition as an AND."
+                else
+                  s"HAVING cannot OR conditions on DIFFERENT GROUP BY keys (${p.sql} spans " +
+                  s"${names.mkString(" and ")}): Elasticsearch nests one grouping level inside " +
+                  "the other, so filtering both would be executed as a conjunction. Split the " +
+                  "query, or restate the condition as an AND."
+              )
+            case None => Right(())
+          }
+        }
+        _ <- {
+          // 🔴 Issue #389 / F5 -- a representable HAVING that NO bucket level can address still
+          // vanished. MEASURED on the branch:
+          //
+          //   SELECT e.name FROM t JOIN UNNEST(t.emails) AS e GROUP BY e.name
+          //   HAVING COALESCE(MAX(amount), 0) > 1
+          //     -> {"size":0,"_source":false,"aggs":{"max_amount":{"max":{"field":"amount"}}}}
+          //        HTTP 200, no `having_filter` -- and the GROUP BY itself is gone.
+          //
+          // The metric is computed at the ROOT while the bucket lives inside the `nested`
+          // aggregation, so `resolveBucketMetric` answers `OutOfScope` at every level, every
+          // condition is filtered out, and `metricSelectorForBucket` returns the `""` that means
+          // "nothing to filter". That is the issue's SECOND conflation site.
+          //
+          // The vanished GROUP BY is a SEPARATE pre-existing defect on a different mechanism (the
+          // control answers `{"query":{"match_all":{}},"_source":true}` -- raw documents -- for the
+          // same statement) and is deliberately NOT fixed here. What this rule guarantees is the
+          // contract: the statement no longer answers HTTP 200 with a silently unfiltered result.
+          //
+          // A metric that DOES share the bucket's nesting level keeps working
+          // (`... GROUP BY e.name HAVING COUNT(e.address) > 1` emits the full nested tree).
+          val innermostNested = buckets.lastOption.flatMap(_.nestedElement).map(_.innerHitsName)
+          val strandedMetric = havingLeaves
+            .filter(e => havingScopeOf(e) == HavingScope.Metric)
+            .flatMap(_.bucketMetrics)
+            .find(m => innermostNested.isDefined && m.innerHitsName != innermostNested)
+          strandedMetric match {
+            case Some(m) if groupBy.isDefined =>
+              Left(
+                s"HAVING cannot filter on ${m.sql}: it is computed outside the nested grouping " +
+                s"'${innermostNested.getOrElse("")}', so no level of the aggregation can read it. " +
+                "Aggregate a field of the nested object, or group by a field of the parent."
+              )
+            case _ => Right(())
           }
         }
         _ <- {

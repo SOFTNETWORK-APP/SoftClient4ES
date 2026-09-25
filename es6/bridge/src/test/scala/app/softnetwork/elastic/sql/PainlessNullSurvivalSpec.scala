@@ -177,7 +177,14 @@ class PainlessNullSurvivalSpec extends AnyFlatSpec with Matchers {
       val code = raw.replaceAll("(?s)/\\*.*?\\*/", " ").replaceAll("(?m)//.*$", " ")
       val names = boundToPredicate.flatMap(_.findAllMatchIn(code).map(_.group(1))).toSet
       val namedUses = names.toSeq.map { n =>
-        s"""(?<![A-Za-z0-9_])$n\\.not(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size
+        // 🔴 Widened (#389 final review, LOW-6). The probe was ONLY `<name>\.not`, so
+        // `p.includePolarityOfRight(not)` -- the member that exists PRECISELY to consume this
+        // fold -- was invisible, and its file scored 0 uses / 0 classifications and passed
+        // VACUOUSLY. A gate that stops seeing the site it has just caught is worse than no gate.
+        // The named fold counts as a use AND, like `negated`, as a classification: calling it IS
+        // the fold. Replace that call with a raw `p.not` and the file reddens, which is the point.
+        (s"""(?<![A-Za-z0-9_])$n\\.not(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size
+        + s"""(?<![A-Za-z0-9_])$n\\.includePolarityOfRight""".r.findAllMatchIn(code).size)
       }.sum
       val uses = namedUses + destructured.findAllMatchIn(code).size
       // The FOLD side must prove itself in CODE — comments are stripped, so the comment explaining
@@ -190,6 +197,7 @@ class PainlessNullSurvivalSpec extends AnyFlatSpec with Matchers {
       val classifications =
         """(?<![A-Za-z0-9_])notConsumed(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size +
         """(?<![A-Za-z0-9_])negated(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size +
+        """(?<![A-Za-z0-9_])includePolarityOfRight(?![A-Za-z0-9_])""".r.findAllMatchIn(code).size +
         "NOT-FOLD:".r.findAllMatchIn(raw).size
       if (uses > classifications)
         Some(
