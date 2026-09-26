@@ -239,6 +239,8 @@ LIMIT 100;
 
 When a `GROUP BY` clause is present, the engine generates an additional **pivot transform** for the aggregation step.
 
+A `HAVING` in a view is more constrained than a `HAVING` in a `SELECT` — most importantly, every aggregate it reads must be published in the `SELECT` list **with an alias**, as `SUM(o.amount) AS total_amount` is above. See [HAVING in a materialized view](#having-in-a-materialized-view).
+
 ---
 
 ## DROP MATERIALIZED VIEW
@@ -531,12 +533,79 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 
 | Limitation                                  | Details                                                              |
 |---------------------------------------------|----------------------------------------------------------------------|
+| **`HAVING`**                                | More constrained than in a `SELECT`: every aggregate the clause reads must be published in the `SELECT` list with an alias, and it cannot filter on a grouping key (see below) |
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
 | **`RIGHT JOIN` / `FULL OUTER JOIN`**        | Not supported (see below). Use `LEFT JOIN` with swapped table order. |
 | **Quota limits**                            | Community: 1 view · Pro: 50 · Enterprise: unlimited                 |
 | **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watcher, which the free Basic license does not include. The view is still created and `REFRESH MATERIALIZED VIEW` still works (see below) |
 | **Eventual consistency**                    | Data is eventually consistent based on refresh frequency and delay   |
 | **Join cardinality**                        | JOINs use enrich policies which match on a single field              |
+
+### HAVING in a materialized view
+
+Since engine `0.24.0`, `CREATE MATERIALIZED VIEW` **refuses** a `HAVING` that the Elasticsearch transform behind the view cannot express, naming the clause and the remedy. The refusal is a parse-time rejection (HTTP 400), so it reaches every venue — REPL, JDBC, Flight SQL — and no artifact is deployed.
+
+The same `HAVING` usually stays valid in a plain `SELECT`. This is a limit of the **transform** a view deploys, not of the query engine, and not of Elasticsearch.
+
+**The case you are most likely to meet: an aggregate with no `SELECT` alias.**
+
+```sql
+-- REFUSED: SUM(amount) carries no alias
+CREATE MATERIALIZED VIEW sales_by_city_mv
+AS
+SELECT city, SUM(amount)
+FROM orders
+GROUP BY city
+HAVING SUM(amount) > 5;
+
+-- Accepted: the same view, with the aggregate published under an alias
+CREATE MATERIALIZED VIEW sales_by_city_mv
+AS
+SELECT city, SUM(amount) AS total
+FROM orders
+GROUP BY city
+HAVING SUM(amount) > 5;
+```
+
+A view's transform names each aggregation after its `SELECT` alias, so an unaliased aggregate leaves the group filter pointing at a metric the view never creates. Adding `AS total` is the whole fix — the `HAVING` itself does not change.
+
+#### Why a view differs from a search
+
+The engine has five mechanisms for a `HAVING`; a transform's pivot offers one of them.
+
+| The `HAVING` names                               | A search applies it through                          | A view's pivot                                                                  |
+|--------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------------------------|
+| a grouping key — `HAVING city = 'Paris'`         | the `terms` aggregation's `include` / `exclude` list | **no such channel** — `group_by` emits `{"terms":{"field":…}}` and nothing else |
+| arithmetic over aggregates — `HAVING spread > 3` | a `bucket_script`                                    | **no `bucket_script` channel**                                                  |
+| a metric — `HAVING SUM(amount) > 5`              | a `bucket_selector`                                  | a `bucket_selector` — **the one that works**                                    |
+
+A pivot also computes a narrower set of metrics than a search: only `MIN`, `MAX`, `SUM`, `AVG` and `COUNT` (including `COUNT(DISTINCT …)`).
+
+#### What is refused
+
+| A view's `HAVING` that…                                                                                               | Why                                                                                                                                                                                                    | Remedy                                                                           |
+|-----------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| reads an aggregate with **no `SELECT` alias** — `SELECT city, SUM(amount) … HAVING SUM(amount) > 5`                   | the pivot names each aggregation after its `SELECT` alias, so the condition matches none of them                                                                                                       | publish the aggregate with an alias: `SUM(amount) AS total`                      |
+| filters on a **grouping key** — `HAVING city = 'Paris'`                                                               | a transform's `group_by` has no `include` / `exclude` channel                                                                                                                                          | move the condition into the view's `WHERE`                                       |
+| has **no `GROUP BY`**                                                                                                 | no `GROUP BY` means no pivot, and a `bucket_selector` hangs on the pivot                                                                                                                               | add a `GROUP BY`, or materialize the aggregate and filter when querying the view |
+| names an aggregate **a pivot cannot compute** — `HAVING STDDEV(amount) > 1`                                           | a pivot computes only `MIN`, `MAX`, `SUM`, `AVG` and `COUNT`, so this aggregate exists in no view                                                                                                      | filter when querying the view                                                    |
+| names an **expression over aggregates** — `SELECT MAX(amount) - MIN(amount) AS spread … HAVING spread > 3`            | a search evaluates it with a `bucket_script`, which a pivot has no channel for                                                                                                                         | filter when querying the view                                                    |
+| compares an aggregate with an aggregate **no other condition names on its left** — `HAVING MAX(amount) > MIN(amount)` | only the left-hand metric of each comparison is declared in `buckets_path`; the right-hand one is read as an undeclared parameter, the null guard rejects every group and the view comes out **empty** | compare with a constant, or filter when querying the view                        |
+| names an aggregate the **`SELECT` list does not publish** — `SELECT city, COUNT(*) AS n … HAVING MAX(amount) > 100`   | the filter would read a metric the view does not compute                                                                                                                                               | add `MAX(amount) AS max_amount` to the `SELECT` list                             |
+| contains a **nested, child or parent predicate**                                                                      | the pivot would emit the metric condition alone — a partial filter returning the wrong groups at HTTP 200                                                                                              | filter when querying the view                                                    |
+
+Comparing two aggregates is **not** refused as such: `HAVING SUM(amount) > MAX(amount) AND MAX(amount) > 1` is accepted, because the sibling condition is what makes the pivot declare `MAX(amount)`.
+
+#### What still works
+
+- A metric compared with a constant, when the aggregate is published under a `SELECT` alias — `SELECT city, SUM(amount) AS total … HAVING SUM(amount) > 5`. The alias form, `HAVING total > 5`, is equally accepted.
+- A JOIN view with a metric-only `HAVING` — the [aggregation example](#materialized-view-with-aggregations) above.
+- `COUNT(DISTINCT …)` — `SELECT city, COUNT(DISTINCT customer_id) AS customers … HAVING COUNT(DISTINCT customer_id) > 1`.
+- A function grouping key — `SELECT DATE_TRUNC(order_date, MONTH) AS month, SUM(amount) AS total … GROUP BY month HAVING SUM(amount) > 100`.
+
+#### What changed
+
+Before engine `0.24.0` every refused statement above was **accepted**, and the view then materialized the wrong groups at HTTP 200: the condition was silently dropped and **every** group was materialized, or — in the two-aggregate case — the deployed `bucket_selector` read an undeclared parameter, rejected every group, and the view came out **empty**. A view bakes that missing filter into a stored transform which then feeds dashboards, which is why the refusal is preferable. A view already deployed keeps running as it is — the rules apply when a view is created, and `CREATE OR REPLACE` is validated exactly like `CREATE`.
 
 ### Supported JOIN types
 

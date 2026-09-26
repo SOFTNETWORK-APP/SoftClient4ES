@@ -17,6 +17,7 @@ This page lists operator precedence used by the parser and evaluator. Operators 
 | **5**           | `<`, `<=`, `>`, `>=`             | Comparison           | Less than, less or equal, greater than, greater or equal |
 | **6**           | `=`, `!=`, `<>`                  | Equality             | Equal, not equal                                         |
 | **7**           | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | Membership & Pattern | Range, set membership, pattern matching                  |
+| **7**           | `EXISTS`                         | Existential          | True when the subquery returns at least one row          |
 | **8**           | `AND`                            | Logical AND          | Logical conjunction                                      |
 | **9** (Lowest)  | `OR`                             | Logical OR           | Logical disjunction                                      |
 
@@ -373,6 +374,15 @@ WHERE price > 50;
 ### 7. Membership & Pattern: `BETWEEN`, `IN`, `LIKE`, `RLIKE`
 
 **Seventh precedence** - Range, set membership, and pattern matching.
+
+> **A subquery does not change the level of its operator.** `IN (SELECT …)` binds exactly where
+> `IN (1, 2, 3)` binds; `x > (SELECT AVG(…) …)` and the quantified forms `x > ALL (SELECT …)` /
+> `x >= ANY (SELECT …)` bind at the comparison level (5), and `= ANY | SOME` / `<> ALL` at the equality
+> level (6) — where they are normalised to `IN` / `NOT IN`. `EXISTS (SELECT …)` is a unary predicate
+> taking no left operand, so nothing binds to its left. All of them are leaf predicates: they group
+> ahead of `AND` and `OR`, which is why `a = 1 AND b IN (SELECT id FROM u) OR c = 2` reads as
+> `((a = 1) AND (b IN (SELECT id FROM u))) OR (c = 2)` — the same shape it would have with a literal
+> value list. See [Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
 
 **Examples:**
 
@@ -791,6 +801,7 @@ WHERE price BETWEEN 10 AND 100;
 | 5      | `<`, `<=`, `>`, `>=`             | Left           | `a < b`              |
 | 6      | `=`, `!=`, `<>`                  | Left           | `a = b`              |
 | 7      | `BETWEEN`, `IN`, `LIKE`, `RLIKE` | N/A            | `a BETWEEN 1 AND 10` |
+| 7      | `EXISTS`                         | N/A            | `EXISTS (SELECT 1 FROM t)` |
 | 8      | `AND`                            | Left           | `a AND b AND c`      |
 | 9      | `OR`                             | Left           | `a OR b OR c`        |
 

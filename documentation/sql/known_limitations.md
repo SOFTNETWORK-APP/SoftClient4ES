@@ -2,9 +2,11 @@
 
 # Known Limitations & Roadmap
 
-SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs that Elasticsearch itself cannot do. A few advanced constructs (subqueries, CTEs, set operators beyond `UNION ALL`) are not in the current release yet. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
+SoftClient4ES runs a large, practical subset of ANSI SQL on Elasticsearch — including cross-index JOINs, and, since engine `0.24.0`, subqueries, derived tables, non-recursive CTEs and the `UNION` / `INTERSECT` / `EXCEPT` set operators, none of which Elasticsearch can do itself. This page tells you exactly what works **as of this release**, what's coming, and how to get unblocked today.
 
-> Great for explicit JOIN SQL — full BI-tool subquery / CTE support is coming in the next release.
+> **Since engine `0.24.0`:** subqueries, derived tables, non-recursive CTEs and set operators
+> (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`, with or without `ALL`) all work, including the nested
+> SQL BI tools generate for you.
 
 ## Using a BI tool? Read this first
 
@@ -24,31 +26,38 @@ Two different things can stop a BI tool here, and it is worth separating them.
 - **Looker** — Looker connects only through drivers it maintains itself, and it allowlists JDBC parameters
   per dialect, so a customer-supplied driver cannot be introduced. This gap is **structural, not
   commercial** — a licence would not close it.
+- **dbt** — dbt requires a dedicated adapter plugin per platform. There is no generic JDBC or ODBC adapter,
+  and no SoftClient4ES adapter.
 
-Neither is a gap we can close from our side: each needs either a change by the vendor or a driver plugin
-that nobody has written.
+None of these is a gap we can close from our side: each one needs either a change by the vendor or a driver
+or adapter plugin that nobody has written.
 
-*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query
-and Looker — on 2026-08-31 and 2026-09-01.)*
+*(Each blocker checked against the vendor's own connection documentation — Metabase, Microsoft Power Query,
+Looker and dbt — on 2026-08-31 and 2026-09-01.)*
 
-### Tools that connect, but generate SQL we do not accept yet
+### Tools that generate nested SQL for you
 
 Some BI tools auto-generate nested SQL (subqueries / derived tables) even when your logical query has none.
-Until the next release lands full subquery support, send **explicit JOIN SQL** instead of letting the tool
-compose nested queries — where the tool lets you:
+**Since engine `0.24.0` that form is accepted** — you no longer have to rewrite it as an explicit JOIN.
 
-- **Apache Superset / DBeaver / Grafana** — you control the SQL. Write explicit JOINs for anything that
-  would otherwise nest, and everything in **Works in this release** below is available to you.
-- **Tableau** — connecting and browsing work; queries are the constrained part. Drag-and-drop worksheets
-  quote and fully qualify every identifier, a form we do not accept yet, and **Custom SQL is not a way
-  around it**: Tableau documents that it *"must wrap the custom SQL statement within a select statement"* (Tableau's Custom SQL
-  documentation, checked 2026-09-01),
-  which turns your query into a derived table. **Extract** mode narrows the exposure but does not remove
-  it — the extract is still built by querying the source.
-  See [Tableau](../client/bi_tools.md).
+- **Apache Superset / DBeaver / Grafana** — you control the SQL. Subqueries, derived tables and explicit
+  JOINs are all available; everything in **Works in this release** below applies.
+- **Tableau** — connecting, browsing, previewing, aggregating, filtering and sorting work. Drag-and-drop
+  worksheets quote and fully qualify every identifier (backticks under the MySQL dialect,
+  `"schema"."table"` under Generic SQL-92) and wrap the query in a derived table; **both quoted forms
+  parse since engine `0.23.0`, and since `0.24.0` the derived-table wrapper also EXECUTES**, on the
+  relational engine. Tableau's **Custom SQL** wraps your statement too — it documents that it *"must wrap the custom
+  SQL statement within a select statement"* (Tableau's Custom SQL documentation, checked 2026-09-01) — and
+  that wrapper is a derived table, which now runs. **Extract** mode remains **untested** against
+  SoftClient4ES. See [Tableau](../client/bi_tools.md).
 
-> **General rule:** prefer **explicit JOIN SQL** over tool-generated nested SQL. If you control the query, a
-> cross-index JOIN is fully supported in the current release.
+> **One thing to check before you rely on it:** a derived table runs on the relational engine — **since
+> engine `0.24.0` with arrow-extensions `0.3.4`** — so the venue executing your SQL must carry the
+> `softclient4es-arrow-extensions` jar as well as the engine. See
+> [Which forms need the relational engine](#which-forms-need-the-relational-engine) below. **You almost
+> certainly have it already**: the JDBC driver, the ADBC driver and the Arrow Flight SQL sidecar all ship
+> with it, and `install.sh` installs it with the REPL by default. Only a REPL installed explicitly with
+> `--no-extensions` lacks it.
 
 **Apache Superset** (dedicated dialect), **DBeaver**, and **Grafana** (via Arrow Flight SQL) are **Tested**.
 **Tableau** is **Compatible** — the connection path works, but it is not yet in our formal regression suite.
@@ -56,40 +65,234 @@ compose nested queries — where the tool lets you:
 ## Works in this release
 
 - **Cross-index JOINs**: `INNER` / `LEFT` / `RIGHT` / `FULL` / `CROSS`, plus `JOIN UNNEST` on nested arrays — something Elasticsearch cannot do natively. (See the [JOIN matrix walkthrough](joins.md) for the per-tier rows and worked examples.)
+- **Subqueries in `WHERE`** — *since engine `0.24.0`*: `IN (SELECT …)` / `NOT IN`, `EXISTS` /
+  `NOT EXISTS`, a scalar comparison against `(SELECT …)`, and the quantified forms `= ANY | SOME`,
+  `<> ALL`, `> ALL`, `>= ANY`, `< ALL`, … — **correlated or not**. See
+  [Subqueries and derived tables](#subqueries-and-derived-tables) below.
+- **Derived tables** — *since engine `0.24.0`*: `FROM (SELECT …) d` and `JOIN (SELECT …) d ON …`, nested
+  to any depth — including bodies that themselves carry a JOIN or another derived table.
 - **Aggregations** + `GROUP BY` / `HAVING`.
 - **Analytical SQL**: `ROW_NUMBER` / `RANK` / `DENSE_RANK`; the `STDDEV` / `VARIANCE` family (`STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`); `PERCENTILE_CONT` / `PERCENTILE_DISC`; window aggregates and `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` over `OVER (PARTITION BY …)`.
 - **Conditionals & null handling**: `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` / `ISNULL` / `ISNOTNULL`.
 - `ORDER BY … NULLS FIRST | NULLS LAST`.
-- `UNION ALL` (concatenate result sets — no de-duplication).
-- `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It is **not** the `EXCEPT` set operator (see below).
+- **Non-recursive CTEs** — *since engine `0.24.0`*: `WITH name AS (SELECT …)` at the top of a `SELECT`,
+  chained left to right. A CTE reference *is* a derived table, so it runs where derived tables run.
+- **Set operators** — *since engine `0.24.0`*: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` /
+  `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. See [Set operators](#set-operators) below.
+- **BI dialect spellings** — *since engine `0.24.0`*: `CHAR_LENGTH` / `CHARACTER_LENGTH` (for
+  `LENGTH`), `TIMESTAMPADD` (for `DATETIME_ADD`) and `TIMESTAMPDIFF` (for `DATE_DIFF`) including the
+  ODBC unit-first argument order and the `SQL_TSI_*` interval names, and `SELECT TOP n` (for
+  `LIMIT n`). These are spellings, not new behaviour — each renders as the canonical form.
+- `SELECT * EXCEPT(col, …)` — drop named columns from `SELECT *`. This is the BigQuery-style **column-exclusion** clause. It removes *columns*; the `EXCEPT` **set operator** removes *rows*. Both work, and they are unrelated.
 
-## Not in this release (coming in the next release, Quarter 4 2026)
+## Subqueries and derived tables
 
-- **Subqueries**: scalar, `IN (SELECT …)`, `EXISTS (SELECT …)`, derived tables `FROM (SELECT …)`.
-- **CTEs**: `WITH name AS (SELECT …)` — recursive and non-recursive.
-- **Set operators**: `UNION` (with row de-duplication), `INTERSECT`, and the `EXCEPT` **set operator**. The `EXCEPT` set operator is **distinct from** the `SELECT * EXCEPT(cols)` column-exclusion clause above — that one works; the set operator does not.
-- **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented; coming with the next release's analytical-SQL work. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work in the current release; the positional/tiling window functions are a different family.)
+**Since engine `0.24.0`.** Earlier releases refuse every form below, so check your engine version
+before planning around them. (Where they refuse it varies by release and by form — `0.23.0`, for
+instance, parses a derived table and refuses it in the engine — so do not rely on the error you get,
+only on the version.)
 
-These arrive in the next release as a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
+An **uncorrelated** `WHERE` subquery needs nothing but the engine: it executes on Elasticsearch itself, at
+every venue. **Correlated subqueries and derived tables additionally need the relational engine — since
+engine `0.24.0` with arrow-extensions `0.3.4`.** See
+[Which forms need the relational engine](#which-forms-need-the-relational-engine).
 
-### What a not-yet-supported query looks like
-
-A subquery in a `WHERE` clause is rejected by the parser today:
+Every form below **parses and executes**. The examples are literal — they are the shapes the engine
+accepts.
 
 ```sql
--- Not supported in the current release: subqueries are not yet implemented.
-SELECT name
-FROM employees
+-- IN / NOT IN over a subquery
+SELECT name FROM employees
 WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
+
+-- scalar comparison
+SELECT name FROM employees
+WHERE salary > (SELECT AVG(salary) FROM employees);
+
+-- quantified comparison (= ANY | SOME, <> ALL, > ALL, >= ANY, < ALL, …)
+SELECT name FROM employees
+WHERE salary >= ALL (SELECT salary FROM employees WHERE department = 'IT');
+
+-- EXISTS / NOT EXISTS, correlated against the outer row
+SELECT c.name FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+
+-- derived table in FROM …
+SELECT d.category, d.n
+FROM (SELECT category, COUNT(*) AS n FROM bi_events GROUP BY category) d
+WHERE d.n > 10;
+
+-- … and in JOIN
+SELECT o.id, c.name
+FROM orders o
+JOIN (SELECT id, name FROM customers WHERE tier = 'gold') c ON o.customer_id = c.id;
 ```
 
-The parser rejects this — `IN` accepts only literal value lists today, not a nested `SELECT`. Rewrite it as an explicit JOIN (fully supported), or wait for the next release where the subquery form lands as-is.
+### Which forms need the relational engine
+
+This is the distinction worth knowing before you plan around it.
+
+| Form | Runs where | Needs `softclient4es-arrow-extensions`? |
+| --- | --- | --- |
+| **Uncorrelated** `WHERE` subquery — `IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified | Elasticsearch, in two phases: the inner statement is executed first, then the outer one is rewritten against its values | **No** — works at every venue, including a plain REPL with no extensions |
+| **Correlated** `WHERE` subquery (the body reads an outer alias) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| **Derived table** in `FROM` or `JOIN` | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| **Non-recursive CTE** (`WITH name AS (SELECT …)`) | The relational engine — a CTE reference *is* a derived table | **Yes** — arrow-extensions `0.3.4` |
+| **`UNION ALL`** | Elasticsearch, one `_msearch`, branches concatenated in order | **No** — works at every venue |
+| **`UNION` / `INTERSECT` / `EXCEPT`** (with or without `ALL`) | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+
+A venue without that jar does not guess: it refuses the statement with an HTTP 400 naming the construct and
+the jar, rather than executing it against the first index the statement mentions. **The default install has
+the engine** — the JDBC driver, the ADBC driver and the Arrow Flight SQL sidecar all bundle it, and
+`install.sh` installs it alongside the REPL unless you pass `--no-extensions`.
+
+### The bound on an uncorrelated subquery
+
+The two-phase path resolves the inner statement into a set of values, so it is bounded by what an
+Elasticsearch `terms` query accepts — **65,536 distinct values** (`index.max_terms_count`). Past that the
+statement fails loudly, naming the limit and suggesting the JOIN rewrite; it is never silently truncated. A
+plain `SELECT <column> FROM …` body is resolved with a single bounded `terms` aggregation, so the values are
+already distinct and `DISTINCT` buys nothing.
+
+`NULL` follows ANSI: `IN` ignores NULLs in the inner values, `NOT IN` over a set containing a NULL matches no
+rows, and an `EXISTS` over an empty body is false while `NOT EXISTS` over one is true.
+
+> ⚠️ **`NOT IN` has one carve-out, and it fails the other way.** The engine detects the `NULL` by
+> re-running the inner query with an `IS NULL` filter. When that inner query carries a `GROUP BY`,
+> the probe is a grouped query too, and Elasticsearch's `terms` aggregation **drops the
+> missing-value group** — so a `NULL` in a `GROUP BY` body is invisible and `NOT IN` returns rows
+> the rule above says it should not. Filter the `NULL` out explicitly in that body
+> (`… WHERE <col> IS NOT NULL GROUP BY …`) rather than relying on the detection.
+
+`DELETE` and `UPDATE` take the same `WHERE` subqueries as `SELECT`, with the same venue rules:
+
+```sql
+DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+UPDATE orders SET status = 'eu' WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+```
+
+### Subquery forms that are still refused
+
+Each of these is refused, never silently mis-executed. Most are refused **by name**, with the rewrite
+in the message; where the refusal is a bare `end of input expected` instead, it is said so, because a
+message that names nothing is the one you will need this page for:
+
+- **`LATERAL`** — a derived table that reads an alias from the enclosing `FROM`
+  (`FROM orders o, (SELECT id FROM customers WHERE id = o.customer_id) d`). Move the condition to the outer
+  `WHERE`, or write it as a correlated `WHERE` subquery. *Named only in that comma-`FROM` spelling: the
+  `LATERAL` keyword itself (`FROM o, LATERAL (…)`, `JOIN LATERAL …`) is a bare syntax error.*
+- **A subquery in `HAVING`** — any subquery, correlated or not. Compute the value separately, or move the
+  condition to `WHERE`.
+- **A subquery in the `SELECT` list** — `SELECT (SELECT MAX(amount) FROM orders) AS m …` does not parse.
+- **A `UNION ALL` body** — `IN (SELECT a FROM t1 UNION ALL SELECT a FROM t2)`. Write one subquery per branch.
+- **A `FROM`-less body** — `IN (SELECT 1)`. Write the literal list instead.
+- **More than one projected column** — an `IN` / quantified / scalar body must project exactly one column, so
+  `IN (SELECT * FROM customers)` is refused.
+- **A QUOTED outer reference** — `WHERE o.customer_id = "c"."id"`. Write it unquoted; the engine rewrites
+  an outer reference onto the extracted leg, and a quoted identifier is not rewritten.
+- **A correlated body that is not a single Elasticsearch source** — its own `JOIN`, comma-separated `FROM`,
+  `JOIN UNNEST`, derived table or window function. Move the construct to the outer `FROM` and correlate
+  against it.
+- **A scalar or quantified subquery on the LEFT of the comparison.** `WHERE (SELECT COUNT(*) FROM orders o
+  WHERE o.customer_id = c.id) > 5` is rejected, and the message it produces (`Unbalanced parentheses`) does
+  not say why. Flip the comparison — `WHERE 5 < (SELECT COUNT(*) …)` means the same thing and is accepted.
+  The subquery must be the right-hand operand.
+- **A column list on the derived table's correlation name** — `FROM (SELECT id FROM orders) AS d (x)`.
+  Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`. *Syntax error, not
+  a named refusal.*
+- **A subquery in a `CASE WHEN` condition** — refused by name, with the rewrite: filter in `WHERE`, or
+  compute the flag in a separate query.
+- **A subquery in a `JOIN … ON` clause.** ⚠️ Its message names neither subqueries nor a rewrite — it
+  reads *"ON clause … must use either equality operator or AND predicate"*. Join on a plain equality
+  and move the subquery to `WHERE`.
+- **A `WHERE` subquery in a `CREATE MATERIALIZED VIEW`** — refused by name: an Elasticsearch transform
+  cannot run the inner query. Resolve the subquery into the view's own source, or keep it in the
+  queries you run against the view.
+- **A `FROM`-less `SELECT` as a set-operation branch** — `SELECT 1 UNION ALL SELECT id FROM orders`.
+  *Syntax error, not a named refusal.* Note this is the one place the connection-handshake idiom
+  `SELECT 1` does not compose.
+
+> ⚠️ **One mistake in this family is NOT refused, and it is the easiest one to make.** An
+> **unqualified** outer reference — `WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = id)`
+> instead of `… = c.id` — is a perfectly legal statement, so nothing can reject it. The bare `id`
+> binds to the subquery's OWN table, the statement stops being correlated, and it runs as an
+> ordinary uncorrelated subquery: **HTTP 200, and different rows from the ones you meant.** It is
+> the only item here that fails silently rather than loudly.
+>
+> Always qualify the outer reference with the outer query's alias, and leave it unquoted.
+
+### Licensing
+
+A **correlated** subquery counts as one relational operation against your plan's `maxJoins` allowance, the
+same as a JOIN clause — it is a semi-, anti- or aggregate-join the engine executes over two extracted
+sources. A **derived table** costs nothing on its own; the JOINs *inside* it count, at any nesting depth.
+
+## Set operators
+
+**Since engine `0.24.0`.** Earlier releases accept `UNION ALL` only and reject every other spelling at the
+parser.
+
+| Spelling | Duplicates | Runs where | Needs `softclient4es-arrow-extensions`? |
+| --- | --- | --- | --- |
+| `UNION ALL` | kept | Elasticsearch, one `_msearch`, results concatenated in branch order | **No** — every venue, a plain REPL included |
+| `UNION` / `UNION DISTINCT` | removed | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| `INTERSECT` / `INTERSECT ALL` | removed / kept | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+| `EXCEPT` / `EXCEPT ALL` | removed / kept | The relational engine | **Yes** — arrow-extensions `0.3.4` |
+
+Elasticsearch has no operation that de-duplicates or intersects across independent searches, so everything
+but `UNION ALL` is executed by the same relational engine that runs cross-index JOINs and derived tables. A
+venue without that jar refuses the statement rather than answering from one branch.
+
+A branch may carry anything a `SELECT` can carry — `GROUP BY`, a `JOIN`, a derived table, a CTE, a
+correlated subquery. A branch that needs the relational engine on its own account routes the whole
+statement there.
+
+Full syntax, precedence and the matching rules: [Set operators](dql_statements.md#set-operators).
+
+### Columns match by position
+
+Branches are matched **column by column**, and the result takes the **first branch's** column names — the
+standard's rule (SQL-92 §7.10), and what every other SQL engine does. Column names are never compared, so
+`SELECT id AS x … UNION ALL SELECT id AS y …` returns **one** column named `x` carrying both branches' ids.
+
+> **Changed in `0.24.0`:** before this release branches were matched **by name**, so a column
+> the other branch did not name came back `NULL` — including for the first branch's own rows. If you have a
+> `UNION ALL` written against the old behaviour, check that its branches project their columns in the same
+> order.
+
+A branch written as a bare `SELECT *` declares no column list, so there is nothing to match positionally;
+such a branch is matched by name instead and its width cannot be checked. Name the columns explicitly
+whenever a branch's shape matters.
+
+### Set-operator forms that are still refused
+
+Each is rejected by name, never silently mis-executed:
+
+- **A set operation as a subquery body** — `WHERE a IN (SELECT … UNION SELECT …)`. Write one subquery per
+  branch.
+- **A parenthesised set operation** — both `(a UNION b) INTERSECT c` and a whole statement wrapped in
+  parentheses. To group against the default precedence (`INTERSECT` binds tighter than `UNION` / `EXCEPT`),
+  use a derived table: `SELECT * FROM (a UNION b) AS g INTERSECT c`.
+- **A trailing `ORDER BY` / `LIMIT` after the last branch** of a `UNION`, `INTERSECT` or `EXCEPT` — it would
+  silently bind to that branch alone. Parenthesise the branch to keep it there, or wrap the whole operation
+  in a derived table to order or limit the result. `UNION ALL` is unchanged: its `ORDER BY` / `LIMIT` have
+  always applied per branch.
+- **A set operation across catalogs** — mixing branches with catalog-qualified names (`` `cluster_b`.orders ``).
+  Catalogs are resolved by their position in the SQL text, so a branch could run on the wrong cluster; the
+  planner refuses rather than risk it. Run each branch as its own statement, or drop the catalog prefix.
+- **`CORRESPONDING` / `CORRESPONDING BY`** — SQL's opt-in for name-based matching. Not implemented;
+  positional matching is the only mode.
+
+### Licensing
+
+A set operation costs **nothing** against your plan's `maxJoins` allowance — like a derived table, it is the
+JOINs and correlated subqueries *inside* the branches that count, at any nesting depth.
 
 ## Quoted identifiers — residual limits
 
 Quoted column names, aliases and **table names** work in both spellings — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers) and
-[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Five things
+[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Six things
 they do **not** cover yet:
 
 - **`INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` names are not quotable.**
@@ -107,10 +310,10 @@ they do **not** cover yet:
   `FROM "logs-2025.03"` — or leave it bare (`FROM logs-2025.03`). All three read the index
   `logs-2025.03`.
 
-- **A qualifier must be quoted from the FIRST part.** `FROM elastic."bi_events"` mixes the
+- **A qualifier must be quoted from the FIRST part.** `FROM prod_eu."bi_events"` mixes the
   spellings, so the leading run of quoted parts is empty and the whole operand is read as ONE index
-  name, `elastic.bi_events`. Quote the first part too (`FROM "elastic"."bi_events"`) if you meant
-  `elastic` as a qualifier, or leave both bare if you meant the dotted index name.
+  name, `prod_eu.bi_events`. Quote the first part too (`FROM "prod_eu"."bi_events"`) if you meant
+  `prod_eu` as a qualifier, or leave both bare if you meant the dotted index name.
 
 - **A dot inside a quoted COLUMN name is still a qualifier.** `` SELECT `a.b` FROM t `` is read as
   the column `b` qualified by `a`, exactly as `SELECT a.b` is — there is no way to address an
@@ -121,7 +324,7 @@ they do **not** cover yet:
   qualified name; `SELECT a . b` is rejected, and so is a name left with a trailing dot
   (`ORDER BY b. DESC`). This is deliberate: when the dot was allowed to float, `ORDER BY b. DESC`
   silently parsed as a column named `b.DESC` sorted *ascending*. A **table**-name qualifier is
-  deliberately more tolerant (`FROM "elastic" . bi_events` is accepted), because that spelling has
+  deliberately more tolerant (`FROM "prod_eu" . bi_events` is accepted), because that spelling has
   always been accepted there and tightening it would have moved which index the statement reads.
 
 - **A qualifier shares a namespace with a real dotted index name.** When one `FROM` names the same
@@ -138,6 +341,61 @@ they do **not** cover yet:
 > parser; now it parses, so the mis-routing is silent. **On the federation path, leave the table
 > name itself unquoted** (`` `prod_us`.orders ``) until this is fixed — see
 > [joins.md](joins.md#row-2--cross-cluster-conveyor).
+
+## Not yet supported
+
+- **Recursive CTEs** (`WITH RECURSIVE …`) and **CTE column lists** (`WITH a (x, y) AS …`), both refused by name. Plain non-recursive CTEs work since engine `0.24.0`, with two further limits: a `WITH` clause is accepted only at the top of a `SELECT` (not inside a subquery body, CTAS, `INSERT … SELECT` or a materialized view), and a CTE body may not name the CTE itself — unlike PostgreSQL, which binds such a name to the base table, this engine rejects it.
+- **Positional / tiling window functions**: `NTILE`, `LAG`, `LEAD` — not yet implemented. (Note: `PERCENTILE_CONT` / `PERCENTILE_DISC` — percentile *aggregates* — already work; the positional/tiling window functions are a different family.)
+- **`SELECT TOP n PERCENT` and `SELECT TOP n WITH TIES`**, both refused *by name*. `TOP n` itself
+  works and is a spelling of `LIMIT n`. Take the plain row count, or compute the percentage
+  yourself. ⚠️ Because `PERCENT` is recognised in that position, a column of that name cannot be the
+  sole select item directly after `TOP n` — write `SELECT TOP 5 t.percent FROM t AS t`, or quote it.
+- **`SELECT DISTINCT TOP n`** — rejected. Write `SELECT DISTINCT … LIMIT n`. (The reverse order,
+  `SELECT TOP n DISTINCT`, happens to parse, but it is not valid T-SQL and is not a supported
+  spelling.)
+- **The ODBC/JDBC escape sequences** — `{fn …}`, `{d '…'}`, `{ts '…'}`, `{oj …}`, `{escape '…'}`.
+  A tool that emits `{fn TIMESTAMPADD(SQL_TSI_DAY, -89, CURRENT_DATE)}` is refused, even though the
+  `TIMESTAMPADD(…)` inside it is now accepted on its own. Turn escape processing off in the client,
+  or write the call without the braces.
+- **MySQL's null-safe equality operator `<=>`** (`a <=> b`, i.e. `a = b OR (a IS NULL AND b IS NULL)`). A BI tool set to a MySQL dialect can emit it in a `JOIN … ON`. Write the expansion, or `=` when neither side is nullable.
+
+When they arrive they will be a driver-side enhancement — single-cluster customers get them by upgrading the driver (JDBC / ADBC / sidecar), with no infrastructure change and no federation server required.
+
+### What a not-yet-supported query looks like
+
+A **recursive** CTE is rejected by the parser today, by name:
+
+```sql
+-- Not supported: WITH RECURSIVE is refused — only non-recursive CTEs are accepted.
+WITH RECURSIVE subordinates AS (
+  SELECT id, manager_id FROM employees WHERE id = 1
+  UNION ALL
+  SELECT e.id, e.manager_id FROM employees e JOIN subordinates s ON e.manager_id = s.id
+)
+SELECT id FROM subordinates;
+```
+
+There is no rewrite that recovers arbitrary-depth recursion. Flatten the hierarchy at index time (store a
+path or a level on each document), or run one statement per level.
+
+The **non-recursive** CTE and the set operator below, on the other hand, both run since engine `0.24.0` —
+a CTE reference is a derived table, so each executes on the relational engine and carries the same venue
+requirement:
+
+```sql
+WITH eu_departments AS (SELECT id FROM departments WHERE region = 'EU')
+SELECT e.name FROM employees e JOIN eu_departments d ON e.department_id = d.id;
+
+SELECT customer_id FROM orders_q1
+INTERSECT
+SELECT customer_id FROM orders_q2;
+```
+
+> ⚠️ **A CTE cannot be named inside a `WHERE` subquery body.**
+> `WITH eu AS (…) SELECT name FROM employees WHERE department_id IN (SELECT id FROM eu)` parses, but
+> the reference inside the body is not resolved: the body reaches Elasticsearch asking for an index
+> called `eu`, and the statement fails with a `404 index_not_found_exception` naming it. Loud, never
+> silent. Read the CTE in `FROM` or `JOIN`, as above.
 
 ## Temporary tables are not supported
 
@@ -263,7 +521,7 @@ make the expression a computed column and sort on that.
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).
-  **Not this**: correlating one Elasticsearch index against **another Elasticsearch index** — `EXISTS` / `NOT EXISTS` / `IN` / `NOT IN` / a scalar comparison against a subquery that reads the outer row — is **single-cluster** and runs through the relational engine shipped in `softclient4es-arrow-extensions`. Its one rule: the outer reference must be **qualified** with the outer table's alias (`… WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`), because a bare column name inside a subquery is read as the subquery's own column. A venue without that jar refuses the statement with HTTP 400 rather than executing it as if it were self-contained.
+  **Not this**: correlating one Elasticsearch index against **another Elasticsearch index** already works in this release and is single-cluster — see [Subqueries and derived tables](#subqueries-and-derived-tables) above. What lands here is correlating across *heterogeneous* sources and across *clusters*.
 
 ## Deferred (a future release, demand-driven — tell us what you need)
 
@@ -271,7 +529,7 @@ make the expression a computed column and sort on that.
 
 ## Roadmap timing
 
-We do not commit firm external dates. The next release is targeted for **Quarter 4 2026**; the upcoming release (heterogeneous federation) for **Quarter 1 2027**; the deferred items are demand-driven with no committed date. Treat the next release's feature list as *planned*, not guaranteed — its scope is gated on a function-library audit.
+We do not commit firm external dates. The **Not yet supported** list above carries no target release: those items are planned, not scheduled. The upcoming heterogeneous-federation release is targeted for **Quarter 1 2027**; the deferred items are demand-driven with no committed date.
 
 ## See also
 
@@ -280,4 +538,4 @@ We do not commit firm external dates. The next release is targeted for **Quarter
 
 ---
 
-*This page describes SoftClient4ES **as of the current release**. Once the next release ships, the "Not in this release" list above shrinks — verify against your installed release.*
+*This page describes SoftClient4ES **as of engine `0.24.0`**. Availability lines name the release a feature landed in; the **Not yet supported** list shrinks as items ship — verify against your installed release.*
