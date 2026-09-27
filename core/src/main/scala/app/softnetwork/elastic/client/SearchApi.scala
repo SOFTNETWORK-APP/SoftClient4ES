@@ -2441,7 +2441,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       LegProjection(
         leg.fieldAliases,
         unionAllLegFieldNames(leg, outputFields),
-        leg.nestedHitsMappings
+        leg.nestedHitsMappings,
+        // the plan that built THIS leg's request -- never one made from the merged map
+        toClientAggregations(leg.sqlAggregations)
       )
     }
   }

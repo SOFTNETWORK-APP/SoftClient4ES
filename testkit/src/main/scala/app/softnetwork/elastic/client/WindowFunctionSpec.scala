@@ -17,7 +17,13 @@
 package app.softnetwork.elastic.client
 
 import akka.stream.scaladsl.Sink
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{
+  ElasticFailure,
+  ElasticSuccess,
+  QueryRows,
+  QueryStream,
+  QueryStructured
+}
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.model.window._
@@ -28,6 +34,7 @@ import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.time.LocalDate
+import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
@@ -2110,6 +2117,213 @@ trait WindowFunctionSpec
 
       case ElasticFailure(error) =>
         fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  // ========================================================================
+  // Story IDENT-1 — a percentile a HAVING, an ORDER BY or a UNION ALL leg reads, however it names it
+  //
+  // Percentiles over one column share one Elasticsearch `percentiles` aggregation. A HAVING and an
+  // ORDER BY read their aggregation BY NAME, so they read a merged-away one -- every group filtered
+  // out and the `order` dropped, HTTP 200 -- when they repeated the SELECT percentile over another
+  // spelling of its column, asked for another percent of the column, or named the alias of a merged
+  // one; and a bare name over a `percentiles` node is refused by Elasticsearch 6.8 and 7.17 even
+  // when it carries one percent. They now read `<node>[<percent>]`. A UNION ALL read every leg's
+  // response with ONE plan made from the legs' merged aggregations, so a leg whose percentile merge
+  // differed from the last leg's read a node its request never emitted (NULL, HTTP 200).
+  //
+  // The medians are computed from the fixture (EmployeeData) by hand: Engineering 105000, Sales
+  // 85000, Marketing 79500, HR 72000 under every interpolation convention, and the 90th percentile
+  // is at least 93500 for Engineering and Sales and at most 88000 for Marketing and HR -- so
+  // `> 89000` on it keeps Engineering and Sales where the median would keep Engineering alone.
+  // Every other percentile is compared with the same percentile ASKED ALONE (its own statement, its
+  // own single-percent aggregation, no merge): the 90th percentile of a small group differs between
+  // Elasticsearch majors (6.8 and 7.17 answer the maximum where 8 and 9 interpolate).
+  // ========================================================================
+
+  private val salaryMedians: Map[String, Double] =
+    Map("Engineering" -> 105000.0, "Sales" -> 85000.0)
+
+  private def percentileClientRows(sql: String): Seq[ListMap[String, Any]] = {
+    // local: a trait-level implicit would reach every other test of this spec
+    implicit val context: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) => response.results
+      case ElasticFailure(error)    => fail(s"Query failed: ${error.message}\n$sql")
+    }
+  }
+
+  private def percentileGatewayRows(sql: String): Seq[ListMap[String, Any]] =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryStructured(response, _)) => response.results
+      case ElasticSuccess(QueryStream(stream, _)) =>
+        Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+      case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")
+    }
+
+  private val percentileVenues: Seq[(String, String => Seq[ListMap[String, Any]])] =
+    Seq("client" -> percentileClientRows _, "gateway" -> percentileGatewayRows _)
+
+  private val percentileOf = "PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY %s)"
+
+  /** A numeric column of a row -- failing, not throwing, when it is absent or NULL. */
+  private def numberOf(row: ListMap[String, Any], column: String): Double =
+    row
+      .get(column)
+      .flatMap(Option(_))
+      .map(_.toString.toDouble)
+      .getOrElse(fail(s"$column is NULL or absent in $row"))
+
+  /** The oracle: `group -> value` of ONE percentile asked alone, grouped by `groupBy`. */
+  private def percentileAlone(
+    percent: String,
+    column: String,
+    groupBy: String
+  ): Map[String, Double] =
+    percentileClientRows(
+      s"SELECT $groupBy, ${percentileOf.format(percent, column)} AS v FROM emp e GROUP BY $groupBy"
+    ).map(row => row(groupBy).toString -> numberOf(row, "v")).toMap
+
+  "PERCENTILE in HAVING" should "filter on the percentile it names, however it names it (client and gateway)" in {
+    val p = percentileOf
+    val median = p.format("0.5", "salary")
+    val p90 = p.format("0.9", "salary")
+    // kept out of the interpolations below: Scala 2.12 rejects an escaped quote inside `${...}`
+    val quotedMedian = p.format("0.5", "\"salary\"")
+    val grouped = "FROM emp e GROUP BY department"
+    Seq(
+      // another spelling of the column than the SELECT's
+      s"SELECT department, ${p.format("0.5", "e.salary")} AS m $grouped HAVING $median > 82000",
+      s"SELECT department, $median AS m $grouped HAVING ${p.format("0.5", "e.salary")} > 82000",
+      s"SELECT department, $quotedMedian AS m $grouped HAVING $median > 82000",
+      // the SELECT's own qualified spelling -- refused before, as "a different aggregate"
+      s"SELECT department, ${p.format("0.5", "e.salary")} AS m $grouped " +
+      s"HAVING ${p.format("0.5", "e.salary")} > 82000",
+      // another percent of the column
+      s"SELECT department, $median AS m $grouped HAVING $p90 > 89000",
+      // the alias of a percentile sharing its column with another, in either SELECT position
+      s"SELECT department, $median AS m, $p90 AS n $grouped HAVING n > 89000",
+      s"SELECT department, $p90 AS n, $median AS m $grouped HAVING n > 89000",
+      // control: the alias of the only one
+      s"SELECT department, $median AS m $grouped HAVING m > 82000"
+    ).foreach { sql =>
+      percentileVenues.foreach { case (venue, rowsOf) =>
+        withClue(s"[$venue] $sql ") {
+          val rows = rowsOf(sql)
+          log.info(s"  $venue: ${rows.mkString(" ")}")
+          rows.map(_.getOrElse("department", fail(s"no department in $rows"))).toSet shouldBe
+          salaryMedians.keySet
+          rows.foreach { row =>
+            val department = row("department").toString
+            numberOf(row, "m") shouldBe (salaryMedians(department) +- 0.5)
+          }
+        }
+      }
+    }
+  }
+
+  it should "filter the one implicit group of a statement without GROUP BY (client and gateway)" in {
+    // every salary of the fixture: the 10th and 11th of 20 are both 85000, so the median is 85000
+    // under every convention, and the 90th percentile lies between 110000 and 120000
+    val select = s"SELECT ${percentileOf.format("0.5", "salary")} AS m, " +
+      s"${percentileOf.format("0.9", "salary")} AS n FROM emp"
+    percentileVenues.foreach { case (venue, rowsOf) =>
+      withClue(s"[$venue] ") {
+        val kept = rowsOf(s"$select HAVING n > 89000")
+        kept should have size 1
+        numberOf(kept.head, "m") shouldBe (85000.0 +- 0.5)
+        rowsOf(s"$select HAVING n > 200000") shouldBe empty
+      }
+    }
+  }
+
+  "PERCENTILE in ORDER BY" should "order the groups by the percentile it names, however it names it (client and gateway)" in {
+    val p = percentileOf
+    val median = p.format("0.5", "salary")
+    val p90 = p.format("0.9", "salary")
+    val medians = percentileAlone("0.5", "salary", "location")
+    val p90s = percentileAlone("0.9", "salary", "location")
+    val mediansAscending = medians.toSeq.sortBy(_._2).map(_._1)
+    val p90sDescending = p90s.toSeq.sortBy(_._2).map(_._1).reverse
+    // never vacuous: every order asserted differs from the terms default (doc count, then key)
+    val unordered = percentileClientRows(
+      "SELECT location, COUNT(*) AS c FROM emp e GROUP BY location"
+    ).map(_("location").toString)
+    val grouped = "FROM emp e GROUP BY location"
+    Seq(
+      // the alias of a percentile merged into another's aggregation
+      s"SELECT location, $median AS m, $p90 AS n $grouped ORDER BY n DESC" -> p90sDescending,
+      // the alias of the aggregation the other one is merged into
+      s"SELECT location, $median AS m, $p90 AS n $grouped ORDER BY m ASC" -> mediansAscending,
+      // another percent of the column
+      s"SELECT location, $median AS m $grouped ORDER BY $p90 DESC" -> p90sDescending,
+      // another spelling of the column than the SELECT's
+      s"SELECT location, ${p.format("0.5", "e.salary")} AS m $grouped ORDER BY $median ASC" ->
+      mediansAscending
+    ).foreach { case (sql, expected) =>
+      expected should not be unordered
+      percentileVenues.foreach { case (venue, rowsOf) =>
+        withClue(s"[$venue] $sql ") {
+          val rows = rowsOf(sql)
+          log.info(s"  $venue: ${rows.mkString(" ")}")
+          rows.map(_("location").toString) shouldBe expected
+          rows.foreach { row =>
+            numberOf(row, "m") shouldBe (medians(row("location").toString) +- 0.5)
+          }
+        }
+      }
+    }
+  }
+
+  "PERCENTILE in a UNION ALL" should "read every column of every leg from that leg's own aggregation (client and gateway)" in {
+    val p = percentileOf
+    val medians = percentileAlone("0.5", "salary", "department")
+    val p90s = percentileAlone("0.9", "salary", "department")
+    val castP90s = percentileAlone("0.9", "CAST(salary AS DOUBLE)", "department")
+    val grouped = "FROM emp e GROUP BY department"
+    // n merges into m's aggregation here ...
+    val merged = s"SELECT department, ${p.format("0.5", "salary")} AS m, " +
+      s"${p.format("0.9", "salary")} AS n $grouped"
+    // ... and has its own over another column here (the same values, another expression)
+    val apart = s"SELECT department, ${p.format("0.5", "salary")} AS m, " +
+      s"${p.format("0.9", "CAST(salary AS DOUBLE)")} AS n $grouped"
+    val kept = p90s.filter(_._2 > 89000).keySet
+    kept shouldBe Set("Engineering", "Sales") // the HAVING leg filters -- never vacuous
+    // (statement, per leg: the groups it returns and the oracle of its `n`)
+    Seq(
+      s"$merged UNION ALL $merged HAVING n > 89000" ->
+      Seq((medians.keySet, p90s), (kept, p90s)),
+      s"$merged UNION ALL " + merged.replace("ORDER BY salary) AS n", "ORDER BY e.salary) AS n") ->
+      Seq((medians.keySet, p90s), (medians.keySet, p90s)),
+      s"$merged UNION ALL $apart" -> Seq((medians.keySet, p90s), (medians.keySet, castP90s)),
+      s"$apart UNION ALL $merged" -> Seq((medians.keySet, castP90s), (medians.keySet, p90s))
+    ).foreach { case (sql, legs) =>
+      percentileVenues.foreach { case (venue, rowsOf) =>
+        withClue(s"[$venue] $sql ") {
+          val rows = rowsOf(sql)
+          log.info(s"  $venue: ${rows.mkString(" ")}")
+          rows should have size legs.map(_._1.size).sum
+          // the legs come back in order, each in its own terms order
+          val slices = legs
+            .foldLeft((rows, Seq.empty[Seq[ListMap[String, Any]]])) {
+              case ((rest, done), (groups, _)) =>
+                (rest.drop(groups.size), done :+ rest.take(groups.size))
+            }
+            ._2
+          slices.zip(legs).zipWithIndex.foreach { case ((slice, (groups, nOracle)), leg) =>
+            withClue(s"leg ${leg + 1}: ") {
+              slice.map(_("department").toString).toSet shouldBe groups
+              slice.foreach { row =>
+                val department = row("department").toString
+                numberOf(row, "m") shouldBe (medians(department) +- 0.5)
+                numberOf(row, "n") shouldBe (nOracle(department) +- 0.5)
+              }
+            }
+          }
+        }
+      }
     }
   }
 

@@ -373,22 +373,40 @@ package object sql {
     def param: String
     def checkNotNull: String
 
-    /** The identity a `PainlessContext` deduplicates parameters on (issue #370).
+    /** The identity a `PainlessContext` deduplicates parameters on (issue #370) -- the
+      * PAINLESS-PARAMETER identity.
       *
-      * By default the rendered doc access itself, which is also what `equals` compares. An
-      * `Identifier` widens it with its CHAINED function rendering, because the chain is folded onto
-      * the parameter OBJECT (`addPainlessMethod`) while identity was the doc-value STRING alone --
-      * so `DATE_TRUNC(d, MONTH) < d` resolved BOTH sides to the one parameter that by then carried
-      * the truncation, and compared `x < x`. Kept apart from `equals` on purpose:
-      * `GenericIdentifier` is a case class that INHERITS this trait's `equals`, so changing it
-      * would move identifier equality everywhere in the AST; the context's bookkeeping is the only
-      * thing that must tell two transforms of one column apart.
+      * By default the rendered doc access itself. An `Identifier` widens it with its CHAINED
+      * function rendering, because the chain is folded onto the parameter OBJECT
+      * (`addPainlessMethod`) while identity was the doc-value STRING alone -- so `DATE_TRUNC(d,
+      * MONTH) < d` resolved BOTH sides to the one parameter that by then carried the truncation,
+      * and compared `x < x`.
+      *
+      * 🔴 NOT `equals`, and neither may be derived from the other: they answer two questions. This
+      * one is "which Painless declaration does this use read", and it is correlation-FREE on
+      * purpose: a script reads ONE document, so `o.d` and `p.d` both read `doc['d']`. `equals` is
+      * the AST and collection identity, which `Identifier` overrides to the same column through the
+      * same CORRELATION (story IDENT-1). A context registers and finds parameters by this key's
+      * STRING (`PainlessContext.get` / `exists`), never by `equals`.
       */
     def contextKey: String = param
 
+    /** Equality of a NON-identifier parameter (`LiteralParam`, `PowParam`): the rendered string.
+      *
+      * 🔴 The first arm is the symmetry half of story IDENT-1. `Identifier` overrides `equals` with
+      * (`param`, `tableAlias`); without this arm `LiteralParam("doc['d'].value") == d` stayed TRUE
+      * while `d == LiteralParam("doc['d'].value")` became FALSE, and the two hashes differ -- an
+      * `equals` contract violation any `Set` or `Map` holding both would expose. So an identifier
+      * and a non-identifier parameter are never equal, in either direction. The two families DO
+      * meet at one production site -- `Identifier.painless`'s `processorBase` walks `Round.args`,
+      * which holds a `PowParam` -- but never with equal `param`s (`Math.pow(10, n)` is no doc
+      * access), so this arm changes no answer the old equality gave. `IdentifierEqualitySpec` holds
+      * the contract.
+      */
     override def hashCode(): Int = param.hashCode
     override def equals(obj: Any): Boolean = {
       obj match {
+        case _: Identifier    => false
         case p: PainlessParam => p.param == param
         case _                => false
       }
@@ -1987,6 +2005,13 @@ package object sql {
               // ... and only when the operand is CHAINED. A function that takes this identifier as
               // an ARGUMENT (`DATE_FORMAT`, `DATE_PARSE`) coerces it on the argument path instead,
               // and doing both emits a parse nobody reads.
+              //
+              // `_ == this` is IDENTIFIER equality -- doc access and correlation (story IDENT-1).
+              // The argument it must match is this column's own copy, resolved by the same `update`
+              // as this identifier; a copy that agrees on the doc access while disagreeing on the
+              // correlation can only be one `update` never resolves (`IdentifierEqualitySpec`, the
+              // lemma). Do not narrow it: an identity that also compares the rendered SQL was
+              // MEASURED to take this branch for `LAST_DAY` and parse the operand twice.
               case f: TransformFunction[_, _]
                   if !f.args.exists(_ == this) &&
                     (f.in == SQLTypes.Temporal || f.in == SQLTypes.Date ||
@@ -2028,6 +2053,53 @@ package object sql {
     }
 
     override def param: String = paramName
+
+    /** 🔴 Two identifiers are equal iff they share the rendered doc access ([[param]]) AND the
+      * table alias the statement wrote ([[tableAlias]]) -- the correlation is what story IDENT-1
+      * adds.
+      *
+      * ⚠️ `param` is a DOC ACCESS, not an expression identity, and this story does not change that:
+      * it is blind to the function chain (`DAY(a) == DAY(DAY(a))`; an aggregate over a chain,
+      * `MAX(YEAR(d))`, reads the raw `doc['d'].value` and equals plain `d`), to `DISTINCT` on a
+      * plain column, and every NAMELESS expression -- a constant, a string / math / CASE / COALESCE
+      * carrier, an aggregate over one -- renders `""` and equals every other (the constant
+      * collapse, out of scope). The render fixed point stays the oracle for all of those.
+      *
+      * It used to be `PainlessParam.equals` -- the doc access alone -- which `GenericIdentifier`
+      * INHERITED: a case class synthesises no `equals` / `hashCode` when a base trait already
+      * defines one concretely. MEASURED on `FROM orders o JOIN orders p ON o.did = p.id GROUP BY
+      * o.category, p.category`: `buckets(0) == buckets(1)` was TRUE and `buckets.distinct.size` was
+      * 1 while the two table aliases were `Some(o)` and `Some(p)`. Every `distinct` / `Set` / `Map`
+      * over identifiers -- and over everything whose case-class equality reaches one: `Bucket`,
+      * `Field`, `FieldSort`, every `Criteria`, every function case class -- merged two correlations
+      * of one column, and a lookup answered the last writer (#292's family, one layer down).
+      *
+      * Deliberately NOT in the key, each for a stated reason:
+      *   - `table` -- redundant (within one statement the alias determines the index) and spoken in
+      *     `From.aliasKey`'s language, which changes when another leg is added;
+      *   - `col`, `bucket`, `bucketPath` -- schema metadata and back-references do not survive
+      *     render -> re-parse, and `Parser(stmt.sql) == Right(stmt)` is the house oracle;
+      *   - `quoted` -- `"a"` and `a` denote one column and must give EQUAL ASTs (story 21.1 AD-1);
+      *   - the function chain -- adding the rendered SQL was MEASURED to split an ingest parameter
+      *     at the two sites that ask "is this my own argument" (`processorBase` below and
+      *     `TransformFunction.checkIfNullable`). So `DAY(a) == DAY(DAY(a))` stays true (#383): for
+      *     a chain, the RENDER fixed point is the oracle, not AST equality.
+      *
+      * ⚠️ The correlation compared is the one WRITTEN (and resolved by `update`), never an inferred
+      * one: an unqualified `category` is NOT equal to `o.category` in `FROM orders o`, although
+      * both read the main table. Resolving a bare name to the main table's correlation is a derived
+      * identity for the consumer that needs it -- stamping the alias on a bare name would move the
+      * render of every unqualified column.
+      *
+      * [[contextKey]] -- the Painless-parameter identity -- is untouched and correlation-free.
+      */
+    override def hashCode(): Int = param.hashCode * 31 + tableAlias.hashCode
+
+    override def equals(obj: Any): Boolean =
+      obj match {
+        case i: Identifier => i.param == param && i.tableAlias == tableAlias
+        case _             => false
+      }
 
     /** The functions that FOLD onto this identifier's raw parameter as methods, in application
       * order (issue #370).

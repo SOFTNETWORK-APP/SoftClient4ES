@@ -447,6 +447,18 @@ package object time {
       }
     }
 
+    /** 🔴 Resolved like every other transform function that holds a copy of the column (story
+      * IDENT-1). The inherited `Extract.update` returns `this`, which is right for a bare extractor
+      * (it holds no identifier) and wrong here: the receiver kept the spelling it was parsed with
+      * at EVERY resolution, so `WEEKDAY(t.d)` read the literal field `t.d` on a client search, and
+      * under an UNNEST aliased by its own field the stale copy agreed with the column on the doc
+      * access while disagreeing on the correlation -- the one pair identifier equality would have
+      * re-answered.
+      */
+    override def update(request: query.SingleSearch): DayOfWeek = new DayOfWeek(
+      date.update(request)
+    )
+
   }
 
   class DayOfYear extends TimeFieldExtract(DAY_OF_YEAR)

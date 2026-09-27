@@ -471,6 +471,76 @@ class UnionAllRoutingSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
     response.results(2) shouldBe ListMap[String, Any]("y" -> "id@3")
   }
 
+  /** Story IDENT-1 — the same defect, for a leg's AGGREGATIONS. Each leg's REQUEST merges the
+    * percentiles over one value column into ONE `percentiles` node, planned from THAT leg's own
+    * aggregations; the `_msearch` response was READ with one plan made from the branches' MERGED
+    * `sqlAggregations`, which keeps the LAST branch's aggregation per name. Two branches naming a
+    * percentile alike over DIFFERENT columns disagree on the merge, so the other branch read a node
+    * its request never emitted: the column came back NULL with HTTP 200, whichever branch came
+    * first.
+    *
+    * The stub answers each leg exactly as Elasticsearch answers the request the bridge emits for it
+    * — one node carrying both percents for the leg over `x` alone, two nodes for the leg over `x`
+    * and `y` — each value naming its leg and its percent. It is written by hand from that emission
+    * (pinned by the bridges' `AggregationNamingSpec`, RUN by the testkit's `WindowFunctionSpec`),
+    * never derived from the plan under test.
+    */
+  "The one-shot _msearch route" should "read each leg's aggregations with that leg's OWN plan" in {
+    class AggregationLegsClient(legs: Seq[String]) extends RecordingClient {
+      private def answer: ElasticResult[Option[JsonNode]] = {
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+        val root = mapper.createObjectNode()
+        val responses = root.putArray("responses")
+        legs.foreach(leg => responses.add(mapper.readTree(leg)))
+        ElasticResult.success(Some(root))
+      }
+      override private[client] def executeMultiSearch(
+        elasticQueries: ElasticQueries
+      ): ElasticResult[Option[JsonNode]] = {
+        msearchCalls.incrementAndGet()
+        answer
+      }
+      override private[client] def executeMultiSearchAsync(
+        elasticQueries: ElasticQueries
+      )(implicit ec: ExecutionContext): scala.concurrent.Future[ElasticResult[Option[JsonNode]]] = {
+        msearchCalls.incrementAndGet()
+        scala.concurrent.Future.successful(answer)
+      }
+    }
+    def leg(key: String, nodes: String): String =
+      s"""{"hits":{"total":{"value":2,"relation":"eq"},"hits":[]},""" +
+      s""""aggregations":{"k":{"buckets":[{"key":"$key","doc_count":2,$nodes}]}}}"""
+    val p = "PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY %s)"
+    val overX =
+      s"SELECT k, ${p.format("0.5", "x")} AS m, ${p.format("0.9", "x")} AS n FROM t GROUP BY k"
+    val overXAndY = overX.replace("ORDER BY x) AS n", "ORDER BY y) AS n")
+    def oneNode(v: Int) = s""""m":{"values":{"50.0":$v.5,"90.0":$v.9}}"""
+    def twoNodes(v: Int) = s""""m":{"values":{"50.0":$v.5}},"n":{"values":{"90.0":$v.9}}"""
+    val expected = Seq(
+      Map[String, Any]("k" -> "a", "m" -> 1.5, "n" -> 1.9),
+      Map[String, Any]("k" -> "b", "m" -> 2.5, "n" -> 2.9)
+    )
+    Seq(
+      s"$overX UNION ALL $overXAndY" -> Seq(leg("a", oneNode(1)), leg("b", twoNodes(2))),
+      s"$overXAndY UNION ALL $overX" -> Seq(leg("a", twoNodes(1)), leg("b", oneNode(2)))
+    ).foreach { case (sql, legs) =>
+      val client = new AggregationLegsClient(legs)
+      val sync = client.search(SelectStatement(sql)) match {
+        case ElasticSuccess(r)     => r.results
+        case ElasticFailure(error) => fail(s"[$sql] refused: ${error.message}")
+      }
+      val async = Await.result(client.searchAsync(SelectStatement(sql)), 20.seconds) match {
+        case ElasticSuccess(r)     => r.results
+        case ElasticFailure(error) => fail(s"[$sql] refused: ${error.message}")
+      }
+      withClue(s"[$sql] ") {
+        client.msearchCalls.get() shouldBe 2 // one-shot, both times: no leg was routed elsewhere
+        sync.map(_.toMap) shouldBe expected
+        async.map(_.toMap) shouldBe expected
+      }
+    }
+  }
+
   /** Issue #355 — the per-leg route re-entered `search(leg)`, which resolves the leg a SECOND time.
     * `resolveWithSchema` is not a pure check: a leg carrying a WHERE subquery has its inner
     * statement EXECUTED by `SubqueryResolver`, uncached.

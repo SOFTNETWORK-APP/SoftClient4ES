@@ -6,7 +6,7 @@
     "WEEKDAY(date)",
     "DAYOFWEEK(date)"
   ],
-  "description": "Returns the day of the week for a date (1=Monday, 7=Sunday).",
+  "description": "Returns the day of the week for a date (0=Monday, 6=Sunday).",
   "parameters": [
     {
       "name": "date",
@@ -21,11 +21,12 @@
     {
       "title": "Get weekday",
       "description": "Check if weekend",
-      "sql": "SELECT * FROM events WHERE WEEKDAY(event_date) IN (6, 7)"
+      "sql": "SELECT * FROM events WHERE WEEKDAY(event_date) IN (5, 6)"
     }
   ],
   "notes": [
-    "Returns 1-7 (Monday=1, Sunday=7)"
+    "Returns 0-6 (Monday=0, Sunday=6), as MySQL's WEEKDAY does",
+    "DAYOFWEEK is an alias with the SAME numbering -- unlike MySQL's DAYOFWEEK, which returns 1-7 (Sunday=1, Saturday=7)"
   ],
   "seeAlso": ["DAY", "WEEK", "YEARDAY"],
   "aliases": ["DAYOFWEEK"]

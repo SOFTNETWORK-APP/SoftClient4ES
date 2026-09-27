@@ -47,10 +47,11 @@ import org.scalatest.matchers.should.Matchers
   * AVG()`), so it is a parser-accepts-`f()` problem rather than an `InExpr` one, and adding
   * `$name()` below would redden this spec for an unrelated reason.
   *
-  * 🔴 And do NOT "strengthen" this to AST equality. `Identifier` inherits `PainlessParam.equals`,
-  * which compares only `param` — so `DAY(a)` and `DAY(DAY(a))` are EQUAL as ASTs, on both trees.
-  * The render fixed point is the strong assertion here; `Parser(stmt.sql) == Right(stmt)` is blind
-  * to this entire defect class.
+  * 🔴 And do NOT "strengthen" this to AST equality. `Identifier.equals` compares the rendered doc
+  * access (`param`) and, since story IDENT-1, the correlation (`tableAlias`) — never the function
+  * chain — so `DAY(a)` and `DAY(DAY(a))` are EQUAL as ASTs, on both trees. The render fixed point
+  * is the strong assertion here; `Parser(stmt.sql) == Right(stmt)` is blind to this entire defect
+  * class.
   */
 class InPredicateRenderSpec extends AnyFlatSpec with Matchers {
 

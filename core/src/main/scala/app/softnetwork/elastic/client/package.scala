@@ -298,8 +298,8 @@ package object client extends SerializationApi {
     * columns differently lost its values to a by-name lookup, and a branch with its own nested
     * mapping was flattened by another branch's. The per-leg route never had that problem: it
     * executes each branch through `search(leg)`, which uses that branch's own everything by
-    * construction. This carries the same three inputs to the one-shot route, so the two routes
-    * agree because they do the same thing, not because one was taught to imitate the other.
+    * construction. This carries the same four inputs to the one-shot route, so the two routes agree
+    * because they do the same thing, not because one was taught to imitate the other.
     *
     * @param fieldAliases
     *   the BRANCH's `source field -> alias` map
@@ -309,11 +309,17 @@ package object client extends SerializationApi {
     *   projection admits (by name)
     * @param nestedHits
     *   the BRANCH's `JOIN UNNEST` mappings
+    * @param aggregations
+    *   the BRANCH's aggregations, planned from the branch's OWN SQL aggregations — the plan that
+    *   built its request. A plan made once from the branches' MERGED map (which keeps the LAST
+    *   branch's aggregation per name) told a branch to read an aggregation its request had merged
+    *   into another, or never emitted: the column came back NULL with HTTP 200.
     */
   case class LegProjection(
     fieldAliases: ListMap[String, String],
     fields: Seq[String],
-    nestedHits: Map[String, Seq[(String, String)]]
+    nestedHits: Map[String, Seq[(String, String)]],
+    aggregations: ListMap[String, ClientAggregation]
   )
 
   /** Retry configuration
