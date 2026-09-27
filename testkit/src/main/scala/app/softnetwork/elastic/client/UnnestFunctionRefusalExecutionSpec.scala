@@ -61,7 +61,8 @@ trait UnnestFunctionRefusalExecutionSpec
 
   private val index = "unnest_function_refusal"
 
-  private case class Item(k: String, d: String, s: String, n: Long)
+  /** The five column types of the nested object (`UnnestPopulation.nestedCols`), and a key. */
+  private case class Item(k: String, d: String, s: String, n: Long, x: Double, b: Boolean)
   private case class Parent(id: String, name: String, items: Seq[Item])
 
   /** Today at noon (UTC), for the one row whose answer is relative to the current date. */
@@ -77,22 +78,25 @@ trait UnnestFunctionRefusalExecutionSpec
       "p1",
       "Alpha",
       Seq(
-        Item("a", "2025-02-10T12:00:00Z", "abc", 7L),
-        Item("b", "2024-03-15T08:30:00Z", "xyz", 3L)
+        Item("a", "2025-02-10T12:00:00Z", "abc", 7L, 1.5, b = true),
+        Item("b", "2024-03-15T08:30:00Z", "xyz", 3L, -2.25, b = false)
       )
     ),
     Parent(
       "p2",
       "beta",
       Seq(
-        Item("c", "2025-02-28T00:00:00Z", "ABC", 7L),
-        Item("d", "2023-12-31T23:59:59Z", "beta", 1L)
+        Item("c", "2025-02-28T00:00:00Z", "ABC", 7L, 0.0, b = true),
+        Item("d", "2023-12-31T23:59:59Z", "beta", 1L, 7.0, b = false)
       )
     ),
     Parent(
       "p3",
       "Gamma",
-      Seq(Item("e", "2025-06-15T10:00:00Z", "mixed Case", 12L), Item("f", today, "today", 5L))
+      Seq(
+        Item("e", "2025-06-15T10:00:00Z", "mixed Case", 12L, 12.5, b = true),
+        Item("f", today, "today", 5L, 3.0, b = false)
+      )
     ),
     Parent("p4", "delta", Nil)
   )
@@ -108,7 +112,9 @@ trait UnnestFunctionRefusalExecutionSpec
         |      "k": { "type": "keyword" },
         |      "d": { "type": "date" },
         |      "s": { "type": "keyword" },
-        |      "n": { "type": "long" }
+        |      "n": { "type": "long" },
+        |      "x": { "type": "double" },
+        |      "b": { "type": "boolean" }
         |    } }
         |  }
         |}""".stripMargin
@@ -118,7 +124,9 @@ trait UnnestFunctionRefusalExecutionSpec
     client.setMapping(index, mapping).get shouldBe true
     val docs = parents.map { p =>
       val items = p.items
-        .map(it => s"""{"k":"${it.k}","d":"${it.d}","s":"${it.s}","n":${it.n}}""")
+        .map(it =>
+          s"""{"k":"${it.k}","d":"${it.d}","s":"${it.s}","n":${it.n},"x":${it.x},"b":${it.b}}"""
+        )
         .mkString("[", ",", "]")
       s"""{"id":"${p.id}","name":"${p.name}","items":$items}"""
     }.toList
@@ -280,6 +288,72 @@ trait UnnestFunctionRefusalExecutionSpec
         viaGateway(sql).map(keys(_, "id", "k")) shouldBe Right(expected)
       }
     }
+  }
+
+  /** Every statement must answer `expected` (its `id|k` rows) at the client API and at the gateway;
+    * the wrong ones are COLLECTED and asserted once.
+    */
+  private def assertAllAnswer(cases: (String, Seq[String])*): Unit = {
+    val wrong = cases.flatMap { case (sql, expected) =>
+      expected should not be empty // the oracle selects something
+      Seq("client" -> viaClient(sql), "gateway" -> viaGateway(sql)).collect {
+        case (venue, answer) if answer.map(keys(_, "id", "k")) != Right(expected) =>
+          s"[$sql] $venue answered ${answer.map(keys(_, "id", "k"))}"
+      }
+    }
+    wrong shouldBe empty
+  }
+
+  "a WHERE COALESCE whose UNNEST column follows a non-null literal" should "answer the rows of the same statement without it" in {
+    // COALESCE answers the literal, never the column: the condition does not depend on the element
+    // and is answered per parent -- correctly, for every column type under both aliases. With a
+    // LIMIT: without one, an UNNEST projection returns at most three elements per parent.
+    val every = parents.flatMap(p => p.items.map(it => s"${p.id}|${it.k}")).sorted
+    val statements = for {
+      alias <- Seq("i", "items")
+      col   <- Seq("d", "s", "n", "x", "b")
+    } yield {
+      val without = s"SELECT id, $alias.k AS k ${u(alias)} LIMIT 100"
+      (
+        without,
+        s"SELECT id, $alias.k AS k ${u(alias)} WHERE COALESCE('x', $alias.$col) = 'x' LIMIT 100"
+      )
+    }
+    statements should have size 10
+    // the same statement without the condition answers every element, under both aliases
+    assertAllAnswer(statements.map(_._1).distinct.map(_ -> every): _*)
+    assertAllAnswer(statements.map(_._2 -> every): _*)
+  }
+
+  it should "answer per parent wherever it stands at the top of the WHERE" in {
+    def expect(p: (Parent, Item) => Boolean): Seq[String] =
+      parents.flatMap(pa => pa.items.filter(p(pa, _)).map(it => s"${pa.id}|${it.k}")).sorted
+    assertAllAnswer(
+      // after a PARENT column and the literal: the parent's name when it has one
+      s"SELECT id, i.k AS k ${u("i")} WHERE COALESCE(t.name, 'x', i.s) = 'Alpha' LIMIT 100" ->
+      expect((pa, _) => pa.name == "Alpha"),
+      // beside a condition evaluated per element
+      s"SELECT id, i.k AS k ${u("i")} WHERE i.n > 5 AND COALESCE('x', i.s) = 'x' LIMIT 100" ->
+      expect((_, it) => it.n > 5L),
+      // against a subquery: `Alpha` is one of the names
+      s"SELECT id, i.k AS k ${u("i")} WHERE COALESCE('Alpha', i.s) IN (SELECT name FROM $index) LIMIT 100" ->
+      expect((_, _) => true)
+    )
+  }
+
+  it should "stay refused where the element is lost, the column can be the answer, or the leaf is not answered per parent" in {
+    assertAllRefused("SELECT")(
+      // one row per parent: the element is lost
+      s"SELECT id, COALESCE('x', i.s) AS c ${u("i")} LIMIT 100",
+      // the window counts parents
+      s"SELECT id, i.k AS k, SUM(COALESCE(1, i.n)) OVER (PARTITION BY id) AS w ${u("i")}"
+    )
+    assertAllRefused("WHERE")(
+      s"SELECT id, i.k AS k ${u("i")} WHERE COALESCE(i.s, 'x') = 'x'",
+      s"SELECT id, i.k AS k ${u("i")} WHERE COALESCE(NULL, i.s) = 'x'",
+      // `NESTED(..)` scopes no nested element here: the bridge renders it `match_all`, every row
+      s"SELECT id, i.k AS k ${u("i")} WHERE NESTED(COALESCE('x', i.s) = 'y')"
+    )
   }
 
   "WEEKDAY in WHERE over an UNNEST alias" should "never be refused by this rule" in {

@@ -265,9 +265,10 @@ make the expression a computed column and sort on that.
 An `UNNEST` element is a separate (nested) Elasticsearch document, and a computed value is evaluated
 against ONE document. A function **projected** over an UNNEST column — alone or beside a window
 function — would be computed once per PARENT document, where the element's columns do not exist;
-so would a WHERE condition whose function is not applied directly to the UNNEST column. Both used to
-answer HTTP 200 with wrong rows — the raw value, NULL, zero rows or every row — and are now refused
-with a `400`: *"A function over an UNNEST column is not supported in …"*.
+so would a WHERE condition whose function is not applied directly to the UNNEST column (unless the
+column is only a `COALESCE` argument after a non-null literal, which `COALESCE` never returns).
+Both used to answer HTTP 200 with wrong rows — the raw value, NULL, zero rows or every row — and are
+now refused with a `400`: *"A function over an UNNEST column is not supported in …"*.
 
 ```sql
 -- refused

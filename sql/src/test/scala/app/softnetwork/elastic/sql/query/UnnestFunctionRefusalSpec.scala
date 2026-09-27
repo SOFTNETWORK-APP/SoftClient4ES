@@ -30,9 +30,10 @@ import scala.util.Try
   * of each SELECT script field and WHERE leaf, and the `doc['<path>']` reads in it) and WHERE (the
   * parent document, or the element of the `nested` query the leaf is rendered in). A read of a
   * column that document does not hold is what answered RAW / NULL / zero rows at RUN level; the
-  * verdict must be a refusal exactly then. A walk that misses an argument kind (the `DISTANCE`
-  * operands, a `CASE`'s `WHEN`) reddens the population row, because the rendered script still reads
-  * it.
+  * verdict must be a refusal exactly then -- save, in a WHERE leaf answered per parent, a DEAD read
+  * the leaf's value does not depend on (a `COALESCE` argument after a literal, MEASURED correct at
+  * RUN). A walk that misses an argument kind (the `DISTANCE` operands, a `CASE`'s `WHEN`) reddens
+  * the population row, because the rendered script still reads it.
   */
 class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
 
@@ -85,10 +86,56 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
       rendered(f.painless).map(script => reads(script).exists(scopeOfPath(ss, _).isDefined))
     }
 
-  /** The ORACLE for the one WHERE leaf: rendered under a `nested` query or at the top level, does
-    * its script read a column that document does not hold?
+  /** A `COALESCE` renders as a right fold `(a != null ? a : rest)`; when `a` is a LITERAL, `rest`
+    * is never the answer.
     */
-  private def whereEscapes(ss: SingleSearch): Option[Boolean] = {
+  private val DeadFold = """\(("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false) != null \? \1 : """.r
+
+  /** `script` with every dead fold replaced by its literal (string literals skipped when the
+    * closing parenthesis is sought).
+    */
+  private def withoutDeadFolds(script: String): String =
+    DeadFold.findFirstMatchIn(script) match {
+      case None => script
+      case Some(m) =>
+        var depth = 0
+        var inString = false
+        var i = m.start
+        var end = -1
+        while (end < 0 && i < script.length) {
+          script.charAt(i) match {
+            case '\\' if inString => i += 1
+            case '"'              => inString = !inString
+            case '(' if !inString => depth += 1
+            case ')' if !inString =>
+              depth -= 1
+              if (depth == 0) end = i + 1
+            case _ =>
+          }
+          i += 1
+        }
+        if (end < 0) script // unbalanced: nothing is dead
+        else withoutDeadFolds(script.substring(0, m.start) + m.group(1) + script.substring(end))
+    }
+
+  /** Is the read of `path` DEAD -- is the parameter holding it (`def <p> = (doc['<path>']...`)
+    * referenced by nothing once the dead folds are gone? The script's value then does not depend on
+    * it. One pass: a chain over the read is another parameter that reads it, so it stays live.
+    */
+  private def deadRead(script: String, path: String): Boolean = {
+    val live = withoutDeadFolds(script)
+    s"def (\\w+) = \\(doc\\['${java.util.regex.Pattern.quote(path)}'\\]".r
+      .findFirstMatchIn(live)
+      .exists(d => s"(?<![A-Za-z0-9_])${d.group(1)}(?![A-Za-z0-9_])".r.findAllIn(live).size == 1)
+  }
+
+  /** The ORACLE for the one WHERE leaf: rendered under a `nested` query or at the top level, does
+    * its script read a column that document does not hold? At the top level -- a query answered per
+    * parent -- a DEAD read does not count unless `deadCounts`: the leaf's value does not depend on
+    * it (MEASURED at RUN: `WHERE COALESCE('x', i.s) = 'x'` returns the rows of the statement
+    * without it).
+    */
+  private def whereEscapes(ss: SingleSearch, deadCounts: Boolean = false): Option[Boolean] = {
     def leaf(c: Criteria, underNested: Boolean): Option[(Expression, Boolean)] = c match {
       case Predicate(l, _, r, _, _) => leaf(l, underNested).orElse(leaf(r, underNested))
       case n: ElasticNested         => leaf(n.criteria, underNested = true)
@@ -98,7 +145,11 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
     ss.where.flatMap(_.criteria).flatMap(leaf(_, underNested = false)).flatMap { case (e, nested) =>
       val evaluatedIn =
         if (nested) e.identifier.nestedElement.map(_.innerHitsName) else None
-      rendered(e.painless).map(script => reads(script).exists(scopeOfPath(ss, _) != evaluatedIn))
+      rendered(e.painless).map { script =>
+        reads(script).exists(p =>
+          scopeOfPath(ss, p) != evaluatedIn && (nested || deadCounts || !deadRead(script, p))
+        )
+      }
     }
   }
 
@@ -201,7 +252,7 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
   }
 
   "a WHERE condition over an UNNEST column" should "be refused exactly when it is evaluated against a document that does not hold a column it reads" in {
-    var refused, accepted, notExercisedCells = 0
+    var refused, accepted, dead, notExercisedCells = 0
     for {
       c     <- exercised.filterNot(_.family == "aggregate")
       alias <- aliases
@@ -226,13 +277,22 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
                 }
               }
               if (escapes) refused += 1 else accepted += 1
+              // a fresh statement: rendering one is not idempotent
+              if (!escapes && whereEscapes(unvalidated(sql), deadCounts = true).contains(true))
+                dead += 1
           }
       }
     }
-    info(s"WHERE refused $refused, accepted $accepted, not exercised $notExercisedCells")
+    info(
+      s"WHERE refused $refused, accepted $accepted (of which a dead read only $dead), " +
+      s"not exercised $notExercisedCells"
+    )
     // BOTH sides must be populated, or the row proves nothing about the one it lacks.
     refused should be >= 1000
     accepted should be >= 300
+    // the dead reads MEASURED on this tree: `COALESCE('x', <col>)` and `COALESCE(DAY, 1, <col>)`,
+    // five columns under two aliases each
+    dead should be >= 20
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -434,6 +494,91 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
     // the chain -- one refusal each, never a loop.
     val havingOnly = s"SELECT id, COUNT(*) AS c $u GROUP BY id HAVING UPPER(i.s) = 'A'"
     Parser(havingOnly).left.map(_.msg).left.getOrElse("") should include("Move it to WHERE")
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A COALESCE argument that is never the answer
+  // ---------------------------------------------------------------------------------------------
+
+  "a WHERE COALESCE whose UNNEST column follows a non-null literal" should "be accepted: that column is never the answer" in {
+    // COALESCE answers its first non-null argument, the literal: the leaf does not depend on the
+    // element and is answered correctly per parent (the RUN rows: the testkit's execution spec).
+    val pd5 = for {
+      alias <- aliases
+      col   <- nestedCols
+    } yield s"SELECT id, $alias.k AS k ${from(alias)} WHERE COALESCE('x', $alias.$col) = 'x'"
+    pd5 should have size 10
+    (pd5 ++ Seq(
+      // after a PARENT column and the literal, after the literal only, on either side of the
+      // comparison, under a function, a NOT, beside a nested leaf, in a CASE, against a subquery
+      s"SELECT id, i.k AS k $u WHERE COALESCE(t.name, 'x', i.s) = 'Alpha'",
+      s"SELECT id, i.k AS k $u WHERE COALESCE(1, i.n, i.x) = 1",
+      s"SELECT id, i.k AS k $u WHERE 'x' = COALESCE('x', i.s)",
+      s"SELECT id, i.k AS k $u WHERE t.name = COALESCE('x', i.s)",
+      s"SELECT id, i.k AS k $u WHERE UPPER(COALESCE('x', i.s)) = 'X'",
+      s"SELECT id, i.k AS k $u WHERE NOT COALESCE('x', i.s) = 'x'",
+      s"SELECT id, i.k AS k $u WHERE i.n > 0 AND COALESCE('x', i.s) = 'x'",
+      s"SELECT id, i.k AS k $u WHERE CASE WHEN COALESCE('x', i.s) = 'x' THEN 1 ELSE 0 END = 1",
+      s"SELECT id, i.k AS k $u WHERE COALESCE('x', i.s) IN (SELECT s FROM w)"
+    )).foreach(sql => withClue(s"[$sql] ")(verdict(sql) shouldBe Right(None)))
+  }
+
+  it should "stay refused in SELECT, beside a window and inside a window's argument" in {
+    // WHERE only: with no live UNNEST column the statement loses the element -- one row per
+    // parent, and a window over it counts parents
+    for {
+      alias <- aliases
+      col   <- nestedCols
+    } {
+      val c = s"$alias.$col"
+      Seq(
+        s"SELECT id, COALESCE('x', $c) AS c ${from(alias)}",
+        s"SELECT id, COALESCE('x', $c) AS c ${from(alias)} LIMIT 100",
+        s"SELECT id, COALESCE('x', $c) AS c, $window ${from(alias)}",
+        s"SELECT id, $alias.k AS k, SUM(COALESCE('x', $c)) OVER (PARTITION BY id) AS w ${from(alias)}",
+        s"SELECT id, $alias.k AS k, SUM(COALESCE(1, $c)) OVER (PARTITION BY id) AS w ${from(alias)}"
+      ).foreach { sql =>
+        withClue(s"[$sql] ") {
+          verdict(sql).toOption.flatten.getOrElse(fail("not refused by name")) should startWith(
+            s"${Phrase}SELECT: "
+          )
+        }
+      }
+    }
+  }
+
+  it should "stay refused in WHERE when the column can be the answer, or the leaf is not answered per parent" in {
+    for {
+      alias <- aliases
+      col   <- nestedCols
+    } {
+      val c = s"$alias.$col"
+      val where = s"SELECT id, $alias.k AS k ${from(alias)} WHERE"
+      Seq(
+        // the column first; after NULL; after a parameter, which can be bound to NULL
+        s"$where COALESCE($c, 'x') = 'x'",
+        s"$where COALESCE(NULL, $c) = 'x'",
+        s"$where COALESCE(?, $c) = 'x'",
+        // a chain over the column is still evaluated against the parent
+        s"$where COALESCE('x', CAST($c AS VARCHAR)) = 'x'",
+        // the column also read outside the COALESCE
+        s"$where COALESCE('x', $c) = $c",
+        // under NESTED(..) the leaf is not answered per parent: the wrapper scopes no nested
+        // element, so the bridge renders it `match_all` -- every row, where this one matches none
+        s"$where NESTED(COALESCE('x', $c) = 'y')"
+      ).foreach { sql =>
+        withClue(s"[$sql] ") {
+          val msg = verdict(sql).toOption.flatten.getOrElse(fail("not refused by name"))
+          msg should startWith(s"${Phrase}WHERE: ")
+          msg should include(s"where $c is not visible")
+        }
+      }
+    }
+    // an UNNEST column BEFORE the literal is read
+    val live = s"SELECT id, i.k AS k $u WHERE COALESCE(i.k, 'x', i.s) = 'x'"
+    verdict(live).toOption.flatten.getOrElse(fail("not refused by name")) should include(
+      "where i.k is not visible"
+    )
   }
 
   // ---------------------------------------------------------------------------------------------

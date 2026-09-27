@@ -707,7 +707,9 @@ against ONE document — so:
   `YEAR(<column>) = 2025` or `EXTRACT(MONTH FROM <column>) = 2` — is evaluated on each element and
   works. A condition whose function is not (`UPPER(items.product) = 'A'`, `ABS(items.quantity) = 2`,
   a `CASE`, `COALESCE`, arithmetic), or that is evaluated on each element but also reads a parent
-  column, is **refused**: filter the returned rows instead.
+  column, is **refused**: filter the returned rows instead — unless the UNNEST column is only a
+  `COALESCE` argument after a non-null literal, which `COALESCE` never returns
+  (`COALESCE('n/a', items.product) = 'n/a'` works).
 - A condition without a function (`items.quantity >= 1`, `items.product IN ('A', 'B')`), an
   aggregate over UNNEST columns, a window function over an UNNEST column, over arithmetic of UNNEST
   columns or over a function applied directly to one (`SUM(CAST(items.quantity AS DOUBLE)) OVER …`),

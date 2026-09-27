@@ -16,9 +16,9 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.{FromTo, Identifier, Token, Value}
+import app.softnetwork.elastic.sql.{FromTo, Identifier, PainlessScript, Token, Value}
 import app.softnetwork.elastic.sql.function.{FunctionChain, FunctionN}
-import app.softnetwork.elastic.sql.function.cond.Case
+import app.softnetwork.elastic.sql.function.cond.{Case, Coalesce}
 import app.softnetwork.elastic.sql.function.geo.Distance
 
 /** Is a value the engine computes with a Painless script evaluated against a document that holds
@@ -64,6 +64,8 @@ import app.softnetwork.elastic.sql.function.geo.Distance
   *     evaluated at all, on a flat index alike;
   *   - a WHERE leaf that carries NO function (`i.n > 0`, `MATCH (i.s) AGAINST ('x')`): a query-DSL
   *     leaf the nested-query machinery places itself;
+  *   - in a top-level WHERE leaf only, a bare UNNEST column after a non-null literal in `COALESCE`
+  *     (`COALESCE('x', i.s) = 'x'`): never the answer, so not a read ([[whereReadsOf]]);
   *   - GROUP BY / HAVING / ORDER BY: other mechanisms, not part of this rule.
   */
 object UnnestScope {
@@ -109,7 +111,65 @@ object UnnestScope {
     * is not supported in a CASE WHEN condition"). A nameless carrier (`UPPER(..)`'s, a literal
     * bound's) names no column.
     */
-  private[query] def readsOf(token: Token): Seq[Identifier] = {
+  private[query] def readsOf(token: Token): Seq[Identifier] = reads(token, _.args)
+
+  /** What a top-level WHERE leaf READS: [[readsOf]], less the DEAD arguments of a `COALESCE` -- a
+    * bare UNNEST column that follows a non-null literal argument. `COALESCE` answers its first
+    * non-null argument, so that column is never the answer: the leaf does not depend on the element
+    * and the engine answers it correctly per parent (MEASURED at RUN on Elasticsearch 8.18.3 and
+    * 6.8.23: `WHERE COALESCE('x', i.s) = 'x'` returns the rows of the same statement without it).
+    *
+    * WHERE ONLY. A SELECT or a window argument that reads no live UNNEST column still loses the
+    * element -- the statement answers one row per parent, and `SUM(COALESCE(1, i.n)) OVER (..)`
+    * counts parents -- and a leaf under an `ElasticNested` is not answered per parent: each is
+    * judged by [[readsOf]].
+    */
+  private def whereReadsOf(token: Token, unnestAliases: Set[String]): Seq[Identifier] =
+    reads(
+      token,
+      {
+        case c: Coalesce => liveArguments(c, unnestAliases)
+        case n           => n.args
+      }
+    )
+
+  /** `c`'s arguments less every bare UNNEST column that follows its first non-null literal. A
+    * literal only -- `NULL` and a `?` parameter can be NULL (`Value.nullable`) -- and a BARE column
+    * only: a chain over a dead column is still evaluated against the parent, so it is not dead.
+    */
+  private def liveArguments(c: Coalesce, unnestAliases: Set[String]): Seq[PainlessScript] = {
+    val literal = c.values.indexWhere(nonNullLiteral)
+    c.values.zipWithIndex.collect {
+      case (arg, i) if literal < 0 || i <= literal || !bareUnnestColumn(arg, unnestAliases) => arg
+    }
+  }
+
+  /** A literal that is never NULL: a nameless carrier holding one non-nullable `Value`, or that
+    * `Value` itself.
+    */
+  private def nonNullLiteral(arg: Token): Boolean = arg match {
+    case v: Value[_] => !v.nullable
+    case id: Identifier if id.name.isEmpty =>
+      id.functions match {
+        case (v: Value[_]) :: Nil => !v.nullable
+        case _                    => false
+      }
+    case _ => false
+  }
+
+  private def bareUnnestColumn(arg: Token, unnestAliases: Set[String]): Boolean = arg match {
+    case id: Identifier =>
+      id.name.nonEmpty && id.functions.isEmpty && scopeOf(id, unnestAliases).isDefined
+    case _ => false
+  }
+
+  /** The ONE walk behind [[readsOf]] and [[whereReadsOf]]: `argsOf` names the arguments of a
+    * function that are read.
+    */
+  private def reads(
+    token: Token,
+    argsOf: FunctionN[_, _] => Seq[PainlessScript]
+  ): Seq[Identifier] = {
     def walk(t: Token, depth: Int): Seq[Identifier] =
       if (depth > MaxDepth) Nil
       else
@@ -122,7 +182,7 @@ object UnnestScope {
             c.args.flatMap(walk(_, depth + 1)) ++
               c.conditions.flatMap { case (when, _) => walk(when, depth + 1) }
           case d: Distance        => d.identifiers.flatMap(walk(_, depth + 1))
-          case n: FunctionN[_, _] => n.args.flatMap(walk(_, depth + 1))
+          case n: FunctionN[_, _] => argsOf(n).flatMap(walk(_, depth + 1))
           case fc: FunctionChain  => fc.functions.flatMap(walk(_, depth + 1))
           case ft: FromTo         => walk(ft.from, depth + 1) ++ walk(ft.to, depth + 1)
           case _                  => Nil
@@ -186,14 +246,18 @@ object UnnestScope {
     case _          => false
   }
 
-  /** Every WHERE leaf, in statement order. A join relation (`CHILD` / `PARENT`) reads OTHER
-    * documents -- not an UNNEST element -- and falls to the default: not this rule's.
+  /** Every WHERE leaf, in statement order, with whether it is at the TOP LEVEL -- outside any
+    * `ElasticNested` (an explicit `NESTED(..)`, or the wrapper `update` puts around a leaf whose
+    * carrier is nested): a query the engine answers per parent. Under one, a leaf is evaluated per
+    * element, or DROPPED when the wrapper scopes no nested element (the bridge renders it
+    * `match_all`). A join relation (`CHILD` / `PARENT`) reads OTHER documents -- not an UNNEST
+    * element -- and falls to the default: not this rule's.
     */
-  private def whereLeaves(c: Criteria): Seq[Criteria] = c match {
-    case Predicate(l, _, r, _, _) => whereLeaves(l) ++ whereLeaves(r)
-    case n: ElasticNested         => whereLeaves(n.criteria)
-    case e: Expression            => Seq(e)
-    case s: SubqueryCriteria      => Seq(s)
+  private def whereLeaves(c: Criteria, topLevel: Boolean): Seq[(Criteria, Boolean)] = c match {
+    case Predicate(l, _, r, _, _) => whereLeaves(l, topLevel) ++ whereLeaves(r, topLevel)
+    case n: ElasticNested         => whereLeaves(n.criteria, topLevel = false)
+    case e: Expression            => Seq(e -> topLevel)
+    case s: SubqueryCriteria      => Seq(s -> topLevel)
     case _                        => Nil
   }
 
@@ -225,17 +289,23 @@ object UnnestScope {
         }
       }
       // WHERE -- a leaf is evaluated against its carrier's element when the carrier is nested
-      // (`Expression.nested`: what `update` wraps it in `ElasticNested` on), else the parent.
-      val where = ss.where.flatMap(_.criteria).toSeq.flatMap(whereLeaves).flatMap {
-        case e: Expression
+      // (`Expression.nested`: what `update` wraps it in `ElasticNested` on), else the parent. A
+      // top-level leaf -- answered per parent -- does not read a `COALESCE`'s dead arguments
+      // (`whereReadsOf`); under an `ElasticNested` that premise does not hold: every read counts.
+      def readsIn(topLevel: Boolean)(token: Token): Seq[Identifier] =
+        if (topLevel) whereReadsOf(token, aliases) else readsOf(token)
+      val leaves = ss.where.flatMap(_.criteria).toSeq.flatMap(whereLeaves(_, topLevel = true))
+      val where = leaves.flatMap {
+        case (e: Expression, topLevel)
             if carriesFunction(e.identifier) || e.maybeValue.exists(carriesFunction) =>
           val evaluatedIn =
             if (e.identifier.nested) scopeOf(e.identifier, aliases) else None
-          outside(evaluatedIn)(readsOf(e)).map(Violation("WHERE", e.sql, _, evaluatedIn))
-        case s: SubqueryCriteria if s.outerIdentifiers.exists(carriesFunction) =>
+          outside(evaluatedIn)(readsIn(topLevel)(e)).map(Violation("WHERE", e.sql, _, evaluatedIn))
+        case (s: SubqueryCriteria, topLevel) if s.outerIdentifiers.exists(carriesFunction) =>
           s.outerIdentifiers.flatMap { outer =>
             val evaluatedIn = if (outer.nested) scopeOf(outer, aliases) else None
-            outside(evaluatedIn)(readsOf(outer)).map(Violation("WHERE", s.sql, _, evaluatedIn))
+            outside(evaluatedIn)(readsIn(topLevel)(outer))
+              .map(Violation("WHERE", s.sql, _, evaluatedIn))
           }
         case _ => Nil
       }
