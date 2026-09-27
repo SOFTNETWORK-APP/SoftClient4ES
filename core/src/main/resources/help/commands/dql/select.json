@@ -184,7 +184,8 @@
     "A statement with a WITH clause executes only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400",
     "A CTE body may not name the CTE itself: unlike PostgreSQL and other engines, which bind such a name to the base table, this engine rejects it. Rename the CTE (WITH orders_f AS (SELECT ... FROM orders ...)). WITH RECURSIVE is a separate unsupported feature.",
     "UNION, UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] execute only through the relational engine (softclient4es-arrow-extensions); without it the statement is refused with HTTP 400. UNION ALL executes natively on Elasticsearch",
-    "A FROM-less SELECT cannot be a set-operation branch, and a set operation grouped in parentheses ((a UNION b) INTERSECT c) must be written as a derived table instead"
+    "A FROM-less SELECT cannot be a set-operation branch, and a set operation grouped in parentheses ((a UNION b) INTERSECT c) must be written as a derived table instead",
+    "A function over an UNNEST column is refused in SELECT (beside a window function too), and in WHERE unless it is applied directly to the UNNEST column and reads no parent column (YEAR(items.d) = 2025, CAST(items.n AS VARCHAR) = '2'): Elasticsearch evaluates it against the parent document, where the element's columns are not visible. Select the columns and compute or filter from the returned rows"
   ],
   "seeAlso": [
     "INSERT",

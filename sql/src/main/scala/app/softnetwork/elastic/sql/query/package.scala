@@ -813,6 +813,26 @@ package object query {
       windowFunctions.exists(_.isWindowing) && groupBy.isEmpty &&
       (!select.fields.forall(_.isAggregation) || scriptFields.nonEmpty)
 
+    /** The statement a window-enriched ROW query ([[windowRowQuery]]) executes for its ROWS: this
+      * one with the window functions removed from the SELECT list, updated. The window values are
+      * computed by a separate aggregation query and merged into those rows client-side.
+      *
+      * ONE derivation, two readers that must agree: core's `createBaseQuery` EXECUTES it and
+      * `UnnestScope` JUDGES the script fields it evaluates. This statement's own `scriptFields` is
+      * empty whenever a window is present (a window counts as an aggregate), so a rule reading it
+      * would judge a query that never runs -- MEASURED at RUN on Elasticsearch 6.8.23: a function
+      * over an UNNEST column projected beside a window was accepted and answered per parent
+      * document (NULL, or the raw nested value).
+      *
+      * A `def`, never a `lazy val`: rendering a statement is not idempotent (a second render of the
+      * same object drops `SAFE_CAST`'s `try` -- MEASURED), so every caller builds its own copy, as
+      * `createBaseQuery` always did.
+      */
+    def withoutWindows: SingleSearch =
+      this
+        .copy(select = select.copy(fields = select.fields.filterNot(_.identifier.hasWindow)))
+        .update()
+
     /** Response shape: true when the query returns DOCUMENT ROWS (plain, script-field or
       * window-enriched projections), false when it returns aggregation results (GROUP BY /
       * metric-only SELECT). A row query with no LIMIT means EVERY matching row (issue #209) —
@@ -1548,6 +1568,12 @@ package object query {
         _ <- having.map(_.validate()).getOrElse(Right(()))
         _ <- orderBy.map(_.validate()).getOrElse(Right(()))
         _ <- limit.map(_.validate()).getOrElse(Right(()))
+        // Story IDENT-5 -- a function over an UNNEST column that Elasticsearch evaluates against a
+        // document that does not hold the column (a SELECT script field, a WHERE leaf with no
+        // nested carrier) answered HTTP 200 with the RAW value, a NULL or zero rows. Refused here,
+        // FIRST among the statement-level rules and after every clause-level one, so a type error
+        // in the clause is reported before it. ONE derivation, in `UnnestScope`.
+        _ <- UnnestScope.refusal(this).map(Left(_)).getOrElse(Right(()))
         // (An aggregate in WHERE is rejected by Where.validate() itself -- run above through
         // `where.map(_.validate())` -- so DELETE / UPDATE are covered too; see there.)
         _ <- {
