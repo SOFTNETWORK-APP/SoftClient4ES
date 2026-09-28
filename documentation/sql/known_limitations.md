@@ -287,6 +287,11 @@ window function over an UNNEST column, over arithmetic of UNNEST columns or over
 directly to one, and statements planned by the relational engine (cross-index JOIN, derived table,
 CTE). See [JOIN UNNEST](dql_statements.md#join-unnest).
 
+A derived table over `JOIN UNNEST` (answered by the arrow extension) is correct today only when its
+inner query aliases each UNNEST column and carries a `LIMIT`. Otherwise the outer query reads `NULL`
+for the column, or each parent keeps at most 3 elements (measured on Elasticsearch 8.18 and 6.8).
+See [JOIN UNNEST](dql_statements.md#join-unnest).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).
