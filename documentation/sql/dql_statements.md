@@ -716,19 +716,38 @@ against ONE document — so:
   and statements planned by the relational engine (cross-index JOIN, derived table, CTE) are not
   affected by this refusal.
 
+> ⚠️ A **derived table** over `JOIN UNNEST` is answered by the arrow extension (the JDBC and ADBC
+> drivers, the Flight SQL sidecar, federation, and the REPL when the extension is not excluded).
+> Today it answers correctly only when the inner query **aliases each UNNEST column** and carries a
+> **`LIMIT`**. Without the alias, the outer query cannot name the column: in a function it reads
+> `NULL`, and in `WHERE` it is refused. Without the inner `LIMIT`, each parent keeps at most 3
+> elements, as for any UNNEST projection. Measured on Elasticsearch 8.18 and 6.8:
+>
+> ```sql
+> SELECT id, UPPER(product) AS product, total_price
+> FROM (SELECT o.id, items.product AS product,
+>              SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
+>       FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100) d;
+> ```
+
 ```sql
 -- refused: A function over an UNNEST column is not supported in SELECT: UPPER(items.product) is
 -- evaluated per parent document, where items.product is not visible. Select its columns and
 -- compute it from the returned rows.
 SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.items) AS items;
 
+-- answered: select the column, upper-case it in the returned rows
+SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
+
 -- refused as well: beside a window, the rows are computed the same way
 SELECT o.id, UPPER(items.product) AS product,
        SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
 FROM dql_orders o JOIN UNNEST(o.items) AS items;
 
--- answered
-SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
+-- answered: the window stays, only UPPER moves to the returned rows
+SELECT o.id, items.product,
+       SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
+FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
 ```
 
 Without a `LIMIT`, an UNNEST projection currently returns at most 3 elements per parent.
