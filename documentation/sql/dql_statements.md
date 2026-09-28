@@ -685,11 +685,53 @@ ORDER BY o.id ASC;
 
 This means:
 
-- expressions such as `items.price` and `items.quantity` are fully usable
-- window functions over `PARTITION BY parent_id` work
+- the array's columns (`items.price`, `items.quantity`) can be projected and filtered
+- a window over an arithmetic expression of UNNEST columns works (e.g.
+  `SUM(items.price * items.quantity) OVER …`); a window over a bare UNNEST column currently returns
+  NULL
 - parent-level aggregations can be computed
 - **full row-level expansion** produces one output row per array element
 - multi-level nesting is handled recursively
+
+### Functions over an UNNEST column
+
+Each array element is a separate (nested) Elasticsearch document, and a computed value is evaluated
+against ONE document — so:
+
+- **In SELECT**, a function over an UNNEST column (`UPPER(items.product)`,
+  `items.price * items.quantity`, `CAST(items.product AS VARCHAR)`) is **refused**, beside a window
+  function too: it would be computed once per parent document, where the element's columns are not
+  visible. Select the columns and compute the value from the returned rows.
+- **In WHERE**, a condition whose function is applied directly to the UNNEST column —
+  `CAST(items.quantity AS VARCHAR) = '2'`, `ISNULL(items.price) = FALSE`, a date part such as
+  `YEAR(<column>) = 2025` or `EXTRACT(MONTH FROM <column>) = 2` — is evaluated on each element and
+  works. A condition whose function is not (`UPPER(items.product) = 'A'`, `ABS(items.quantity) = 2`,
+  a `CASE`, `COALESCE`, arithmetic), or that is evaluated on each element but also reads a parent
+  column, is **refused**: filter the returned rows instead — unless the UNNEST column is only a
+  `COALESCE` argument after a non-null literal, which `COALESCE` never returns
+  (`COALESCE('n/a', items.product) = 'n/a'` works).
+- A condition without a function (`items.quantity >= 1`, `items.product IN ('A', 'B')`), an
+  aggregate over UNNEST columns, a window function over an UNNEST column, over arithmetic of UNNEST
+  columns or over a function applied directly to one (`SUM(CAST(items.quantity AS DOUBLE)) OVER …`),
+  and statements planned by the relational engine (cross-index JOIN, derived table, CTE) are not
+  affected by this refusal.
+
+```sql
+-- refused: A function over an UNNEST column is not supported in SELECT: UPPER(items.product) is
+-- evaluated per parent document, where items.product is not visible. Select its columns and
+-- compute it from the returned rows.
+SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.items) AS items;
+
+-- refused as well: beside a window, the rows are computed the same way
+SELECT o.id, UPPER(items.product) AS product,
+       SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
+FROM dql_orders o JOIN UNNEST(o.items) AS items;
+
+-- answered
+SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
+```
+
+Without a `LIMIT`, an UNNEST projection currently returns at most 3 elements per parent.
 
 ---
 

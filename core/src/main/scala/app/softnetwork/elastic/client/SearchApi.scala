@@ -2023,24 +2023,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     )
   }
 
-  /** Create base query by removing window functions from SELECT
+  /** Create base query by removing window functions from SELECT: `SingleSearch.withoutWindows`, the
+    * ONE derivation the parse-time UNNEST rule judges too (`UnnestScope`), so the statement that is
+    * judged and the statement that runs cannot diverge.
     */
   protected def createBaseQuery(
     request: SingleSearch
-  ): SingleSearch = {
-
-    // Remove window function fields from SELECT
-    val baseFields = request.select.fields.filterNot(_.identifier.hasWindow)
-
-    // Create modified request
-    val baseRequest = request
-      .copy(
-        select = request.select.copy(fields = baseFields)
-      )
-      .update()
-
-    baseRequest
-  }
+  ): SingleSearch = request.withoutWindows
 
   /** Extract partition key from aggregation row
     */

@@ -260,6 +260,33 @@ instead — filter it in `WHERE`, or compute the remainder from an already-filte
 and Elasticsearch rejects a sort script that can return null. Order by a stored column instead, or
 make the expression a computed column and sort on that.
 
+## A function over an UNNEST column is refused
+
+An `UNNEST` element is a separate (nested) Elasticsearch document, and a computed value is evaluated
+against ONE document. A function **projected** over an UNNEST column — alone or beside a window
+function — would be computed once per PARENT document, where the element's columns do not exist;
+so would a WHERE condition whose function is not applied directly to the UNNEST column (unless the
+column is only a `COALESCE` argument after a non-null literal, which `COALESCE` never returns).
+Both used to answer HTTP 200 with wrong rows — the raw value, NULL, zero rows or every row — and are
+now refused with a `400`: *"A function over an UNNEST column is not supported in …"*.
+
+```sql
+-- refused
+SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.items) AS items;
+
+-- answered: select the column, compute the value from the returned rows
+SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
+```
+
+Without a `LIMIT`, an UNNEST projection currently returns at most 3 elements per parent.
+
+Not affected by this refusal: a WHERE condition whose function is applied directly to the UNNEST
+column and reads no parent column (`CAST(items.quantity AS VARCHAR) = '2'`, a date part such as
+`YEAR(<column>) = 2025`), any condition without a function, aggregates over UNNEST columns, a
+window function over an UNNEST column, over arithmetic of UNNEST columns or over a function applied
+directly to one, and statements planned by the relational engine (cross-index JOIN, derived table,
+CTE). See [JOIN UNNEST](dql_statements.md#join-unnest).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).
