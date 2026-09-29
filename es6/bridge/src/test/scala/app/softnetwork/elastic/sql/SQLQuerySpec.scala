@@ -4456,7 +4456,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |      },
         |      "aggs": {
         |        "__c2": {
-        |          "cardinality": {
+        |          "value_count": {
         |            "field": "_index"
         |          }
         |        },
@@ -4514,7 +4514,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          }
         |        },
         |        "count_distinct_all": {
-        |          "cardinality": {
+        |          "value_count": {
         |            "field": "_index"
         |          }
         |        },
@@ -4540,6 +4540,49 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("&&", " && ")
       .replaceAll(">", " > ")
       .replaceAll("\\?false:", " ? false : ")
+  }
+
+  it should "count documents for COUNT(DISTINCT *) and COUNT(DISTINCT _id), exactly as for COUNT(*)" in {
+    // 🔴 Both were the `cardinality` of `_index`: the number of distinct INDICES, so every group
+    // answered 1. The number of distinct documents IS the number of documents, and an `_id` is
+    // unique within its index: each shape must emit exactly what COUNT(*) emits -- per group, over
+    // the whole table and per window partition.
+    Seq(
+      "SELECT Country, %s AS n FROM Customers GROUP BY Country",
+      "SELECT %s AS n FROM Customers",
+      "SELECT Country, %s OVER (PARTITION BY Country) AS n FROM Customers"
+    ).foreach { shape =>
+      val star: ElasticSearchRequest = SelectStatement(shape.format("COUNT(*)"))
+      Seq("COUNT(DISTINCT *)", "COUNT(DISTINCT _id)").foreach { count =>
+        val distinct: ElasticSearchRequest = SelectStatement(shape.format(count))
+        withClue(s"[${shape.format(count)}] ") {
+          distinct.query should include(""""n":{"value_count":{"field":"_index"}}""")
+          distinct.query should not include "cardinality"
+          distinct.query shouldBe star.query
+        }
+      }
+    }
+  }
+
+  it should "keep COUNT(DISTINCT _type) the cardinality of _index" in {
+    // The number of mapping types is 1: COUNT(DISTINCT _type) is not a count of documents. Each
+    // request is pinned to the bytes emitted before COUNT(DISTINCT _id) became one.
+    val perCountry =
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"Country":{"terms":""" +
+      """{"field":"Country","size":65536,"min_doc_count":1},""" +
+      """"aggs":{"n":{"cardinality":{"field":"_index"}}}}}}"""
+    Seq(
+      "SELECT Country, COUNT(DISTINCT _type) AS n FROM Customers GROUP BY Country" -> perCountry,
+      "SELECT COUNT(DISTINCT _type) AS n FROM Customers" ->
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"n":{"cardinality":{"field":"_index"}}}}""",
+      "SELECT Country, COUNT(DISTINCT _type) OVER (PARTITION BY Country) AS n FROM Customers" ->
+      perCountry
+    ).foreach { case (sql, expected) =>
+      val request: ElasticSearchRequest = SelectStatement(sql)
+      withClue(s"[$sql] ") {
+        request.query shouldBe expected
+      }
+    }
   }
 
   it should "test" in {

@@ -56,7 +56,8 @@ case class AvgTransformAggregation(field: String) extends TransformAggregation {
 case class CountTransformAggregation(field: String) extends TransformAggregation {
   override def name: String = "value_count"
 
-  override def sql: String = if (field == "_id") "COUNT(*)" else s"COUNT($field)"
+  override def sql: String =
+    if (field == CountAllDocumentsField) "COUNT(*)" else s"COUNT($field)"
 }
 
 case class CardinalityTransformAggregation(field: String) extends TransformAggregation {

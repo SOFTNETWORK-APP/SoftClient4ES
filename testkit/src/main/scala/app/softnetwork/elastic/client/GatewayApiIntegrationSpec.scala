@@ -17,11 +17,14 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.{DdlResult, DmlResult, ElasticSuccess}
+import app.softnetwork.elastic.client.spi.ElasticClientSpi
 import app.softnetwork.elastic.scalatest.ElasticTestKit
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
+import app.softnetwork.elastic.sql.query.SelectStatement
+import com.typesafe.config.ConfigFactory
 
 import java.time.temporal.ChronoUnit
 import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
@@ -1965,6 +1968,99 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
           "childrenCount" -> 2
         )
       )
+    )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Composite PRIMARY KEY
+  // ---------------------------------------------------------------------------
+
+  it should "store every row of a table with a composite PRIMARY KEY under its composite _id" in {
+    // The key's `_id` template was ONE mustache variable (`{{country\|\|city}}`), which resolves to
+    // nothing: every document was rejected ("if _id is specified it must not be empty") while
+    // CREATE reported success. The key is declared in NON-alphabetical order and ('X', 'X') repeats
+    // a value, so an `_id` built in another order, or from a de-duplicated set, shows.
+    val create =
+      """CREATE TABLE IF NOT EXISTS dml_cities (
+        |  country KEYWORD NOT NULL,
+        |  city KEYWORD NOT NULL,
+        |  population INT,
+        |  PRIMARY KEY (country, city)
+        |);""".stripMargin
+
+    assertDdl(System.nanoTime(), client.run(create).futureValue)
+
+    val insert =
+      """INSERT INTO dml_cities (country, city, population) VALUES
+        |  ('FR', 'Paris',  100),
+        |  ('FR', 'Lyon',    50),
+        |  ('DE', 'Berlin',  80),
+        |  ('X',  'X',        1);""".stripMargin
+
+    assertDml(System.nanoTime(), client.run(insert).futureValue, Some(DmlResult(inserted = 4)))
+
+    def stored(): Seq[Map[String, Any]] =
+      collectRows(
+        System.nanoTime(),
+        client.run("SELECT country, city, population FROM dml_cities").futureValue
+      )
+
+    def rows(values: (String, String, Int)*): Seq[Map[String, Any]] =
+      values.map { case (country, city, population) =>
+        Map("country" -> country, "city" -> city, "population" -> population)
+      }
+
+    stored() should contain theSameElementsAs rows(
+      ("FR", "Paris", 100),
+      ("FR", "Lyon", 50),
+      ("DE", "Berlin", 80),
+      ("X", "X", 1)
+    )
+
+    // Each row sits under the `_id` the key names: its values, in the declared order. Read through
+    // a SEARCH by a client that surfaces `_id`, not a GET by id: the Jest client puts the id in the
+    // URL unencoded, and `|` is illegal in a URI path.
+    val withDocumentId: ElasticClientApi =
+      java.util.ServiceLoader
+        .load(classOf[ElasticClientSpi])
+        .iterator()
+        .next()
+        .client(
+          ConfigFactory
+            .parseString("elastic.include-document-id = true")
+            .withFallback(elasticConfig)
+        )
+    withDocumentId.search(SelectStatement("SELECT country, city FROM dml_cities"))(
+      NativeContext
+    ) match {
+      case ElasticSuccess(response) =>
+        response.results.map(row => row("_id")) should contain theSameElementsAs Seq(
+          "FR||Paris",
+          "FR||Lyon",
+          "DE||Berlin",
+          "X||X"
+        )
+        response.results.foreach { row =>
+          row("_id") shouldBe s"${row("country")}||${row("city")}"
+        }
+      case other => fail(s"cannot read the _id of dml_cities: $other")
+    }
+
+    // ON CONFLICT DO UPDATE addresses a row by the `_id` the BULK path builds, so it must be the
+    // pipeline's: an upsert under any other `_id` ADDS a row instead of updating one.
+    val upsert =
+      """INSERT INTO dml_cities (country, city, population) VALUES
+        |  ('FR', 'Paris', 101),
+        |  ('X',  'X',       2)
+        |ON CONFLICT DO UPDATE;""".stripMargin
+
+    assertDml(System.nanoTime(), client.run(upsert).futureValue, Some(DmlResult(inserted = 2)))
+
+    stored() should contain theSameElementsAs rows(
+      ("FR", "Paris", 101),
+      ("FR", "Lyon", 50),
+      ("DE", "Berlin", 80),
+      ("X", "X", 2)
     )
   }
 

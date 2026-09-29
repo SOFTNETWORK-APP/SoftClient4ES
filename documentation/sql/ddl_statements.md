@@ -274,7 +274,7 @@ CREATE TABLE users (
 - Avoid long `_id` values.
 - Mapping rules:
 	- `PRIMARY KEY (id)` → `_id = id`
-	- `PRIMARY KEY (id, birthdate)` → `_id = "{{id}}-{{birthdate}}"`
+	- `PRIMARY KEY (id, birthdate)` → `_id = "{{id}}||{{birthdate}}"`
 
 ---
 

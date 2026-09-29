@@ -24,7 +24,7 @@ import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.file._
 import app.softnetwork.elastic.client.result.{ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.sql.query.{FileFormat, Unknown}
-import app.softnetwork.elastic.sql.schema.sqlConfig
+import app.softnetwork.elastic.sql.schema.CompositeKey
 import org.apache.hadoop.conf.Configuration
 
 import java.time.LocalDate
@@ -711,9 +711,12 @@ trait BulkApi extends BulkTypes with ElasticClientHelpers {
     val jsonNode = mapper.readTree(document)
     val jsonMap = mapper.convertValue(jsonNode, classOf[Map[String, Any]])
 
-    // extract id
+    // extract id -- the `_id` the table's PRIMARY KEY pipeline writes (`CompositeKey`), so that an
+    // upsert addresses the row that pipeline stored: the values in `keys`' iteration order, which
+    // for a declared key is its declared order (`IndicesApi` passes a `ListSet`). `toSeq` BEFORE
+    // `map`: mapping the Set itself collapsed equal values, so the key (7, 7) became "7".
     val id = idKey.map { keys =>
-      keys.map(i => jsonMap.getOrElse(i, "").toString).mkString(sqlConfig.compositeKeySeparator)
+      CompositeKey.id(keys.toSeq.map(i => jsonMap.getOrElse(i, "").toString))
     }
 
     // extract final index name

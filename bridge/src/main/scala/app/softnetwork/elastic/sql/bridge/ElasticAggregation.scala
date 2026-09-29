@@ -218,16 +218,7 @@ object ElasticAggregation {
     val _agg =
       aggType match {
         case COUNT =>
-          val field =
-            sourceField match {
-              case "*" | "_id" | "_index" | "_type" => "_index"
-              case _                                => sourceField
-            }
-          if (distinct)
-            cardinalityAgg(aggName, field)
-          else {
-            valueCountAgg(aggName, field)
-          }
+          countAggregation(aggName, sourceField, distinct)
         case MIN => aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
         case MAX => aggWithFieldOrScript(maxAgg, (name, s) => maxAgg(name, sourceField).script(s))
         case AVG => aggWithFieldOrScript(avgAgg, (name, s) => avgAgg(name, sourceField).script(s))
@@ -243,17 +234,7 @@ object ElasticAggregation {
           )
         case th: WindowFunction =>
           th.window match {
-            case COUNT =>
-              val field =
-                sourceField match {
-                  case "*" | "_id" | "_index" | "_type" => "_index"
-                  case _                                => sourceField
-                }
-              if (distinct)
-                cardinalityAgg(aggName, field)
-              else {
-                valueCountAgg(aggName, field)
-              }
+            case COUNT => countAggregation(aggName, sourceField, distinct)
             case MIN =>
               aggWithFieldOrScript(minAgg, (name, s) => minAgg(name, sourceField).script(s))
             case MAX =>
@@ -433,6 +414,36 @@ object ElasticAggregation {
       nestedElement = nestedElement,
       bucketPath = bucketPath
     )
+  }
+
+  /** The aggregation of a `COUNT`, plain or windowed.
+    *
+    * `COUNT(DISTINCT *)` counts DOCUMENTS, exactly as `COUNT(*)` does -- the number of distinct
+    * documents IS the number of documents -- so it is the same `value_count` on `_index`, a field
+    * every document carries exactly once (a view's transform counts the same field,
+    * `transform.CountAllDocumentsField`).
+    *
+    * `COUNT(DISTINCT _id)` is that same count of documents: exact within one index, where an `_id`
+    * is unique; across several indices, an id present in two of them is counted twice. (An exact
+    * distinct count on `_id` needs field data, which Elasticsearch 8 disallows.)
+    *
+    * 🔴 Both were the `cardinality` of `_index`: the number of distinct INDICES, so every group
+    * answered 1, with HTTP 200. That remains what `COUNT(DISTINCT _index)` names, and what
+    * `COUNT(DISTINCT _type)` answers: the number of mapping types, 1.
+    */
+  private def countAggregation(
+    aggName: String,
+    sourceField: String,
+    distinct: Boolean
+  ): Aggregation = {
+    val field =
+      sourceField match {
+        case "*" | "_id" | "_index" | "_type" => "_index"
+        case _                                => sourceField
+      }
+    val countsDocuments = sourceField == "*" || sourceField == "_id"
+    if (distinct && !countsDocuments) cardinalityAgg(aggName, field)
+    else valueCountAgg(aggName, field)
   }
 
   def buildBuckets(
