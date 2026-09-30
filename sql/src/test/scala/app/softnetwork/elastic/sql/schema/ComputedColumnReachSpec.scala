@@ -297,7 +297,7 @@ class ComputedColumnReachSpec extends AnyFlatSpec with Matchers with TableDriven
   it should "ignore a dependency the SOURCE table never declared" in {
     // `_id` is a metadata field, not a column: the projection has nothing to say about it, and a
     // rule that treated every unknown name as missing would drop every primary-key processor.
-    val source = t1.copy(processors = Seq(PrimaryKeyProcessor(column = "_id", value = Set("c"))))
+    val source = t1.copy(processors = Seq(PrimaryKeyProcessor(column = "_id", value = Seq("c"))))
     val merged = source.mergeWithSearch(search("SELECT c FROM t1")).copy(name = "t2")
     merged.processors.map(_.column) shouldBe Seq("_id")
   }

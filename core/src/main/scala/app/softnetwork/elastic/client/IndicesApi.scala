@@ -47,6 +47,7 @@ import org.apache.hadoop.conf.Configuration
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.collection.immutable.ListSet
 import scala.concurrent.{ExecutionContext, Future}
 import scala.jdk.CollectionConverters._
 
@@ -1490,10 +1491,11 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         }
       }
 
-      // 4. Derive bulk options
+      // 4. Derive bulk options -- the key in its DECLARED order, which is the order of the values in
+      // the `_id` the table's pipeline writes (`CompositeKey`): a plain `Set` loses it past 4 columns
       idKey = idx.primaryKey match {
         case Nil => None
-        case pk  => Some(pk.toSet)
+        case pk  => Some(ListSet(pk: _*))
       }
       suffixKey = idx.partitionBy.map(_.column)
       suffixPattern = idx.partitionBy.flatMap(_.dateFormats.headOption)
@@ -1603,10 +1605,10 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           Left(ElasticError.notFound(target, "copyInto"))
       }.toTry)
 
-      // 3. Derive bulk options
+      // 3. Derive bulk options -- the key in its declared order (see `runInsertByQuery`)
       idKey = idx.primaryKey match {
         case Nil => None
-        case pk  => Some(pk.toSet)
+        case pk  => Some(ListSet(pk: _*))
       }
       suffixKey = idx.partitionBy.map(_.column)
       suffixPattern = idx.partitionBy.flatMap(_.dateFormats.headOption)

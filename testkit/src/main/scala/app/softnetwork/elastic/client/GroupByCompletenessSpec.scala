@@ -1096,4 +1096,85 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       res.isSuccess shouldBe false
     }
   }
+
+  // ------------------------------------------------------------------
+  // COUNT(DISTINCT *) and COUNT(DISTINCT _id) count DOCUMENTS, exactly as COUNT(*) does (an `_id`
+  // is unique within its index, and this fixture is one index).
+  //
+  // 🔴 The search bridge emitted both as the `cardinality` of `_index`: the number of distinct
+  // INDICES, so every group answered 1 -- and so did the whole table -- with HTTP 200. The oracle is
+  // the fixture, not a second query through the engine: `cat_i` holds exactly `i` documents (703
+  // in all), so the old answer is right for one group of 37 and wrong for the table.
+  // ------------------------------------------------------------------
+
+  private val documentCounts = Seq("n" -> "COUNT(DISTINCT *)", "d" -> "COUNT(DISTINCT _id)")
+
+  "COUNT(DISTINCT *) and COUNT(DISTINCT _id)" should "count the documents of every group, as COUNT(*) does" in {
+    implicit val distinctCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement(
+        "SELECT category, COUNT(DISTINCT *) AS n, COUNT(DISTINCT _id) AS d, COUNT(*) AS c " +
+        "FROM group_by_completeness GROUP BY category"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        documentCounts.foreach { case (column, count) =>
+          withClue(s"[$count] rows=${response.results.take(4)}: ") {
+            response.results
+              .map(row => row("category").toString -> row(column).toString.toDouble)
+              .toMap shouldBe (1 to categories).map(c => f"cat_$c%02d" -> c.toDouble).toMap
+            // Read back exactly as COUNT(*) is: the same value, of the same runtime type (the typed
+            // ES 8 / 9 models read a `value_count` as a double, a `cardinality` as a long).
+            response.results.foreach { row =>
+              row(column) shouldBe row("c")
+              row(column).getClass shouldBe row("c").getClass
+            }
+          }
+        }
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "count the documents of the whole table" in {
+    implicit val distinctCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement(
+        "SELECT COUNT(DISTINCT *) AS n, COUNT(DISTINCT _id) AS d, COUNT(*) AS c " +
+        "FROM group_by_completeness"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        withClue(s"rows=${response.results}: ") {
+          response.results should have size 1
+          val row = response.results.head
+          documentCounts.foreach { case (column, count) =>
+            withClue(s"[$count] ") {
+              row(column).toString.toDouble shouldBe totalDocs.toDouble
+              row(column) shouldBe row("c")
+              row(column).getClass shouldBe row("c").getClass
+            }
+          }
+        }
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "filter the groups on their document count in a HAVING" in {
+    // cat_31 .. cat_37 hold more than 30 documents; with the count of indices no group did.
+    implicit val distinctCtx: ConversionContext = NativeContext
+    documentCounts.foreach { case (_, count) =>
+      client.search(
+        SelectStatement(
+          s"SELECT category FROM group_by_completeness GROUP BY category HAVING $count > 30"
+        )
+      ) match {
+        case ElasticSuccess(response) =>
+          withClue(s"[$count] ") {
+            response.results.map(_("category").toString).toSet shouldBe
+            (categories - over30 + 1 to categories).map(c => f"cat_$c%02d").toSet
+          }
+        case ElasticFailure(error) => fail(s"[$count] Query failed: ${error.message}")
+      }
+    }
+  }
 }

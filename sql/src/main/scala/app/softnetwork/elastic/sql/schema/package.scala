@@ -252,20 +252,12 @@ package object schema {
           val ignoreFailure = Option(props.get("ignore_failure")).exists(_.asBoolean())
 
           if (field == "_id" && valueNode.isDefined) {
-            val value =
-              valueNode.get
-                .asText()
-                .trim
-                .stripPrefix("{{")
-                .stripSuffix("}}")
-                .trim
             // DdlPrimaryKeyProcessor
-            val cols = value.split(sqlConfig.compositeKeySeparator).toSet
             PrimaryKeyProcessor(
               pipelineType = pipelineType,
               description = desc,
               column = "_id",
-              value = cols,
+              value = CompositeKey.columns(valueNode.get.asText()),
               ignoreFailure = ignoreFailure
             )
           } else {
@@ -1164,14 +1156,70 @@ package object schema {
 
   }
 
+  /** The `_id` of a document whose table declares a PRIMARY KEY: each key column's value, in the
+    * DECLARED order, joined by [[CompositeKey.separator]] -- `{{a}}||{{b}}` in the ingest pipeline,
+    * `1||2` in the document. ONE definition for every place that builds or reads it:
+    * [[PrimaryKeyProcessor]] renders the template, `IngestProcessor.apply` reads it back, and
+    * `BulkApi` builds the same `_id` for a bulk upsert (`ON CONFLICT DO UPDATE`, `COPY INTO`),
+    * which addresses the document by the `_id` it NAMES: MEASURED on 7.17.29 and 8.18.3, an upsert
+    * whose `_id` differs from the pipeline's does not update the row, it adds a second one.
+    *
+    * 🔴 One mustache variable PER COLUMN. The template was `{{a\|\|b}}`: ONE variable, named
+    * `a\|\|b`, that resolves to nothing, so the `_id` was empty and Elasticsearch rejected every
+    * document ("if _id is specified it must not be empty") while `CREATE` reported success -- a
+    * composite-key table, and every view with two GROUP BY keys, stored no rows.
+    */
+  object CompositeKey {
+
+    /** `sql.composite-key-separator` is configured as a REGEX (`\|\|`); an `_id` is built with the
+      * literal text that regex matches (`||`).
+      */
+    lazy val separator: String = literal(sqlConfig.compositeKeySeparator)
+
+    /** The literal text of a separator regex: its backslash escapes removed, then CHECKED -- a
+      * configured regex that does not match its own unescaped text (`[|]{2}`, `\Q||\E`) is refused
+      * loudly instead of producing an `_id` layout nothing reads back.
+      */
+    def literal(regex: String): String = {
+      val text = regex.replaceAll("""\\(\W)""", "$1")
+      require(
+        text.nonEmpty && java.util.regex.Pattern.matches(regex, text),
+        s"sql.composite-key-separator must be a regex matching exactly one literal text: $regex"
+      )
+      text
+    }
+
+    /** The ingest template of the `_id`: one mustache variable per key column, in order. */
+    def template(columns: Seq[String], separator: String = separator): String =
+      columns.map(column => s"{{$column}}").mkString(separator)
+
+    /** The key columns a template names, in order: the inverse of [[template]]. A template written
+      * before the fix (`{{a\|\|b}}`) reads back as what it IS -- one variable -- so the pipeline
+      * diff reports it as changed against the table's declared key.
+      */
+    def columns(template: String, separator: String = separator): Seq[String] =
+      template.trim
+        .split(java.util.regex.Pattern.quote(separator), -1)
+        .toSeq
+        .map(_.trim.stripPrefix("{{").stripSuffix("}}").trim)
+
+    /** The `_id` of a document whose key columns hold `values`, in the declared order. */
+    def id(values: Seq[String]): String = values.mkString(separator)
+  }
+
+  /** @param value
+    *   the key columns in the DECLARED order, which is the order of the values in the `_id`
+    * @param separator
+    *   the `sql.composite-key-separator` REGEX; the `_id` joins with its literal text
+    */
   case class PrimaryKeyProcessor(
     pipelineType: IngestPipelineType = IngestPipelineType.Default,
     description: Option[String] = None,
     column: String,
-    value: Set[String],
+    value: Seq[String],
     ignoreFailure: Boolean = false,
     ignoreEmptyValue: Option[Boolean] = Some(false),
-    separator: String = "\\|\\|"
+    separator: String = sqlConfig.compositeKeySeparator
   ) extends IngestProcessor {
     def processorType: IngestProcessorType = IngestProcessorType.Set
 
@@ -1180,7 +1228,7 @@ package object schema {
     override def properties: ListMap[String, Any] = ListMap(
       "description"    -> description.getOrElse(sql),
       "field"          -> column,
-      "value"          -> value.mkString("{{", separator, "}}"),
+      "value"          -> CompositeKey.template(value, CompositeKey.literal(separator)),
       "ignore_failure" -> ignoreFailure
     ) ++ ignoreEmptyValue
       .map("ignore_empty_value" -> _)
@@ -1300,7 +1348,7 @@ package object schema {
       Seq(
         PrimaryKeyProcessor(
           column = "_id",
-          value = primaryKey.toSet,
+          value = primaryKey,
           separator = sqlConfig.compositeKeySeparator
         )
       )
@@ -2842,7 +2890,7 @@ package object schema {
           s.column +: s.validationExpr.toSeq.flatMap(ScriptReferences.of).map(_._1.path)
         case r: RenameProcessor        => Seq(r.column, r.newName)
         case r: RemoveProcessor        => Seq(r.column)
-        case k: PrimaryKeyProcessor    => k.column +: k.value.toSeq
+        case k: PrimaryKeyProcessor    => k.column +: k.value
         case s: SetProcessor           => s.column +: s.copyFrom.toSeq
         case d: DateIndexNameProcessor => Seq(d.column)
         case e: EnrichProcessor        => Seq(e.column, e.field)

@@ -583,7 +583,7 @@ Composite PKs are fully supported:
 The Elasticsearch `_id` is constructed from all PK columns, e.g.:
 
 ```
-O1001|C001
+O1001||C001
 ```
 
 This ensures deterministic conflict detection.
