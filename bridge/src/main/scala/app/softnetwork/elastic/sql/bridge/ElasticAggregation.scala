@@ -757,13 +757,9 @@ object ElasticAggregation {
 
     val currentNestedPath = nested.map(_.nestedPath).getOrElse("")
 
-    // No filtering
-    val fullScript = MetricSelectorScript
-      .metricSelector(criteria)
-      .replaceAll("1 == 1 &&", "")
-      .replaceAll("&& 1 == 1", "")
-      .replaceAll("1 == 1", "")
-      .trim
+    // No filtering at this level is `None`, never a placeholder to strip out of a script: a
+    // rendered comparison can hold the placeholder's text (`params.max_c1 == 1`).
+    val fullScript = MetricSelectorScript.selectorScript(criteria).map(_.trim).getOrElse("")
 
     //    println(s"[DEBUG] currentNestedPath = $currentNestedPath")
     //    println(s"[DEBUG] fullScript (complete) = $fullScript")

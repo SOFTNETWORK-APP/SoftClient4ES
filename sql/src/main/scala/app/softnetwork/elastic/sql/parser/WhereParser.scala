@@ -85,6 +85,16 @@ import app.softnetwork.elastic.sql.query.{
   Where
 }
 
+/** One element of a condition once the scanner's tokens are taken apart (`WhereParser.flatten`): an
+  * operand, or the operator joining two operands together with the `NOT` the scanner attached to
+  * the operand AFTER it. Top-level, not inside the trait: an inner case class of a trait cannot be
+  * type-tested without an unchecked outer reference.
+  */
+private[parser] sealed trait ChainItem
+private[parser] final case class ChainOperand(criteria: Criteria) extends ChainItem
+private[parser] final case class ChainJunction(operator: PredicateOperator, negatesNext: Boolean)
+    extends ChainItem
+
 trait WhereParser {
   self: Parser with GroupByParser with OrderByParser =>
 
@@ -488,7 +498,7 @@ trait WhereParser {
     * 🔴 Why it had to change. `rep1` offers a bare `end` and never backtracks, so for every
     * PARENTHESISED body whose last clause is a WHERE or a HAVING — story 22.1's `FROM (SELECT a
     * FROM t WHERE x = 1) d`, story 22.2's `IN (SELECT id FROM c WHERE r = 'EU')` — the inner clause
-    * swallowed the subquery's own `)`, `processTokensHelper`'s top-level `EndDelimiter` arm
+    * swallowed the subquery's own `)`, the reducer's (`processTokens`) top-level `EndDelimiter` arm
     * answered `Left("Unbalanced parentheses")` and `where` raised it as a NON-backtracking `err`
     * that killed the whole statement. It is the mechanism story 21.4 met inside relation predicates
     * and fixed by giving them `relationTokens`, which omits `end` (`:264-293`) — the same defect,
@@ -497,7 +507,7 @@ trait WhereParser {
     * Depth is counted on `StartPredicate` / `EndPredicate` ONLY, because those are the only
     * delimiters this alternation can emit: `start` produces `StartPredicate`, `end` produces
     * `EndPredicate`, and `then_case` produces `ThenCase` — which IS an `EndDelimiter` but must keep
-    * being consumed, since `processTokensHelper` reads it as end-of-tokens for a CASE-WHEN
+    * being consumed, since the reducer (`processTokens`) reads it as end-of-tokens for a CASE-WHEN
     * condition. A parenthesis that an ITEM consumes (a function call, a relation predicate's own
     * group, `IN (1, 2)`) never reaches this counter: items are consumed atomically.
     *
@@ -557,67 +567,31 @@ trait WhereParser {
 
   import scala.annotation.tailrec
 
-  /** This method is used to recursively process a list of SQL tokens and construct SQL criteria and
-    * predicates from these tokens. Here are the key points:
+  /** The tokens of ONE parenthesis level as an alternating operand / junction list.
     *
-    * Base case (Nil): If the list of tokens is empty (Nil), we check the contents of the stack to
-    * determine the final result.
+    * 🔴 `whereCriteria` scans `allPredicate` first, and `allPredicate` holds the binary
+    * [[predicate]] production (`criteria (AND|OR) [NOT] criteria`). So the scanner PRE-PAIRS two
+    * adjacent conditions into one `Predicate` token, left to right and whatever their operators: `a
+    * OR b AND c` arrives as `[a OR b], AND, c`. A precedence reduction must take the pairs apart
+    * before it can apply AND before OR. A pair is taken apart WITHOUT moving its `NOT`: the scanner
+    * put it on the pair's right operand, and [[reduceChain]] puts it back there whenever that
+    * operand stays a right operand. `predicate` itself must stay in the scanner: it is the only
+    * home of a `NOT` in front of a LIKE, IN, BETWEEN or IS condition after an operator (`a AND NOT
+    * b LIKE 'x%'`) -- those carry their own NOT only after the column.
     *
-    * If the stack contains an operator, a left criterion and a right criterion, we create a
-    * SQLPredicate predicate. Otherwise, we return the first criterion (SQLCriteria) of the stack if
-    * it exists. Case of criteria (SQLCriteria): If the first token is a criterion, we treat it
-    * according to the content of the stack:
+    * A parenthesised group is reduced on its own ([[processSubTokens]]) and enters the chain as ONE
+    * operand, marked `group = true`: the mark `Predicate.sql` renders the parentheses from. `THEN`
+    * ends the scan: `case_condition` hands this reducer its tokens up to and including it.
     *
-    * If the stack contains a predicate operator, we create a predicate with the left and right
-    * criteria and update the stack. Otherwise, we simply add the criterion to the stack. Case of
-    * operators (SQLPredicateOperator): If the first token is a predicate operator, we treat it
-    * according to the contents of the stack:
-    *
-    * If the stack contains at least two elements, we create a predicate with the left and right
-    * criterion and update the stack. If the stack contains only one element (a single operator), we
-    * simply add the operator to the stack. Otherwise, it is an invalid stack state. Case of
-    * delimiters (StartDelimiter and EndDelimiter): If the first token is a start delimiter
-    * (StartDelimiter), we extract the tokens up to the corresponding end delimiter (EndDelimiter),
-    * we recursively process the extracted sub-tokens, then we continue with the rest of the tokens.
-    * A closing delimiter that reaches this scan is unmatched, because a balanced group is consumed
-    * whole by extractSubTokens.
-    *
-    * Rejections: every failure is returned as a `Left(reason)` and NEVER thrown (#250).
-    * `Parser.apply` is typed `Either[ParserError, Statement]` and five production call sites match
-    * on that Either with no `try` of their own; the combinator callers of this helper turn a `Left`
-    * into `err(reason)`.
-    *
-    * @param tokens
-    *   - list of SQL tokens
-    * @param stack
-    *   - stack of tokens
-    * @return
-    *   the criteria built from the tokens, or a Left carrying the reason the tokens are invalid
+    * Rejections are returned, never thrown (#250).
     */
   @tailrec
-  private def processTokensHelper(
+  private def flatten(
     tokens: List[Token],
-    stack: List[Token]
-  ): Either[String, Option[Criteria]] = {
+    acc: List[ChainItem]
+  ): Either[String, List[ChainItem]] =
     tokens match {
-      case Nil =>
-        stack match {
-          case (right: Criteria) :: (op: PredicateOperator) :: (left: Criteria) :: Nil =>
-            Right(Option(Predicate(left, op, right)))
-          // #250 - a Criteria head with anything still UNDER it means the tokens folded into a
-          // stack this function cannot reduce, and returning just the head would SILENTLY DROP the
-          // rest: the same defect class as the EndDelimiter arm below, and the #213 family. It used
-          // to return `stack.headOption`.
-          // MEASURED 2026-09-05 by instrumenting this arm and running every suite that parses SQL
-          // (sql 592, core 856, bridge 120, macros-tests 19): NO input reaches it with a Criteria
-          // head and a non-empty tail. The shapes that do reach the fallback below all have a
-          // PredicateOperator head - a dangling AND/OR - and must keep yielding `Right(None)` so
-          // the caller's "WHERE/HAVING clause requires criteria" message wins over this one.
-          case (_: Criteria) :: rest if rest.nonEmpty =>
-            Left("Invalid stack state for predicate creation")
-          case _ =>
-            Right(stack.headOption.collect { case c: Criteria => c })
-        }
+      case Nil | (ThenCase :: _) => Right(acc.reverse)
       case (_: StartDelimiter) :: rest =>
         extractSubTokens(rest, 1) match {
           case Left(reason) => Left(reason)
@@ -625,89 +599,97 @@ trait WhereParser {
             processSubTokens(subTokens) match {
               case Left(reason) => Left(reason)
               case Right(p: Predicate) =>
-                processTokensHelper(remainingTokens, p.copy(group = true) :: stack)
-              case Right(c) =>
-                processTokensHelper(remainingTokens, c :: stack)
+                flatten(remainingTokens, ChainOperand(p.copy(group = true)) :: acc)
+              case Right(c) => flatten(remainingTokens, ChainOperand(c) :: acc)
             }
         }
-      case (c: Criteria) :: rest =>
-        stack match {
-          case (op: PredicateOperator) :: (left: Criteria) :: tail =>
-            val predicate = Predicate(left, op, c)
-            processTokensHelper(rest, predicate :: tail)
-          case _ =>
-            processTokensHelper(rest, c :: stack)
-        }
+      case (p: Predicate) :: rest =>
+        flatten(
+          rest,
+          ChainOperand(p.rightCriteria) :: ChainJunction(p.operator, p.not.isDefined) ::
+          ChainOperand(p.leftCriteria) :: acc
+        )
+      case (c: Criteria) :: rest => flatten(rest, ChainOperand(c) :: acc)
       case (op: PredicateOperator) :: rest =>
-        stack match {
-          case (right: Criteria) :: (left: Criteria) :: tail =>
-            val predicate = Predicate(left, op, right)
-            processTokensHelper(rest, predicate :: tail)
-          case (right: Criteria) :: (o: PredicateOperator) :: tail =>
-            tail match {
-              case (left: Criteria) :: tt =>
-                val predicate = Predicate(left, op, right)
-                processTokensHelper(rest, o :: predicate :: tt)
-              case _ =>
-                processTokensHelper(rest, op :: stack)
-            }
-          case _ :: Nil =>
-            processTokensHelper(rest, op :: stack)
-          case _ =>
-            // #250 - was `throw ValidationError(...)`. `Parser.apply` is typed
-            // `Either[ParserError, Statement]`; five production call sites match on that Either
-            // with no `try` of their own (SQLImplicits.queryToStatement, IndicesApi x3, the
-            // searchAs macro). The caller turns this into `err(...)`, which short-circuits
-            // `where.?` instead of silently yielding a None.
-            Left("Invalid stack state for predicate creation")
-        }
-      case ThenCase :: _ =>
-        processTokensHelper(Nil, stack) // exit processing on THEN
+        flatten(rest, ChainJunction(op, negatesNext = false) :: acc)
       case (_: EndDelimiter) :: _ =>
-        // A closing delimiter reaching the TOP-LEVEL scan means no `StartDelimiter` arm above ever
-        // took ownership of it. This used to "ignore and move on", which silently discarded it.
-        // TWO different inputs land here, and BOTH used to be corrupted rather than reported
-        // (measured 2026-09-05 by reverting just this arm):
-        //
-        //   1. A genuinely stray `)`. `SELECT a FROM t WHERE a = 1)` parsed as `... WHERE a = 1`.
-        //
-        //   2. 🔴 A BALANCED relation predicate with THREE OR MORE criteria - so the reason text
-        //      "Unbalanced parentheses" is accurate about the TOKEN STREAM, not about what the
-        //      user typed. `nestedPredicate`/`childPredicate`/`parentPredicate` take a `predicate`,
-        //      which is strictly BINARY (`criteria ~ (and|or) ~ not.? ~ criteria`), so with a third
-        //      criterion they fail and the parser falls back to
-        //      `nestedCriteria`/`childCriteria`/`parentCriteria` = `X.regex ~ start.? ~ criteria ~
-        //      end.?`. That takes ONE criterion, its `start.?` swallows the `(`, its `end.?` finds
-        //      `AND` instead of `)` - and the real `)` arrives here with nothing to close.
-        //      Measured before this change:
-        //        `WHERE id = 1 AND child(a = 2 AND b = 3 AND c = 4)`
-        //          parsed as `WHERE id = 1 AND CHILD(a = 2) AND b = 3 AND c = 4`
-        //      i.e. the CHILD scope silently collapsed to the first criterion and the other two
-        //      escaped onto the parent document - a wrong answer that executes and returns rows.
-        //      `child(x = 1 OR y = 2 OR z = 3)` likewise became `CHILD(x = 1) OR y = 2 OR z = 3`.
-        //      Rejecting is strictly better, and is the #213 family this story is closing; the
-        //      `start.?`/`end.?` asymmetry that causes it belongs to a later story (local record
-        //      docs/issues/local-21.4-relation-predicate-paren-asymmetry.md). Its twin hole - an
-        //      unmatched OPENING paren, `child(a = 1 AND b = 2`, still silently accepted - is NOT
-        //      reachable from here and is recorded there too.
+        // A closing delimiter reaching the scan of a level means no `StartDelimiter` arm ever took
+        // ownership of it: a stray `)` (`WHERE a = 1)`), or -- before story 21.4 -- the `)` of a
+        // relation predicate whose `(` the paren-less form swallowed. Pinned in ParserTotalitySpec.
         Left("Unbalanced parentheses")
       case unexpected :: _ =>
-        // #250 - this arm used to be `processTokensHelper(Nil, stack)`, which ABANDONED every
-        // remaining token and returned whatever the stack happened to hold: a silent truncation of
-        // the clause the user wrote. It is believed unreachable - `whereCriteria` scans
-        // `allPredicate | allCriteria | start | or | and | end | then_case` (story 22.1 added a
-        // depth rule, not a token kind) and every one of those token kinds is matched by an arm
-        // above - and it was NEVER reached while
-        // instrumented across the sql, core, bridge and macros-tests suites (2026-09-05). That is
-        // exactly why it must not silently truncate: an unreachable arm that loses data is one
-        // grammar change away from being reachable. Same reasoning as the defensive arm in
-        // `parser/operator/math`.
+        // Believed unreachable (`whereCriteria` emits no other token kind) -- and must not
+        // silently truncate the clause if a grammar change makes it reachable (#250).
         Left(s"Unexpected token in predicate: ${unexpected.getClass.getSimpleName}")
+    }
+
+  /** Reduces one level with SQL precedence -- `NOT` > `AND` > `OR`, left-associative, parentheses
+    * respected (a group is one operand).
+    *
+    * The operands are split at every `OR` into runs joined by `AND`; each run is folded left, and
+    * the runs are folded left with `OR`. So `a OR b AND c` is `a OR (b AND c)`, `a AND b OR c AND
+    * d` is `(a AND b) OR (c AND d)`, and a one-operator chain is the left fold.
+    *
+    * The scanner's `NOT` qualifies the operand after its operator, and that operand is the RIGHT
+    * operand of the predicate built for it -- `Predicate.not`, as the scanner built it -- except in
+    * ONE position: the first operand of a run that follows an `OR` becomes the LEFT operand of the
+    * run's first `AND`, and `Predicate` has no left-hand `NOT`. There the negation is folded into
+    * the operand through `Criteria.negated`, which is the criterion the grammar itself builds for
+    * that text at the start of a clause (`NOT a = 1 AND b = 2`, `a NOT LIKE 'x%' AND b = 2`,
+    * `ISNOTNULL(a) AND b = 2`). A criterion that cannot carry its own `NOT` (`MATCH ... AGAINST`)
+    * is refused there by name -- it is refused at the start of a clause too.
+    *
+    * The shapes of the old reduction are kept where they were right: a dangling operator is still
+    * `Right(None)` (the caller names the clause); a leading operator and two consecutive operands
+    * or operators are still `Left("Invalid stack state for predicate creation")`.
+    */
+  private def reduceChain(items: List[ChainItem]): Either[String, Option[Criteria]] = {
+    val invalid = "Invalid stack state for predicate creation"
+    def not(negated: Boolean): Option[NOT.type] = if (negated) Some(NOT) else None
+    // The LEFT operand of a run's first AND.
+    def runHead(c: Criteria, negated: Boolean): Either[String, Criteria] =
+      if (!negated) Right(c)
+      else
+        c.negated.toRight(
+          s"NOT ${c.sql} cannot start conditions joined by AND after an OR: write it after the " +
+          s"AND, for example A OR (B AND NOT ${c.sql})"
+        )
+    // `runs`: the finished OR operands, newest first, each with the scanner's NOT of a run that
+    // stayed ONE operand long; `current` / `currentNot`: the run being folded.
+    @tailrec
+    def loop(
+      rest: List[ChainItem],
+      runs: List[(Criteria, Boolean)],
+      current: Criteria,
+      currentNot: Boolean
+    ): Either[String, Option[Criteria]] =
+      rest match {
+        case Nil =>
+          val all = ((current, currentNot) :: runs).reverse
+          Right(Some(all.tail.foldLeft(all.head._1) { case (acc, (run, negated)) =>
+            Predicate(acc, OR, run, not(negated))
+          }))
+        case ChainJunction(_, _) :: Nil => Right(None) // a dangling operator
+        case ChainJunction(AND, negated) :: ChainOperand(c) :: tail =>
+          runHead(current, currentNot) match {
+            case Left(reason) => Left(reason)
+            case Right(head) =>
+              loop(tail, runs, Predicate(head, AND, c, not(negated)), currentNot = false)
+          }
+        case ChainJunction(OR, negated) :: ChainOperand(c) :: tail =>
+          loop(tail, (current, currentNot) :: runs, c, negated)
+        case _ => Left(invalid)
+      }
+    items match {
+      case Nil                         => Right(None)
+      case ChainOperand(first) :: rest => loop(rest, Nil, first, currentNot = false)
+      case _                           => Left(invalid)
     }
   }
 
-  /** This method calls processTokensHelper with an empty stack (Nil) to begin processing primary
-    * tokens.
+  /** Reduces the tokens of a WHERE / HAVING / JOIN ON / CASE WHEN condition, or of a relation body,
+    * to one criteria tree: [[flatten]] takes the scanner's pairs apart, then [[reduceChain]]
+    * applies SQL precedence.
     *
     * Narrowed to `private[parser]` with #250: its four callers (`where` here,
     * `HavingParser.having`, `FromParser.on` and `parser.function.cond.case_condition`) are all
@@ -721,13 +703,12 @@ trait WhereParser {
     */
   private[parser] def processTokens(
     tokens: List[Token]
-  ): Either[String, Option[Criteria]] = {
-    processTokensHelper(tokens, Nil)
-  }
+  ): Either[String, Option[Criteria]] =
+    flatten(tokens, Nil).flatMap(reduceChain)
 
-  /** This method is used to process subtokens extracted between delimiters. It calls
-    * processTokensHelper and returns the result as a SQLCriteria, or a `Left` carrying the reason
-    * no criteria could be built (#250 - it used to throw).
+  /** This method is used to process subtokens extracted between delimiters. It reduces them with
+    * [[processTokens]] and returns the result as a SQLCriteria, or a `Left` carrying the reason no
+    * criteria could be built (#250 - it used to throw).
     *
     * @param tokens
     *   - list of SQL tokens
@@ -735,7 +716,7 @@ trait WhereParser {
     *   the criteria built from the sub-tokens, or a Left carrying the reason they are invalid
     */
   private def processSubTokens(tokens: List[Token]): Either[String, Criteria] =
-    processTokensHelper(tokens, Nil) match {
+    processTokens(tokens) match {
       case Right(Some(criteria)) => Right(criteria)
       case Right(None)           => Left("Empty sub-expression")
       case Left(reason)          => Left(reason)

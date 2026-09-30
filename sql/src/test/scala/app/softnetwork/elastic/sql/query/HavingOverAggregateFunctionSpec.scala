@@ -744,6 +744,135 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     Parser(group + "NOT (status = 'x' OR status = 'y')").isLeft shouldBe true
   }
 
+  /** A condition comparing the key with values: its text, the values it names, and its sense --
+    * `true` when it holds for a key that IS one of them, `false` when it holds for a key that is
+    * NONE of them.
+    */
+  private val keyEqualities: Seq[(String, Set[String], Boolean)] = Seq(
+    ("status = 'a'", Set("a"), true),
+    ("status = 'b'", Set("b"), true),
+    ("NOT status = 'a'", Set("a"), false),
+    ("status <> 'b'", Set("b"), false),
+    ("status IN ('a','c')", Set("a", "c"), true),
+    ("status NOT IN ('b','c')", Set("b", "c"), false)
+  )
+
+  "equalities of one key joined by AND and OR together" should
+  "be accepted exactly when the two lists keep the buckets SQL's reading keeps" in {
+    // The verdict is DERIVED from two readings of each condition, compared on every key value that
+    // matters -- each value a condition names, and one no condition names (`None`):
+    //   - SQL's reading: AND before OR, left to right, a group as written;
+    //   - the terms channel's: a bucket is kept when the kept list is empty or holds its key, and
+    //     the removed list does not. Every condition that holds for its values feeds the kept list,
+    //     every one that holds for any other value feeds the removed list, whatever joins them.
+    // The two agree -> accepted; they disagree on one value -> refused by (b2).
+    type Holds = Option[String] => Boolean
+    def leaf(values: Set[String], sense: Boolean): Holds = key => key.exists(values) == sense
+    def chain(items: Seq[Holds], ands: Seq[Boolean]): Holds = key => {
+      val runs = ands.zip(items.tail).foldLeft(List(List(items.head))) {
+        case (run :: done, (true, item)) => (item :: run) :: done
+        case (runs, (_, item))           => List(item) :: runs
+      }
+      runs.exists(_.forall(_(key)))
+    }
+    def op(and: Boolean): String = if (and) " AND " else " OR "
+    val mixed2 = Seq(Seq(true, false), Seq(false, true))
+    val mixed3 = for {
+      a <- Seq(true, false); b <- Seq(true, false); c <- Seq(true, false)
+      if Set(a, b, c).size == 2
+    } yield Seq(a, b, c)
+    val statements: Seq[(String, Holds, Seq[(Set[String], Boolean)])] =
+      (for {
+        a    <- keyEqualities; b <- keyEqualities; c <- keyEqualities
+        ands <- mixed2
+        form <- Seq("flat", "(ab)c", "a(bc)")
+      } yield {
+        val h = Seq(a, b, c).map { case (_, v, s) => leaf(v, s) }
+        val (o1, o2) = (ands.head, ands(1))
+        val (text, holds) = form match {
+          case "flat" => (a._1 + op(o1) + b._1 + op(o2) + c._1, chain(h, ands))
+          case "(ab)c" =>
+            (
+              s"(${a._1}${op(o1)}${b._1})${op(o2)}${c._1}",
+              chain(Seq(chain(h.take(2), Seq(o1)), h(2)), Seq(o2))
+            )
+          case _ =>
+            (
+              s"${a._1}${op(o1)}(${b._1}${op(o2)}${c._1})",
+              chain(Seq(h.head, chain(h.drop(1), Seq(o2))), Seq(o1))
+            )
+        }
+        (text, holds, Seq(a, b, c).map(e => (e._2, e._3)))
+      }) ++ (for {
+        a    <- keyEqualities; b <- keyEqualities; c <- keyEqualities; d <- keyEqualities
+        ands <- mixed3
+      } yield {
+        val items = Seq(a, b, c, d)
+        val text = items.head._1 + ands.zip(items.tail).map { case (o, e) => op(o) + e._1 }.mkString
+        (
+          text,
+          chain(items.map { case (_, v, s) => leaf(v, s) }, ands),
+          items.map(e => (e._2, e._3))
+        )
+      })
+    def answeredExactly(holds: Holds, conditions: Seq[(Set[String], Boolean)]): Boolean = {
+      val kept = conditions.filter(_._2).flatMap(_._1).toSet
+      val removed = conditions.filterNot(_._2).flatMap(_._1).toSet
+      def emitted(key: Option[String]): Boolean = key match {
+        case Some(v) => (kept.isEmpty || kept(v)) && !removed(v)
+        case None    => kept.isEmpty
+      }
+      (conditions.flatMap(_._1).map(Option(_)).toSet + None).forall(k => emitted(k) == holds(k))
+    }
+    val wrong = statements.flatMap { case (condition, holds, conditions) =>
+      val expected = answeredExactly(holds, conditions)
+      Parser(group + condition) match {
+        case Right(_) if expected                                                           => None
+        case Left(e) if !expected && e.msg.contains("HAVING cannot combine the conditions") => None
+        case verdict => Some(s"[$condition] expected accepted=$expected, got $verdict")
+      }
+    }
+    val accepted = statements.count { case (_, holds, conditions) =>
+      answeredExactly(holds, conditions)
+    }
+    withClue(s"${wrong.size} of ${statements.size} wrong:\n${wrong.take(20).mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
+    // non-vacuous both ways
+    accepted should be > 0
+    accepted should be < statements.size
+  }
+
+  it should "accept the one-key mixes the lists answer, with the lists they always had" in {
+    // SQL reads each as `v1 OR (v2 AND NOT v3)` and so on; the kept and removed lists below are
+    // what these statements emitted before AND bound tighter than OR, and they give SQL's answer.
+    val one = "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k HAVING "
+    Seq(
+      ("k = 'v1' OR k = 'v2' AND NOT k = 'v3'", Set("v1", "v2"), Set("v3")),
+      ("(k = 'v1' OR k = 'v2' AND NOT k = 'v3')", Set("v1", "v2"), Set("v3")),
+      ("NOT k = 'v1' AND NOT k = 'v2' AND k = 'v3' OR k = 'v4'", Set("v3", "v4"), Set("v1", "v2")),
+      ("k = 'v1' OR k = 'v2' AND NOT k = 'v3' AND NOT k = 'v4'", Set("v1", "v2"), Set("v3", "v4"))
+    ).foreach { case (condition, kept, removed) =>
+      withClue(s"[$condition] ") {
+        val st = parsed(one + condition)
+        val criteria = havingOf(st, condition)
+        st.buckets
+          .map(b => criteria.includes(b, not = false, BucketIncludesExcludes()).values)
+          .toSet shouldBe Set(kept)
+        st.buckets
+          .map(b => criteria.excludes(b, not = false, BucketIncludesExcludes()).values)
+          .toSet shouldBe Set(removed)
+      }
+    }
+  }
+
+  it should "refuse the same shape when its lists would drop a value SQL keeps" in {
+    // `v3 OR (v2 AND NOT v3)` keeps v2 and v3; `include:["v3","v2"]` with `exclude:["v3"]` keeps v2
+    rejection(
+      "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k HAVING k = 'v3' OR k = 'v2' AND NOT k = 'v3'"
+    ) should include("HAVING cannot combine the conditions")
+  }
+
   // -------------------------------------------------------------------------------------------
   // The OR rule -- homogeneity of MECHANISM (round 3)
   // -------------------------------------------------------------------------------------------
@@ -802,6 +931,25 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     val ok = unvalidated(group + "COUNT(*) > 1").having.get
     ok.unrepresentable shouldBe empty
     ok.script shouldBe Some("(params.c == null ? false : (params.c > 1))")
+  }
+
+  it should "keep a comparison whose text holds the no-filter placeholder" in {
+    // 🔴 `MAX(c1) = 1` renders `params.max_c1 == 1`, which holds `1 == 1` -- the text
+    // `metricSelector` answers when there is nothing to filter. Stripped out of the whole script,
+    // it left `params.max_c`; `= 10` left `params.max_c0`, and `IN (1, 2)` lost its first member.
+    Seq(
+      "MAX(c1) = 1"  -> "(params.max_c1 == null ? false : (params.max_c1 == 1))",
+      "MAX(c1) = 10" -> "(params.max_c1 == null ? false : (params.max_c1 == 10))",
+      "MAX(c1) IN (1, 2)" -> "(params.max_c1 == null ? false : (params.max_c1 == 1 || params.max_c1 == 2))"
+    ).foreach { case (condition, script) =>
+      withClue(s"[$condition] ") {
+        unvalidated(
+          s"SELECT g, COUNT(*) AS cnt FROM t GROUP BY g HAVING $condition"
+        ).having.get.script shouldBe Some(script)
+      }
+    }
+    // ... and nothing to filter is still no script at all
+    unvalidated(group + "status = 'a'").having.get.script shouldBe None
   }
 
   "a metric computed outside the nested grouping" should "be refused rather than vanish" in {

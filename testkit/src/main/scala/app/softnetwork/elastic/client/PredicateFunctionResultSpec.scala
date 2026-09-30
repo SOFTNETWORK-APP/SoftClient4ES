@@ -134,6 +134,8 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
 
   override def afterAll(): Unit = {
     client.deleteIndex(index)
+    Seq(precedenceIndex, s"${precedenceIndex}_delete", s"${precedenceIndex}_update")
+      .foreach(client.deleteIndex(_))
     system.terminate()
     super.afterAll()
   }
@@ -464,5 +466,230 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
     selected("NOT WEEKDAY(d) = 0") shouldBe (allIds - "d6")
     if (esMajor >= 7)
       selected("WEEKDAY(d) = 0 AND DATE_FORMAT(d, 'yyyy') = '2025'") shouldBe Set("d6")
+  }
+
+  // -- AND / OR precedence, on a truth-table fixture ---------------------------------------------
+
+  /** `ConditionTruthTable`: 32 documents on which every boolean reading of a condition selects a
+    * different set, so the documents returned show which reading ran. The expected set is computed
+    * from the condition's structure -- SQL's reading, AND before OR -- never from the engine.
+    *
+    * 🔴 Why RUN rows and not query pins: an OR under an AND used to be emitted as `should` clauses
+    * beside `filter` clauses, which Elasticsearch treats as OPTIONAL -- a well-formed query, HTTP
+    * 200, the wrong documents. Only the rows show it, and Elasticsearch 6 and 7+ disagree on them.
+    */
+  private val precedenceIndex = "condition_precedence"
+
+  private def loadTruthTable(name: String): Unit = {
+    client
+      .createIndex(name, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client.setMapping(name, ConditionTruthTable.Mapping).get shouldBe true
+    implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = name, logEvery = 10)
+    implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](ConditionTruthTable.documents, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_)     => client.refresh(name)
+      case ElasticFailure(error) => fail(s"Bulk indexing into $name failed: ${error.message}")
+    }
+  }
+
+  private lazy val truthTableLoaded: Unit = loadTruthTable(precedenceIndex)
+
+  private def idsOf(rows: Seq[ListMap[String, Any]], column: String): Set[String] =
+    rows.map(r => r.getOrElse(column, fail(s"no $column column in $r")).toString).toSet
+
+  private def whereIds(where: String): Set[String] =
+    idsOf(rowsOf(s"SELECT id FROM $precedenceIndex WHERE $where"), "id")
+
+  /** The same, through `GatewayApi.run`. */
+  private def gatewayWhereIds(where: String): Set[String] = {
+    val sql = s"SELECT id FROM $precedenceIndex WHERE $where"
+    val rows = Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryStructured(response, _)) => response.results
+      case ElasticSuccess(QueryStream(stream, _)) =>
+        Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+      case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")
+    }
+    idsOf(rows, "id")
+  }
+
+  private def collectWrong(
+    conditions: Seq[(String, Set[String])]
+  )(run: String => Set[String]): Unit = {
+    val wrong = conditions.flatMap { case (condition, expected) =>
+      val actual = run(condition)
+      if (actual == expected) None
+      else
+        Some(
+          s"[$condition] returned ${actual.size}, expected ${expected.size}: missing ${expected -- actual}, extra ${actual -- expected}"
+        )
+    }
+    withClue(s"${wrong.size} of ${conditions.size} wrong:\n${wrong.take(20).mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
+  }
+
+  "a WHERE that combines AND and OR" should "select the documents SQL's precedence selects" in {
+    truthTableLoaded
+    val conditions = (ConditionTruthTable.parenthesised ++ ConditionTruthTable.negated).map { c =>
+      c.render(ConditionTruthTable.whereLeaf) -> ConditionTruthTable.expected(c)
+    }
+    collectWrong(conditions)(whereIds)
+  }
+
+  it should "answer the same through the gateway venue" in {
+    truthTableLoaded
+    import ConditionTruthTable.{expected, Group, Leaf}
+    def g(items: List[ConditionTruthTable.Cond], ands: List[Boolean], paren: Boolean = false) =
+      Group(items, ands, paren)
+    val named = Seq(
+      // the documentation's example: category = 'Electronics' AND price < 100 OR on_sale = true
+      g(List(Leaf(1), Leaf(2), Leaf(3)), List(true, false)),
+      // a OR b AND c
+      g(List(Leaf(1), Leaf(2), Leaf(3)), List(false, true)),
+      // a AND b OR c AND d
+      g(List(Leaf(1), Leaf(2), Leaf(3), Leaf(4)), List(true, false, true)),
+      // a OR (b OR c) AND d: the operators after a group used to trade places
+      g(
+        List(Leaf(1), g(List(Leaf(2), Leaf(3)), List(false), paren = true), Leaf(4)),
+        List(false, true)
+      ),
+      // a AND (b OR c AND d): Elasticsearch 6 and 8 used to return different wrong rows
+      g(
+        List(Leaf(1), g(List(Leaf(2), Leaf(3), Leaf(4)), List(false, true), paren = true)),
+        List(true)
+      ),
+      // a OR NOT b AND c: the NOT moves into the condition it heads
+      g(List(Leaf(1), Leaf(2, negated = true), Leaf(3)), List(false, true))
+    ).map(c => c.render(ConditionTruthTable.whereLeaf) -> expected(c))
+    collectWrong(named)(whereIds)
+    collectWrong(named)(gatewayWhereIds)
+  }
+
+  "an OR group holding a MATCH, under an AND" should "stay one condition of the AND" in {
+    truthTableLoaded
+    // Spread beside the root's `filter` clauses, the group's `should` clauses turned optional, and
+    // this returned every document with c1 = 1, whatever the MATCH and c3. `d1` is the one
+    // document the MATCH alone admits (c1 = 1, c3 = 0).
+    val where = "c1 = 1 AND (MATCH (t) AGAINST ('d1') OR c3 = 1)"
+    val expected = (0 until ConditionTruthTable.Documents)
+      .filter(d => ConditionTruthTable.bit(d, 1) && (d == 1 || ConditionTruthTable.bit(d, 3)))
+      .map(ConditionTruthTable.id)
+      .toSet
+    expected should contain("d1")
+    collectWrong(Seq(where -> expected))(whereIds)
+    collectWrong(Seq(where -> expected))(gatewayWhereIds)
+  }
+
+  "a CASE WHEN that combines AND and OR" should "evaluate SQL's reading on every document" in {
+    truthTableLoaded
+    val conditions = ConditionTruthTable.parenthesised.take(12).map { c =>
+      c.render(ConditionTruthTable.whereLeaf) -> ConditionTruthTable.expected(c)
+    }
+    collectWrong(conditions) { condition =>
+      rowsOf(s"SELECT id, CASE WHEN $condition THEN 1 ELSE 0 END AS x FROM $precedenceIndex")
+        .filter { r =>
+          (r.getOrElse("x", "") match {
+            case s: Seq[_]                  => s.headOption.map(_.toString).getOrElse("")
+            case a: java.util.Collection[_] => a.toArray.headOption.map(_.toString).getOrElse("")
+            case other                      => String.valueOf(other)
+          }) == "1"
+        }
+        .map(r => r.getOrElse("id", fail(s"no id column in $r")).toString)
+        .toSet
+    }
+  }
+
+  "a HAVING over aggregates that combines AND and OR" should "keep the groups SQL's reading keeps" in {
+    truthTableLoaded
+    val conditions =
+      (ConditionTruthTable.parenthesised.take(12) ++ ConditionTruthTable.negated.take(12)).map {
+        c =>
+          c.render(ConditionTruthTable.havingLeaf) -> ConditionTruthTable.expected(c)
+      }
+    collectWrong(conditions) { having =>
+      idsOf(
+        rowsOf(s"SELECT g, COUNT(*) AS cnt FROM $precedenceIndex GROUP BY g HAVING $having"),
+        "g"
+      )
+    }
+  }
+
+  "a HAVING that compares an aggregate with 1" should "read that aggregate's own parameter" in {
+    truthTableLoaded
+    // `MAX(c1) = 1` renders `params.max_c1 == 1`, and the emission used to strip the text `1 == 1`
+    // -- its placeholder for "nothing to filter" -- out of the script, leaving `params.max_c`,
+    // which no aggregation publishes: the search failed.
+    val expected = (0 until ConditionTruthTable.Documents)
+      .filter(ConditionTruthTable.bit(_, 1))
+      .map(ConditionTruthTable.id)
+      .toSet
+    idsOf(
+      rowsOf(s"SELECT g, COUNT(*) AS cnt FROM $precedenceIndex GROUP BY g HAVING MAX(c1) = 1"),
+      "g"
+    ) shouldBe expected
+  }
+
+  "a HAVING on one GROUP BY key that combines AND and OR" should
+  "keep the groups SQL's reading keeps" in {
+    truthTableLoaded
+    // One group per document (`g` is its id), so `g = 'dN'` holds for the group dN alone.
+    val rows = Seq(
+      // (g <> d1 AND g <> d2 AND g = d3) OR g = d4
+      "NOT g = 'd1' AND NOT g = 'd2' AND g = 'd3' OR g = 'd4'" -> Set("d3", "d4"),
+      // g = d1 OR (g = d2 AND g <> d3 AND g <> d4)
+      "g = 'd1' OR g = 'd2' AND NOT g = 'd3' AND NOT g = 'd4'" -> Set("d1", "d2")
+    ) ++ (
+      // g = d1 OR (g = d2 AND g <> d3). ⚠️ Not on Elasticsearch 6: the es6 bridge renders a ONE-value
+      // exclude list as a bare string, which 6.8 reads as a pattern and refuses beside an include
+      // list -- pre-existing, and the same for these lists before AND bound tighter than OR.
+      if (esMajor >= 7)
+        Seq(
+          "g = 'd1' OR g = 'd2' AND NOT g = 'd3'"   -> Set("d1", "d2"),
+          "(g = 'd1' OR g = 'd2' AND NOT g = 'd3')" -> Set("d1", "d2")
+        )
+      else Nil
+    )
+    collectWrong(rows) { having =>
+      idsOf(
+        rowsOf(s"SELECT g, COUNT(*) AS cnt FROM $precedenceIndex GROUP BY g HAVING $having"),
+        "g"
+      )
+    }
+  }
+
+  "DELETE and UPDATE with a condition that combines AND and OR" should
+  "change exactly the documents SQL's reading selects" in {
+    import ConditionTruthTable.{expected, Group, Leaf}
+    val conditions = Seq(
+      Group(List(Leaf(1), Leaf(2), Leaf(3)), List(false, true), paren = false),
+      Group(List(Leaf(1), Leaf(2), Leaf(3), Leaf(4)), List(true, false, true), paren = false)
+    )
+    val all = (0 until ConditionTruthTable.Documents).map(ConditionTruthTable.id).toSet
+    conditions.foreach { c =>
+      val where = c.render(ConditionTruthTable.whereLeaf)
+      def dml(sql: String, on: String): Unit =
+        Await.result(client.run(sql), 60.seconds) match {
+          case ElasticSuccess(_)     => client.refresh(on)
+          case ElasticFailure(error) => fail(s"DML failed: ${error.message}\n$sql")
+        }
+      val deleted = s"${precedenceIndex}_delete"
+      loadTruthTable(deleted)
+      dml(s"DELETE FROM $deleted WHERE $where", deleted)
+      withClue(s"[DELETE ... WHERE $where] ") {
+        idsOf(rowsOf(s"SELECT id FROM $deleted"), "id") shouldBe (all -- expected(c))
+      }
+      client.deleteIndex(deleted)
+      val updated = s"${precedenceIndex}_update"
+      loadTruthTable(updated)
+      dml(s"UPDATE $updated SET m = 1 WHERE $where", updated)
+      withClue(s"[UPDATE ... WHERE $where] ") {
+        idsOf(rowsOf(s"SELECT id FROM $updated WHERE m = 1"), "id") shouldBe expected(c)
+      }
+      client.deleteIndex(updated)
+    }
   }
 }

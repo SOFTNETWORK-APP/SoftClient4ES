@@ -399,9 +399,19 @@ object MetricSelectorScript {
     * it is the invariant's second line of defence, for a `SingleSearch` assembled in code and
     * emitted without validation.
     */
-  def metricSelector(expr: Criteria): String = selector(expr) match {
-    case NoFilter           => "1 == 1"
-    case Filter(script)     => script
+  def metricSelector(expr: Criteria): String = selectorScript(expr).getOrElse("1 == 1")
+
+  /** [[metricSelector]] without its `"1 == 1"` placeholder: the script, or `None` when there is
+    * nothing to filter at this level. Throws exactly where [[metricSelector]] does.
+    *
+    * 🔴 The emission must never look for the placeholder INSIDE a script. It used to strip it with
+    * `replaceAll("1 == 1", "")`, and a rendered comparison can hold that very text: `MAX(c1) = 1`
+    * renders `params.max_c1 == 1`, which the strip turned into `params.max_c` -- a parameter no
+    * aggregation publishes, and the search failed -- and `MAX(c1) = 10` into `params.max_c0`.
+    */
+  def selectorScript(expr: Criteria): Option[String] = selector(expr) match {
+    case NoFilter           => None
+    case Filter(script)     => Some(script)
     case u: Unrepresentable => throw new IllegalStateException(u.message)
   }
 
@@ -449,13 +459,21 @@ object MetricSelectorScript {
           // a bucket whose metric is missing still fails the test -- `!(guard ? false : ...)` would
           // let it through, against SQL's three-valued NOT and the AC 4b contract. A compound right
           // side falls back to `!( ... )`.
+          //
+          // The script must evaluate the TREE. Painless, like SQL, binds `&&` tighter than `||`, so
+          // an operand joined by OR under an AND is parenthesised whatever its `group` flag -- a
+          // written group renders `(a) || (b)` for itself and nothing around it, and its parent used
+          // to read `(a) || (b) && c` as `a || (b && c)`.
+          val l = if (PredicatePrecedence.orUnderAnd(left, op)) s"($leftStr)" else leftStr
+          val r =
+            if (PredicatePrecedence.orUnderAnd(effectiveRight, op)) s"($rightStr)" else rightStr
           Filter(maybeNot match {
             case Some(_) if right.negated.isDefined => s"($leftStr) $opStr $rightStr"
             // Grammar-unreachable today (`NOT (A AND B)` in HAVING is a parse rejection); kept
             // as the total fallback for a compound right side.
             case Some(_)       => s"($leftStr) $opStr !($rightStr)"
             case None if group => s"($leftStr) $opStr ($rightStr)"
-            case None          => s"$leftStr $opStr $rightStr"
+            case None          => s"$l $opStr $r"
           })
       }
 

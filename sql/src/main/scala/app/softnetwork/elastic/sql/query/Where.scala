@@ -363,10 +363,19 @@ case class Predicate(
   not: Option[NOT.type] = None,
   group: Boolean = false
 ) extends Criteria {
-  override def sql = s"${if (group) s"($leftCriteria"
-  else leftCriteria} $operator${not
-    .map(_ => " NOT")
-    .getOrElse("")} ${if (group) s"$rightCriteria)" else rightCriteria}"
+
+  /** Parenthesised where the user wrote parentheses (`group`), and wherever an operand binds LOOSER
+    * than this predicate -- an `OR` under an `AND` -- whatever its flag, so the text always
+    * re-parses to this tree under SQL precedence: a tree built by the parser never needs the second
+    * rule, a tree rebuilt later (a relation wrapper stripped by `update`, a rewrite) may.
+    */
+  override def sql: String = {
+    def operand(c: Criteria): String =
+      if (PredicatePrecedence.bindsLooserThan(c, operator)) s"(${c.sql})" else c.sql
+    val body =
+      s"${operand(leftCriteria)} $operator${not.map(_ => " NOT").getOrElse("")} ${operand(rightCriteria)}"
+    if (group) s"($body)" else body
+  }
 
   /** The polarity the RIGHT criterion inherits when a `terms` include/exclude traversal walks this
     * predicate. The predicate's own `NOT` binds the RIGHT operand, and this IS its fold: the
@@ -435,6 +444,13 @@ case class Predicate(
     * So the first three fold and the fourth does not, each for a stated reason.
     * `PainlessNullSurvivalSpec`'s source scan fails if a consumer appears that states NEITHER —
     * silence is the failure mode both round-10 defects had in common.
+    *
+    * What the four consumers can meet is set by the reducer (`WhereParser.reduceChain`): it builds
+    * `Predicate.not` only where the scanner put it, on a right operand that is ONE condition. At
+    * the head of an AND run after an OR (`a OR NOT b AND c`) that condition becomes a LEFT operand,
+    * so the reducer folds the `NOT` into it through `negated` -- the criterion the grammar builds
+    * for the same text at a condition's start -- and refuses by name a condition that cannot carry
+    * its own `NOT`. The four consumers are unchanged.
     */
   private[query] lazy val (emittedRight: Criteria, notConsumed: Boolean) =
     not match {
@@ -448,15 +464,23 @@ case class Predicate(
     // `must_not` over a script MATCHES documents the script rejects, including those that lack the
     // field, which is the opposite of the three-valued reading the criterion itself emits (B-2).
     val negate = not.isDefined && !notConsumed
+    // A child predicate writes into THIS bool only when it joins its operands with the same
+    // operator (AND in `filter`, OR in `should`: associative, so flattening is exact). An operator
+    // change opens a bool of its own, as a written group always did: shared, an OR under an AND put
+    // its `should` clauses next to `filter` clauses, where Elasticsearch treats them as optional
+    // (`minimum_should_match` defaults to 0 once a `filter` or `must` clause is present).
+    def filterOf(c: Criteria): ElasticFilter = c match {
+      case p: Predicate if !p.group && p.operator != operator =>
+        p.copy(group = true).asFilter(Option(query))
+      case other => other.asFilter(Option(query))
+    }
     operator match {
       case AND =>
-        (if (negate) query.not(emittedRight.asFilter(Option(query)))
-         else query.filter(emittedRight.asFilter(Option(query))))
-          .filter(leftCriteria.asFilter(Option(query)))
+        (if (negate) query.not(filterOf(emittedRight)) else query.filter(filterOf(emittedRight)))
+          .filter(filterOf(leftCriteria))
       case OR =>
-        (if (negate) query.not(emittedRight.asFilter(Option(query)))
-         else query.should(emittedRight.asFilter(Option(query))))
-          .should(leftCriteria.asFilter(Option(query)))
+        (if (negate) query.not(filterOf(emittedRight)) else query.should(filterOf(emittedRight)))
+          .should(filterOf(leftCriteria))
     }
   }
 
@@ -479,6 +503,37 @@ case class Predicate(
 
   override def nestedCriteria(innerHitsName: String): Seq[Criteria] =
     leftCriteria.nestedCriteria(innerHitsName) ++ rightCriteria.nestedCriteria(innerHitsName)
+}
+
+/** SQL precedence for the renderings of a criteria tree (`Predicate.sql`, `MetricSelectorScript`).
+  * NOT a companion of `Predicate`: an explicit companion would drop the synthetic one's `Function5`
+  * parent -- a binary change for no reason.
+  */
+private[query] object PredicatePrecedence {
+
+  /** Does `operand`, as an operand of a predicate joined by `parent`, bind LOOSER than it -- an
+    * `OR` under an `AND`, not written in parentheses? Then its text needs parentheses to keep its
+    * meaning (SQL and Painless both bind AND tighter than OR). The transparent wrapper `update`
+    * puts around a nested operand renders bare, so it is looked through; a written relation renders
+    * its own.
+    */
+  private[query] def bindsLooserThan(operand: Criteria, parent: PredicateOperator): Boolean =
+    operand match {
+      case p: Predicate                       => !p.group && orUnderAnd(p, parent)
+      case n: ElasticNested if n.fromCriteria => bindsLooserThan(n.criteria, parent)
+      case _                                  => false
+    }
+
+  /** Is `operand` -- a predicate, seen through any relation -- joined by OR while its parent joins
+    * by AND? Asked by `MetricSelectorScript`, whose Painless for a written group parenthesises the
+    * group's OPERANDS and not the group itself, so the parent must parenthesise it, flag or not.
+    */
+  private[query] def orUnderAnd(operand: Criteria, parent: PredicateOperator): Boolean =
+    operand match {
+      case p: Predicate       => p.operator == OR && parent == AND
+      case r: ElasticRelation => orUnderAnd(r.criteria, parent)
+      case _                  => false
+    }
 }
 
 sealed trait ElasticFilter
@@ -524,7 +579,17 @@ case class ElasticBoolQuery(
       notFilters = this.notFilters,
       shouldFilters = this.shouldFilters
     )
+    // A MATCH-bearing bool that holds `should` clauses is ONE condition: an OR group
+    // (`c = 1 AND (MATCH (t) AGAINST ('x') OR d = 1)`), or a MATCH over several columns. Spread into
+    // this bool beside any other clause, its `should` clauses would turn optional (Elasticsearch
+    // requires one only while the bool holds no `filter` / `must` clause) or merge with another
+    // group's. So it is spread only when it is the whole condition, and kept whole otherwise, as
+    // one scoring `must` clause.
+    val whole =
+      innerFilters.size == 1 && mustFilters.isEmpty && notFilters.isEmpty && shouldFilters.isEmpty
     innerFilters.reverse.map {
+      case b: ElasticBoolQuery if b.matchCriteria && b.shouldFilters.nonEmpty && !whole =>
+        query.must(b)
       case b: ElasticBoolQuery if b.matchCriteria =>
         b.innerFilters.reverse.foreach(query.must)
         b.mustFilters.reverse.foreach(query.must)
@@ -549,7 +614,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   def notAsString: String = maybeNot.map(v => s"$v ").getOrElse("")
 
   def valueAsString: String = maybeValue.map(v => s" $v").getOrElse("")
-  override def sql = s"$identifier $notAsString$operator$valueAsString"
+
+  /** A `NOT` on `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=` is written BEFORE the column (`NOT c = 1`),
+    * the only place the grammar reads it (`WhereParser.equality` / `comparison`): `c NOT = 1` does
+    * not parse. LIKE and RLIKE -- `ComparisonOperator`s too -- read theirs AFTER the column only
+    * (`c NOT LIKE 'x%'`), so the operator is matched by NAME, never by its trait.
+    */
+  override def sql: String = operator match {
+    case EQ | NE | DIFF | GE | GT | LE | LT if maybeNot.isDefined =>
+      s"$NOT $identifier $operator$valueAsString"
+    case _ => s"$identifier $notAsString$operator$valueAsString"
+  }
 
   override lazy val dependencies: Seq[Identifier] =
     maybeValue match {
@@ -1718,6 +1793,13 @@ object ConditionalFunctionAsCriteria {
 case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditionalFunction[SQLAny] {
   override val conditionalFunction: ConditionalFunction[SQLAny] = IsNull(identifier)
   override val operator: Operator = IS_NULL
+
+  /** `NOT ISNULL(x)` is `ISNOTNULL(x)`, exactly as `NOT x IS NULL` is `x IS NOT NULL`: the function
+    * forms emit the same `exists` query and the same `== null` / `!= null` test as the operator
+    * forms, which carry their negation the same way.
+    */
+  override def negated: Option[Criteria] = Some(IsNotNullCriteria(identifier))
+
   override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {
@@ -1757,6 +1839,10 @@ case class IsNotNullCriteria(identifier: Identifier)
     identifier
   )
   override val operator: Operator = IS_NOT_NULL
+
+  /** `NOT ISNOTNULL(x)` is `ISNULL(x)` -- see [[IsNullCriteria.negated]]. */
+  override def negated: Option[Criteria] = Some(IsNullCriteria(identifier))
+
   override def update(request: SingleSearch): Criteria = {
     val updated = this.copy(identifier = identifier.update(request))
     if (updated.nested) {

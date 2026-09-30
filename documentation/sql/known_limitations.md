@@ -295,6 +295,27 @@ within the elements an UNNEST projection returns per parent. Two inner columns w
 coincide (`o.id` and `items.id`) are refused: alias one of them (measured on Elasticsearch 8.18 and
 6.8). See [JOIN UNNEST](dql_statements.md#join-unnest).
 
+## `NOT` applies to one condition
+
+`NOT` negates the one condition written after it, and only some spellings of it are accepted:
+
+| Written | Verdict |
+|---------|---------|
+| `NOT price > 100`, `NOT status = 'x'` (before a comparison) | Accepted |
+| `status NOT IN (...)`, `name NOT LIKE 'x%'`, `price NOT BETWEEN 1 AND 2`, `manager IS NOT NULL` | Accepted |
+| `NOT (a = 1 OR b = 2)`, `NOT (price > 100)` (before a parenthesised group) | Parse error |
+| `NOT is_active` (before a bare boolean column) | Parse error |
+| `NOT status IN (...)`, `NOT name LIKE 'x%'`, `NOT manager IS NULL`, `NOT MATCH (...) AGAINST (...)`, `NOT ISNULL(x)` at the start of a condition | Parse error |
+| `a = 1 AND NOT name LIKE 'x%'` (the same spellings right after `AND` / `OR`) | Accepted in some positions only: `a = 1 AND b = 2 AND NOT name LIKE 'x%'` is a parse error |
+| `a = 1 OR NOT ISNULL(x) AND b = 2` (also with `ISNOTNULL(x)`) | Accepted, read as `a = 1 OR (ISNOTNULL(x) AND b = 2)` |
+| `a = 1 OR NOT MATCH (t) AGAINST ('x') AND b = 2` | Refused: *"NOT ... cannot start conditions joined by AND after an OR"* |
+
+Write the condition De Morgan's laws give instead of a `NOT` over a group (`NOT (a = 1 OR b = 2)` is
+`NOT a = 1 AND NOT b = 2`), compare a boolean column (`is_active = false`), put the `NOT` of `IN`,
+`LIKE`, `RLIKE`, `BETWEEN` and `IS NULL` after the column, write `ISNOTNULL(x)` for `NOT ISNULL(x)`
+(and `ISNULL(x)` for `NOT ISNOTNULL(x)`), and move a negated `MATCH` to the end of its `AND` group
+(`a = 1 OR (b = 2 AND NOT MATCH (t) AGAINST ('x'))`).
+
 ## Coming in the upcoming release (Quarter 1 2027)
 
 - **Heterogeneous federation**: JOIN or correlate Elasticsearch with PostgreSQL, MySQL, ClickHouse, Snowflake, and more — plus cross-cluster subqueries (e.g. correlate one cluster's data against another's).

@@ -365,6 +365,26 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     )
   }
 
+  "a comparison of an aggregate with 1 or 10" should "read that aggregate's own parameter" in {
+    // 🔴 The emission stripped every `1 == 1` out of the script -- the text the selector answers
+    // when there is nothing to filter -- and `params.max_c1 == 1` holds that text. MEASURED on the
+    // base: `= 1` read `params.max_c`, `= 10` read `params.max_c0`, and `IN (1, 2)` lost its first
+    // member; on Elasticsearch 8.18.3 all three searches failed (`Cannot invoke
+    // "Object.getClass()" because "value" is null`).
+    Seq(
+      "MAX(c1) = 1"  -> "(params.max_c1 == null ? false : (params.max_c1 == 1))",
+      "MAX(c1) = 10" -> "(params.max_c1 == null ? false : (params.max_c1 == 10))",
+      "MAX(c1) IN (1, 2)" -> "(params.max_c1 == null ? false : (params.max_c1 == 1 || params.max_c1 == 2))"
+    ).foreach { case (condition, script) =>
+      withClue(s"[$condition] ") {
+        queryOf(s"SELECT g, COUNT(*) AS cnt FROM t GROUP BY g HAVING $condition") should include(
+          """"having_filter":{"bucket_selector":{"buckets_path":{"max_c1":"max_c1"},""" +
+          s""""script":{"source":"$script"}}}"""
+        )
+      }
+    }
+  }
+
   "a wrapped aggregate beside a bucket-key predicate" should "honour BOTH mechanisms" in {
     // The key predicate is a `terms` exclude, the aggregate one a `bucket_selector`. Neither may
     // cost the other.
