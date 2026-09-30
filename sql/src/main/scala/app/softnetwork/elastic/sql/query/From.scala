@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.operator.{AND, EQ}
+import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql.{
   asString,
   renderName,
@@ -32,6 +33,7 @@ import app.softnetwork.elastic.sql.{
 
 import scala.annotation.tailrec
 import scala.collection.immutable.ListMap
+import scala.util.Try
 
 case object From extends Expr("FROM") with TokenRegex
 
@@ -404,6 +406,90 @@ case class DerivedTable(
 }
 
 object DerivedTable {
+
+  /** A column a derived table's body projects WITHOUT an alias is named by its SHORT name — the
+    * last part of the column reference, as SQL names a column reference: `item.product` (an UNNEST
+    * column) is `product`, `o.address.city` is `city`. A qualified top-level column (`o.id`)
+    * already carries its short name, and an aliased column keeps its alias.
+    *
+    * The name is given as an ALIAS on the body's own SELECT item, not only to [[outputNames]]: the
+    * body executes from its RENDER (the relational engine hands `query.sql` to the gateway), so the
+    * keys of the rows it returns are the output names of the RE-PARSED body. Declaring a name the
+    * render does not carry is the defect this closes: `item.product` was declared `product` while
+    * every row carried `item.product`, so `SELECT *` grew an all-NULL `product` column and
+    * `UPPER(product)` answered NULL with HTTP 200. The alias is emitted QUOTED so that it re-parses
+    * whatever the column is called — a bare alias cannot be a reserved word (`count`, `day`), a
+    * quoted one can.
+    *
+    * Two columns of one body named alike through this rule (`t.id` and `item.id` are both `id`) are
+    * REFUSED with a message asking for an alias: a row is keyed by column name, so one of the two
+    * would be lost. The comparison is case-insensitive, like every derived-column match
+    * (`SubqueryScope.projects`), and runs over the SEQUENCE of names — a map would already have
+    * collapsed the duplicate it is looking for.
+    *
+    * Applied where a body becomes a derived table's body: `FromParser.derivedTable` and a CTE
+    * definition (whose body every reference substitutes). `owner` opens the refusal (`Derived table
+    * 'd'`, `CTE 'monthly'`).
+    */
+  def withShortNames(body: DqlStatement, owner: String): Either[String, DqlStatement] =
+    body match {
+      case s: SingleSearch => shortNamed(s, owner)
+      case m: MultiSearch  =>
+        // EVERY branch: a `UNION ALL` body executes branch by branch, and a branch keeping
+        // `item.product` beside a first branch named `product` would disagree on the column.
+        m.requests
+          .foldLeft(Right(Vector.empty): Either[String, Vector[SingleSearch]]) {
+            case (left @ Left(_), _) => left
+            case (Right(done), b)    => shortNamed(b, owner).map(done :+ _)
+          }
+          .map { branches =>
+            if (branches.zip(m.requests).forall { case (a, b) => a eq b }) m
+            else m.copy(requests = branches)
+          }
+      case other => Right(other) // a FROM-less body names no column
+    }
+
+  /** The short name of a SELECT item that takes one: a plain column reference (no function, no
+    * alias) whose output name is a dotted path. `*` is never a name.
+    */
+  private def shortNameOf(f: Field): Option[String] =
+    if (f.fieldAlias.nonEmpty || f.identifier.functions.nonEmpty || f.identifier.name.isEmpty)
+      None
+    else {
+      val n = f.outputName
+      val dot = n.lastIndexOf('.')
+      if (dot < 0) None
+      else Some(n.substring(dot + 1)).filter(s => s.nonEmpty && s != "*")
+    }
+
+  private def shortNamed(s: SingleSearch, owner: String): Either[String, SingleSearch] = {
+    val named: Seq[(Field, Boolean)] = s.select.fields.map { f =>
+      shortNameOf(f) match {
+        case Some(short) => (f.copy(fieldAlias = Some(Alias(short, quoted = true))), true)
+        case None        => (f, false)
+      }
+    }
+    if (!named.exists(_._2)) Right(s)
+    else {
+      val names = named.map(_._1.outputName)
+      def same(n: String): Seq[Int] = names.indices.filter(i => names(i).equalsIgnoreCase(n))
+      named.zipWithIndex.collectFirst {
+        case ((f, true), _) if same(f.outputName).size > 1 => same(f.outputName)
+      } match {
+        case Some(clashing) =>
+          val written = clashing.map(i => s.select.fields(i).identifier.sql.trim)
+          val renamed = clashing.filter(named(_)._2).last
+          val original = s.select.fields(renamed)
+          Left(
+            s"$owner projects two columns named '${names(renamed)}' " +
+            s"(${written.mkString(", ")}): alias one of them, e.g. " +
+            s"${original.identifier.sql.trim} AS ${original.outputName.replace('.', '_')}"
+          )
+        case None =>
+          Right(s.copy(select = s.select.copy(fields = named.map(_._1))).update())
+      }
+    }
+  }
 
   /** A bare `SELECT *` projects an un-enumerable list; anything else projects its items' output
     * names. The `*` test is `identifierName` with no functions — the same spelling
@@ -892,6 +978,34 @@ case class NestedElement(
 }
 
 object NestedElements {
+
+  /** Elements requested per parent by an UNNEST projection that carries no `LIMIT`, unless the
+    * index sets a lower `index.max_inner_result_window` ([[innerHitsSize]]): Elasticsearch's
+    * default for that setting, the most a nested `inner_hits` may return unless it is raised. Left
+    * unset, `inner_hits` returns its own default of 3, and a five-element parent answered three
+    * rows with HTTP 200. There is deliberately no truncation check (lead ruling): a parent holding
+    * more elements returns the first 100.
+    */
+  val DefaultInnerHitsSize: Int = 100
+
+  /** The index setting that caps an `inner_hits` size, as `Table.settings` keys it (the keys under
+    * `index.`).
+    */
+  val MaxInnerResultWindowSetting: String = "max_inner_result_window"
+
+  /** Elements an UNNEST projection without a `LIMIT` requests per parent over `schema`'s index:
+    * [[DefaultInnerHitsSize]], or the index's own `index.max_inner_result_window` when it is set
+    * LOWER — Elasticsearch refuses an `inner_hits` block asking for more than that setting, so the
+    * whole statement would fail. Read from the schema core attaches before rendering
+    * (`SearchApi.resolveWithSchema`, #306); with no schema, or no readable positive setting,
+    * [[DefaultInnerHitsSize]]. A higher setting is not followed.
+    */
+  def innerHitsSize(schema: Option[Schema]): Int =
+    schema
+      .flatMap(_.settings.get(MaxInnerResultWindowSetting))
+      .flatMap(v => Try(String.valueOf(v.value).trim.toInt).toOption)
+      .filter(_ > 0)
+      .fold(DefaultInnerHitsSize)(math.min(DefaultInnerHitsSize, _))
 
   def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
     if (nestedElements.isEmpty) return Nil

@@ -147,7 +147,13 @@ trait FromParser {
     (start ~> (derivedTableBodyInner | err(
       "A derived table body must be a SELECT: write FROM (SELECT ...) AS <name>"
     )) <~ end) ~ alias.? >> {
-      case body ~ Some(a) if a.alias.nonEmpty => success(DerivedTable(body, a))
+      case body ~ Some(a) if a.alias.nonEmpty =>
+        // An unaliased column takes its SHORT name; two columns named alike are refused — see
+        // `DerivedTable.withShortNames`.
+        DerivedTable.withShortNames(body, s"Derived table '${a.alias}'") match {
+          case Right(named) => success(DerivedTable(named, a))
+          case Left(reason) => err(reason)
+        }
       case _ =>
         err(
           "A derived table requires an alias (SQL-92 correlation name): " +

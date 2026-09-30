@@ -278,7 +278,9 @@ SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.ite
 SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
 ```
 
-Without a `LIMIT`, an UNNEST projection currently returns at most 3 elements per parent.
+Without a `LIMIT`, an UNNEST projection returns up to 100 elements per parent, or up to the index's
+own `index.max_inner_result_window` when that setting is lower. A parent holding more elements is
+cut without an error: a 101-element parent returns 100 rows, its last element dropped.
 
 Not affected by this refusal: a WHERE condition whose function is applied directly to the UNNEST
 column and reads no parent column (`CAST(items.quantity AS VARCHAR) = '2'`, a date part such as
@@ -287,10 +289,11 @@ window function over an UNNEST column, over arithmetic of UNNEST columns or over
 directly to one, and statements planned by the relational engine (cross-index JOIN, derived table,
 CTE). See [JOIN UNNEST](dql_statements.md#join-unnest).
 
-A derived table over `JOIN UNNEST` (answered by the arrow extension) is correct today only when its
-inner query aliases each UNNEST column and carries a `LIMIT`. Otherwise the outer query reads `NULL`
-for the column, or each parent keeps at most 3 elements (measured on Elasticsearch 8.18 and 6.8).
-See [JOIN UNNEST](dql_statements.md#join-unnest).
+A derived table over `JOIN UNNEST` (answered by the arrow extension) names an inner column without
+an alias by its short name (`items.product` is `product`), and needs no alias and no inner `LIMIT`,
+within the elements an UNNEST projection returns per parent. Two inner columns whose short names
+coincide (`o.id` and `items.id`) are refused: alias one of them (measured on Elasticsearch 8.18 and
+6.8). See [JOIN UNNEST](dql_statements.md#join-unnest).
 
 ## Coming in the upcoming release (Quarter 1 2027)
 

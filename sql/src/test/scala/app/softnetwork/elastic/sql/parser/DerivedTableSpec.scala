@@ -305,6 +305,208 @@ class DerivedTableSpec extends AnyFlatSpec with Matchers {
     ()
   }
 
+  // ── a column with no alias takes its SHORT name ────────────────────────────────────────────
+
+  private val unnestBody = "SELECT t.id, item.product FROM t JOIN UNNEST(t.items) AS item"
+
+  private def derivedOf(s: SingleSearch): DerivedTable =
+    s.from.mainTable.derived.getOrElse(fail(s"[${s.sql}] has no derived table"))
+
+  private def bodyOf(s: SingleSearch): SingleSearch = derivedOf(s).query match {
+    case b: SingleSearch => b
+    case other => fail(s"expected a SingleSearch body, got ${other.getClass.getSimpleName}")
+  }
+
+  /** 🔴 The MECHANISM, not the declared list alone: the body executes from its RENDER (the
+    * relational engine hands `query.sql` to the gateway), so the names its ROWS carry are the
+    * output names of the re-parsed body. Before the rule the declared name was `product` (the
+    * engine strips the qualifier) while every row carried `item.product`: `SELECT *` grew an
+    * all-NULL `product` column and `UPPER(product)` answered NULL.
+    */
+  "An unaliased column of a derived table" should "take its short name, in the body the rows come from" in {
+    val s = parse(s"SELECT * FROM ($unnestBody) d")
+    derivedOf(s).outputNames shouldBe Some(Seq("id", "product"))
+    bodyOf(s).sql shouldBe
+    """SELECT t.id, item.product AS "product" FROM t JOIN UNNEST(t.items) AS item"""
+    parse(bodyOf(s).sql).select.fields.map(_.outputName) shouldBe Seq("id", "product")
+    Parser(s.sql) shouldBe Right(s)
+  }
+
+  it should "leave an aliased column and a top-level column as they are" in {
+    val aliased = parse(
+      "SELECT * FROM (SELECT t.id, item.product AS p FROM t JOIN UNNEST(t.items) AS item) d"
+    )
+    derivedOf(aliased).outputNames shouldBe Some(Seq("id", "p"))
+    bodyOf(aliased).sql shouldBe
+    "SELECT t.id, item.product AS p FROM t JOIN UNNEST(t.items) AS item"
+    val plain = parse("SELECT * FROM (SELECT o.id, o.name FROM t o) d")
+    derivedOf(plain).outputNames shouldBe Some(Seq("id", "name"))
+    bodyOf(plain).sql shouldBe "SELECT o.id, o.name FROM t AS o"
+  }
+
+  it should "name an object path and a reserved word by their last part, and re-parse" in {
+    val path = parse("SELECT * FROM (SELECT o.address.city FROM t o) d")
+    derivedOf(path).outputNames shouldBe Some(Seq("city"))
+    Parser(path.sql) shouldBe Right(path)
+    // a bare alias cannot be a reserved word: the short name is emitted QUOTED
+    val reserved = parse("SELECT * FROM (SELECT item.count FROM t JOIN UNNEST(t.items) AS item) d")
+    derivedOf(reserved).outputNames shouldBe Some(Seq("count"))
+    bodyOf(reserved).sql should include("""item.count AS "count"""")
+    Parser(reserved.sql) shouldBe Right(reserved)
+  }
+
+  it should "apply to every branch of a UNION ALL body, a JOIN source and a CTE body" in {
+    val union = parse(s"SELECT * FROM ($unnestBody UNION ALL $unnestBody) d")
+    derivedOf(union).outputNames shouldBe Some(Seq("id", "product"))
+    derivedOf(union).query match {
+      case m: MultiSearch =>
+        m.requests.map(_.select.fields.map(_.outputName)) shouldBe
+          Seq(Seq("id", "product"), Seq("id", "product"))
+      case other => fail(s"expected a MultiSearch body, got $other")
+    }
+    Parser(union.sql) shouldBe Right(union)
+
+    val joined = parse(s"SELECT o.id FROM orders o JOIN ($unnestBody) d ON o.id = d.id")
+    joined.from.mainTable.joins.head.asInstanceOf[StandardJoin].source match {
+      case d: DerivedTable => d.outputNames shouldBe Some(Seq("id", "product"))
+      case other           => fail(s"expected a derived JOIN source, got $other")
+    }
+
+    val cte = parse(s"WITH c AS ($unnestBody) SELECT product FROM c")
+    derivedOf(cte).outputNames shouldBe Some(Seq("id", "product"))
+    cte.sql shouldBe
+    s"""WITH c AS (SELECT t.id, item.product AS "product" FROM t JOIN UNNEST(t.items) AS item) SELECT product FROM c"""
+    Parser(cte.sql) shouldBe Right(cte)
+  }
+
+  it should "not rename a top-level statement's column" in {
+    parse(unnestBody).select.fields.map(_.outputName) shouldBe Seq("id", "item.product")
+  }
+
+  "Two columns of a derived table with one short name" should "be refused, asking for an alias" in {
+    rejects(
+      "SELECT * FROM (SELECT t.id, item.id FROM t JOIN UNNEST(t.items) AS item) d",
+      "Derived table 'd' projects two columns named 'id' (t.id, item.id): alias one of them, " +
+      "e.g. item.id AS item_id"
+    )
+    // accurate today with an inner LIMIT, refused all the same (lead ruling 2026-09-29)
+    rejects(
+      "SELECT d.id FROM (SELECT t.id, item.id FROM t JOIN UNNEST(t.items) AS item LIMIT 100) d",
+      "projects two columns named 'id'"
+    )
+    // case-insensitively, against an explicit alias too, in JOIN position and in a CTE
+    rejects(
+      "SELECT * FROM (SELECT t.ID, item.id FROM t JOIN UNNEST(t.items) AS item) d",
+      "projects two columns named"
+    )
+    rejects(
+      "SELECT * FROM (SELECT t.name AS id, item.id FROM t JOIN UNNEST(t.items) AS item) d",
+      "projects two columns named 'id'"
+    )
+    rejects(
+      "SELECT o.id FROM orders o JOIN " +
+      "(SELECT t.id, item.id FROM t JOIN UNNEST(t.items) AS item) d ON o.id = d.id",
+      "Derived table 'd' projects two columns named 'id'"
+    )
+    rejects(
+      "WITH c AS (SELECT t.id, item.id FROM t JOIN UNNEST(t.items) AS item) SELECT * FROM c",
+      "CTE 'c' projects two columns named 'id' (t.id, item.id): alias one of them"
+    )
+  }
+
+  it should "be accepted once one of them is aliased" in {
+    derivedOf(
+      parse(
+        "SELECT * FROM (SELECT t.id, item.id AS item_id FROM t JOIN UNNEST(t.items) AS item) d"
+      )
+    ).outputNames shouldBe Some(Seq("id", "item_id"))
+  }
+
+  // ── an outer name the derived table does not project is refused in every clause ───────────
+
+  "An outer reference to an unprojected column" should "be refused in every clause" in {
+    val reason = "Column 'nope' is not projected by derived table 'd' (it projects: a)"
+    Seq(
+      "SELECT UPPER(nope) AS u FROM (SELECT a FROM t) d",
+      "SELECT CONCAT(a, nope) AS u FROM (SELECT a FROM t) d",
+      "SELECT CASE WHEN nope = 1 THEN 1 ELSE 0 END AS u FROM (SELECT a FROM t) d",
+      "SELECT a, SUM(a) OVER (PARTITION BY nope) AS s FROM (SELECT a FROM t) d",
+      "SELECT a FROM (SELECT a FROM t) d WHERE nope = 1",
+      "SELECT a FROM (SELECT a FROM t) d GROUP BY nope",
+      "SELECT a, COUNT(*) AS c FROM (SELECT a FROM t) d GROUP BY a HAVING MAX(nope) > 1",
+      "SELECT a FROM (SELECT a FROM t) d ORDER BY nope"
+    ).foreach(sql => rejects(sql, reason))
+  }
+
+  /** 🔴 The outer-alias exemption, closed in the one place a SELECT alias cannot be named: the item
+    * that defines it. MEASURED before the rule: `SELECT id, UPPER(product) AS product FROM (SELECT
+    * t.id, item.product …) d` was accepted and answered NULL — the item's own `product` was
+    * exempted as an outer alias — while `WHERE product = 'x'` over the same derived table was
+    * refused.
+    */
+  it should "be refused in the SELECT item that defines an alias of the same name" in {
+    rejects(
+      "SELECT UPPER(x) AS x FROM (SELECT a FROM t) d",
+      "Column 'x' is not projected by derived table 'd' (it projects: a)"
+    )
+    // a WHERE naming that alias does not make the item's own reference a column
+    rejects(
+      "SELECT UPPER(x) AS x FROM (SELECT a FROM t) d WHERE x = 'X'",
+      "Column 'x' is not projected by derived table 'd' (it projects: a)"
+    )
+  }
+
+  /** WHERE included: the relational engine resolves a SELECT alias there. The second and third
+    * statements below were answered correctly before the rule and after it (MEASURED through the
+    * arrow JOIN extension, ES 8.18.3 and 6.8.23), so refusing them would refuse accurate queries.
+    */
+  it should "still let WHERE, GROUP BY, HAVING, ORDER BY and another SELECT item name an outer alias" in {
+    parse("SELECT UPPER(a) AS up FROM (SELECT a FROM t) d WHERE up = 'X'")
+    parse("SELECT id * 10 AS x FROM (SELECT t.id FROM t) AS d WHERE x = 20")
+    parse(
+      "SELECT UPPER(p) AS up FROM (SELECT item.product AS p FROM t JOIN UNNEST(t.items) AS item " +
+      "LIMIT 100) AS d WHERE up = 'FIG'"
+    )
+    parse("SELECT UPPER(a) AS up FROM (SELECT a FROM t) d ORDER BY up")
+    parse("SELECT UPPER(a) AS up FROM (SELECT a FROM t) d GROUP BY up")
+    parse("SELECT UPPER(a) AS up, COUNT(*) AS c FROM (SELECT a FROM t) d GROUP BY up HAVING c > 1")
+    parse("SELECT UPPER(a) AS up, LOWER(up) AS low FROM (SELECT a FROM t) d")
+    parse(
+      "SELECT CASE WHEN up = 'X' THEN 1 ELSE 0 END AS f, UPPER(a) AS up FROM (SELECT a FROM t) d"
+    )
+    ()
+  }
+
+  it should "be refused for the body's full name of a column, naming its short name" in {
+    val reason =
+      "Column 'item.product' is not projected by derived table 'd' (it projects: id, product)"
+    Seq(
+      s"SELECT UPPER(item.product) AS product FROM ($unnestBody) AS d",
+      s"SELECT item.product FROM ($unnestBody) AS d",
+      s"SELECT id FROM ($unnestBody) AS d WHERE item.product = 'x'",
+      s"SELECT id FROM ($unnestBody) AS d ORDER BY item.product"
+    ).foreach(sql => rejects(sql, reason))
+    // a path INTO a projected column is not a full name: its head is projected
+    parse("SELECT items.name FROM (SELECT items FROM t) d")
+    // over an opaque body nothing is known, so nothing is refused
+    parse("SELECT foo.bar FROM (SELECT * FROM t) d")
+    ()
+  }
+
+  it should "accept the short name in every clause" in {
+    Seq(
+      s"SELECT id, UPPER(product) AS product FROM ($unnestBody) AS d",
+      s"SELECT product FROM ($unnestBody) AS d WHERE product = 'x'",
+      s"SELECT UPPER(product) AS product FROM ($unnestBody) AS d WHERE product = 'x'",
+      s"SELECT product, COUNT(*) AS c FROM ($unnestBody) AS d GROUP BY product",
+      s"SELECT id FROM ($unnestBody) AS d ORDER BY product",
+      s"SELECT d.product FROM ($unnestBody) AS d",
+      "SELECT id, UPPER(product) AS product, total_price FROM (SELECT t.id, item.product, " +
+      "SUM(item.price * item.quantity) OVER (PARTITION BY t.id) AS total_price " +
+      "FROM t JOIN UNNEST(t.items) AS item) AS d"
+    ).foreach(parse)
+  }
+
   // ── rejections that MUST be ours (AD-3 / AD-6) ─────────────────────────────────────────────
 
   "A derived table" should "require an alias (PD-1)" in {

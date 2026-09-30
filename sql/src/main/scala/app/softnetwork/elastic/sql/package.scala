@@ -2241,7 +2241,32 @@ package object sql {
       */
     override def reportedLeafType: SQLType = col.map(_.dataType).getOrElse(super.reportedLeafType)
 
-    def update(request: SingleSearch): Identifier = {
+    def update(request: SingleSearch): Identifier =
+      resolve(request) match {
+        case resolved: GenericIdentifier => resolved.withNestedElementOf(request)
+        case other                       => other
+      }
+
+    /** This UNNEST column's element RE-derived from the statement being resolved, on every pass —
+      * never carried over from the first one. Its `size` depends on that statement: its LIMIT, its
+      * projection and, for an UNNEST projection without a LIMIT, the index's
+      * `max_inner_result_window` (`NestedElements.innerHitsSize`), read from the schema a LATER
+      * pass attaches (`update(Some(schema))`, #306). Carried over from the parse-time pass, a WHERE
+      * on the UNNEST column kept the schema-less size (100) in the `inner_hits` it carries —
+      * MEASURED — which Elasticsearch refuses on an index whose setting is lower.
+      */
+    private def withNestedElementOf(request: SingleSearch): Identifier =
+      nestedElement match {
+        case Some(current) =>
+          tableAlias
+            .flatMap(request.unnests.get)
+            .map(request.toNestedElement)
+            .filter(n => n.innerHitsName == current.innerHitsName && n != current)
+            .fold(this: Identifier)(n => this.copy(nestedElement = Some(n)).withNullable(nullable))
+        case None => this
+      }
+
+    private def resolve(request: SingleSearch): Identifier = {
       val bucketPath: String =
         request.groupBy match {
           case Some(gb) =>
