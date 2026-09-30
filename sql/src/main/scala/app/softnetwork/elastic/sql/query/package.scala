@@ -1270,6 +1270,49 @@ package object query {
         .filter(_.name.nonEmpty)
         .distinct
 
+    /** Why a HAVING leaf that QUALIFIES a SELECT-list alias with a table alias (`HAVING
+      * d.avg_salary > 1` over `AVG(e.salary) AS avg_salary`) cannot be filtered on, or `None` when
+      * `leaf` is not one.
+      *
+      * Such a leaf IS neither a GROUP BY key nor an aggregate (rule (a) in `validate()` is right to
+      * refuse it), but the rule's own remedy, "move it to WHERE", sends the user the wrong way. The
+      * reason names the alias and what it aliases, the way the relational engine names the same
+      * mistake in ORDER BY and GROUP BY.
+      *
+      * Only where `q.n` cannot be `q`'s own column, the three cases that engine's check exempts:
+      * the alias names a COMPUTED value or a RENAMED column of `q` itself -- not `q.n` (the alias
+      * of that very column) and not another table's plain column (which `q` may own too) -- and the
+      * statement writes `q.n` as a column nowhere else (a SELECT item's source, WHERE, GROUP BY, a
+      * JOIN's ON). Everywhere else the leaf may be a real column, and the generic reason stands.
+      */
+    private[query] def qualifiedSelectAlias(leaf: Identifier): Option[String] =
+      leaf.tableAlias.filter(_ => leaf.name.nonEmpty && !leaf.name.contains(".")).flatMap { q =>
+        val writtenAsColumn = referencedIdentifiersBySite.exists {
+          case (ReferenceSite.InHaving | ReferenceSite.InOrderBy, _) => false
+          case (_, id) =>
+            id.tableAlias.exists(_.equalsIgnoreCase(q)) && id.name.equalsIgnoreCase(leaf.name)
+        }
+        select.fields
+          .find(_.fieldAlias.exists(_.alias.equalsIgnoreCase(leaf.name)))
+          .filterNot(_ => writtenAsColumn)
+          .flatMap { f =>
+            val source = f.identifier
+            val computed = source.functions.nonEmpty || source.name.isEmpty
+            val renamed = !computed && source.tableAlias.exists(_.equalsIgnoreCase(q)) &&
+              !source.name.equalsIgnoreCase(leaf.name)
+            if (!computed && !renamed) None
+            else
+              Some(
+                s"In HAVING, '$q.${leaf.name}' qualifies the SELECT-list alias '${leaf.name}' " +
+                s"with table alias '$q', but that alias names " +
+                (if (computed) "a computed value" else s"a renamed column (${source.sql})") +
+                s", not a column of '$q'. Write it bare, or reference what it aliases " +
+                s"(${source.sql}); if '$q' really has a column named '${leaf.name}', rename the " +
+                "alias."
+              )
+          }
+      }
+
     private[query] def havingScopeOf(e: Expression): HavingScope =
       if (e.referencedIdentifiers.exists(_.bucketMetrics.nonEmpty)) HavingScope.Metric
       else {
@@ -1446,7 +1489,10 @@ package object query {
       *     where a clause may name one (WHERE, GROUP BY, HAVING, ORDER BY, ON, another SELECT item)
       *     — in the item that defines it, the name is checked as a column;
       *   - a dotted name whose head is no source (`item.product`) is checked against a LONE derived
-      *     source's projection, and refused with the names it does project;
+      *     source's projection, and refused with the names it does project -- unless its head is a
+      *     correlation name of an ENCLOSING statement (`c.id` in `WHERE EXISTS (SELECT 1 FROM (…) d
+      *     WHERE d.a = c.id)`): that is a correlated reference, or a LATERAL one `lateralCheck`
+      *     refuses by name, never a column of this statement's derived table;
       *   - an ordinal or literal (empty `name`), `*` and `COUNT(*)` are never derived-table
       *     references;
       *   - a derived table whose projection is OPAQUE (`outputNames == None`, i.e. a bare `SELECT
@@ -1456,7 +1502,7 @@ package object query {
       * A dotted remainder (`d.items.name`) is struct/nested access INTO a projected column, so the
       * HEAD segment is what is compared, never the whole path.
       */
-    private lazy val derivedScopeCheck: Either[String, Unit] = {
+    private def derivedScopeCheck(enclosing: Seq[SingleSearch]): Either[String, Unit] = {
       val scopes = from.derivedTables
       if (scopes.isEmpty) Right(())
       else {
@@ -1487,6 +1533,18 @@ package object query {
         // a path into one of that source's columns, so it is checked against its projection — by
         // the head, as a qualified path is, or whole (a projected name may itself hold a dot). With
         // several sources it stays unchecked: which one it reads is not known without a mapping.
+        //
+        // 🔴 ...unless the head names a source of an ENCLOSING statement. In `WHERE EXISTS (SELECT 1
+        // FROM (SELECT a FROM x) d WHERE d.a = c.id)` the body cannot resolve `c`, and without its
+        // enclosing statements it refused the valid correlated `c.id` as a column `d` does not
+        // project, preempting the relational engine's own reason. The test is the one the router
+        // makes (`SubqueryScope.readsEnclosingScope`), with the names every enclosing statement
+        // declares minus this one's own, which shadow them: what it calls correlated routes as
+        // correlated, and a derived body naming an outer alias is still refused, by
+        // `lateralCheck`, as LATERAL. Computed only when an unresolved dotted name needs it.
+        lazy val enclosingOnly: Set[String] =
+          enclosing.flatMap(SubqueryScope.correlationNames).toSet --
+          SubqueryScope.correlationNames(this)
         val lone: Option[DerivedTable] =
           here.head.sources.filterNot(_.isInstanceOf[SubqueryScope.UnnestSource]) match {
             case Seq(src: SubqueryScope.DerivedSource) => scopes.get(src.alias)
@@ -1519,7 +1577,8 @@ package object query {
               case SubqueryScope.Resolved(0, src: SubqueryScope.DerivedSource, column) =>
                 scopes.get(src.alias).map(_ -> Seq(column.split("\\.", 2)(0)))
               case SubqueryScope.Unresolved
-                  if id.tableAlias.isEmpty && id.table.isEmpty && id.name.contains(".") =>
+                  if id.tableAlias.isEmpty && id.table.isEmpty && id.name.contains(".") &&
+                    !SubqueryScope.readsEnclosingScope(id, enclosingOnly) =>
                 lone.map(_ -> Seq(id.name.split("\\.", 2)(0), id.name))
               case _ => None // Ambiguous / an enclosing scope: never guessed at
             }
@@ -1641,7 +1700,17 @@ package object query {
       orderBy.toSeq.flatMap(_.sorts.map(_.field)) ++
       groupBy.toSeq.flatMap(_.buckets.map(_.identifier))
 
+    /** Validates this statement INSIDE the statements that enclose it (`SubqueryScope.enclosing`,
+      * empty for a statement validated on its own), and every statement nested in it -- a WHERE
+      * subquery's body, a derived table's, a CTE's -- inside this one: the derived-scope check
+      * reads them to tell a correlated reference from a column its derived table does not project.
+      */
     override def validate(): Either[String, Unit] = {
+      val enclosing = SubqueryScope.enclosing
+      SubqueryScope.validatingInside(this)(validateWithin(enclosing))
+    }
+
+    private def validateWithin(enclosing: Seq[SingleSearch]): Either[String, Unit] = {
       for {
         // Story 22.5 — an UNREFERENCED CTE's body reaches `DerivedTable.validate()` through no
         // path at all (nothing in the FROM tree points at it), so its own GROUP BY / HAVING rules
@@ -1652,7 +1721,7 @@ package object query {
         _ <- from.validate()
         // AFTER `from.validate()` so a derived table's OWN body is validated first, and BEFORE
         // every clause rule so the scope message wins over a downstream symptom.
-        _ <- derivedScopeCheck
+        _ <- derivedScopeCheck(enclosing)
         _ <- lateralCheck
         _ <- select.validate()
         _ <- where.map(_.validate()).getOrElse(Right(()))
@@ -1744,11 +1813,24 @@ package object query {
           // `filter(_.name.nonEmpty)` probe cannot see a FUNCTION of one, which is S8's original
           // hole. MEASURED: `SELECT COUNT(*) AS c FROM t HAVING UPPER(status) = 'A'` answered
           // `{"c":{"value":4}}` with the predicate gone.
+          //
+          // ⚠️ It applies to a statement the relational engine evaluates too, and that is MEASURED,
+          // not assumed: there DuckDB refuses the same column (`column ... must appear in the
+          // GROUP BY clause`), but only after every leg has run, behind "Attempting to execute an
+          // unsuccessful or closed pending query result". What was wrong for such a statement is
+          // the REMEDY when the leaf qualifies a SELECT-list alias (`HAVING d.avg_salary > 1`):
+          // "move it to WHERE" preempted the engine's precise reason, so the rule gives that
+          // reason itself (`qualifiedSelectAlias`).
           havingLeaves.filter(e => havingScopeOf(e) == HavingScope.Unscoped).headOption match {
             case Some(e) =>
               Left(
-                s"HAVING can only filter on a GROUP BY key or on an aggregate; ${e.sql} is " +
-                "neither. Move it to WHERE, or add its column to the GROUP BY."
+                namedLeavesOf(e)
+                  .map(qualifiedSelectAlias)
+                  .collectFirst { case Some(reason) => reason }
+                  .getOrElse(
+                    s"HAVING can only filter on a GROUP BY key or on an aggregate; ${e.sql} is " +
+                    "neither. Move it to WHERE, or add its column to the GROUP BY."
+                  )
               )
             case None => Right(())
           }

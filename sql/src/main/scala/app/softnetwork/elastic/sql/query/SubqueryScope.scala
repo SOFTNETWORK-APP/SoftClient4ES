@@ -18,6 +18,8 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.Identifier
 
+import scala.util.DynamicVariable
+
 /** Does a nested statement read a correlation name of an ENCLOSING statement?
   *
   * ONE detector, structural, on the AST the parser already built (story 22.1, consumed by stories
@@ -267,6 +269,46 @@ object SubqueryScope {
     */
   def correlationNames(s: SingleSearch): Set[String] = scopeOf(s).names
 
+  /** Does `id` read an ENCLOSING scope? A dotted name the statement left unresolved whose HEAD is
+    * one of `outerOnly` -- the enclosing correlation names minus the statement's own, so a name the
+    * statement declares itself shadows an outer one (innermost wins).
+    *
+    * ONE predicate, three readers: the correlation walk (story 22.2 -- routing), the LATERAL walk
+    * (story 22.3) and `SingleSearch.derivedScopeCheck`, which must not call such a name a column
+    * its derived table does not project. A second spelling of the test would let the check refuse
+    * what the router treats as correlated, or accept what it treats as a column.
+    */
+  private[query] def readsEnclosingScope(id: Identifier, outerOnly: Set[String]): Boolean =
+    id.tableAlias.isEmpty && !id.nested && id.name.contains(".") &&
+    outerOnly.contains(id.name.split("\\.", 2)(0))
+
+  /** The statements ENCLOSING the one being validated, innermost first -- what
+    * `SingleSearch.validate()` runs the nested statements' validation inside of.
+    *
+    * 🔴 Why a thread-scoped carrier, not a parameter. A WHERE subquery's body is validated through
+    * `Where.validate()` -> `Criteria.validate()` -> `SubqueryCriteria.commonChecks`, and a derived
+    * table's through `From.validate()` -> `DerivedTable.validate()`: `Token.validate()` takes no
+    * argument and is implemented across the whole `Criteria` hierarchy, and the node is `update`d
+    * with its enclosing statement only (`correlatedRefs` is relative to ONE level). So nothing on
+    * that path can tell the body that `c` in `c.id` is an enclosing alias, and the derived-scope
+    * check refused a valid correlated reference as a column its derived table does not project.
+    * `SingleSearch.validate()` sets the value around its own rules and restores it on exit;
+    * validation is synchronous, so the value is read on the thread that set it. Outside a
+    * `validate()` it is empty: a statement validated on its own has no enclosing scope.
+    */
+  private val enclosingStatements: DynamicVariable[List[SingleSearch]] =
+    new DynamicVariable[List[SingleSearch]](Nil)
+
+  /** The statements enclosing the one being validated, innermost first ([[enclosingStatements]]).
+    */
+  private[query] def enclosing: List[SingleSearch] = enclosingStatements.value
+
+  /** Run `body` -- the validation of `statement`'s own rules and of every statement nested in it --
+    * with `statement` added to the enclosing statements.
+    */
+  private[query] def validatingInside[T](statement: SingleSearch)(body: => T): T =
+    enclosingStatements.withValue(statement :: enclosingStatements.value)(body)
+
   def correlatedReferences(body: DqlStatement, outer: SingleSearch): Seq[Identifier] =
     correlatedReferences(body, correlationNames(outer))
 
@@ -309,11 +351,7 @@ object SubqueryScope {
         val outerOnly = outerScopes -- innerNames // innermost wins
         val direct =
           if (outerOnly.isEmpty) Nil
-          else
-            inner.referencedIdentifiers.filter { id =>
-              id.tableAlias.isEmpty && !id.nested && id.name.contains(".") &&
-              outerOnly.contains(id.name.split("\\.", 2)(0))
-            }
+          else inner.referencedIdentifiers.filter(readsEnclosingScope(_, outerOnly))
         // A derived table NESTED in this body, and (story 22.2) a WHERE SUBQUERY nested in it,
         // are walked with this statement's names added — so a reference two levels in to the
         // OUTERMOST alias is caught at the outermost `update()` too. For the LATERAL question the

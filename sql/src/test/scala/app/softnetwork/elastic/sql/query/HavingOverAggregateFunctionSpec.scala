@@ -474,6 +474,66 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     )
   }
 
+  private val joinedAgg =
+    "SELECT d.dept_name, COUNT(*) AS headcount, AVG(e.salary) AS avg_salary " +
+    "FROM emp e JOIN dept d ON e.dept_id = d.dept_id GROUP BY d.dept_name HAVING "
+
+  /** 🔴 REGRESSION PIN -- a leaf qualifying a SELECT-list alias is refused by this rule, rightly,
+    * but its remedy ("move it to WHERE") preempted the relational engine's precise reason for the
+    * same statement. The rule now gives that reason itself; the verdict does not move.
+    */
+  it should "name a qualified SELECT-list alias, and what it aliases" in {
+    Seq(
+      joinedAgg + "d.avg_salary > 1" -> "'d.avg_salary' qualifies the SELECT-list alias 'avg_salary'",
+      joinedAgg + "e.avg_salary > 1" -> "'e.avg_salary' qualifies the SELECT-list alias 'avg_salary'"
+    ).foreach { case (sql, reason) =>
+      val msg = rejection(sql)
+      withClue(s"[$sql] msg=[$msg] ") {
+        msg should include(reason)
+        msg should include("a computed value")
+        msg should include("(AVG(e.salary))")
+        msg should not include "Move it to WHERE"
+      }
+    }
+    rejection(
+      "SELECT UPPER(d.dept_name) AS label, COUNT(*) AS cnt FROM emp e JOIN dept d " +
+      "ON e.dept_id = d.dept_id GROUP BY d.dept_name HAVING d.label = 'ENG'"
+    ) should include("'d.label' qualifies the SELECT-list alias 'label'")
+    // a RENAMED column of the same table alias
+    rejection(
+      "SELECT e.name AS label, d.dept_name, COUNT(*) AS cnt FROM emp e JOIN dept d " +
+      "ON e.dept_id = d.dept_id GROUP BY d.dept_name HAVING e.label = 'x'"
+    ) should include(
+      "'e.label' qualifies the SELECT-list alias 'label' with table alias 'e', " +
+      "but that alias names a renamed column (e.name)"
+    )
+    // on a single index too: the rule is the same one wherever the statement runs
+    rejection(group + "t.c > 1") should include("'t.c' qualifies the SELECT-list alias 'c'")
+  }
+
+  it should "keep the generic reason where the qualified name may be the table's own column" in {
+    val generic = "can only filter on a GROUP BY key or on an aggregate"
+    Seq(
+      // not a SELECT-list alias at all
+      joinedAgg + "e.name = 'x'",
+      // the alias of that very column
+      "SELECT d.dept_name, e.name AS name, COUNT(*) AS cnt FROM emp e JOIN dept d " +
+      "ON e.dept_id = d.dept_id GROUP BY d.dept_name HAVING e.name = 'x'",
+      // the alias of ANOTHER table's plain column: `e` may own `id` as well
+      "SELECT d.dept_id AS id, COUNT(*) AS cnt FROM emp e JOIN dept d " +
+      "ON e.dept_id = d.dept_id GROUP BY d.dept_id HAVING e.id > 1",
+      // written as a column elsewhere in the statement
+      "SELECT d.dept_name, COUNT(*) AS salary FROM emp e JOIN dept d ON e.dept_id = d.dept_id " +
+      "WHERE e.salary > 0 GROUP BY d.dept_name HAVING e.salary > 1"
+    ).foreach { sql =>
+      val msg = rejection(sql)
+      withClue(s"[$sql] msg=[$msg] ") {
+        msg should include(generic)
+        msg should not include "qualifies the SELECT-list alias"
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------------------------
   // The include/exclude CHANNEL -- it unions, it never intersects (rule b2)
   //
