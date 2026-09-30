@@ -507,6 +507,151 @@ class DerivedTableSpec extends AnyFlatSpec with Matchers {
     ).foreach(parse)
   }
 
+  // ── a correlated reference over a derived table is not an unprojected column ───────────────
+
+  /** A WHERE subquery whose FROM is a lone derived table, reading `ref` -- in each position a
+    * subquery can take, both sides of a comparison and the body's own SELECT list. `outer` is the
+    * enclosing statement's own column, the left operand of the forms that take one.
+    */
+  private def subqueryPositions(dt: String, ref: String, outer: String): Seq[String] = Seq(
+    s"EXISTS (SELECT 1 FROM $dt WHERE d.a = $ref)",
+    s"EXISTS (SELECT 1 FROM $dt WHERE $ref = d.a)",
+    s"NOT EXISTS (SELECT 1 FROM $dt WHERE d.a = $ref)",
+    s"$outer IN (SELECT d.a FROM $dt WHERE d.a = $ref)",
+    s"$outer > (SELECT MAX(d.a) FROM $dt WHERE d.a = $ref)",
+    s"$outer > ALL (SELECT d.a FROM $dt WHERE d.a = $ref)",
+    s"$outer IN (SELECT $ref FROM $dt WHERE d.a = 1)"
+  )
+
+  private val derivedBodies = Seq(
+    "(SELECT a FROM x) d",
+    "(SELECT a FROM x WHERE a > 0) d",
+    "(SELECT a, COUNT(*) AS n FROM x GROUP BY a) d",
+    "(SELECT a FROM x UNION ALL SELECT a FROM y) d"
+  )
+
+  /** The enclosing FROM and the correlated reference it makes valid: an aliased index, an unaliased
+    * one (its name IS the correlation name) and a derived table.
+    */
+  private val enclosingSources = Seq(
+    "customers c"                  -> "c.id",
+    "customers"                    -> "customers.id",
+    "(SELECT id FROM customers) c" -> "c.id"
+  )
+
+  /** Every WHERE-subquery node's `correlatedRefs`, at any depth -- what the router reads. */
+  private def correlatedNames(s: SingleSearch): Seq[String] =
+    s.whereSubqueries.flatMap(n =>
+      n.correlatedRefs.map(_.name) ++ n.inner.toSeq.flatMap(correlatedNames)
+    ) ++
+    s.from.derivedTables.values.toSeq.flatMap(_.query match {
+      case b: SingleSearch => correlatedNames(b)
+      case _               => Nil
+    })
+
+  /** 🔴 REGRESSION PIN -- the unprojected-column check reads a dotted name whose head is no source
+    * of the statement's FROM as a path into its LONE derived source, and a WHERE subquery's body is
+    * validated without the statement that encloses it. So the correlated `c.id` of `WHERE EXISTS
+    * (SELECT 1 FROM (SELECT a FROM x) d WHERE d.a = c.id)` was refused as "Column 'c.id' is not
+    * projected by derived table 'd'", preempting the relational engine's own reason for the shape.
+    * MEASURED on its shapes (EXISTS, NOT EXISTS, IN, a scalar comparison, ALL, an outer column in
+    * the body's SELECT list, two levels in, inside a derived body): each parsed before that check,
+    * and after it each was refused at parse, replacing every venue's own reason -- the core
+    * gateway's "requires the relational engine", the relational engine's "cannot carry a derived
+    * table".
+    *
+    * The check exempts exactly what the ROUTER reads as correlated (`correlatedRefs`), so an
+    * accepted statement is also routed as correlated -- asserted below, not assumed.
+    */
+  "A correlated reference over a derived table" should "be accepted and routed as correlated" in {
+    val population = for {
+      (source, ref) <- enclosingSources
+      dt            <- derivedBodies
+      predicate     <- subqueryPositions(dt, ref, outer = ref)
+    } yield s"SELECT $ref FROM $source WHERE $predicate" -> ref
+    population should have size 84
+    population.foreach { case (sql, ref) =>
+      val s = parse(sql)
+      withClue(s"[$sql] ") {
+        s.relationalClosureRequired shouldBe true
+        correlatedNames(s) should contain(ref)
+      }
+    }
+  }
+
+  it should "be accepted two levels in, and inside a derived table's body" in {
+    Seq(
+      // the innermost body reads the OUTERMOST statement, and the middle one
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.cid = c.id AND " +
+      "EXISTS (SELECT 1 FROM (SELECT region FROM orders) d WHERE d.region = c.region))" -> "c.region",
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.cid = c.id AND " +
+      "EXISTS (SELECT 1 FROM (SELECT region FROM orders) d WHERE d.region = o.region))" -> "o.region",
+      // a correlated subquery entirely inside a derived table's body
+      "SELECT t.id FROM (SELECT c.id FROM customers c WHERE EXISTS " +
+      "(SELECT 1 FROM (SELECT a FROM x) d WHERE d.a = c.id)) t" -> "c.id",
+      // both the enclosing source and the body's are derived tables
+      "SELECT d1.cid FROM (SELECT cid FROM orders) d1 WHERE EXISTS " +
+      "(SELECT 1 FROM (SELECT id FROM customers) d2 WHERE d2.id = d1.cid)" -> "d1.cid"
+    ).foreach { case (sql, ref) =>
+      withClue(s"[$sql] ") { correlatedNames(parse(sql)) should contain(ref) }
+    }
+  }
+
+  it should "leave a genuinely unknown name refused, in every position, with the same message" in {
+    for {
+      dt        <- derivedBodies
+      predicate <- subqueryPositions(dt, "zz.id", outer = "c.id")
+    } rejects(
+      s"SELECT c.id FROM customers c WHERE $predicate",
+      "Column 'zz.id' is not projected by derived table 'd' (it projects: a"
+    )
+    // beside a valid correlated reference, the unknown one is the one named
+    rejects(
+      "SELECT c.id FROM customers c WHERE EXISTS " +
+      "(SELECT 1 FROM (SELECT a FROM x) d WHERE d.a = c.id AND zz.k = 1)",
+      "Column 'zz.k' is not projected by derived table 'd' (it projects: a)"
+    )
+    // two levels in
+    rejects(
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.cid = c.id AND " +
+      "EXISTS (SELECT 1 FROM (SELECT region FROM orders) d WHERE d.region = zz.region))",
+      "Column 'zz.region' is not projected by derived table 'd' (it projects: region)"
+    )
+  }
+
+  it should "resolve to the body's OWN source when the body declares the same name" in {
+    // `c` is the body's derived table here, shadowing the enclosing `c`
+    rejects(
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM (SELECT a FROM x) c WHERE c.id = 1)",
+      "Column 'id' is not projected by derived table 'c' (it projects: a)"
+    )
+  }
+
+  it should "leave a derived body naming an outer alias to the LATERAL refusal" in {
+    rejects(
+      "SELECT c.id, t.a FROM customers c JOIN " +
+      "(SELECT d.a FROM (SELECT a FROM x) d WHERE d.a = c.id) t ON t.a = c.id",
+      "LATERAL is not supported",
+      "'c.id' inside derived table 't'"
+    )
+  }
+
+  it should "still refuse the body validated on its own, where no statement encloses it" in {
+    val body = "SELECT 1 FROM (SELECT a FROM x) d WHERE d.a = c.id"
+    val reason = "Column 'c.id' is not projected by derived table 'd' (it projects: a)"
+    rejects(body, reason)
+    parse(s"SELECT c.id FROM customers c WHERE EXISTS ($body)")
+    // the enclosing statements are those of ONE validation, never left behind for the next
+    rejects(body, reason)
+  }
+
+  it should "still refuse an UN-qualified outer name: an outer reference must be qualified" in {
+    rejects(
+      "SELECT c.id FROM customers c WHERE EXISTS (SELECT 1 FROM (SELECT a FROM x) d WHERE d.a = id)",
+      "Column 'id' is not projected by derived table 'd' (it projects: a)"
+    )
+  }
+
   // ── rejections that MUST be ours (AD-3 / AD-6) ─────────────────────────────────────────────
 
   "A derived table" should "require an alias (PD-1)" in {
