@@ -718,16 +718,18 @@ against ONE document — so:
 
 > ⚠️ A **derived table** over `JOIN UNNEST` is answered by the arrow extension (the JDBC and ADBC
 > drivers, the Flight SQL sidecar, federation, and the REPL when the extension is not excluded).
-> Today it answers correctly only when the inner query **aliases each UNNEST column** and carries a
-> **`LIMIT`**. Without the alias, the outer query cannot name the column: in a function it reads
-> `NULL`, and in `WHERE` it is refused. Without the inner `LIMIT`, each parent keeps at most 3
-> elements, as for any UNNEST projection. Measured on Elasticsearch 8.18 and 6.8:
+> An inner column without an alias is named by its **short name**, the last part of the reference:
+> `items.product` is `product` — the name every clause of the outer query uses, and the label
+> `SELECT *` gives the column. Two inner columns whose short names coincide (`o.id` and `items.id`)
+> are refused with a message asking for an alias: alias one of them (`items.id AS item_id`).
+> Otherwise the inner query needs no alias and no `LIMIT` — within the elements an UNNEST projection
+> returns per parent (100 by default, see below). Measured on Elasticsearch 8.18 and 6.8:
 >
 > ```sql
 > SELECT id, UPPER(product) AS product, total_price
-> FROM (SELECT o.id, items.product AS product,
+> FROM (SELECT o.id, items.product,
 >              SUM(items.price * items.quantity) OVER (PARTITION BY o.id) AS total_price
->       FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100) d;
+>       FROM dql_orders o JOIN UNNEST(o.items) AS items) d;
 > ```
 
 ```sql
@@ -750,7 +752,10 @@ SELECT o.id, items.product,
 FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
 ```
 
-Without a `LIMIT`, an UNNEST projection currently returns at most 3 elements per parent.
+Without a `LIMIT`, an UNNEST projection returns up to 100 elements per parent, or up to the index's
+own `index.max_inner_result_window` when that setting is lower. A parent holding more elements is
+cut without an error: measured on Elasticsearch 6.8, 7.17, 8.18 and 9.0, a 101-element parent
+returns 100 rows, its last element dropped.
 
 ---
 

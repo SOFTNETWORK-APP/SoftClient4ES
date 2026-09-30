@@ -1473,7 +1473,13 @@ object Parser
           "supported: alias the columns in the CTE's SELECT list instead " +
           s"(WITH ${n.value} AS (SELECT expr AS ${cols.head}, ...))"
         )
-      case n ~ None ~ body => success(Cte(n, body))
+      case n ~ None ~ body =>
+        // Every reference substitutes THIS body as a derived table's body, so its unaliased
+        // columns take their short names here, once — see `DerivedTable.withShortNames`.
+        DerivedTable.withShortNames(body, s"CTE '${n.value}'") match {
+          case Right(named) => success(Cte(n, named))
+          case Left(reason) => err(reason)
+        }
     }
 
   /** `WITH [RECURSIVE] <cte> [, <cte>]*`.

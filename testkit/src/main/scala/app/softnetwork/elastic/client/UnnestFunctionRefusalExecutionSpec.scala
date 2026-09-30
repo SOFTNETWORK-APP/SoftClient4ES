@@ -69,9 +69,9 @@ trait UnnestFunctionRefusalExecutionSpec
   private val today: String =
     _root_.java.time.LocalDate.now(_root_.java.time.ZoneOffset.UTC).toString + "T12:00:00Z"
 
-  /** Two elements per parent at most: an UNNEST projection without LIMIT returns at most three
-    * elements of each parent (Elasticsearch's default inner hits size), which is not this spec's.
-    * `p4` has NO element: an UNNEST is an inner join, it contributes no row.
+  /** Two elements per parent at most: how many elements an UNNEST projection returns per parent is
+    * not this spec's question (`UnnestInnerHitsSizeExecutionSpec`). `p4` has NO element: an UNNEST
+    * is an inner join, it contributes no row.
     */
   private val parents: Seq[Parent] = Seq(
     Parent(
@@ -307,7 +307,7 @@ trait UnnestFunctionRefusalExecutionSpec
   "a WHERE COALESCE whose UNNEST column follows a non-null literal" should "answer the rows of the same statement without it" in {
     // COALESCE answers the literal, never the column: the condition does not depend on the element
     // and is answered per parent -- correctly, for every column type under both aliases. With a
-    // LIMIT: without one, an UNNEST projection returns at most three elements per parent.
+    // LIMIT, as measured.
     val every = parents.flatMap(p => p.items.map(it => s"${p.id}|${it.k}")).sorted
     val statements = for {
       alias <- Seq("i", "items")

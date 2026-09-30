@@ -212,8 +212,8 @@ object UnnestScope {
     /** 🔴 The stable phrase FIRST and the remedy LAST: `GatewayApi` relays a parse refusal longer
       * than 200 characters as its first 120 + `...` + its last 77, so both ends must survive a cut.
       * The remedy was MEASURED with a LIMIT: a plain UNNEST projection then answers every element.
-      * Without one it currently returns at most three elements per parent (Elasticsearch's default
-      * inner-hits size) -- a separate defect, documented beside this refusal.
+      * Without one it answers up to 100 elements per parent, or the index's own lower
+      * `index.max_inner_result_window` (`NestedElements.innerHitsSize`).
       */
     def message: String = {
       val where = evaluatedIn match {

@@ -352,6 +352,20 @@ package object query {
       case _ => None
     }
 
+  /** Where an identifier of `SingleSearch.referencedIdentifiersBySite` was written. */
+  sealed trait ReferenceSite
+
+  object ReferenceSite {
+
+    /** The SELECT item at `index` (0-based), or an argument of its function chain. */
+    final case class SelectItem(index: Int) extends ReferenceSite
+    case object InWhere extends ReferenceSite
+    case object InHaving extends ReferenceSite
+    case object InGroupBy extends ReferenceSite
+    case object InOrderBy extends ReferenceSite
+    case object InJoinOn extends ReferenceSite
+  }
+
   sealed trait Statement extends Token
 
   sealed trait DqlStatement extends Statement
@@ -537,16 +551,34 @@ package object query {
       * story 22.2's subquery detector): a second enumeration of the clauses is the
       * one-key-two-derivations drift story 21.3 paid for four times.
       */
-    lazy val referencedIdentifiers: Seq[Identifier] =
-      select.fields.flatMap(f => FunctionUtils.funIdentifiers(f.identifier)) ++
-      where.flatMap(_.criteria).map(_.referencedIdentifiers).getOrElse(Nil) ++
-      having.flatMap(_.criteria).map(_.referencedIdentifiers).getOrElse(Nil) ++
-      groupBy.map(_.buckets.map(_.identifier)).getOrElse(Nil) ++
-      orderBy.map(_.sorts.map(_.field)).getOrElse(Nil) ++
+    lazy val referencedIdentifiers: Seq[Identifier] = referencedIdentifiersBySite.map(_._2)
+
+    /** [[referencedIdentifiers]], each with the place it was written — THE enumeration, of which
+      * the list above is the projection, so the clauses are walked once. `derivedScopeCheck` needs
+      * the place: an outer SELECT alias may be named in every clause, but not by the SELECT item
+      * that defines it.
+      */
+    lazy val referencedIdentifiersBySite: Seq[(ReferenceSite, Identifier)] =
+      select.fields.zipWithIndex.flatMap { case (f, i) =>
+        FunctionUtils.funIdentifiers(f.identifier).map(ReferenceSite.SelectItem(i) -> _)
+      } ++
+      where
+        .flatMap(_.criteria)
+        .map(_.referencedIdentifiers)
+        .getOrElse(Nil)
+        .map(ReferenceSite.InWhere -> _) ++
+      having
+        .flatMap(_.criteria)
+        .map(_.referencedIdentifiers)
+        .getOrElse(Nil)
+        .map(ReferenceSite.InHaving -> _) ++
+      groupBy.map(_.buckets.map(_.identifier)).getOrElse(Nil).map(ReferenceSite.InGroupBy -> _) ++
+      orderBy.map(_.sorts.map(_.field)).getOrElse(Nil).map(ReferenceSite.InOrderBy -> _) ++
       from.joins
         .collect { case sj: StandardJoin => sj }
         .flatMap(_.on.toSeq)
         .flatMap(_.criteria.referencedIdentifiers)
+        .map(ReferenceSite.InJoinOn -> _)
 
     /** alias -> table KEY, lossless (story BIDC-8): the map to consult when resolving a qualifier.
       * `tableAliases` (table -> alias) cannot hold two aliases of one table.
@@ -674,13 +706,33 @@ package object query {
       }
     }
 
+    /** The inner hits whose ELEMENTS become rows (the UNNEST row explosion): each UNNEST a
+      * non-aggregated SELECT column reads, and every UNNEST it is nested in — a parent's inner hits
+      * carry its children's, so a parent left at Elasticsearch's default would cap them too.
+      */
+    private[this] lazy val rowSourceInnerHits: Set[String] = {
+      def withAncestors(u: Unnest): Seq[String] =
+        u.innerHitsName +: u.parent.toSeq.flatMap(withAncestors)
+      nestedFields.keys.toSeq.flatMap(k => unnests.get(k).toSeq.flatMap(withAncestors)).toSet
+    }
+
     def toNestedElement(u: Unnest): NestedElement = {
       val updated = unnests.getOrElse(u.alias.map(_.alias).getOrElse(u.name), u)
       val parent = updated.parent.map(toNestedElement)
       NestedElement(
         path = updated.path,
         innerHitsName = updated.innerHitsName,
-        size = limit.map(_.limit),
+        // The statement's LIMIT when it has one (unchanged). Without it, an UNNEST projection asks
+        // for `NestedElements.innerHitsSize` elements per parent (100, or the index's own lower
+        // `index.max_inner_result_window`) instead of inner_hits' own default of 3; a nested filter
+        // or aggregate whose elements are not rows keeps the default.
+        size = limit
+          .map(_.limit)
+          .orElse(
+            if (rowSourceInnerHits.contains(updated.innerHitsName))
+              Some(NestedElements.innerHitsSize(schema))
+            else None
+          ),
         children = Nil,
         sources = nestedFields
           .get(updated.innerHitsName)
@@ -1390,8 +1442,13 @@ package object query {
       *     a derived table (Tableau's `SELECT COL FROM (SELECT 1 AS COL) AS SUBQUERY`). With
       *     several sources a bare name is ambiguous today for plain tables too, and resolving it is
       *     story 22.3's scope model, not this story's;
-      *   - an outer SELECT alias (`SELECT COL AS c … ORDER BY c`), an ordinal or literal (empty
-      *     `name`), `*` and `COUNT(*)` are never derived-table references;
+      *   - an outer SELECT alias (`SELECT COL AS c … ORDER BY c`) is not a derived-table reference
+      *     where a clause may name one (WHERE, GROUP BY, HAVING, ORDER BY, ON, another SELECT item)
+      *     — in the item that defines it, the name is checked as a column;
+      *   - a dotted name whose head is no source (`item.product`) is checked against a LONE derived
+      *     source's projection, and refused with the names it does project;
+      *   - an ordinal or literal (empty `name`), `*` and `COUNT(*)` are never derived-table
+      *     references;
       *   - a derived table whose projection is OPAQUE (`outputNames == None`, i.e. a bare `SELECT
       *     *`) accepts EVERY reference: rejecting one would mean inventing the schema, and DuckDB's
       *     binder rejects a wrong one loudly once story 22.4 executes it.
@@ -1409,34 +1466,69 @@ package object query {
         // falls back to `table`, absorbing the re-`update()` staleness where every other consumer
         // already keys on the alias.
         val here = Seq(SubqueryScope.scopeOf(this))
-        // `fieldAliases` is built over `fieldsWithComputedAliases`, so it also holds the synthetic
-        // `__cN` names — harmless here, since no real column is spelled that way.
-        val outerAliases: Set[String] = select.fieldAliases.values.toSet
-        referencedIdentifiers.iterator
-          .filter(id => id.name.nonEmpty && id.name != "*")
-          // An OUTER SELECT alias (`SELECT COL AS c … ORDER BY c`) is not a derived-table
-          // reference; it names a projection of THIS statement.
-          .filterNot(id =>
+        // The outer SELECT aliases, item by item. `fieldsWithComputedAliases` also holds the
+        // synthetic `__cN` names — harmless here, since no real column is spelled that way.
+        val itemAliases: Seq[Option[String]] =
+          select.fieldsWithComputedAliases.map(_.fieldAlias.map(_.alias))
+        val outerAliases: Set[String] = itemAliases.flatten.toSet
+        // An OUTER SELECT alias (`SELECT COL AS c … ORDER BY c`) is not a derived-table reference;
+        // it names a projection of THIS statement — in WHERE (the relational engine resolves a
+        // SELECT alias there: `SELECT id * 10 AS x FROM (…) d WHERE x = 20` answers), GROUP BY,
+        // HAVING, ORDER BY, a JOIN's ON, and a SELECT item naming ANOTHER item's alias. Never in the
+        // item that defines it: there the name is a COLUMN, and exempting it let `SELECT
+        // UPPER(product) AS product …` through over a derived table that projects no `product`.
+        def aliasesNameableAt(site: ReferenceSite): Set[String] = site match {
+          case ReferenceSite.SelectItem(i) =>
+            itemAliases.zipWithIndex.collect { case (Some(a), j) if j != i => a }.toSet
+          case _ => outerAliases
+        }
+        // A DOTTED name whose head is no source of this FROM (`item.product`: the body's own UNNEST
+        // alias, invisible out here) resolves to nothing. Over a LONE derived source it can only be
+        // a path into one of that source's columns, so it is checked against its projection — by
+        // the head, as a qualified path is, or whole (a projected name may itself hold a dot). With
+        // several sources it stays unchecked: which one it reads is not known without a mapping.
+        val lone: Option[DerivedTable] =
+          here.head.sources.filterNot(_.isInstanceOf[SubqueryScope.UnnestSource]) match {
+            case Seq(src: SubqueryScope.DerivedSource) => scopes.get(src.alias)
+            case _                                     => None
+          }
+        // A SELECT item also reads what `funIdentifiers` does not reach — a CASE's WHEN conditions,
+        // DISTANCE's operands (`UnnestScope.readsOf`, THE walk of what an expression reads) — and a
+        // window's PARTITION BY / ORDER BY keys. Added HERE rather than to `referencedIdentifiers`,
+        // whose other readers (the correlation walk, core's subquery seam, the relational planner)
+        // were not asked to change.
+        val selectReads: Seq[(ReferenceSite, Identifier)] =
+          select.fields.zipWithIndex.flatMap { case (f, i) =>
+            (UnnestScope.readsOf(f.identifier) ++ f.identifier.windows.toSeq.flatMap { w =>
+              w.partitionBy ++ w.orderBy.toSeq.flatMap(_.sorts.map(_.field))
+            }).map(ReferenceSite.SelectItem(i) -> _)
+          }
+        (referencedIdentifiersBySite.iterator ++ selectReads.iterator)
+          .filter { case (_, id) => id.name.nonEmpty && id.name != "*" }
+          .filterNot { case (site, id) =>
             id.tableAlias.isEmpty && id.table.isEmpty && !id.name.contains(".") &&
-            outerAliases.contains(id.name)
-          )
-          .flatMap { id =>
+              aliasesNameableAt(site).contains(id.name)
+          }
+          .flatMap { case (_, id) =>
             // 🔴 The column comes FROM the resolution, never re-derived from `id.name`: `resolve`
             // has already stripped whatever qualifier it matched, and splitting the name again
             // here would compare the QUALIFIER (`D` of `D.total`, which `resolve` matches
             // case-insensitively) against the projection and refuse a statement it just resolved.
             // One derivation, two readers — the story 21.3 lesson.
-            val scope: Option[(DerivedTable, String)] = SubqueryScope.resolve(id, here) match {
+            val scope: Option[(DerivedTable, Seq[String])] = SubqueryScope.resolve(id, here) match {
               case SubqueryScope.Resolved(0, src: SubqueryScope.DerivedSource, column) =>
-                scopes.get(src.alias).map(_ -> column.split("\\.", 2)(0))
-              case _ => None // Ambiguous / Unresolved / an enclosing scope: never guessed at
+                scopes.get(src.alias).map(_ -> Seq(column.split("\\.", 2)(0)))
+              case SubqueryScope.Unresolved
+                  if id.tableAlias.isEmpty && id.table.isEmpty && id.name.contains(".") =>
+                lone.map(_ -> Seq(id.name.split("\\.", 2)(0), id.name))
+              case _ => None // Ambiguous / an enclosing scope: never guessed at
             }
-            scope.flatMap { case (d, head) =>
+            scope.flatMap { case (d, candidates) =>
               // Case-INSENSITIVE, the same match `SubqueryScope.resolve` makes when it decides
               // WHICH source projects the name: an SQL identifier is case-insensitive, and the two
               // halves disagreeing is exactly what made `SELECT Total … AS total` fail.
               d.outputNames
-                .filterNot(names => SubqueryScope.projects(Some(names), head))
+                .filterNot(names => candidates.exists(c => SubqueryScope.projects(Some(names), c)))
                 .map(names => (id, d, names))
             }
           }
