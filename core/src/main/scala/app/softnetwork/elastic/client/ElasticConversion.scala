@@ -221,7 +221,9 @@ trait ElasticConversion {
             jsonToRows(
               response,
               leg0.map(_.fieldAliases).getOrElse(fieldAliases),
-              aggregations,
+              // and from ITS OWN aggregation plan: the merged one keeps the LAST branch's
+              // aggregation per name, which may not be the one THIS branch's request emitted
+              leg0.map(_.aggregations).getOrElse(aggregations),
               leg0.map(_.fields).getOrElse(fields),
               leg0.map(_.nestedHits).getOrElse(nestedHits),
               explodeNested,

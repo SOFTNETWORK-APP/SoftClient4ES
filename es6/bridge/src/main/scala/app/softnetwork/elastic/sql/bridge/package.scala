@@ -170,9 +170,16 @@ package object bridge {
         None
     }
 
+  /** @param aggregations
+    *   the aggregations as EMITTED
+    * @param references
+    *   the same aggregations as a pipeline or a terms `order` READS them -- every one, a percentile
+    *   merged into another's node bound to that node (see `coalescePercentileAggs`)
+    */
   implicit def requestToRootAggregations(
     request: SingleSearch,
-    aggregations: Seq[ElasticAggregation]
+    aggregations: Seq[ElasticAggregation],
+    references: Seq[ElasticAggregation]
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query
@@ -190,26 +197,31 @@ package object bridge {
           Map.empty,
           request.having.flatMap(_.criteria),
           None,
-          aggregations
+          references
         ) match {
           case Nil  => Seq.empty
           case aggs => aggs
         }
         buckets
       case aggs =>
-        val directions: Map[String, SortOrder] = aggs
-          .filter(_.direction.isDefined)
-          .map(agg => agg.agg.name -> agg.direction.get)
+        val notNestedReferences = references.filterNot(_.nested)
+
+        // An `ORDER BY` reads its aggregation as a pipeline does: by `valuePath` -- a percentile by
+        // key, on the node that carries it.
+        val ordered = notNestedReferences.filter(_.direction.isDefined)
+
+        val directions: Map[String, SortOrder] = ordered
+          .map(agg => agg.valuePath -> agg.direction.get)
           .toMap
 
         val buckets = ElasticAggregation.buildBuckets(
           notNestedBuckets,
-          request.sorts -- directions.keys,
+          request.sorts -- ordered.map(_.agg.name),
           aggs,
           directions,
           request.having.flatMap(_.criteria),
           None,
-          aggs
+          notNestedReferences
         ) match {
           // No buckets. A `HAVING` with no `GROUP BY` filters the ONE implicit whole-table group,
           // so the metric aggregations move inside a synthetic single-bucket `filters` aggregation
@@ -217,7 +229,7 @@ package object bridge {
           // silently discarded (see ElasticAggregation.wholeTableHavingAggregation).
           case Nil =>
             ElasticAggregation
-              .wholeTableHavingAggregation(request, aggs)
+              .wholeTableHavingAggregation(request, aggs, notNestedReferences)
               .map(Seq(_))
               .getOrElse(aggs.map(_.agg))
           case aggs =>
@@ -231,9 +243,16 @@ package object bridge {
     rootAggregations
   }
 
+  /** @param aggregations
+    *   the aggregations as EMITTED
+    * @param references
+    *   the same aggregations as a pipeline or a terms `order` READS them (see
+    *   [[requestToRootAggregations]])
+    */
   implicit def requestToScopedAggregations(
     request: SingleSearch,
-    aggregations: Seq[ElasticAggregation]
+    aggregations: Seq[ElasticAggregation],
+    references: Seq[ElasticAggregation]
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query
@@ -291,12 +310,15 @@ package object bridge {
             }
             .map(_.agg)
 
-          // Get the directions for this nested aggregation
+          // Get the directions for this nested aggregation -- read by `valuePath`, as the root's
+          val ordered = references
+            .filter(_.nestedElement.exists(_.path == n.path))
+            .filter(_.direction.isDefined)
+
           val directions: Map[String, SortOrder] =
-            elasticAggregations
-              .filter(_.direction.isDefined)
+            ordered
               .map(elasticAggregation =>
-                elasticAggregation.agg.name -> elasticAggregation.direction.getOrElse(Asc)
+                elasticAggregation.valuePath -> elasticAggregation.direction.getOrElse(Asc)
               )
               .toMap
 
@@ -308,12 +330,12 @@ package object bridge {
           val buckets: Seq[AbstractAggregation] =
             ElasticAggregation.buildBuckets(
               nestedBuckets,
-              request.sorts -- directions.keys,
+              request.sorts -- ordered.map(_.agg.name),
               notRelatedAggregationsToBuckets,
               directions,
               havingCriteria,
               Some(n),
-              aggregations
+              references
             ) match {
               case Nil => notRelatedAggregationsToBuckets.map(_.agg)
               case aggs =>
@@ -470,28 +492,38 @@ package object bridge {
     * the FIRST of them (the owner): set the owner's ES `percentiles` `percents` to the group's
     * sorted-distinct union and drop the delegates. Mirrors `SearchApi.toClientAggregations` via the
     * shared [[PercentileAgg.coalescePlan]] so query and response agree on the owner node.
+    *
+    * Returns the aggregations twice: as EMITTED (the delegates dropped), and as a
+    * `bucket_selector`, a `bucket_script` or a terms `order` REFERENCES them -- every one, a
+    * delegate bound to its owner's merged node, so it is read as `<owner>[<percent>]`
+    * (`ElasticAggregation.valuePath`). 🔴 Only the response side used to redirect a merged
+    * percentile to its owner; a pipeline or an order read the delegate by its own name, which named
+    * no node: zero groups at HTTP 200, a lost terms `order` (story IDENT-1, MEASURED on
+    * Elasticsearch 8.18.3). The emitted `bucket_script`s read their operands through the references
+    * too, merged or not.
     */
   private def coalescePercentileAggs(
     aggs: Seq[ElasticAggregation]
-  ): Seq[ElasticAggregation] = {
+  ): (Seq[ElasticAggregation], Seq[ElasticAggregation]) = {
     val items = aggs.collect {
       case ea if ea.aggType.isInstanceOf[PercentileAgg] =>
         ea.aggName -> ea.aggType.asInstanceOf[PercentileAgg]
     }
-    if (items.size < 2) aggs
-    else {
-      val plan = PercentileAgg.coalescePlan(items)
-      aggs.flatMap { ea =>
-        if (plan.isDelegate(ea.aggName)) None
-        else if (plan.isOwner(ea.aggName))
-          Some(
-            ea.copy(agg =
+    val (emitted, references) =
+      if (items.size < 2) (aggs, aggs)
+      else {
+        val plan = PercentileAgg.coalescePlan(items)
+        val nodes: Map[String, AbstractAggregation] = aggs.collect {
+          case ea if plan.isOwner(ea.aggName) =>
+            ea.aggName ->
               ea.agg.asInstanceOf[PercentilesAggregation].percents(plan.mergedPercents(ea.aggName))
-            )
-          )
-        else Some(ea)
+        }.toMap
+        val references = aggs.map { ea =>
+          plan.ownerOf.get(ea.aggName).flatMap(nodes.get).fold(ea)(node => ea.copy(agg = node))
+        }
+        (references.filterNot(ea => plan.isDelegate(ea.aggName)), references)
       }
-    }
+    (emitted.map(ElasticAggregation.withOperandValuePaths(_, references)), references)
   }
 
   implicit def requestToSearchRequest(
@@ -502,7 +534,7 @@ package object bridge {
   ): SearchRequest = {
     import request._
 
-    val aggregations = coalescePercentileAggs(
+    val (aggregations, references) = coalescePercentileAggs(
       request.aggregates.map(
         ElasticAggregation(
           _,
@@ -513,9 +545,9 @@ package object bridge {
       )
     )
 
-    val rootAggregations = requestToRootAggregations(request, aggregations)
+    val rootAggregations = requestToRootAggregations(request, aggregations, references)
 
-    val scopedAggregations = requestToScopedAggregations(request, aggregations)
+    val scopedAggregations = requestToScopedAggregations(request, aggregations, references)
 
     val allAggregations = {
       rootAggregations match {

@@ -290,10 +290,10 @@ class StringLiteralEscapingSpec extends AnyFlatSpec with Matchers {
       val stmt = statementOf(sql)
       withClue(s"[$sql] rendered as [${stmt.sql}] ") {
         Parser(stmt.sql) shouldBe Right(stmt)
-        // 🔴 And the RENDER fixed point as well. AST equality alone is WEAK here: `Identifier`
-        // inherits `PainlessParam.equals`, which compares only the rendered doc access, so two
-        // statements differing ONLY in their format string are EQUAL as ASTs. The render fixed
-        // point is what actually sees the pattern.
+        // 🔴 And the RENDER fixed point as well. AST equality alone is WEAK here: `Identifier.equals`
+        // compares the rendered doc access and the correlation — never the chain or its arguments
+        // — so two statements differing ONLY in their format string are EQUAL as ASTs. The render
+        // fixed point is what actually sees the pattern.
         Parser(stmt.sql).map(_.sql) shouldBe Right(stmt.sql)
       }
     }

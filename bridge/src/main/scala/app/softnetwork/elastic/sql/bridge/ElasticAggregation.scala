@@ -67,6 +67,7 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   TermsAggregation,
   TermsOrder
 }
+import com.sksamuel.elastic4s.requests.searches.aggs.pipeline.BucketScriptPipelineAgg
 import com.sksamuel.elastic4s.requests.searches.sort.FieldSort
 
 import scala.language.implicitConversions
@@ -108,6 +109,24 @@ case class ElasticAggregation(
     * the client-module tests assert it on the `sqlQueryToAggregations` door.
     */
   def hasTransformExtendedStats: Boolean = ScriptedExtendedStatsAggregation.existsIn(Seq(agg))
+
+  /** The `buckets_path` / terms `order` value that reads THIS aggregation: its node's local name --
+    * and, for a percentile, the percent it asks for as well, `<node>[<percent>]`.
+    *
+    * 🔴 A `percentiles` node is MULTI-VALUE even when it carries one percent, and the percentiles
+    * over one value column share ONE node (the percent merge), so a bare name cannot read one of
+    * them. MEASURED on Elasticsearch 6.8.23, 7.17.29, 8.18.3 and 9.0.3 (story IDENT-1): over a
+    * merged node a bare name is refused by a `bucket_selector`, a `bucket_script` and a terms
+    * `order` ("contains multiple values", "Missing value key"), and over a single-percent node by a
+    * terms `order` on all four and by a `bucket_selector` on 6.8 and 7.17; the keyed form reads one
+    * percent of either node, for all three, on all four. A merged percentile is bound to the node
+    * that carries it before this is read (the bridge's `coalescePercentileAggs`).
+    */
+  def valuePath: String =
+    aggType match {
+      case percentile: PercentileAgg => s"${agg.name}[${percentile.resultField}]"
+      case _                         => agg.name
+    }
 }
 
 /** The terms `order` a bucket asks for, looked up under BOTH spellings a sort can be keyed by: the
@@ -680,25 +699,28 @@ object ElasticAggregation {
     *
     * Returns `None` -- leaving the emission untouched -- when the statement is not this shape, or
     * when the selector script comes back empty (no condition of the predicate resolves against this
-    * level's metrics, the same guard the bucket path applies).
+    * level's metrics, the same guard the bucket path applies). `aggs` are the aggregations as
+    * EMITTED, `references` as a pipeline READS them (a merged percentile bound to the node that
+    * carries it), exactly as the bucket path takes them.
     */
   def wholeTableHavingAggregation(
     request: app.softnetwork.elastic.sql.query.SingleSearch,
-    aggs: Seq[ElasticAggregation]
+    aggs: Seq[ElasticAggregation],
+    references: Seq[ElasticAggregation]
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType
   ): Option[Aggregation] =
     request.having.flatMap(_.criteria) match {
       case Some(criteria) if request.wholeTableHaving && aggs.nonEmpty =>
-        val script = metricSelectorForBucket(criteria, None, aggs)
+        val script = metricSelectorForBucket(criteria, None, references)
         if (script.isEmpty) None
         else {
           val bucketSelector =
             bucketSelectorAggregation(
               "having_filter",
               now(Script(script)),
-              extractMetricsPathForBucket(criteria, None, aggs)
+              extractMetricsPathForBucket(criteria, None, references)
             )
           Some(
             KeyedFiltersAggregation(
@@ -805,8 +827,9 @@ object ElasticAggregation {
 
   /** Addressable from this bucket. `path` is the `buckets_path` value: the aggregation's LOCAL name
     * -- `agg.name`, the name the elastic4s aggregation was built with, never the `.`-joined
-    * `aggName` a nested aggregation carries (issue #54) -- or `<child nested agg>><local name>` for
-    * a global metric of a direct nested child.
+    * `aggName` a nested aggregation carries (issue #54), keyed by its percent for a percentile
+    * ([[ElasticAggregation.valuePath]]) -- or `<child nested agg>><local name>` for a global metric
+    * of a direct nested child.
     */
   private case class Resolved(path: String) extends MetricResolution
 
@@ -827,10 +850,10 @@ object ElasticAggregation {
       case Some(elasticAgg) =>
         val metricBucketPath = elasticAgg.nestedElement.map(_.nestedPath).getOrElse("")
         if (metricBucketPath == currentNestedPath)
-          Resolved(elasticAgg.agg.name)
+          Resolved(elasticAgg.valuePath)
         else if (isDirectChild(metricBucketPath, currentNestedPath) && elasticAgg.isGlobalMetric) {
           val childNestedName = elasticAgg.nestedElement.map(_.innerHitsName).getOrElse("")
-          Resolved(s"$childNestedName>${elasticAgg.agg.name}")
+          Resolved(s"$childNestedName>${elasticAgg.valuePath}")
         } else
           OutOfScope
       case None => Unknown
@@ -883,6 +906,32 @@ object ElasticAggregation {
       }
     result.toMap
   }
+
+  /** A `bucket_script`'s `buckets_path`, re-read against the aggregations as REFERENCED: each
+    * operand resolves to the aggregation [[extractMetricsPathForBucketScript]] found under the same
+    * name, and a percentile operand is read through [[ElasticAggregation.valuePath]] -- by key, on
+    * the node that carries it. The script's paths are extracted as each aggregation is BUILT,
+    * before the percent merge decides which node carries a percentile; this runs after it. Any
+    * other aggregation is returned unchanged.
+    */
+  def withOperandValuePaths(
+    aggregation: ElasticAggregation,
+    references: Seq[ElasticAggregation]
+  ): ElasticAggregation =
+    aggregation.agg match {
+      case script: BucketScriptPipelineAgg =>
+        aggregation.copy(agg = script.copy(bucketsPaths = script.bucketsPaths.map {
+          case (param, path) =>
+            param -> references
+              .find(reference => reference.aggName == path || reference.field == path)
+              .collect {
+                case reference if reference.aggType.isInstanceOf[PercentileAgg] =>
+                  reference.valuePath
+              }
+              .getOrElse(path)
+        }))
+      case _ => aggregation
+    }
 
   /** Extracts the buckets_path for a given bucket
     */

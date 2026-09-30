@@ -34,10 +34,10 @@ import org.scalatest.matchers.should.Matchers
   * BOTH extractions onto one parameter and failed the shard with `int.get(ChronoField)`.
   *
   * The repair is `PainlessParam.contextKey`: the context deduplicates on the column PLUS the
-  * chained rendering, and `equals` is deliberately left alone (a case-class identifier inherits it,
-  * so the whole AST would move). Every emission pinned below is EXECUTED over a real index by
-  * `PredicateFunctionResultSpec`, which asserts the ROW SETS -- a byte pin proves the bytes did not
-  * move, not that the rows are right.
+  * chained rendering. `equals` is deliberately NOT what a context keys on: it is the AST identity
+  * -- the doc access and, since story IDENT-1, the correlation -- and it ignores the chain. Every
+  * emission pinned below is EXECUTED over a real index by `PredicateFunctionResultSpec`, which
+  * asserts the ROW SETS -- a byte pin proves the bytes did not move, not that the rows are right.
   */
 class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
 

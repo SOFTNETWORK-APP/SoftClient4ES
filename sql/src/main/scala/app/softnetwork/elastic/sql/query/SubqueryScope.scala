@@ -367,6 +367,9 @@ object SubqueryScope {
         case body: SingleSearch => lateralOffenders(body, here)
         case _                  => Nil
       }
+      // Every member is an UNRESOLVED dotted reference -- `escapingReferences` keeps only
+      // `tableAlias.isEmpty` -- so identifier equality (doc access and correlation, story IDENT-1)
+      // reduces to the doc access for this dedup, by construction.
       val innerIds = inner.map(_._2).toSet
       escapingReferences(d.query, here, accumulate = false)
         .filterNot(innerIds.contains)

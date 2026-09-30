@@ -544,6 +544,19 @@ package object function {
       */
     def producesOutputJavaType: Boolean = false
 
+    /** 🔴 What the equality below asks, read from the source (story IDENT-1). `this` is never
+      * inside its own operand's chain -- the parser builds the carrier as `i.withFunctions(f +:
+      * i.functions)` and hands `f` the operand `i` -- so `equals` holds only by STRUCTURAL
+      * coincidence: the operand's innermost function is a same-class call with equal fields (a
+      * repeated call, `LAST_DAY(LAST_DAY(LAST_DAY(d)))`), or a `DayOfWeek`, whose inherited
+      * `Extract` equality compares only its field. Reference identity (`eq`) flips that answer
+      * (MEASURED: the repeated chain goes from true to false), so it is NOT a safe rewrite.
+      * Identifier equality (doc access and correlation) does not move it: a `DayOfWeek` compares by
+      * its field alone, and every other function holding a copy of the column either shares this
+      * one's correlation or reads a different doc access (`IdentifierEqualitySpec`, the lemma).
+      * Reached only when `super.checkIfNullable` holds -- never for `DATE_TRUNC`, whose only
+      * argument is its unit.
+      */
     override def checkIfNullable: Boolean =
       super.checkIfNullable && (this match {
         case f: FunctionWithIdentifier

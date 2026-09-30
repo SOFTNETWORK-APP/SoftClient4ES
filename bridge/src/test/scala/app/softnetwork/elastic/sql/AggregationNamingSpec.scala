@@ -2,6 +2,8 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.query._
+import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.sksamuel.elastic4s.requests.searches.aggs.{AbstractAggregation, Aggregation}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -452,7 +454,7 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       |GROUP BY e.domain HAVING COUNT(e.address) > 1""".stripMargin,
     """SELECT e.domain FROM customers c JOIN UNNEST(c.emails) AS e
       |GROUP BY e.domain HAVING COUNT(e.address) > 1""".stripMargin
-  )
+  ) ++ percentileShapes.map(_._1)
 
   private val mapper = new ObjectMapper()
 
@@ -626,4 +628,192 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       .filter(_.group(2).contains("? null :"))
       .map(_.group(1))
       .toSeq
+
+  // ---------------------------------------------------------------------------------------------
+  // Story IDENT-1 -- a percentile a bucket pipeline or a terms `order` reads is read BY KEY
+  //
+  // Percentiles over one value column share one `percentiles` aggregation, and only the RESPONSE
+  // side used to redirect a merged column to its owner's `values`. A `buckets_path` or a terms
+  // `order` read the percentile by its OWN name, so under a merge it named no aggregation (the
+  // selector read nothing: zero groups at HTTP 200; the `order` was dropped), and on its owner it
+  // named a node carrying several percents (refused: "contains multiple values"). Found repeating a
+  // SELECT percentile with another spelling of its column (the render now keeps the qualifier and
+  // the quoting); the same holes existed for another percent of the column and for the alias of a
+  // merged SELECT percentile. Every read is now `<node>[<percent>]` on the node that carries the
+  // percent -- the one form Elasticsearch accepts on every major, for a merged node and a
+  // single-percent one alike (MEASURED on 6.8.23, 7.17.29, 8.18.3 and 9.0.3). Asserted at both
+  // resolutions: R1 is `Parser.apply`'s single one (an index pattern is sent after it), R2 the
+  // schema-attaching second one a search over one concrete index gets.
+  // ---------------------------------------------------------------------------------------------
+
+  private val percentileSchema: SchemaTable = SchemaTable(
+    "t",
+    columns = List(Column("k", SQLTypes.Keyword), Column("x", SQLTypes.Double))
+  )
+
+  private def bodiesAt(sql: String): Seq[(String, String)] = {
+    val r1 = SelectStatement(sql).statement match {
+      case Some(single: SingleSearch) => single
+      case other                      => fail(s"[$sql] is not a single search: $other")
+    }
+    Seq("R1" -> r1, "R2" -> r1.update(Some(percentileSchema))).map { case (res, single) =>
+      res -> (single: ElasticSearchRequest).query
+    }
+  }
+
+  private val keyedPath = """([^\[\]>]+)\[([^\[\]]+)\]""".r
+
+  /** Every value a `bucket_selector` or a `bucket_script` reads (its `buckets_path`) and every key
+    * a terms `order` sorts on, with the node it reads and, for a percentile, the percent its key
+    * asks for -- failing on a name no sibling aggregation carries, on a percentile read without a
+    * key, and on a key its node does not carry.
+    */
+  private def pipelineReads(json: String): Seq[(String, JsonNode, Option[Double])] = {
+    def entries(order: JsonNode): Seq[String] =
+      if (order.isArray) order.elements().asScala.toSeq.flatMap(_.fieldNames().asScala)
+      else order.fieldNames().asScala.toSeq
+    def read(path: String, siblings: JsonNode): (String, JsonNode, Option[Double]) = {
+      val (name, key) = path match {
+        case keyedPath(node, percent) => (node, Some(percent))
+        case node                     => (node, None)
+      }
+      val node = Option(siblings)
+        .flatMap(aggs => Option(aggs.get(name)))
+        .getOrElse(fail(s"`$path` names no aggregation"))
+      if (node.has("percentiles")) {
+        val percent =
+          key.getOrElse(fail(s"`$path` reads a percentiles node without a key")).toDouble
+        withClue(s"`$path` ")(percentsOf(node) should contain(percent))
+        (path, node, Some(percent))
+      } else {
+        withClue(s"`$path` ")(key shouldBe None)
+        (path, node, None)
+      }
+    }
+    def walk(node: JsonNode): Seq[(String, JsonNode, Option[Double])] =
+      Option(node.get("aggs")).toSeq.flatMap { aggs =>
+        aggs.fields().asScala.toSeq.flatMap { entry =>
+          val agg = entry.getValue
+          val pipelines = Seq("bucket_selector", "bucket_script")
+            .flatMap(kind => Option(agg.get(kind)))
+            .flatMap(_.get("buckets_path").fields().asScala.toSeq)
+            .map(path => read(path.getValue.asText(), aggs))
+          val ordered =
+            Option(agg.get("terms")).flatMap(t => Option(t.get("order"))).toSeq.flatMap { order =>
+              entries(order).filterNot(_.startsWith("_")).map(read(_, agg.get("aggs")))
+            }
+          pipelines ++ ordered ++ walk(agg)
+        }
+      }
+    walk(mapper.readTree(json))
+  }
+
+  private def percentsOf(node: JsonNode): Seq[Double] =
+    Option(node.get("percentiles"))
+      .map(_.get("percents").elements().asScala.toSeq.map(_.asDouble()))
+      .getOrElse(fail(s"not a percentiles aggregation: $node"))
+
+  /** The percents of every emitted `percentiles` aggregation, one entry per aggregation. */
+  private def percentileNodes(json: String): Seq[Seq[Double]] =
+    valuesOf(mapper.readTree(json), "percentiles").map(
+      _.get("percents").elements().asScala.toSeq.map(_.asDouble())
+    )
+
+  // lazy: `shapes`, initialised above, reads them through `percentileShapes`
+  private lazy val p50 = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY %s)"
+  private lazy val px = "PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY x)"
+  private lazy val pair =
+    s"SELECT k, ${px.format("0.5")} AS a, ${px.format("0.9")} AS b FROM t GROUP BY k"
+
+  /** (statement, the percent every percentile read must key) */
+  private lazy val percentileShapes: Seq[(String, Double)] =
+    (for {
+      (selected, repeated) <- Seq(
+        "t.x"   -> "x",
+        "x"     -> "t.x",
+        "\"x\"" -> "x",
+        "x"     -> "\"x\"",
+        "t.x"   -> "\"x\""
+      )
+      clause <- Seq(s"HAVING ${p50.format(repeated)} > 1", s"ORDER BY ${p50.format(repeated)} DESC")
+    } yield s"SELECT k, ${p50.format(selected)} AS p FROM t GROUP BY k $clause" -> 50.0) ++ Seq(
+      s"SELECT k, ${px.format("0.5")} AS a FROM t GROUP BY k HAVING ${px.format("0.9")} > 1" -> 90.0,
+      s"SELECT k, ${px.format("0.5")} AS a FROM t GROUP BY k ORDER BY ${px.format("0.9")} DESC" -> 90.0,
+      s"$pair HAVING b > 1"                   -> 90.0,
+      s"$pair ORDER BY b DESC"                -> 90.0,
+      s"$pair HAVING a > 1"                   -> 50.0,
+      s"$pair HAVING ${px.format("0.9")} > 1" -> 90.0,
+      // no GROUP BY: the one implicit group's `filters` bucket carries the selector
+      s"SELECT ${px.format("0.5")} AS a, ${px.format("0.9")} AS b FROM t HAVING b > 1" -> 90.0
+    )
+
+  "a percentile a pipeline or an order reads" should "be read by its key on the node that carries it, at both resolutions" in {
+    percentileShapes.foreach { case (sql, percent) =>
+      bodiesAt(sql).foreach { case (res, json) =>
+        withClue(s"[$res] $sql\n$json\n") {
+          val read = pipelineReads(json).flatMap(_._3)
+          read should not be empty // a dropped selector or order reads nothing -- never vacuous
+          read.foreach(_ shouldBe percent)
+        }
+      }
+    }
+  }
+
+  it should "leave every percentile over the column in ONE aggregation, whatever reads it" in {
+    // every spelling of `x` is one value column: `t.x`, `x` and `"x"` share one node at R2, the
+    // resolution a search over one concrete index sends
+    percentileShapes.foreach { case (sql, _) =>
+      val (_, json) = bodiesAt(sql).last
+      withClue(s"[R2] $sql\n$json\n")(percentileNodes(json) should have size 1)
+    }
+    bodiesAt(s"${pair.replace(" FROM", s", ${px.format("0.99")} AS c FROM")} HAVING b > 1")
+      .foreach { case (res, json) =>
+        withClue(s"[$res] $json\n") {
+          percentileNodes(json) shouldBe Seq(Seq(50.0, 90.0, 99.0))
+          pipelineReads(json).map(_._1) shouldBe Seq("a[90.0]")
+        }
+      }
+  }
+
+  it should "be read by key by a bucket_script too, merged or not" in {
+    val difference = s"${px.format("0.9")} - ${px.format("0.5")}"
+    Seq(
+      s"SELECT k, $difference AS d FROM t GROUP BY k",
+      s"SELECT k, ${px.format("0.5")} AS a, ${px.format("0.9")} AS b, $difference AS d " +
+      "FROM t GROUP BY k"
+    ).foreach { sql =>
+      bodiesAt(sql).foreach { case (res, json) =>
+        withClue(s"[$res] $sql\n$json\n") {
+          val read = pipelineReads(json)
+          read.flatMap(_._3).sorted shouldBe Seq(50.0, 90.0)
+          percentileNodes(json) shouldBe Seq(Seq(50.0, 90.0))
+        }
+      }
+    }
+  }
+
+  it should "be read by key under an UNNEST too, where its aggregation name is a path" in {
+    val p = "PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY e.size)"
+    val select = s"SELECT e.domain, ${p.format("0.5")} AS a, ${p.format("0.9")} AS b " +
+      "FROM customers c JOIN UNNEST(c.emails) AS e GROUP BY e.domain"
+    Seq(s"$select HAVING b > 1", s"$select ORDER BY b DESC").foreach { sql =>
+      val json = queryOf(sql)
+      withClue(s"$sql\n$json\n") {
+        pipelineReads(json).map(r => r._1 -> r._3) shouldBe Seq("a[90.0]" -> Some(90.0))
+        percentileNodes(json) shouldBe Seq(Seq(50.0, 90.0))
+      }
+    }
+  }
+
+  /** The repeat over the SAME qualified spelling used to be refused as "a different aggregate"
+    * under the SELECT alias (one copy resolved, one not); it now reads exactly what the alias does.
+    */
+  "a percentile repeated in HAVING over its qualified spelling" should "emit exactly what HAVING on its alias emits" in {
+    val select = s"SELECT k, ${p50.format("t.x")} AS p FROM t GROUP BY k"
+    bodiesAt(s"$select HAVING ${p50.format("t.x")} > 1")
+      .zip(bodiesAt(s"$select HAVING p > 1"))
+      .foreach { case ((res, repeated), (_, alias)) =>
+        withClue(s"[$res] ")(repeated shouldBe alias)
+      }
+  }
 }

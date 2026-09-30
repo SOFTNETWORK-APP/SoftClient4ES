@@ -538,12 +538,21 @@ package object aggregate {
         identifier = identifier.update(request)
       )
 
-    // All five input forms normalize to a single canonical round-trip form.
+    /** All five input forms normalize to a single canonical round-trip form.
+      *
+      * 🔴 The value column and the partitions render through `Identifier.sql` -- the spelling every
+      * other window already renders with (`WindowFunction.sql` interpolates `$identifier`) -- never
+      * through `identifierName`, which drops the table qualifier AND the quoting (story IDENT-1).
+      * MEASURED before: `PARTITION BY c.city` in a JOIN rendered `PARTITION BY city`, which
+      * re-parses as the MAIN table's column; and a column that needs quoting (`"my col"`,
+      * `"order"`) rendered SQL the parser rejects. Both reach a PERSISTED text: a materialized view
+      * stores this render.
+      */
     override def sql: String = {
       val fn = if (cont) PERCENTILE_CONT else PERCENTILE_DISC
-      val base = s"$fn($p) WITHIN GROUP (ORDER BY ${identifier.identifierName})"
+      val base = s"$fn($p) WITHIN GROUP (ORDER BY ${identifier.sql})"
       if (partitionBy.nonEmpty)
-        s"$base $OVER ($PARTITION_BY ${partitionBy.map(_.identifierName).mkString(", ")})"
+        s"$base $OVER ($PARTITION_BY ${partitionBy.map(_.sql).mkString(", ")})"
       else base
     }
   }
@@ -565,6 +574,11 @@ package object aggregate {
       * to itself); `mergedPercents` maps each owner aggName to the sorted distinct percents of its
       * group. Built identically on the query side (bridge) and the response side (SearchApi) so
       * both agree on which node is shared.
+      *
+      * A merge is invisible to every reader of a merged percentile: the response side reads it from
+      * its owner's `values`, and a bucket pipeline or a terms `order` reads it BY KEY on its
+      * owner's node (`<node>[<percent>]`, the bridges' `ElasticAggregation.valuePath`) -- a bare
+      * name cannot address one percent of a `percentiles` node, merged or not.
       *
       * @param items
       *   percentile `(aggName, PercentileAgg)` pairs in SELECT order.
