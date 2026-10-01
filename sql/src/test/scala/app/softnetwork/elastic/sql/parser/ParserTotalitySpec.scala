@@ -106,7 +106,7 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
     rejects("SELECT a FROM t JOIN u ON ()", "Empty sub-expression")
   }
 
-  // --- site 1: processTokensHelper's invalid stack -----------------------------------------
+  // --- site 1: the reducer's (`processTokens`) invalid stack --------------------------------
 
   it should "reject a leading predicate operator instead of throwing" in {
     rejects("SELECT a FROM t WHERE AND a = 1", "Invalid stack state for predicate creation")
@@ -154,7 +154,7 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
   // --- OQ-6: the stray closing parenthesis, which used to be swallowed ----------------------
 
   // MEASURED on the unmodified tree: `SELECT a FROM t WHERE a = 1)` parsed as `... WHERE a = 1`,
-  // the `)` consumed by `whereCriteria` and then ignored by processTokensHelper's EndDelimiter
+  // the `)` consumed by `whereCriteria` and then ignored by the reducer's EndDelimiter
   // arm. A closing delimiter reaching that scan is unmatched by construction - a balanced group is
   // consumed whole by `extractSubTokens` - so rejecting it cannot lose a valid statement.
   //
@@ -300,20 +300,20 @@ class ParserTotalitySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // Every AST `.sql` must re-parse to an EQUAL AST (project_ast_render_roundtrip_family).
-  // ⚠️ NOT is deliberately absent here: `NOT c = 3` renders as `c NOT = 3`, which does NOT re-parse.
-  // That render defect is PRE-EXISTING and identical at top level (`WHERE NOT a = 1` renders
-  // `a NOT = 1` on `main` too), but 3-criteria relations were rejected before, so this commit makes
-  // it newly REACHABLE inside a relation. Recorded in
-  // docs/issues/local-21.4-not-render-asymmetry.md; deliberately not pinned, because pinning a
-  // broken round-trip reads as a contract.
+  // Every AST `.sql` must re-parse to an EQUAL AST (project_ast_render_roundtrip_family) -- a NOT
+  // included: `NOT c = 3` renders `NOT c = 3`, the only place the grammar reads that NOT.
   it should "round-trip an N-ary relation predicate through its own render" in {
     Seq(
       "SELECT * FROM Table WHERE child(child.a = 2 AND child.b = 3 AND child.c = 4)",
       "SELECT * FROM Table WHERE child(child.x = 1 OR child.y = 2 OR child.z = 3)",
       "SELECT * FROM Table WHERE child(child.a = 1 AND (child.b = 2 OR child.c = 3))",
       "SELECT * FROM Table WHERE parent(parent.a = 1 AND parent.b = 2 AND parent.c = 3)",
-      "SELECT * FROM Table WHERE nested nested.a = 1"
+      "SELECT * FROM Table WHERE nested nested.a = 1",
+      "SELECT * FROM Table WHERE NOT a = 1",
+      "SELECT * FROM Table WHERE a = 1 AND NOT b = 2",
+      "SELECT * FROM Table WHERE a = 1 OR NOT b = 2 AND c = 3",
+      "SELECT * FROM Table WHERE child(NOT child.a = 1 AND child.b = 2)",
+      "SELECT * FROM Table WHERE child(child.a = 1 OR NOT child.b = 2 AND child.c = 3)"
     ).foreach { sql =>
       val parsed = Parser(sql)
       withClue(s"[$sql] ") { parsed.isRight shouldBe true }

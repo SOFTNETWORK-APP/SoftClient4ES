@@ -20,6 +20,8 @@ This page lists operator precedence used by the parser and evaluator. Operators 
 | **8**           | `AND`                            | Logical AND          | Logical conjunction                                      |
 | **9** (Lowest)  | `OR`                             | Logical OR           | Logical disjunction                                      |
 
+> Since 0.24.0 a condition that combines `AND` and `OR` without parentheses is evaluated with this precedence in every clause (`WHERE`, `HAVING`, `CASE WHEN`, `DELETE`, `UPDATE`); earlier versions could evaluate it in another order and return other rows without an error.
+
 ---
 
 ### 1. Parentheses `(...)`
@@ -88,16 +90,16 @@ SELECT 10 + -5 AS result;
 SELECT 10 + (-5) AS result;
 -- Result: 5
 
--- Double negation
-SELECT -(-10) AS result;
+-- Double negation: subtract the negative value (a unary minus before a parenthesis does not
+-- parse)
+SELECT 0 - (-10) AS result;
 -- Result: 10
 ```
 
 **Unary Plus:**
 ```sql
--- Explicit positive (rarely used)
+-- ✗ parse error: a unary plus is not supported -- write the value itself
 SELECT +5 AS pos_value;
--- Result: 5
 
 SELECT +price AS positive_price
 FROM products;
@@ -105,26 +107,22 @@ FROM products;
 
 **Logical NOT:**
 ```sql
--- Negate boolean expression
-SELECT * FROM users
-WHERE NOT is_active;
--- Same as: WHERE is_active = false
-
--- NOT with comparison
+-- NOT negates the condition right after it
 SELECT * FROM products
-WHERE NOT (price > 100);
+WHERE NOT price > 100;
 -- Same as: WHERE price <= 100
 
--- NOT with IN
-SELECT * FROM orders
-WHERE NOT status IN ('cancelled', 'refunded');
--- Same as: WHERE status NOT IN ('cancelled', 'refunded')
-
--- Multiple NOT
+-- NOT binds tighter than AND and OR
 SELECT * FROM users
-WHERE NOT (NOT is_verified);
--- Same as: WHERE is_verified
+WHERE NOT is_active = true AND is_verified = true;
+-- Evaluated as: (NOT is_active = true) AND (is_verified = true)
+
+-- IN, LIKE, RLIKE, BETWEEN and IS NULL take their NOT after the column
+SELECT * FROM orders
+WHERE status NOT IN ('cancelled', 'refunded');
 ```
+
+`NOT` applies to one condition. It is not accepted before a parenthesised group (`NOT (a = 1 OR b = 2)`) or a bare boolean column (`NOT is_active`): write the condition De Morgan's laws give (`NOT a = 1 AND NOT b = 2`), or compare the column (`is_active = false`). See [Known Limitations](known_limitations.md#not-applies-to-one-condition).
 
 ---
 
@@ -270,12 +268,12 @@ SELECT (10 + 5) * (2 - 3) AS result;
 
 **Less Than / Greater Than:**
 ```sql
--- Basic comparisons
-SELECT 5 < 10 AS result;
--- Result: true
+-- Basic comparisons (a comparison is a condition: in the SELECT list, write it in a CASE)
+SELECT CASE WHEN 5 < 10 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
-SELECT 5 > 10 AS result;
--- Result: false
+SELECT CASE WHEN 5 > 10 THEN 1 ELSE 0 END AS result;
+-- Result: 0
 
 -- In WHERE clause
 SELECT * FROM products
@@ -321,9 +319,9 @@ WHERE price BETWEEN 50 AND 100;
 
 **Equality:**
 ```sql
--- Basic equality
-SELECT 5 = 5 AS result;
--- Result: true
+-- Basic equality (a comparison is a condition: in the SELECT list, write it in a CASE)
+SELECT CASE WHEN 5 = 5 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
 -- In WHERE clause
 SELECT * FROM users
@@ -338,11 +336,11 @@ WHERE email = NULL;  -- Always false!
 **Inequality:**
 ```sql
 -- Not equal (two forms)
-SELECT 5 != 3 AS result;
--- Result: true
+SELECT CASE WHEN 5 != 3 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
-SELECT 5 <> 3 AS result;
--- Result: true
+SELECT CASE WHEN 5 <> 3 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
 -- In WHERE clause
 SELECT * FROM orders
@@ -354,16 +352,14 @@ WHERE category <> 'discontinued';
 
 **With Comparisons:**
 ```sql
--- Comparison before equality
+-- ✗ parse error: a comparison is not compared with a boolean, with or without parentheses
 SELECT * FROM products
 WHERE price > 50 = true;
--- Evaluated as: (price > 50) = true
 
--- More readable:
 SELECT * FROM products
 WHERE (price > 50) = true;
 
--- Or simply:
+-- Write the comparison itself:
 SELECT * FROM products
 WHERE price > 50;
 ```
@@ -596,13 +592,13 @@ WHERE category = 'electronics' AND (price < 100 OR on_sale = true);
 ```sql
 -- NOT with high precedence
 SELECT * FROM users
-WHERE NOT is_active AND is_verified;
--- Evaluated as: (NOT is_active) AND (is_verified)
+WHERE NOT is_active = true AND is_verified = true;
+-- Evaluated as: (NOT is_active = true) AND (is_verified = true)
 
--- Use parentheses for different logic
+-- NOT over both conditions: NOT (A AND B) is written (NOT A) OR (NOT B)
 SELECT * FROM users
-WHERE NOT (is_active AND is_verified);
--- Evaluated as: NOT ((is_active) AND (is_verified))
+WHERE NOT is_active = true OR NOT is_verified = true;
+-- Evaluated as: (NOT is_active = true) OR (NOT is_verified = true)
 ```
 
 **Example 4: Complex Business Logic**
@@ -755,12 +751,14 @@ SELECT (price + tax) * quantity FROM orders;
 ```sql
 -- Wrong interpretation
 SELECT * FROM users
-WHERE NOT is_active AND is_verified;
--- Evaluated as: (NOT is_active) AND (is_verified)
+WHERE NOT is_active = true AND is_verified = true;
+-- Might think: NOT (is_active = true AND is_verified = true)
+-- Actually means: (NOT is_active = true) AND (is_verified = true)
 
--- If you want: NOT (is_active AND is_verified)
+-- If you want NOT (is_active = true AND is_verified = true), apply De Morgan's law
+-- (NOT before a parenthesised group is not supported)
 SELECT * FROM users
-WHERE NOT (is_active AND is_verified);
+WHERE NOT is_active = true OR NOT is_verified = true;
 ```
 
 **Mistake 4: Multiple comparisons**

@@ -145,13 +145,9 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
   def script: Option[String] = criteria.flatMap { criteria =>
     if (unrepresentable.nonEmpty) None
     else {
-      val fullScript = MetricSelectorScript
-        .metricSelector(criteria)
-        .replaceAll("1 == 1 &&", "")
-        .replaceAll("&& 1 == 1", "")
-        .replaceAll("1 == 1", "")
-        .trim
-      if (fullScript.nonEmpty) Some(fullScript) else None
+      // `None` when there is nothing to filter -- never a placeholder stripped out of the script,
+      // which also ate `params.max_c1 == 1` (see `MetricSelectorScript.selectorScript`).
+      MetricSelectorScript.selectorScript(criteria).map(_.trim).filter(_.nonEmpty)
     }
   }
 }

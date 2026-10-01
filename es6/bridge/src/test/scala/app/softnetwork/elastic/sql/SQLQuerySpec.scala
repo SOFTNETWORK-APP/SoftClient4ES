@@ -5054,8 +5054,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "emit no bucket_selector for a HAVING with no aggregate over an aggregate-free GROUP BY" in {
-    // `metricSelectorForBucket` strips "1 == 1" to the empty string, so the HAVING becomes a terms
-    // exclude and no bucket_selector is produced.
+    // `metricSelectorForBucket` finds nothing to filter at this level (`selectorScript` is `None`),
+    // so the HAVING becomes a terms exclude and no bucket_selector is produced.
     val select: ElasticSearchRequest =
       SelectStatement("SELECT category FROM Table GROUP BY category HAVING category <> 'x'")
     val query = select.query

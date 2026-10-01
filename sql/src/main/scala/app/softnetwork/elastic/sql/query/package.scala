@@ -1425,9 +1425,78 @@ package object query {
         }
       having.flatMap(_.criteria).flatMap { criteria =>
         buckets.view
+          .filterNot(bucket => keyEqualitiesAnsweredExactly(criteria, bucket))
           .flatMap(bucket => conflict(criteria, bucket, not = false))
           .headOption
           .map { case (_, reason) => reason }
+      }
+    }
+
+    /** Rule (b2)'s one exception: a `HAVING` whose every condition compares ONE key with values
+      * (`=`, `<>`, `!=`, `IN`, each possibly negated), joined by AND and OR together, and whose two
+      * lists keep exactly the buckets SQL's reading keeps. The per-node walk of
+      * [[keyChannelConflict]] refuses such a combination as soon as a removed value sits under an
+      * OR, yet `k = 'v1' OR k = 'v2' AND NOT k = 'v3'` -- `k = 'v1' OR (k = 'v2' AND k <> 'v3')` --
+      * keeps `v1` and `v2` through `include:["v1","v2"]` and `exclude:["v3"]`, which is SQL's
+      * answer.
+      *
+      * Decided EXACTLY, never by shape. A bucket holds ONE key value, so the condition's truth
+      * depends only on which of the named values the key is, if any: each named value, plus one
+      * value none of the conditions names, is evaluated both ways -- the tree as SQL reads it, and
+      * the two lists as Elasticsearch applies them (kept if the include list is empty or holds it,
+      * and the exclude list does not). The values and the sense of each condition are those
+      * `Criteria.includes` / `excludes` give -- the functions the emission calls -- so the lists
+      * judged are the lists emitted. A rule on the shape could not do: `k = 'v3' OR k = 'v2' AND
+      * NOT k = 'v3'` has the very shape of the example above, and its lists (`include:["v3","v2"]`,
+      * `exclude:["v3"]`) drop `v3`, which SQL keeps -- so it stays refused.
+      */
+    private[query] def keyEqualitiesAnsweredExactly(criteria: Criteria, bucket: Bucket): Boolean = {
+      val empty = BucketIncludesExcludes()
+      // A condition's truth for a key value, `None` standing for a value no condition names; `None`
+      // for the whole tree when one condition is not such an equality of this key.
+      def truth(c: Criteria): Option[Option[String] => Boolean] = c match {
+        case p @ Predicate(left, op, right, _, _) =>
+          // the predicate's NOT, on its RIGHT operand, as the lists themselves read it
+          val negatedRight = p.includePolarityOfRight(not = false)
+          for { l <- truth(left); r <- truth(right) } yield { (key: Option[String]) =>
+            val rightHolds = r(key) != negatedRight
+            if (op == AND) l(key) && rightHolds else l(key) || rightHolds
+          }
+        case e: Expression if e.identifier.functions.isEmpty =>
+          (e.includes(bucket, not = false, empty), e.excludes(bucket, not = false, empty)) match {
+            case (kept, BucketIncludesExcludes(removed, None))
+                if kept == empty && removed.nonEmpty =>
+              Some((key: Option[String]) => !key.exists(removed.contains))
+            case (BucketIncludesExcludes(values, None), removed)
+                if removed == empty && values.nonEmpty =>
+              Some((key: Option[String]) => key.exists(values.contains))
+            case _ => None
+          }
+        case _ => None
+      }
+      // the operators joining the conditions, AND as `true`
+      def joins(c: Criteria): List[Boolean] = c match {
+        case Predicate(left, op, right, _, _) => (op == AND) :: joins(left) ::: joins(right)
+        case _                                => Nil
+      }
+      def named(c: Criteria): Set[String] = c match {
+        case Predicate(left, _, right, _, _) => named(left) ++ named(right)
+        case e: Expression =>
+          e.includes(bucket, not = false, empty).values ++ e
+            .excludes(bucket, not = false, empty)
+            .values
+        case _ => Set.empty
+      }
+      val ops = joins(criteria)
+      ops.contains(true) && ops.contains(false) && truth(criteria).exists { holds =>
+        val kept = criteria.includes(bucket, not = false, empty)
+        val removed = criteria.excludes(bucket, not = false, empty)
+        def emitted(key: Option[String]): Boolean = key match {
+          case Some(v) => (kept.values.isEmpty || kept.values.contains(v)) && !removed.values(v)
+          case None    => kept.values.isEmpty
+        }
+        kept.regex.isEmpty && removed.regex.isEmpty &&
+        (named(criteria).map(Option(_)) + None).forall(key => emitted(key) == holds(key))
       }
     }
 
@@ -1860,6 +1929,10 @@ package object query {
           //   `HAVING city = 'a' AND city = 'b'` -> `include:["a","b"]`, also a silent wrong
           //      answer: the include list means `a OR b`, the SQL means no bucket at all.
           //   `HAVING city = 'a' OR city = 'b'` -> `include:["a","b"]`, CORRECT.
+          //
+          // One exception, decided exactly and never by shape: equalities of one key joined by
+          // AND and OR together, when the two lists keep the buckets SQL keeps
+          // (`keyEqualitiesAnsweredExactly`).
           //
           // 🔴 This rule is ONE derivation that asks BOTH methods about BOTH sides. The defect it
           // replaces (a round-5 regression, reverted with the rest of that work) was a rule

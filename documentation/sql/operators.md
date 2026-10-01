@@ -55,15 +55,15 @@ FROM orders;
 **With Different Types:**
 ```sql
 -- Integer addition
-SELECT 10 + 20 AS sum;
+SELECT 10 + 20 AS total;
 -- Result: 30
 
 -- Float addition
-SELECT 10.5 + 20.3 AS sum;
+SELECT 10.5 + 20.3 AS total;
 -- Result: 30.8
 
 -- Mixed types (INT + DOUBLE)
-SELECT 10 + 20.5 AS sum;
+SELECT 10 + 20.5 AS total;
 -- Result: 30.5 (promoted to DOUBLE)
 ```
 
@@ -169,8 +169,8 @@ SELECT 5 * 3 AS result;
 -- Calculate revenue
 SELECT quantity * price AS revenue FROM sales;
 
--- Multiple multiplications
-SELECT length * width * height AS volume
+-- Multiple multiplications (`length` is also a function name: quote it)
+SELECT `length` * width * height AS volume
 FROM boxes;
 ```
 
@@ -434,10 +434,10 @@ SELECT
   day_number % 7 AS day_of_week
 FROM calendar;
 
--- Alternate row colors (even/odd)
+-- Alternate row colors (even/odd; `row_number` is also a function name: quote it)
 SELECT 
-  row_number,
-  CASE WHEN row_number % 2 = 0 THEN 'even-row' ELSE 'odd-row' END AS css_class
+  `row_number`,
+  CASE WHEN `row_number` % 2 = 0 THEN 'even-row' ELSE 'odd-row' END AS css_class
 FROM data_table;
 ```
 
@@ -475,9 +475,9 @@ expr1 = expr2
 
 **Basic Equality:**
 ```sql
--- Compare values
-SELECT 5 = 5 AS result;
--- Result: true
+-- Compare values (a comparison is a condition: in the SELECT list, write it in a CASE)
+SELECT CASE WHEN 5 = 5 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
 -- Filter by department
 SELECT * FROM emp WHERE department = 'IT';
@@ -548,12 +548,12 @@ expr1 != expr2
 
 **Basic Inequality:**
 ```sql
--- Not equal
-SELECT 5 <> 3 AS result;
--- Result: true
+-- Not equal (a comparison is a condition: in the SELECT list, write it in a CASE)
+SELECT CASE WHEN 5 <> 3 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
-SELECT 5 != 3 AS result;
--- Result: true
+SELECT CASE WHEN 5 != 3 THEN 1 ELSE 0 END AS result;
+-- Result: 1
 
 -- Filter by status
 SELECT * FROM emp WHERE status <> 'terminated';
@@ -730,16 +730,17 @@ WHERE category_id IN (
 
 **Empty List:**
 ```sql
--- Empty IN list returns false
+-- ✗ parse error: an IN list holds at least one value
 SELECT * FROM products WHERE id IN ();
--- Returns no rows
 ```
 
 **NULL Handling:**
 ```sql
--- NULL in list
+-- ✗ parse error: NULL is not accepted in an IN list
 SELECT * FROM users WHERE status IN ('active', NULL);
--- NULL is ignored in the list
+
+-- Keep the rows whose status is NULL as well
+SELECT * FROM users WHERE status = 'active' OR status IS NULL;
 
 -- Column with NULL
 SELECT * FROM users WHERE email IN ('test@example.com');
@@ -798,9 +799,8 @@ WHERE category_id NOT IN (
 
 **NULL Handling (Important!):**
 ```sql
--- NOT IN with NULL in list returns NULL (not true!)
+-- ✗ parse error: NULL is not accepted in a NOT IN list
 SELECT * FROM users WHERE id NOT IN (1, 2, NULL);
--- Returns no rows because comparison with NULL is NULL
 
 -- Safe alternative: filter NULLs in subquery
 SELECT * FROM customers
@@ -887,9 +887,9 @@ WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 AND 5000;
 SELECT id FROM locations 
 WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km;
 
--- Distance with miles
+-- Distance with miles (a distance with a unit is a whole number: `2.5 mi` does not parse)
 SELECT id FROM locations 
-WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 2.5 mi AND 3.1 mi;
+WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 2 mi AND 4 mi;
 ```
 
 **Elasticsearch Optimization:**
@@ -1135,8 +1135,8 @@ SELECT * FROM phone_numbers WHERE number LIKE '555-____';
 SELECT * FROM users WHERE name LIKE 'john%';
 -- May or may not match 'JOHN', 'John', 'john'
 
--- Force case-insensitive with LOWER
-SELECT * FROM users WHERE LOWER(name) LIKE LOWER('john%');
+-- Force case-insensitive with LOWER (the pattern is a literal: write it in lower case)
+SELECT * FROM users WHERE LOWER(name) LIKE 'john%';
 -- Matches all case variations
 ```
 
@@ -1153,12 +1153,14 @@ WHERE title NOT LIKE '%draft%'
 
 **Escaping Special Characters:**
 ```sql
--- Literal % or _ (if supported)
+-- ✗ parse error: the ESCAPE clause is not supported
 SELECT * FROM products WHERE name LIKE '100\% cotton' ESCAPE '\';
+
+-- A literal % or _: use RLIKE, where both are ordinary characters
+SELECT * FROM products WHERE name RLIKE '100% cotton';
 -- Matches: '100% cotton'
 
--- Literal underscore
-SELECT * FROM codes WHERE code LIKE 'CODE\_123' ESCAPE '\';
+SELECT * FROM codes WHERE code RLIKE 'CODE_123';
 -- Matches: 'CODE_123'
 ```
 
@@ -1503,6 +1505,8 @@ WHERE category = 'Electronics' AND (price < 100 OR on_sale = true);
 -- Evaluated as: (category = 'Electronics') AND ((price < 100) OR (on_sale = true))
 ```
 
+> Since 0.24.0 a condition that combines `AND` and `OR` without parentheses is evaluated with this precedence in every clause (`WHERE`, `HAVING`, `CASE WHEN`, `DELETE`, `UPDATE`); earlier versions could evaluate it in another order and return other rows without an error.
+
 **Multiple OR Conditions:**
 ```sql
 -- Status check
@@ -1580,98 +1584,86 @@ NOT condition
 
 **Examples:**
 
+`NOT` negates the ONE condition after it. It is written before a comparison (`NOT price > 100`), and
+after the column for `IN`, `LIKE`, `RLIKE`, `BETWEEN` and `IS NULL` (`status NOT IN (...)`,
+`manager IS NOT NULL`). A `NOT` before a parenthesised group or before a bare boolean column is not
+accepted: write the condition De Morgan's laws give, or compare the column. See
+[Known Limitations](known_limitations.md#not-applies-to-one-condition).
+
 **Basic NOT:**
 ```sql
--- Negate boolean column
-SELECT * FROM emp WHERE NOT active;
--- Same as: WHERE active = false
+-- Negate a boolean column: compare it
+SELECT * FROM emp WHERE active = false;
 
 -- Negate comparison
-SELECT * FROM products WHERE NOT (price > 100);
+SELECT * FROM products WHERE NOT price > 100;
 -- Same as: WHERE price <= 100
 ```
 
 **NOT with IN:**
 ```sql
 -- Exclude values
-SELECT * FROM orders WHERE NOT status IN ('cancelled', 'refunded');
--- Same as: WHERE status NOT IN ('cancelled', 'refunded')
-
--- Explicit NOT
-SELECT * FROM products WHERE NOT (category IN ('Discontinued', 'Obsolete'));
+SELECT * FROM orders WHERE status NOT IN ('cancelled', 'refunded');
 ```
 
 **NOT with BETWEEN:**
 ```sql
 -- Outside range
-SELECT * FROM products WHERE NOT (price BETWEEN 50 AND 100);
--- Same as: WHERE price NOT BETWEEN 50 AND 100
--- Same as: WHERE price < 50 OR price > 100
+SELECT * FROM products WHERE price NOT BETWEEN 50 AND 100;
 ```
 
 **NOT with LIKE:**
 ```sql
 -- Exclude pattern
-SELECT * FROM users WHERE NOT (email LIKE '%@spam.com');
--- Same as: WHERE email NOT LIKE '%@spam.com'
+SELECT * FROM users WHERE email NOT LIKE '%@spam.com';
 
 -- Multiple NOT LIKE
 SELECT * FROM products
-WHERE NOT (name LIKE '%discontinued%')
-  AND NOT (name LIKE '%obsolete%');
+WHERE name NOT LIKE '%discontinued%'
+  AND name NOT LIKE '%obsolete%';
 ```
 
 **NOT with IS NULL:**
 ```sql
 -- Has value
-SELECT * FROM emp WHERE NOT (manager IS NULL);
--- Same as: WHERE manager IS NOT NULL
+SELECT * FROM emp WHERE manager IS NOT NULL;
 
--- Both fields have values
+-- Both fields have values: NOT (email IS NULL OR phone IS NULL)
 SELECT * FROM contacts
-WHERE NOT (email IS NULL OR phone IS NULL);
--- Same as: WHERE email IS NOT NULL AND phone IS NOT NULL
+WHERE email IS NOT NULL AND phone IS NOT NULL;
 ```
 
 **NOT with AND/OR:**
 ```sql
 -- De Morgan's Law: NOT (A AND B) = (NOT A) OR (NOT B)
 SELECT * FROM users
-WHERE NOT (is_active = true AND is_verified = true);
--- Same as: WHERE is_active = false OR is_verified = false
+WHERE NOT is_active = true OR NOT is_verified = true;
 
 -- De Morgan's Law: NOT (A OR B) = (NOT A) AND (NOT B)
 SELECT * FROM products
-WHERE NOT (category = 'Discontinued' OR in_stock = false);
--- Same as: WHERE category != 'Discontinued' AND in_stock = true
+WHERE NOT category = 'Discontinued' AND NOT in_stock = false;
 ```
 
 **Double Negation:**
 ```sql
--- NOT NOT = identity
-SELECT * FROM users WHERE NOT (NOT is_active);
--- Same as: WHERE is_active
-
--- Can be confusing, avoid in practice
-SELECT * FROM products WHERE NOT (NOT (price > 100));
--- Same as: WHERE price > 100
+-- NOT NOT is the identity: write the condition itself
+SELECT * FROM users WHERE is_active = true;
+SELECT * FROM products WHERE price > 100;
 ```
 
 **NOT with Complex Expressions:**
 ```sql
--- Negate entire condition
+-- Orders that don't meet ALL three conditions:
+-- NOT (status = 'completed' AND payment_status = 'paid' AND total_amount > 1000)
 SELECT * FROM orders
-WHERE NOT (
-  status = 'completed' 
-  AND payment_status = 'paid' 
-  AND total_amount > 1000
-);
--- Returns orders that don't meet ALL three conditions
+WHERE NOT status = 'completed'
+   OR NOT payment_status = 'paid'
+   OR NOT total_amount > 1000;
 
--- Negate with parentheses
+-- Non-Sales employees OR Sales employees earning >= 50000:
+-- NOT (department = 'Sales' AND salary < 50000)
 SELECT * FROM employees
-WHERE NOT (department = 'Sales' AND salary < 50000);
--- Returns non-Sales employees OR Sales employees earning >= 50000
+WHERE NOT department = 'Sales' OR NOT salary < 50000;
 ```
 
 **NOT with EXISTS:**
@@ -1685,38 +1677,31 @@ WHERE NOT EXISTS (
 
 **Practical Examples:**
 ```sql
--- Exclude inactive and unverified users
+-- Active and verified users: NOT (is_active = false OR is_verified = false)
 SELECT * FROM users
-WHERE NOT (is_active = false OR is_verified = false);
--- Same as: WHERE is_active = true AND is_verified = true
+WHERE NOT is_active = false AND NOT is_verified = false;
 
 -- Products not in specific categories
 SELECT * FROM products
-WHERE NOT (category IN ('Discontinued', 'Clearance', 'Obsolete'));
+WHERE category NOT IN ('Discontinued', 'Clearance', 'Obsolete');
 
 -- Orders not in terminal states
 SELECT * FROM orders
-WHERE NOT (status IN ('completed', 'cancelled', 'refunded'));
+WHERE status NOT IN ('completed', 'cancelled', 'refunded');
 
--- Users without complete profile
+-- Users without complete profile:
+-- NOT (email IS NOT NULL AND phone IS NOT NULL AND address IS NOT NULL)
 SELECT * FROM users
-WHERE NOT (
-  email IS NOT NULL 
-  AND phone IS NOT NULL 
-  AND address IS NOT NULL
-);
+WHERE email IS NULL
+   OR phone IS NULL
+   OR address IS NULL;
 ```
 
 **NULL Handling:**
 ```sql
--- NOT NULL = NULL (not false!)
-SELECT * FROM products WHERE NOT (discount IS NULL);
--- Same as: WHERE discount IS NOT NULL
-
--- NOT with NULL comparison
-SELECT * FROM users WHERE NOT (status = NULL);
--- Always returns no rows (NULL comparison is always NULL)
--- Use: WHERE status IS NOT NULL
+-- Test NULL with IS NULL / IS NOT NULL, never with = NULL
+SELECT * FROM products WHERE discount IS NOT NULL;
+SELECT * FROM users WHERE status IS NOT NULL;
 ```
 
 **Best Practices:**
@@ -1725,13 +1710,10 @@ SELECT * FROM users WHERE NOT (status = NULL);
 SELECT * FROM users WHERE is_active = true;
 
 -- Avoid: Double negatives
-SELECT * FROM users WHERE NOT (is_active = false);
+SELECT * FROM users WHERE NOT is_active = false;
 
 -- Good: Use specific operators
 SELECT * FROM products WHERE category NOT IN ('A', 'B');
-
--- Avoid: NOT with IN
-SELECT * FROM products WHERE NOT (category IN ('A', 'B'));
 ```
 
 ---
@@ -1746,7 +1728,7 @@ WHERE (
     (status = 'pending' AND created_date < DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY))
     OR (status = 'processing' AND priority = 'high')
   )
-  AND NOT (customer_type = 'blocked')
+  AND NOT customer_type = 'blocked'
   AND total_amount > 0;
 ```
 
@@ -1758,28 +1740,27 @@ WHERE (
 ```sql
 -- Without parentheses (follows precedence)
 SELECT * FROM products
-WHERE NOT in_stock AND price < 100 OR on_sale = true;
--- Evaluated as: ((NOT in_stock) AND (price < 100)) OR (on_sale = true)
+WHERE NOT in_stock = true AND price < 100 OR on_sale = true;
+-- Evaluated as: ((NOT in_stock = true) AND (price < 100)) OR (on_sale = true)
 
--- With parentheses (explicit)
+-- With parentheses (explicit, same meaning)
 SELECT * FROM products
-WHERE NOT (in_stock AND price < 100) OR on_sale = true;
--- Evaluated as: (NOT (in_stock AND price < 100)) OR (on_sale = true)
+WHERE (NOT in_stock = true AND price < 100) OR on_sale = true;
+
+-- With parentheses (different logic)
+SELECT * FROM products
+WHERE NOT in_stock = true AND (price < 100 OR on_sale = true);
+-- Evaluated as: (NOT in_stock = true) AND ((price < 100) OR (on_sale = true))
 ```
 
 **De Morgan's Laws:**
 ```sql
 -- NOT (A AND B) = (NOT A) OR (NOT B)
+-- NOT before a parenthesised group is not supported: write the right-hand side
 SELECT * FROM users
-WHERE NOT (is_active = true AND is_verified = true);
--- Equivalent to:
-SELECT * FROM users
-WHERE is_active = false OR is_verified = false;
+WHERE NOT is_active = true OR NOT is_verified = true;
 
 -- NOT (A OR B) = (NOT A) AND (NOT B)
-SELECT * FROM products
-WHERE NOT (category = 'A' OR category = 'B');
--- Equivalent to:
 SELECT * FROM products
 WHERE category != 'A' AND category != 'B';
 -- Or better:
@@ -1838,8 +1819,8 @@ SELECT '2025-01-10'::DATE AS d;
 SELECT '2025-01-10 14:30:00'::TIMESTAMP AS ts;
 -- Result: 2025-01-10 14:30:00
 
--- TIMESTAMP to DATE
-SELECT CURRENT_TIMESTAMP::DATE AS today;
+-- TIMESTAMP to DATE (`today` is a function name: another alias)
+SELECT CURRENT_TIMESTAMP::DATE AS current_day;
 -- Result: 2025-10-27
 
 -- Date string with explicit cast
@@ -1880,9 +1861,9 @@ SELECT 0::BOOLEAN AS b;
 
 **In WHERE Clause:**
 ```sql
--- Cast for comparison
+-- Cast for comparison (the literal on the right is cast with CAST)
 SELECT * FROM orders
-WHERE order_date::DATE >= '2025-01-01'::DATE;
+WHERE order_date::DATE >= CAST('2025-01-01' AS DATE);
 
 -- Cast string to number
 SELECT * FROM products
@@ -1890,7 +1871,7 @@ WHERE price_str::DOUBLE > 100;
 
 -- Cast to timestamp
 SELECT * FROM events
-WHERE event_time::TIMESTAMP >= '2025-01-10 00:00:00'::TIMESTAMP;
+WHERE event_time::TIMESTAMP >= CAST('2025-01-10 00:00:00' AS TIMESTAMP);
 ```
 
 **In Calculations:**
@@ -1911,7 +1892,7 @@ SELECT hire_date::VARCHAR::DATE FROM emp;
 -- First to VARCHAR, then to DATE
 
 -- Cast then manipulate
-SELECT (salary::VARCHAR || ' USD') AS formatted_salary
+SELECT CONCAT(salary::VARCHAR, ' USD') AS formatted_salary
 FROM employees;
 ```
 
@@ -1930,7 +1911,8 @@ SELECT CAST(hire_date AS DATE) FROM emp;
 
 **Complex Examples:**
 ```sql
--- Cast in JOIN condition
+-- ✗ refused: a JOIN condition compares the columns themselves
+-- ("... cannot use functions in equality expressions")
 SELECT o.*, p.*
 FROM orders o
 JOIN products p ON o.product_id::VARCHAR = p.product_code;
@@ -1988,7 +1970,7 @@ SELECT CAST(created_at AS DATE) FROM users;
 
 -- Good: Cast both sides of comparison
 SELECT * FROM orders
-WHERE order_date::DATE = '2025-01-10'::DATE;
+WHERE order_date::DATE = CAST('2025-01-10' AS DATE);
 
 -- Avoid: Implicit type conversion (may cause issues)
 SELECT * FROM orders WHERE order_date = '2025-01-10';
