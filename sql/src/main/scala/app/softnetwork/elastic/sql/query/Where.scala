@@ -27,7 +27,7 @@ import app.softnetwork.elastic.sql.`type`.{
 }
 import app.softnetwork.elastic.sql.function.cond.Case
 import app.softnetwork.elastic.sql.function._
-import app.softnetwork.elastic.sql.function.cond.{ConditionalFunction, IsNotNull, IsNull}
+import app.softnetwork.elastic.sql.function.cond.{Coalesce, ConditionalFunction, IsNotNull, IsNull}
 import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.parser.Validator
@@ -1355,16 +1355,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       // name), kept total so a grammar widening cannot ship it.
       case IS_NULL     => s"$param == null"
       case IS_NOT_NULL => s"$param != null"
-      case _ =>
-        val guard = bucketMetrics.map(id => s"${id.metricParam} == null").mkString(" || ")
+      case _           =>
+        // Never empty: the left operand is a metric, and nothing here handles its NULL.
+        val guard = bucketPipelineGuard(None).mkString(" || ")
         s"($guard ? false : $painlessNot(${bucketPipelineCheck(param)}))"
     }
   }
 
   /** Every metric THIS predicate reads, left operand and right operand alike, deduplicated and in
-    * order -- the guard set of [[bucketPipelinePainless]] and of [[functionBucketPipelinePainless]]
-    * alike, and the same derivation `Criteria.extractAggregationFields` creates the aggregations
-    * from and `extractAllMetricsPath` publishes.
+    * order -- what [[bucketPipelineGuard]] guards, and the same derivation
+    * `Criteria.extractAggregationFields` creates the aggregations from and `extractAllMetricsPath`
+    * publishes.
     *
     * 🔴 It used to be `identifier +: maybeValue.collect { case id if id.isAggregation }`, which
     * misses an aggregate reached through a function: `HAVING COUNT(*) > ABS(MAX(x))` emitted
@@ -1390,7 +1391,8 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * proved to be a single boolean expression ([[MetricSelectorScript.representable]]) and once
     * every metric it dereferences is null-guarded.
     *
-    * 🔴 The guard is added only for a metric the rendering does not already test. `COALESCE` exists
+    * 🔴 The guard is the one [[bucketPipelineGuard]] derives: a metric the rendering does not
+    * already test, and a `COALESCE` on its RESULT, never on its arguments. `COALESCE` exists
     * precisely to decide what a null means, and forcing `false` on it would make `COALESCE(MAX(x),
     * 99) > 1` answer `false` where SQL says `true`. A rendering that does NOT test the metric
     * (`Math.abs(params.c)`) would throw on a null instead, and SQL's answer for it is UNKNOWN --
@@ -1399,13 +1401,115 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     */
   private[query] def functionBucketPipelinePainless: String = {
     val rendering = painless(None)
-    val unguarded = bucketMetrics.filterNot { id =>
-      rendering.contains(s"${id.metricParam} == null") ||
-      rendering.contains(s"${id.metricParam} != null")
+    val guard = bucketPipelineGuard(Some(rendering))
+    if (guard.isEmpty) rendering
+    else s"(${guard.mkString(" || ")} ? false : ($rendering))"
+  }
+
+  /** The terms of THIS predicate's null guard, in order. The bucket-pipeline rendering is `(<terms>
+    * ? false : (<comparison>))`, the terms joined by `||`, so the comparison is UNKNOWN -- `false`
+    * to a group filter -- as soon as one term holds. The ONE derivation behind
+    * [[bucketPipelinePainless]] and [[functionBucketPipelinePainless]].
+    *
+    * A metric is guarded on ITSELF, `params.<metric> == null`: its NULL makes the comparison
+    * UNKNOWN, and a rendering that dereferences it (`Math.abs(params.c)`) would throw on it. Given
+    * the context-free `rendering` the guard is placed around, a term that rendering already carries
+    * is not added again: `ISNULL(MAX(x))` IS the test of its metric, and the rendering of a
+    * predicate with an aggregate on its left is the one [[bucketPipelinePainless]] renders, guarded
+    * already.
+    *
+    * 🔴 A `COALESCE` is guarded on its RESULT ([[nullGuardTerms]]). It decides what a NULL argument
+    * means, so the comparison is UNKNOWN only when its VALUE is NULL -- when every argument is.
+    * Guarding an argument instead made `HAVING COALESCE(MAX(a), MIN(b)) > 1` drop a group whose
+    * documents all lack `b` although `MAX(a)` is 5 (MEASURED on Elasticsearch 8.18.3, once such a
+    * group's `MIN(b)` read as NULL): the guard landed on the argument the rendering does not test,
+    * the last one. Every other predicate keeps exactly the guard it had.
+    */
+  private[query] def bucketPipelineGuard(rendering: Option[String]): Seq[String] = {
+    val operands = identifier +: maybeValue.toSeq.collect { case id: Identifier => id }
+    if (operands.exists(readsCoalesce)) {
+      val nullTest = operator == IS_NULL || operator == IS_NOT_NULL
+      val terms = operands.zipWithIndex.flatMap { case (operand, i) =>
+        // a null test reads its operand's value, NULL included
+        nullGuardTerms(operand, nullHandled = nullTest && i == 0)
+      }.distinct
+      rendering.fold(terms)(r => terms.filterNot(r.contains))
+    } else
+      rendering
+        .fold(bucketMetrics)(r =>
+          bucketMetrics.filterNot { id =>
+            r.contains(s"${id.metricParam} == null") || r.contains(s"${id.metricParam} != null")
+          }
+        )
+        .map(id => s"${id.metricParam} == null")
+  }
+
+  /** The guard terms of ONE operand of the comparison.
+    *
+    * `nullHandled`: what surrounds the operand decides what its NULL means -- an enclosing
+    * `COALESCE`, or the null test it is the operand of -- so its NULL is not guarded, only what
+    * would make it unreadable. A metric is always readable (a missing one reads as `null`); a
+    * function of one dereferences it.
+    *
+    * A `COALESCE` guards its arguments as `nullHandled` and adds the test of its own value,
+    * `<rendering> == null`, which holds exactly when every argument is NULL -- unless it cannot be
+    * NULL at all (a literal other than `NULL` among its arguments), or what surrounds it handles
+    * its NULL in turn. A function OF a `COALESCE` (`SIGN(COALESCE(...))`) propagates or
+    * dereferences that value, so its arguments are guarded as values. Anything else keeps the guard
+    * of every metric it reads.
+    */
+  private def nullGuardTerms(operand: Identifier, nullHandled: Boolean): Seq[String] =
+    operand.functions match {
+      case List(coalesce: Coalesce) if !isMetric(operand) =>
+        coalesce.values match {
+          // `COALESCE(x)` IS `x`
+          case List(single: Identifier) => nullGuardTerms(single, nullHandled)
+          case values =>
+            val arguments = values
+              .collect { case argument: Identifier => argument }
+              .flatMap(nullGuardTerms(_, nullHandled = true))
+            val result =
+              if (nullHandled || values.exists(nonNullLiteral)) Nil
+              else Seq(s"${operand.painless(None)} == null")
+            arguments ++ result
+        }
+      case List(f: FunctionN[_, _]) if readsCoalesce(operand) =>
+        f.args
+          .collect { case argument: Identifier => argument }
+          .flatMap(nullGuardTerms(_, nullHandled = false))
+      case _ if nullHandled && isMetric(operand) => Nil
+      case _ => operand.bucketMetrics.map(m => s"${m.metricParam} == null")
     }
-    if (unguarded.isEmpty) rendering
-    else
-      s"(${unguarded.map(id => s"${id.metricParam} == null").mkString(" || ")} ? false : ($rendering))"
+
+  /** An operand a bucket pipeline reads as ONE `params.<name>`: an aggregate, or the alias of a
+    * SELECT `bucket_script` item.
+    */
+  private def isMetric(operand: Identifier): Boolean = operand.bucketMetrics match {
+    case Seq(metric) => metric eq operand
+    case _           => false
+  }
+
+  /** Does this operand read a `COALESCE` -- its own, or one among its functions' arguments? */
+  private def readsCoalesce(operand: Identifier): Boolean =
+    !isMetric(operand) && operand.functions.exists {
+      case _: Coalesce => true
+      case f: FunctionN[_, _] =>
+        f.args.exists {
+          case argument: Identifier => readsCoalesce(argument)
+          case _                    => false
+        }
+      case _ => false
+    }
+
+  /** A `COALESCE` argument that is a literal other than `NULL`: that `COALESCE` is never NULL. */
+  private def nonNullLiteral(argument: PainlessScript): Boolean = argument match {
+    case literal: Value[_] => !literal.nullable
+    case wrapped: Identifier if wrapped.name.isEmpty && !isMetric(wrapped) =>
+      wrapped.functions match {
+        case List(literal: Value[_]) => !literal.nullable
+        case _                       => false
+      }
+    case _ => false
   }
 
   /** The comparison body of the bucket-pipeline rendering, `param` (= `params.<metric>`) against

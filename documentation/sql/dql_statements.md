@@ -845,8 +845,11 @@ ORDER BY COUNT(*) DESC;
 - Rejected with an explicit error: arithmetic over aggregates written inline in `HAVING`
   (`HAVING MAX(price) - MIN(price) > 10` — alias it in `SELECT` and reference the alias), an
   aggregate function inside `WHERE` (use `HAVING`, and this covers a wrapped one such as
-  `WHERE ABS(COUNT(*)) > 1`), and an alias that names one aggregate in `SELECT` and a different one
-  in `HAVING` / `ORDER BY`.
+  `WHERE ABS(COUNT(*)) > 1`), an alias that names one aggregate in `SELECT` and a different one
+  in `HAVING` / `ORDER BY`, and a full-text `MATCH ... AGAINST` in `HAVING` over an aggregate
+  (`HAVING MATCH (MAX(title)) AGAINST ('x')`, or over its `SELECT` alias) or over a column that is
+  neither an aggregate nor a `GROUP BY` key (`GROUP BY city HAVING MATCH (title) AGAINST ('x')`)
+  — put the `MATCH` in `WHERE`.
 - A **function of an aggregate** in `HAVING` is applied to the group, or the statement is rejected
   by name — it is never ignored. `COALESCE`, `GREATEST`, `LEAST` and `SIGN` over an aggregate filter
   the groups (`HAVING COALESCE(COUNT(*), 0) > 30`, `HAVING GREATEST(MAX(price), 0) > 100`), on
@@ -938,7 +941,14 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 - An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
-  script null-checks every metric before comparing it.
+  script null-checks every metric before comparing it. For such a group `IS NULL` is true and
+  `IS NOT NULL` is false (written `ISNULL(MAX(age))` and `ISNOTNULL(MAX(age))` in `HAVING`).
+
+> 🔴 **Changed in 0.24.0 — an empty group's aggregate is NULL in `HAVING`.** Before 0.24.0, `<>`, a
+> negated comparison (`NOT MAX(age) = 30`, `NOT BETWEEN`, `NOT IN`), `IS [NOT] NULL` and `COALESCE`
+> over the `MIN`, `MAX`, `AVG` or a percentile of a group with no value could keep or drop the wrong groups:
+> the group filter was handed Elasticsearch's placeholder for an aggregate over no value (`NaN`),
+> not NULL.
 
 #### GROUP BY without an aggregate
 

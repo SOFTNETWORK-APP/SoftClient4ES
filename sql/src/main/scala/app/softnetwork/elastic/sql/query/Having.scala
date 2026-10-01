@@ -140,14 +140,23 @@ case class Having(criteria: Option[Criteria]) extends Updateable {
     * `MetricSelectorScript.metricSelector` would THROW inside the extension (a 500), and the
     * extension must decide for itself. [[unrepresentable]] is public so it can. See `§9` of the
     * story artifact (§10.B) for the exact change extensions needs once `0.24.0` is published.
+    *
+    * It reads every aggregate as SELECT returns it, through the ONE function the bridge's
+    * `bucket_selector` reads too (`MetricSelectorScript.nullAwareSelectorScript`, #292): an empty
+    * group's `MIN` / `MAX` / `AVG` / percentile is NULL here exactly as it is there. That read
+    * declares no `buckets_path` variable of its own, so a view's `buckets_path` -- derived from the
+    * clause, not from this script -- stays valid.
     */
-  @deprecated("read `unrepresentable` first, then `MetricSelectorScript.metricSelector`", "0.24.0")
+  @deprecated(
+    "read `unrepresentable` first, then `MetricSelectorScript.nullAwareSelectorScript`",
+    "0.24.0"
+  )
   def script: Option[String] = criteria.flatMap { criteria =>
     if (unrepresentable.nonEmpty) None
     else {
       // `None` when there is nothing to filter -- never a placeholder stripped out of the script,
       // which also ate `params.max_c1 == 1` (see `MetricSelectorScript.selectorScript`).
-      MetricSelectorScript.selectorScript(criteria).map(_.trim).filter(_.nonEmpty)
+      MetricSelectorScript.nullAwareSelectorScript(criteria).map(_.trim).filter(_.nonEmpty)
     }
   }
 }

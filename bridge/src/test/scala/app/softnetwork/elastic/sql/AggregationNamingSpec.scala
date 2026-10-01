@@ -77,7 +77,14 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       """doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).get(ChronoField.YEAR)); param1"}}},""",
       """"count_x":{"value_count":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"y":"y","count_x":"count_x"},""",
-      """"script":{"source":"(params.y == null ? false : (params.y > 2020)) && """,
+      """"script":{"source":"""",
+      """(((def) (params.y == null""",
+      """ || Double.isNaN(params.y)""",
+      """ || Double.isInfinite(params.y) ? null : params.y)) == null ? false : """,
+      """(((def) (params.y == null""",
+      """ || Double.isNaN(params.y)""",
+      """ || Double.isInfinite(params.y) ? null : params.y)) > 2020))""",
+      """ && """,
       """(params.count_x == null ? false : (params.count_x > 1))"}}}}}}}"""
     ).mkString
   }
@@ -90,7 +97,12 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       ""","aggs":{"count_x":{"value_count":{"field":"x"}},"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x","max_x":"max_x"},""",
       """"script":{"source":"(params.count_x == null ? false : (params.count_x > 5)) && """,
-      """(params.max_x == null ? false : (params.max_x > 3))"}}}}}}}"""
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) > 3))"}}}}}}}"""
     ).mkString
   }
 
@@ -104,7 +116,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       """"aggs":{"c":{"value_count":{"field":"x"}},"max_x":{"max":{"field":"x"}},""",
       """"min_x":{"min":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : (params.max_x > 3))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) > 3))"}}}}}}}"""
     ).mkString
   }
 
@@ -129,7 +147,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_profile_age":{"max":{"field":"profile.age"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_profile_age":"max_profile_age"},""",
-      """"script":{"source":"(params.max_profile_age == null ? false : (params.max_profile_age > 30))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_profile_age == null""",
+      """ || Double.isNaN(params.max_profile_age)""",
+      """ || Double.isInfinite(params.max_profile_age) ? null : params.max_profile_age)) == null ? false : """,
+      """(((def) (params.max_profile_age == null""",
+      """ || Double.isNaN(params.max_profile_age)""",
+      """ || Double.isInfinite(params.max_profile_age) ? null : params.max_profile_age)) > 30))"}}}}}}}"""
     ).mkString
   }
 
@@ -183,7 +207,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       ""","aggs":{"c":{"value_count":{"field":"x"}},""",
       maxYearCreatedAt,
       ""","having_filter":{"bucket_selector":{"buckets_path":{"max_year_createdat":"max_year_createdat"},""",
-      """"script":{"source":"(params.max_year_createdat == null ? false : (params.max_year_createdat > 2020))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_year_createdat == null""",
+      """ || Double.isNaN(params.max_year_createdat)""",
+      """ || Double.isInfinite(params.max_year_createdat) ? null : params.max_year_createdat)) == null ? false : """,
+      """(((def) (params.max_year_createdat == null""",
+      """ || Double.isNaN(params.max_year_createdat)""",
+      """ || Double.isInfinite(params.max_year_createdat) ? null : params.max_year_createdat)) > 2020))"}}}}}}}"""
     ).mkString
   }
 
@@ -198,7 +228,14 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       ""","aggs":{"c":{"value_count":{"field":"x"}},""",
       maxYearCreatedAt,
       ""","having_filter":{"bucket_selector":{"buckets_path":{"max_year_createdat":"max_year_createdat","c":"c"},""",
-      """"script":{"source":"(params.max_year_createdat == null ? false : (params.max_year_createdat > 2020)) || """,
+      """"script":{"source":"""",
+      """(((def) (params.max_year_createdat == null""",
+      """ || Double.isNaN(params.max_year_createdat)""",
+      """ || Double.isInfinite(params.max_year_createdat) ? null : params.max_year_createdat)) == null ? false : """,
+      """(((def) (params.max_year_createdat == null""",
+      """ || Double.isNaN(params.max_year_createdat)""",
+      """ || Double.isInfinite(params.max_year_createdat) ? null : params.max_year_createdat)) > 2020))""",
+      """ || """,
       """(params.c == null ? false : (params.c > 5))"}}}}}}}"""
     ).mkString
   }
@@ -209,7 +246,18 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_a":{"max":{"field":"a"}},"min_b":{"min":{"field":"b"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_a":"max_a","min_b":"min_b"},""",
-      """"script":{"source":"(params.max_a == null || params.min_b == null ? false : (params.max_a > params.min_b))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_a == null""",
+      """ || Double.isNaN(params.max_a)""",
+      """ || Double.isInfinite(params.max_a) ? null : params.max_a)) == null""",
+      """ || ((def) (params.min_b == null""",
+      """ || Double.isNaN(params.min_b)""",
+      """ || Double.isInfinite(params.min_b) ? null : params.min_b)) == null ? false : """,
+      """(((def) (params.max_a == null""",
+      """ || Double.isNaN(params.max_a)""",
+      """ || Double.isInfinite(params.max_a) ? null : params.max_a)) > ((def) (params.min_b == null""",
+      """ || Double.isNaN(params.min_b)""",
+      """ || Double.isInfinite(params.min_b) ? null : params.min_b))))"}}}}}}}"""
     ).mkString
   }
 
@@ -224,8 +272,14 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       """"source":"def param1 = (doc['createdAt'].size() == 0 ? null : """,
       """doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).truncatedTo(ChronoUnit.DAYS)); param1"}}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_date_trunc_createdat_day":"max_date_trunc_createdat_day"},""",
-      """"script":{"source":"(params.max_date_trunc_createdat_day == null ? false : """,
-      """(params.max_date_trunc_createdat_day > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z'))""",
+      """"script":{"source":"""",
+      """(((def) (params.max_date_trunc_createdat_day == null""",
+      """ || Double.isNaN(params.max_date_trunc_createdat_day)""",
+      """ || Double.isInfinite(params.max_date_trunc_createdat_day) ? null : params.max_date_trunc_createdat_day)) == null ? false : """,
+      """(((def) """,
+      """(params.max_date_trunc_createdat_day == null""",
+      """ || Double.isNaN(params.max_date_trunc_createdat_day)""",
+      """ || Double.isInfinite(params.max_date_trunc_createdat_day) ? null : params.max_date_trunc_createdat_day)) > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z'))""",
       """.minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))","params":{"__now__":1767139200000}}}}}}}}"""
     ).mkString
   }
@@ -257,7 +311,16 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : (params.max_x == 1 || params.max_x == 2))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == 1""",
+      """ || ((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == 2))"}}}}}}}"""
     ).mkString
   }
 
@@ -267,7 +330,16 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : !(params.max_x == 1 || params.max_x == 2))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : !""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == 1""",
+      """ || ((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == 2))"}}}}}}}"""
     ).mkString
   }
 
@@ -306,7 +378,12 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       ""","aggs":{"count_x":{"value_count":{"field":"x"}},"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_x":"count_x","max_x":"max_x"},""",
       """"script":{"source":"((params.count_x == null ? false : (params.count_x > 5))) && """,
-      """(params.max_x == null ? false : (params.max_x <= 3))"}}}}}}}"""
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) <= 3))"}}}}}}}"""
     ).mkString
   }
 
@@ -316,7 +393,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_x":"max_x"},""",
-      """"script":{"source":"(params.max_x == null ? false : (params.max_x <= 3))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) <= 3))"}}}}}}}"""
     ).mkString
   }
 
@@ -329,7 +412,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       """"script":"params.max_x - params.min_x"}},""",
       """"max_x":{"max":{"field":"x"}},"min_x":{"min":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"d":"d"},""",
-      """"script":{"source":"(params.d == null ? false : (params.d > 3))"}}}}}}}"""
+      """"script":{"source":"""",
+      """(((def) (params.d == null""",
+      """ || Double.isNaN(params.d)""",
+      """ || Double.isInfinite(params.d) ? null : params.d)) == null ? false : """,
+      """(((def) (params.d == null""",
+      """ || Double.isNaN(params.d)""",
+      """ || Double.isInfinite(params.d) ? null : params.d)) > 3))"}}}}}}}"""
     ).mkString
   }
 
@@ -344,7 +433,13 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
       """"aggs":{"e.domain":{"terms":{"field":"emails.domain","size":65536,"min_doc_count":1},""",
       """"aggs":{"max_e_sent":{"max":{"field":"emails.sent"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"max_e_sent":"max_e_sent"},""",
-      """"script":{"source":"(params.max_e_sent == null ? false : (params.max_e_sent > """,
+      """"script":{"source":"""",
+      """(((def) (params.max_e_sent == null""",
+      """ || Double.isNaN(params.max_e_sent)""",
+      """ || Double.isInfinite(params.max_e_sent) ? null : params.max_e_sent)) == null ? false : """,
+      """(((def) (params.max_e_sent == null""",
+      """ || Double.isNaN(params.max_e_sent)""",
+      """ || Double.isInfinite(params.max_e_sent) ? null : params.max_e_sent)) > """,
       """ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS)""",
       """.toInstant().toEpochMilli()))","params":{"__now__":1767139200000}}}}}}}}}}"""
     ).mkString

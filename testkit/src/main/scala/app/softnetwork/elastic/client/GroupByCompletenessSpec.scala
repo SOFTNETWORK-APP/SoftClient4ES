@@ -18,17 +18,26 @@ package app.softnetwork.elastic.client
 
 import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.scaladsl.Source
+import akka.stream.scaladsl.{Sink, Source}
 import app.softnetwork.elastic.client.bulk._
-import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
+import app.softnetwork.elastic.client.result.{
+  ElasticFailure,
+  ElasticResult,
+  ElasticSuccess,
+  QueryRows,
+  QueryStream,
+  QueryStructured
+}
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
+import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence.generateUUID
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
+import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.implicitConversions
@@ -110,6 +119,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
 
   override def afterAll(): Unit = {
     client.deleteIndex(index)
+    client.deleteIndex(nullIndex)
+    client.deleteIndex(coalesceIndex)
     super.afterAll()
   }
 
@@ -1174,6 +1185,650 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
             (categories - over30 + 1 to categories).map(c => f"cat_$c%02d").toSet
           }
         case ElasticFailure(error) => fail(s"[$count] Query failed: ${error.message}")
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // F1 -- an aggregate reads in HAVING exactly as SELECT returns it.
+  //
+  // In a group where no document has the aggregated column, SELECT answers NULL for MIN, MAX,
+  // AVG, the percentiles and arithmetic over them (`ClientAggregation.nullOverEmptyInput`), and
+  // SQL keeps a group only when its condition is TRUE -- a comparison with NULL is UNKNOWN, and
+  // so is its NOT. The `bucket_selector` was handed Elasticsearch's sentinel instead (`NaN`), so
+  // `MAX(v) <> 5` KEPT such a group and `ISNULL(MAX(v))` dropped it, HTTP 200.
+  //
+  // The population is DERIVED, not listed: the aggregates from that rule, every comparison, every
+  // NOT the grammar accepts, ISNULL / ISNOTNULL, each of them under AND / OR with COUNT(*), on
+  // both venues of the aggregate (HAVING only, and published by the SELECT list), plus the
+  // implicit whole-table group. The expected groups are computed HERE, from the fixture, with
+  // three-valued logic -- never from the engine. Every statement runs through the gateway.
+  // ---------------------------------------------------------------------------------------------
+
+  private val nullIndex = "having_null_groups"
+
+  /** Each group and the `v` of each of its documents (`None`: the document has no `v`): absent from
+    * every document, partly present, fully present. The present values of a group are all equal, so
+    * every percentile of it is exact on every major -- the oracle never models a digest.
+    */
+  private val nullGroups: Seq[(String, Seq[Option[Int]])] = Seq(
+    "a1" -> Seq(None, None),
+    "a2" -> Seq(None, None, None),
+    "p1" -> Seq(Some(5), None),
+    "p2" -> Seq(Some(7), Some(7), None),
+    "f1" -> Seq(Some(5), Some(5)),
+    "f2" -> Seq(Some(7), Some(7), Some(7))
+  )
+
+  private lazy val nullGroupsLoaded: Unit = {
+    client
+      .createIndex(nullIndex, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client
+      .setMapping(
+        nullIndex,
+        """{"properties": {"id": {"type": "keyword"}, "g": {"type": "keyword"}, "v": {"type": "integer"}}}"""
+      )
+      .get shouldBe true
+    val docs = for {
+      (g, vs)     <- nullGroups.toList
+      (v, offset) <- vs.zipWithIndex
+    } yield v.fold(s"""{"id":"$g-$offset","g":"$g"}""")(x =>
+      s"""{"id":"$g-$offset","g":"$g","v":$x}"""
+    )
+    implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = nullIndex, logEvery = 100)
+    implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_)     => client.refresh(nullIndex)
+      case ElasticFailure(error) => fail(s"Bulk indexing into $nullIndex failed: ${error.message}")
+    }
+  }
+
+  /** The aggregates SELECT answers NULL over a group with no value, DERIVED from the rule the
+    * response parser applies (`ClientAggregation.nullOverEmptyInput`) over every aggregation type.
+    */
+  private lazy val nullOverEmptyTypes: Seq[AggregationType.AggregationType] =
+    AggregationType.values.toSeq.filter(t =>
+      ClientAggregation(
+        aggName = "a",
+        aggType = t,
+        distinct = false,
+        sourceField = "v",
+        windowing = false,
+        bucketPath = "",
+        bucketRoot = ""
+      ).nullOverEmptyInput
+    )
+
+  /** The derived aggregates a HAVING cannot answer at all -- MEASURED on main, every form failing
+    * in Elasticsearch before any group is filtered, and recorded as their own defects.
+    */
+  private val notAnsweredByHaving: Map[AggregationType.AggregationType, String] = Map(
+    AggregationType.Stddev     -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.StddevSamp -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.StddevPop  -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.Variance   -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.VarSamp    -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.VarPop     -> "extended_stats read without its key by the bucket_selector",
+    AggregationType.FirstValue -> "top_hits: no number a bucket_selector can read",
+    AggregationType.LastValue  -> "top_hits: no number a bucket_selector can read"
+  )
+
+  /** How a HAVING names an aggregate of `nullOverEmptyTypes` over `v`, and what SELECT answers for
+    * it over a group's present values. Arithmetic over aggregates is named by its SELECT alias.
+    */
+  private final case class NullableAggregate(
+    kind: AggregationType.AggregationType,
+    having: String,
+    selectItem: String,
+    value: Seq[Int] => Double
+  )
+
+  private def nullableAggregate(t: AggregationType.AggregationType): NullableAggregate = {
+    def single(present: Seq[Int]): Double = {
+      present.distinct should have size 1L
+      present.head.toDouble
+    }
+    t match {
+      case AggregationType.Min => NullableAggregate(t, "MIN(v)", "MIN(v) AS a", _.min.toDouble)
+      case AggregationType.Max => NullableAggregate(t, "MAX(v)", "MAX(v) AS a", _.max.toDouble)
+      case AggregationType.Avg =>
+        NullableAggregate(t, "AVG(v)", "AVG(v) AS a", vs => vs.sum.toDouble / vs.size)
+      case AggregationType.PercentileCont =>
+        val p = "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v)"
+        NullableAggregate(t, p, s"$p AS a", single)
+      case AggregationType.PercentileDisc =>
+        val p = "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY v)"
+        NullableAggregate(t, p, s"$p AS a", single)
+      case AggregationType.BucketScript =>
+        NullableAggregate(t, "d", "MAX(v) - MIN(v) AS d", vs => (vs.max - vs.min).toDouble)
+      case other => fail(s"$other is NULL over an empty group and has no HAVING spelling here")
+    }
+  }
+
+  /** A HAVING condition over the aggregate `a`, rendered as SQL and evaluated as SQL does: `None`
+    * is UNKNOWN.
+    */
+  private sealed trait NullCond {
+    def sql(a: String): String
+    def eval(v: Option[Double], rows: Int): Option[Boolean]
+  }
+
+  private final case class Cmp(op: String, k: Int) extends NullCond {
+    def sql(a: String): String = s"$a $op $k"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] = v.map { x =>
+      op match {
+        case ">"         => x > k
+        case "<"         => x < k
+        case ">="        => x >= k
+        case "<="        => x <= k
+        case "="         => x == k
+        case "<>" | "!=" => x != k
+      }
+    }
+  }
+
+  private final case class NotCmp(cmp: Cmp) extends NullCond {
+    def sql(a: String): String = s"NOT ${cmp.sql(a)}"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] = cmp.eval(v, rows).map(!_)
+  }
+
+  private final case class Between(lo: Int, hi: Int, not: Boolean) extends NullCond {
+    def sql(a: String): String = s"$a ${if (not) "NOT " else ""}BETWEEN $lo AND $hi"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] =
+      v.map(x => (x >= lo && x <= hi) != not)
+  }
+
+  private final case class In(ks: Seq[Int], not: Boolean) extends NullCond {
+    def sql(a: String): String = s"$a ${if (not) "NOT " else ""}IN (${ks.mkString(", ")})"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] =
+      v.map(x => ks.exists(_.toDouble == x) != not)
+  }
+
+  private final case class NullTest(isNull: Boolean) extends NullCond {
+    def sql(a: String): String = if (isNull) s"ISNULL($a)" else s"ISNOTNULL($a)"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] = Some(v.isEmpty == isNull)
+  }
+
+  private final case class RowsAbove(n: Int) extends NullCond {
+    def sql(a: String): String = s"COUNT(*) > $n"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] = Some(rows > n)
+  }
+
+  /** `left AND|OR [NOT] right`: the grammar's `NOT` after an operator negates the RIGHT operand. */
+  private final case class Junction(
+    left: NullCond,
+    and: Boolean,
+    notRight: Boolean,
+    right: NullCond
+  ) extends NullCond {
+    def sql(a: String): String =
+      s"${left.sql(a)} ${if (and) "AND" else "OR"}${if (notRight) " NOT" else ""} ${right.sql(a)}"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] = {
+      val l = left.eval(v, rows)
+      val r = right.eval(v, rows).map(b => if (notRight) !b else b)
+      if (and) {
+        (l, r) match {
+          case (Some(false), _) | (_, Some(false)) => Some(false)
+          case (Some(true), Some(true))            => Some(true)
+          case _                                   => None
+        }
+      } else {
+        (l, r) match {
+          case (Some(true), _) | (_, Some(true)) => Some(true)
+          case (Some(false), Some(false))        => Some(false)
+          case _                                 => None
+        }
+      }
+    }
+  }
+
+  private val comparisons: Seq[Cmp] =
+    Seq(
+      Cmp(">", 6),
+      Cmp("<", 6),
+      Cmp(">=", 7),
+      Cmp("<=", 5),
+      Cmp("=", 5),
+      Cmp("<>", 5),
+      Cmp("!=", 7)
+    )
+
+  private val positives: Seq[NullCond] =
+    comparisons ++ Seq(Between(4, 6, not = false), In(Seq(5, 8), not = false)) ++
+    Seq(NullTest(isNull = true), NullTest(isNull = false))
+
+  /** Every NOT the grammar accepts over an aggregate: before a comparison, inside BETWEEN / IN, and
+    * after AND / OR (below). `NOT ISNULL(...)` at the start of a clause is not accepted.
+    */
+  private val negations: Seq[NullCond] =
+    comparisons.map(c => NotCmp(c)) ++ Seq(Between(4, 6, not = true), In(Seq(5, 8), not = true))
+
+  private val rowsAbove = RowsAbove(2)
+
+  private val nullForms: Seq[NullCond] = {
+    val alone = positives ++ negations
+    val withCount = alone.flatMap(c =>
+      Seq(
+        Junction(rowsAbove, and = true, notRight = false, c),
+        Junction(rowsAbove, and = false, notRight = false, c),
+        Junction(c, and = true, notRight = false, rowsAbove),
+        Junction(c, and = false, notRight = false, rowsAbove)
+      )
+    )
+    val negatedAfterOperator = positives.flatMap(c =>
+      Seq(
+        Junction(rowsAbove, and = true, notRight = true, c),
+        Junction(rowsAbove, and = false, notRight = true, c)
+      )
+    )
+    alone ++ withCount ++ negatedAfterOperator
+  }
+
+  private def readsNullTest(c: NullCond): Boolean = c match {
+    case _: NullTest          => true
+    case Junction(l, _, _, r) => readsNullTest(l) || readsNullTest(r)
+    case _                    => false
+  }
+
+  /** `wholeTable`: the one group the WHERE selects, for a statement with no GROUP BY. */
+  private final case class NullStatement(
+    sql: String,
+    expected: Set[String],
+    wholeTable: Option[String] = None
+  )
+
+  private lazy val nullCandidates: Seq[NullStatement] = {
+    val answered = nullOverEmptyTypes.filterNot(notAnsweredByHaving.contains).map(nullableAggregate)
+    val oracle: Seq[(String, Option[Seq[Int]], Int)] = nullGroups.map { case (g, vs) =>
+      (g, Some(vs.flatten).filter(_.nonEmpty), vs.size)
+    }
+    def keep(agg: NullableAggregate, c: NullCond): Set[String] =
+      oracle.collect {
+        case (g, present, rows) if c.eval(present.map(agg.value), rows).contains(true) => g
+      }.toSet
+    val grouped = for {
+      agg <- answered
+      c   <- nullForms
+      // `ISNULL(d)` over the alias of arithmetic over aggregates reads the OPERANDS, which its
+      // selector does not declare -- it fails on main, before any group is filtered.
+      if !(agg.kind == AggregationType.BucketScript && readsNullTest(c))
+      select <-
+        if (agg.kind == AggregationType.BucketScript) Seq(s"g, ${agg.selectItem}")
+        else Seq("g, COUNT(*) AS c", s"g, ${agg.selectItem}")
+    } yield NullStatement(
+      s"SELECT $select FROM $nullIndex GROUP BY g HAVING ${c.sql(agg.having)}",
+      keep(agg, c)
+    )
+    // The implicit whole-table group, one group of each kind at a time.
+    val wholeTable = for {
+      agg     <- answered.filterNot(_.kind == AggregationType.BucketScript)
+      c       <- positives ++ negations
+      (g, vs) <- nullGroups.filter { case (g, _) => Set("a1", "p1", "f1").contains(g) }
+    } yield NullStatement(
+      s"SELECT ${agg.selectItem} FROM $nullIndex WHERE g = '$g' HAVING ${c.sql(agg.having)}",
+      if (c.eval(Some(vs.flatten).filter(_.nonEmpty).map(agg.value), vs.size).contains(true))
+        Set(g)
+      else Set.empty,
+      wholeTable = Some(g)
+    )
+    grouped ++ wholeTable
+  }
+
+  /** The forms the grammar accepts -- and the ones it does not, which must be ONLY `ISNULL(...)` /
+    * `ISNOTNULL(...)` over the WITHIN GROUP spelling of a percentile (asserted in the test).
+    */
+  private lazy val nullPartition: (Seq[NullStatement], Seq[NullStatement]) =
+    nullCandidates.partition(st => Parser(st.sql).isRight)
+
+  private def nullPopulation: Seq[NullStatement] = nullPartition._1
+
+  private def nullPopulationNotParsed: Seq[NullStatement] = nullPartition._2
+
+  /** The rows of a statement, through `GatewayApi.run` (JDBC / REPL / Flight SQL). */
+  private def gatewayRows(sql: String): Either[String, Seq[ListMap[String, Any]]] =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(QueryRows(rows, _))           => Right(rows)
+      case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
+      case ElasticSuccess(QueryStream(stream, _)) =>
+        Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
+      case ElasticSuccess(other) => Left(s"unexpected result $other")
+      case ElasticFailure(error) => Left(error.message)
+    }
+
+  /** The groups a statement keeps, through the gateway. */
+  private def keptGroups(statement: NullStatement): Either[String, Set[String]] =
+    gatewayRows(statement.sql).map { rs =>
+      statement.wholeTable match {
+        case None => rs.map(_.getOrElse("g", "?").toString).toSet
+        // The implicit group is ONE row or none; any other count is a wrong answer of its own.
+        case Some(g) =>
+          if (rs.isEmpty) Set.empty[String]
+          else if (rs.size == 1) Set(g)
+          else Set(g, s"${rs.size} rows")
+      }
+    }
+
+  "a HAVING over an aggregate a group has no value for" should
+  "keep exactly the groups SQL's three-valued logic keeps" in {
+    nullGroupsLoaded
+    // Non-vacuity, computed over the material: the population must hold the shapes the defect
+    // lives in, and the oracle must both keep and drop the groups that have no value.
+    val population = nullPopulation
+    population.size should be >= 1000
+    Seq(
+      " <> ",
+      " != ",
+      "HAVING NOT ",
+      " NOT BETWEEN ",
+      " NOT IN ",
+      "ISNULL(",
+      "ISNOTNULL(",
+      " AND NOT ",
+      " OR NOT "
+    )
+      .foreach(shape =>
+        withClue(s"[$shape] ")(population.exists(_.sql.contains(shape)) shouldBe true)
+      )
+    population.exists(_.expected.contains("a1")) shouldBe true
+    population.exists(st => !st.expected.contains("a1") && st.expected.contains("f1")) shouldBe true
+    // The parser trimmed only `ISNULL` / `ISNOTNULL` over the WITHIN GROUP spelling.
+    nullPopulationNotParsed
+      .map(_.sql)
+      .filterNot(sql =>
+        sql.contains("ISNULL(PERCENTILE_") || sql.contains("ISNOTNULL(PERCENTILE_")
+      ) shouldBe empty
+
+    val outcomes = population.map(st => st -> keptGroups(st))
+    val wrong = outcomes.collect {
+      case (st, Right(actual)) if actual != st.expected => (st, actual)
+    }
+    val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
+    val wrongGroups = wrong.map { case (st, actual) =>
+      ((st.expected -- actual) ++ (actual -- st.expected)).size
+    }.sum
+    info(
+      s"HAVING over valueless groups: ${population.size} statements over ${nullOverEmptyTypes.size} derived " +
+      s"aggregates (${notAnsweredByHaving.keys.toSeq.map(_.toString).sorted.mkString(", ")} not " +
+      s"answered by HAVING); wrong: ${wrong.size} statements / $wrongGroups groups; " +
+      s"errors: ${errors.size}"
+    )
+    val report = wrong.take(20).map { case (st, actual) =>
+      s"[${st.sql}] kept ${actual.toSeq.sorted.mkString(",")}, expected ${st.expected.toSeq.sorted.mkString(",")}"
+    }
+    withClue(
+      s"${wrong.size} wrong statements ($wrongGroups wrong groups), ${errors.size} errors:\n" +
+      (report ++ errors.take(10)).mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+      errors shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A COALESCE of aggregates in HAVING is guarded on its RESULT: the comparison is UNKNOWN only
+  // when every argument is NULL. It was guarded on the argument its rendering does not test, the
+  // LAST one, so once an empty group's aggregate read as NULL, `COALESCE(MAX(a), MIN(b)) > 1`
+  // dropped a group whose documents have `a` and no `b`.
+  //
+  // The fixture is the review's: a group with `a` only, `b` only, both, neither, and a `0` on
+  // either side. The population is a COALESCE in every position its guard is derived for --
+  // compared, under NOT / BETWEEN / IN, on the right of an aggregate or of a literal,
+  // null-tested, nested, with three arguments, as the argument of a function -- on both venues
+  // of the aggregates, plus the review's four statements in the implicit whole-table group. The
+  // expected groups are computed HERE, with three-valued logic, never from the engine.
+  // ---------------------------------------------------------------------------------------------
+
+  private val coalesceIndex = "having_coalesce_groups"
+
+  /** Each group and the `(a, b)` of each of its documents (`None`: the document lacks it). */
+  private val coalesceGroups: Seq[(String, Seq[(Option[Int], Option[Int])])] = Seq(
+    "g1" -> Seq((Some(5), None), (Some(5), None)),
+    "g2" -> Seq((None, Some(5))),
+    "g3" -> Seq((Some(5), Some(5))),
+    "g4" -> Seq((None, None)),
+    "g5" -> Seq((Some(0), None)),
+    "g6" -> Seq((None, Some(0)))
+  )
+
+  private lazy val coalesceGroupsLoaded: Unit = {
+    client
+      .createIndex(coalesceIndex, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client
+      .setMapping(
+        coalesceIndex,
+        """{"properties": {"id": {"type": "keyword"}, "g": {"type": "keyword"}, "a": {"type": "integer"}, "b": {"type": "integer"}}}"""
+      )
+      .get shouldBe true
+    val docs = for {
+      (g, rows)        <- coalesceGroups.toList
+      ((a, b), offset) <- rows.zipWithIndex
+    } yield (Seq(s""""id":"$g-$offset"""", s""""g":"$g"""") ++ a.map(x => s""""a":$x""") ++
+    b.map(x => s""""b":$x""")).mkString("{", ",", "}")
+    implicit val bulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = coalesceIndex, logEvery = 100)
+    implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(coalesceIndex)
+      case ElasticFailure(error) =>
+        fail(s"Bulk indexing into $coalesceIndex failed: ${error.message}")
+    }
+  }
+
+  /** The present `a` and `b` values of a group, and its document count. */
+  private final case class CoalesceGroup(rows: Int, as: Seq[Int], bs: Seq[Int])
+
+  /** An operand of the HAVING comparison, and its value over a group as SELECT answers it (#336):
+    * NULL over no value, except `SUM`, which is `0`.
+    */
+  private sealed trait CoalesceOperand {
+    def sql: String
+    def value(group: CoalesceGroup): Option[Double]
+  }
+
+  private final case class Aggregate(sql: String) extends CoalesceOperand {
+    def value(group: CoalesceGroup): Option[Double] = sql match {
+      case "MAX(a)" => group.as.reduceOption(_ max _).map(_.toDouble)
+      case "MIN(b)" => group.bs.reduceOption(_ min _).map(_.toDouble)
+      case "MAX(b)" => group.bs.reduceOption(_ max _).map(_.toDouble)
+      case "SUM(a)" => Some(group.as.sum.toDouble)
+      case other    => fail(s"no value for $other")
+    }
+  }
+
+  private final case class Literal(k: Int) extends CoalesceOperand {
+    def sql: String = k.toString
+    def value(group: CoalesceGroup): Option[Double] = Some(k.toDouble)
+  }
+
+  private final case class CoalesceOf(arguments: CoalesceOperand*) extends CoalesceOperand {
+    def sql: String = arguments.map(_.sql).mkString("COALESCE(", ", ", ")")
+    def value(group: CoalesceGroup): Option[Double] =
+      arguments.flatMap(_.value(group)).headOption
+  }
+
+  private final case class SignOf(argument: CoalesceOperand) extends CoalesceOperand {
+    def sql: String = s"SIGN(${argument.sql})"
+    def value(group: CoalesceGroup): Option[Double] = argument.value(group).map(math.signum)
+  }
+
+  private def compares(left: Double, op: String, right: Double): Boolean = op match {
+    case ">"  => left > right
+    case "<"  => left < right
+    case ">=" => left >= right
+    case "<=" => left <= right
+    case "="  => left == right
+    case "<>" => left != right
+  }
+
+  /** `COUNT(*) <op> X`: an aggregate on the LEFT of the operand. */
+  private final case class CountVs(op: String) extends NullCond {
+    def sql(a: String): String = s"COUNT(*) $op $a"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] =
+      v.map(x => compares(rows.toDouble, op, x))
+  }
+
+  /** `k <op> X`: a literal on the LEFT of the operand. */
+  private final case class LiteralVs(k: Int, op: String) extends NullCond {
+    def sql(a: String): String = s"$k $op $a"
+    def eval(v: Option[Double], rows: Int): Option[Boolean] =
+      v.map(x => compares(k.toDouble, op, x))
+  }
+
+  private val maxA = Aggregate("MAX(a)")
+  private val minB = Aggregate("MIN(b)")
+  private val maxB = Aggregate("MAX(b)")
+
+  /** The review's four statements, over the review's fixture. */
+  private val reviewForms: Seq[(CoalesceOperand, NullCond)] = Seq(
+    CoalesceOf(maxA, minB)       -> Cmp(">", 1),
+    CoalesceOf(maxA, maxB)       -> Cmp(">", 1),
+    CoalesceOf(maxA, Literal(5)) -> Cmp(">", 1),
+    CoalesceOf(maxA, minB)       -> Junction(RowsAbove(0), and = true, notRight = true, Cmp(">", 1))
+  )
+
+  private val coalesceOperands: Seq[CoalesceOperand] = Seq(
+    CoalesceOf(maxA, minB),
+    CoalesceOf(maxA, maxB),
+    // never NULL
+    CoalesceOf(maxA, Literal(5)),
+    CoalesceOf(minB, maxA),
+    CoalesceOf(maxA, minB, maxB),
+    CoalesceOf(maxA, minB, Literal(5)),
+    // SUM is never NULL either (#336)
+    CoalesceOf(Aggregate("SUM(a)"), minB),
+    CoalesceOf(CoalesceOf(maxA, minB), Literal(5)),
+    CoalesceOf(maxB, CoalesceOf(maxA, minB)),
+    SignOf(CoalesceOf(maxA, minB))
+  )
+
+  private val coalesceForms: Seq[NullCond] = Seq(
+    Cmp(">", 1),
+    Cmp("<", 1),
+    Cmp("=", 5),
+    Cmp("<>", 5),
+    NotCmp(Cmp(">", 1)),
+    NotCmp(Cmp("=", 0)),
+    Between(1, 5, not = false),
+    Between(1, 5, not = true),
+    In(Seq(0, 5), not = false),
+    In(Seq(0, 5), not = true),
+    CountVs(">"),
+    CountVs("<="),
+    LiteralVs(1, "<"),
+    NullTest(isNull = true),
+    NullTest(isNull = false),
+    Junction(RowsAbove(0), and = true, notRight = true, Cmp(">", 1)),
+    Junction(RowsAbove(0), and = true, notRight = false, Cmp(">", 1)),
+    Junction(Cmp(">", 1), and = false, notRight = false, RowsAbove(1)),
+    Junction(RowsAbove(0), and = true, notRight = true, NullTest(isNull = true))
+  )
+
+  private lazy val coalescePopulation: Seq[NullStatement] = {
+    val oracle: Seq[(String, CoalesceGroup)] = coalesceGroups.map { case (g, rows) =>
+      g -> CoalesceGroup(rows.size, rows.flatMap(_._1), rows.flatMap(_._2))
+    }
+    def keep(operand: CoalesceOperand, c: NullCond): Set[String] =
+      oracle.collect {
+        case (g, group) if c.eval(operand.value(group), group.rows).contains(true) => g
+      }.toSet
+    val grouped = for {
+      operand <- coalesceOperands
+      c       <- coalesceForms
+      // `ISNULL(SIGN(...))` fails to compile in Elasticsearch on main already (`Cannot cast from
+      // [int] to [java.lang.Object]`): the null test of a function rendering a primitive.
+      if !(operand.isInstanceOf[SignOf] && readsNullTest(c))
+      select <- Seq("g, COUNT(*) AS c", "g, MAX(a) AS ma, MIN(b) AS mb, MAX(b) AS xb, SUM(a) AS sa")
+    } yield NullStatement(
+      s"SELECT $select FROM $coalesceIndex GROUP BY g HAVING ${c.sql(operand.sql)}",
+      keep(operand, c)
+    )
+    // The implicit whole-table group, one group at a time.
+    val wholeTable = for {
+      (operand, c) <- reviewForms
+      (g, group)   <- oracle
+    } yield NullStatement(
+      s"SELECT COUNT(*) AS c FROM $coalesceIndex WHERE g = '$g' HAVING ${c.sql(operand.sql)}",
+      if (c.eval(operand.value(group), group.rows).contains(true)) Set(g) else Set.empty,
+      wholeTable = Some(g)
+    )
+    grouped ++ wholeTable
+  }
+
+  "a HAVING over a COALESCE of aggregates" should
+  "keep exactly the groups SQL's three-valued logic keeps" in {
+    coalesceGroupsLoaded
+    val population = coalescePopulation
+    // Non-vacuity, computed over the material: the review's four statements are in it, and the
+    // oracle keeps and drops each group whose `a` or `b` has no value.
+    reviewForms.foreach { case (operand, c) =>
+      val sql =
+        s"SELECT g, COUNT(*) AS c FROM $coalesceIndex GROUP BY g HAVING ${c.sql(operand.sql)}"
+      withClue(s"[$sql] ")(population.exists(_.sql == sql) shouldBe true)
+    }
+    Seq("g1", "g2", "g4", "g5", "g6").foreach { g =>
+      withClue(s"[$g] ") {
+        population.exists(st => st.wholeTable.isEmpty && st.expected.contains(g)) shouldBe true
+        population.exists(st => st.wholeTable.isEmpty && !st.expected.contains(g)) shouldBe true
+      }
+    }
+    population.foreach(st => withClue(s"[${st.sql}] ")(Parser(st.sql).isRight shouldBe true))
+
+    val outcomes = population.map(st => st -> keptGroups(st))
+    val wrong = outcomes.collect {
+      case (st, Right(actual)) if actual != st.expected => (st, actual)
+    }
+    val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
+    val wrongGroups = wrong.map { case (st, actual) =>
+      ((st.expected -- actual) ++ (actual -- st.expected)).size
+    }.sum
+    info(
+      s"HAVING over a COALESCE of aggregates: ${population.size} statements; wrong: " +
+      s"${wrong.size} statements / $wrongGroups groups; errors: ${errors.size}"
+    )
+    val report = wrong.map { case (st, actual) =>
+      s"[${st.sql}] kept ${actual.toSeq.sorted.mkString(",")}, expected ${st.expected.toSeq.sorted.mkString(",")}"
+    }
+    report.foreach(info(_))
+    errors.foreach(info(_))
+    withClue(
+      s"${wrong.size} wrong statements ($wrongGroups wrong groups), ${errors.size} errors:\n" +
+      (report.take(20) ++ errors.take(10)).mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+      errors shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // F2 -- a MATCH in HAVING over an aggregate, or over a column that is neither an aggregate nor a
+  // GROUP BY key, is refused by name. Before, it was DROPPED: the group filter has no MATCH, the
+  // key filter reads only the key, so every group came back.
+  // ---------------------------------------------------------------------------------------------
+
+  "a MATCH in HAVING over an aggregate or a non-key column" should
+  "be refused by name through the gateway" in {
+    nullGroupsLoaded
+    Seq(
+      s"SELECT g, COUNT(*) AS c FROM $nullIndex GROUP BY g HAVING MATCH (MAX(g)) AGAINST ('zzz')" ->
+      "HAVING cannot apply MATCH to the aggregate MAX(g)",
+      s"SELECT g, COUNT(*) AS c FROM $nullIndex GROUP BY g HAVING COUNT(*) > 0 AND MATCH (MAX(g)) AGAINST ('zzz')" ->
+      "HAVING cannot apply MATCH to the aggregate MAX(g)",
+      s"SELECT g, COUNT(*) AS c FROM $nullIndex GROUP BY g HAVING MATCH (id) AGAINST ('zzz')" ->
+      "HAVING cannot apply MATCH to the column id",
+      s"SELECT g, COUNT(*) AS c FROM $nullIndex GROUP BY g HAVING COUNT(*) > 0 OR MATCH (id) AGAINST ('zzz')" ->
+      "HAVING cannot apply MATCH to the column id"
+    ).foreach { case (sql, refusal) =>
+      withClue(s"[$sql] ") {
+        gatewayRows(sql) match {
+          case Left(error) =>
+            error should include(refusal)
+            error should include("Put the MATCH in WHERE.")
+          case Right(rows) => fail(s"answered ${rows.size} rows instead of refusing")
+        }
       }
     }
   }

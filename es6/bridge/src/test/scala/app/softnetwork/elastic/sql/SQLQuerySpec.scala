@@ -862,7 +862,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                      "max_price": "max_price"
       |                    },
       |                    "script": {
-      |                      "source": "(params.min_price == null ? false : (params.min_price > 5.0)) && (params.max_price == null ? false : (params.max_price < 50.0))"
+      |                      "source": "(((def) (params.min_price == null || Double.isNaN(params.min_price) || Double.isInfinite(params.min_price) ? null : params.min_price)) == null ? false : (((def) (params.min_price == null || Double.isNaN(params.min_price) || Double.isInfinite(params.min_price) ? null : params.min_price)) > 5.0)) && (((def) (params.max_price == null || Double.isNaN(params.max_price) || Double.isInfinite(params.max_price) ? null : params.max_price)) == null ? false : (((def) (params.max_price == null || Double.isNaN(params.max_price) || Double.isInfinite(params.max_price) ? null : params.max_price)) < 50.0))"
       |                    }
       |                  }
       |                }
@@ -883,6 +883,14 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("<(\\d)", " < $1")
       .replaceAll(">(\\d)", " > $1")
       .replaceAll("\\?false:", " ? false : ")
+      .replace(
+        "((def)(params.min_price == null||Double.isNaN(params.min_price)||Double.isInfinite(params.min_price)?null:params.min_price))",
+        "((def) (params.min_price == null || Double.isNaN(params.min_price) || Double.isInfinite(params.min_price) ? null : params.min_price))"
+      )
+      .replace(
+        "((def)(params.max_price == null||Double.isNaN(params.max_price)||Double.isInfinite(params.max_price)?null:params.max_price))",
+        "((def) (params.max_price == null || Double.isNaN(params.max_price) || Double.isInfinite(params.max_price) ? null : params.max_price))"
+      )
 
   }
 
@@ -1094,7 +1102,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "lastSeen": "lastSeen"
       |            },
       |            "script": {
-      |              "source": "(params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
+      |              "source": "(((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) == null ? false : (((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
       |              "params": {
       |                "__now__": 1767139200000
       |              }
@@ -1116,6 +1124,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
       .replaceAll("\\?false:", " ? false : ")
+      .replace(
+        "((def)(params.lastSeen == null||Double.isNaN(params.lastSeen)||Double.isInfinite(params.lastSeen)?null:params.lastSeen))",
+        "((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen))"
+      )
   }
 
   it should "handle group by with having and date time functions" in {
@@ -1167,7 +1179,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "lastSeen": "lastSeen"
       |                },
       |                "script": {
-      |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
+      |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) == null ? false : (((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
       |                  "params": {
       |                    "__now__": 1767139200000
       |                  }
@@ -1191,6 +1203,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
       .replaceAll("\\?false:", " ? false : ")
+      .replace(
+        "((def)(params.lastSeen == null||Double.isNaN(params.lastSeen)||Double.isInfinite(params.lastSeen)?null:params.lastSeen))",
+        "((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen))"
+      )
   }
 
   it should "handle group by index" in {
@@ -1244,7 +1260,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                  "lastSeen": "lastSeen"
       |                },
       |                "script": {
-      |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (params.lastSeen == null ? false : (params.lastSeen > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
+      |                  "source": "(params.cnt == null ? false : (params.cnt > 1)) && (((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) == null ? false : (((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen)) > ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).minus(7, ChronoUnit.DAYS).toInstant().toEpochMilli()))",
       |                  "params": {
       |                    "__now__": 1767139200000
       |                  }
@@ -1268,6 +1284,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">", " > ")
       .replaceAll(",ZoneId.of", ", ZoneId.of")
       .replaceAll("\\?false:", " ? false : ")
+      .replace(
+        "((def)(params.lastSeen == null||Double.isNaN(params.lastSeen)||Double.isInfinite(params.lastSeen)?null:params.lastSeen))",
+        "((def) (params.lastSeen == null || Double.isNaN(params.lastSeen) || Double.isInfinite(params.lastSeen) ? null : params.lastSeen))"
+      )
   }
 
   it should "handle date_parse function" in {
@@ -4262,7 +4282,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |              "avg_age": "avg_age"
         |            },
         |            "script": {
-        |              "source": "(params.__c2 == null ? false : (params.__c2 >= 1)) && (params.avg_age == null ? false : (params.avg_age > 25))"
+        |              "source": "(params.__c2 == null ? false : (params.__c2 >= 1)) && (((def) (params.avg_age == null || Double.isNaN(params.avg_age) || Double.isInfinite(params.avg_age) ? null : params.avg_age)) == null ? false : (((def) (params.avg_age == null || Double.isNaN(params.avg_age) || Double.isInfinite(params.avg_age) ? null : params.avg_age)) > 25))"
         |            }
         |          }
         |        }
@@ -4279,6 +4299,10 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(">=", " >= ")
       .replaceAll("(?<!>)>(?!=)", " > ")
       .replaceAll("\\?false:", " ? false : ")
+      .replace(
+        "((def)(params.avg_age == null||Double.isNaN(params.avg_age)||Double.isInfinite(params.avg_age)?null:params.avg_age))",
+        "((def) (params.avg_age == null || Double.isNaN(params.avg_age) || Double.isInfinite(params.avg_age) ? null : params.avg_age))"
+      )
   }
 
   it should "handle HAVING COUNT(*) only in HAVING clause not in SELECT" in {

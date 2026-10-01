@@ -1870,6 +1870,62 @@ package object query {
           }
         }
         _ <- {
+          // F2 -- a full-text MATCH in HAVING over an aggregate (`HAVING MATCH (MAX(title))
+          // AGAINST ('x')`) or over a column that is neither an aggregate nor a GROUP BY key
+          // (`GROUP BY g HAVING MATCH (title) AGAINST ('x')`) has no group-level form: the group
+          // filter has no MATCH, the key filter reads only the key, and such a column is not
+          // constant within a group. The condition was DROPPED and every group came back, HTTP
+          // 200. Refused by name: the aggregate written inline or named by its SELECT alias (the
+          // same alias map the substitution above reads), the column classified by the same
+          // `keyBucketOf` as rule (a) below. Left as they are: a MATCH over the GROUP BY key, and
+          // a MATCH the nested filter emits -- inside a relation, or over nested columns only,
+          // exactly the predicates `havingLeaves` leaves to that filter.
+          def matchesOf(c: Criteria, nestedFilter: Boolean): Seq[(MultiMatchCriteria, Boolean)] =
+            c match {
+              case Predicate(l, _, r, _, _) =>
+                matchesOf(l, nestedFilter) ++ matchesOf(r, nestedFilter)
+              case relation: ElasticRelation => matchesOf(relation.criteria, nestedFilter = true)
+              case m: MultiMatchCriteria     => Seq(m -> (nestedFilter || m.nested))
+              case _                         => Nil
+            }
+          val allMatches = having.flatMap(_.criteria).toSeq.flatMap(matchesOf(_, false))
+          val matches = allMatches.map(_._1)
+          lazy val aliases = Having.aggregateAliases(this)
+          // An aggregate is named first, wherever it stands among the MATCH's columns.
+          def overAggregate: Option[String] = matches.view.flatMap { m =>
+            m.identifiers.collect {
+              // `bucketMetrics`, not `hasAggregation`: a function never looks inside its own
+              // arguments, so `MATCH (UPPER(MAX(t)))` hides its aggregate from the latter (#389)
+              case id if id.bucketMetrics.nonEmpty =>
+                s"the aggregate ${id.bucketMetrics.head.sql} in ${m.sql}: a full-text match " +
+                  "reads documents, and HAVING filters groups."
+              case id if id.functions.isEmpty && aliases.contains(id.name) =>
+                s"the aggregate ${id.name} (${aliases(id.name).sql}) in ${m.sql}: a full-text " +
+                  "match reads documents, and HAVING filters groups."
+            }
+          }.headOption
+          def overColumn: Option[String] = allMatches.view
+            .collect { case (m, false) =>
+              m
+            }
+            .flatMap { m =>
+              m.identifiers
+                .flatMap(FunctionUtils.funIdentifiers(_))
+                .filter(_.name.nonEmpty)
+                .find(keyBucketOf(_).isEmpty)
+                .map(column =>
+                  s"the column ${column.name} in ${m.sql}: ${column.name} is neither an aggregate " +
+                  "nor a GROUP BY key, and HAVING filters groups."
+                )
+            }
+            .headOption
+          overAggregate.orElse(overColumn) match {
+            case Some(reason) =>
+              Left(s"HAVING cannot apply MATCH to $reason Put the MATCH in WHERE.")
+            case None => Right(())
+          }
+        }
+        _ <- {
           // 🔴 Issue #389 -- (a) a predicate that reads neither an aggregate NOR a grouping key is
           // not constant within a bucket, so NO mechanism can honour it: the terms filter cannot
           // spell it, the selector cannot read a document, and filtering documents would silently

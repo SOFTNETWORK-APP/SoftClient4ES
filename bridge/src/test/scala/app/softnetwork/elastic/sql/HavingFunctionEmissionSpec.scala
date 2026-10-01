@@ -357,10 +357,13 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     // base: `= 1` read `params.max_c`, `= 10` read `params.max_c0`, and `IN (1, 2)` lost its first
     // member; on Elasticsearch 8.18.3 all three searches failed (`Cannot invoke
     // "Object.getClass()" because "value" is null`).
+    // F1: `max_c1` is read as NULL when it is null, NaN or infinite (an empty group).
+    val m = "((def) (params.max_c1 == null || Double.isNaN(params.max_c1) || " +
+      "Double.isInfinite(params.max_c1) ? null : params.max_c1))"
     Seq(
-      "MAX(c1) = 1"  -> "(params.max_c1 == null ? false : (params.max_c1 == 1))",
-      "MAX(c1) = 10" -> "(params.max_c1 == null ? false : (params.max_c1 == 10))",
-      "MAX(c1) IN (1, 2)" -> "(params.max_c1 == null ? false : (params.max_c1 == 1 || params.max_c1 == 2))"
+      "MAX(c1) = 1"       -> s"($m == null ? false : ($m == 1))",
+      "MAX(c1) = 10"      -> s"($m == null ? false : ($m == 10))",
+      "MAX(c1) IN (1, 2)" -> s"($m == null ? false : ($m == 1 || $m == 2))"
     ).foreach { case (condition, script) =>
       withClue(s"[$condition] ") {
         queryOf(s"SELECT g, COUNT(*) AS cnt FROM t GROUP BY g HAVING $condition") should include(
@@ -420,8 +423,14 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"c":{"value_count":{"field":"_index"}},"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"c":"c","max_x":"max_x"},""",
-      """"script":{"source":"(params.c == null || params.max_x == null ? false : """,
-      """(params.c > Math.max(params.max_x, 0)))"}}}}}}}"""
+      """"script":{"source":"(params.c == null""",
+      """ || ((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
+      """(params.c > Math.max""",
+      """(((def) (params.max_x == null""",
+      """ || Double.isNaN(params.max_x)""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)), 0)))"}}}}}}}"""
     ).mkString
   }
 
