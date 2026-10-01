@@ -59,8 +59,10 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
   private def havingOf(s: SingleSearch, sql: String): Criteria =
     s.having.flatMap(_.criteria).getOrElse(fail(s"[$sql] has no HAVING criteria"))
 
+  // The rendering BEFORE the null-aware read (`metricSelector` reads through it): what this spec
+  // pins is the function rendering and its guard, which the read does not touch.
   private def script(sql: String): String =
-    MetricSelectorScript.metricSelector(having(sql))
+    MetricSelectorScript.selectorScript(having(sql)).getOrElse("1 == 1")
 
   /** The pattern the `terms` filter would carry, asked of the REAL derivation. */
   private def includeOf(sql: String): Option[String] = {
@@ -377,7 +379,7 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     val sql = group + "COUNT(*) > 1 AND NULLIF(COUNT(*), 0) > 2"
     val criteria = havingOf(unvalidated(sql), sql)
     val thrown = intercept[IllegalStateException] {
-      MetricSelectorScript.metricSelector(criteria)
+      MetricSelectorScript.selectorScript(criteria)
     }
     thrown.getMessage should include("HAVING cannot be applied to")
     // ... and it must not have quietly emitted the OTHER half instead.
@@ -937,10 +939,13 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     // 🔴 `MAX(c1) = 1` renders `params.max_c1 == 1`, which holds `1 == 1` -- the text
     // `metricSelector` answers when there is nothing to filter. Stripped out of the whole script,
     // it left `params.max_c`; `= 10` left `params.max_c0`, and `IN (1, 2)` lost its first member.
+    // F1: `max_c1` is read as NULL when it is null, NaN or infinite (an empty group).
+    val m = "((def) (params.max_c1 == null || Double.isNaN(params.max_c1) || " +
+      "Double.isInfinite(params.max_c1) ? null : params.max_c1))"
     Seq(
-      "MAX(c1) = 1"  -> "(params.max_c1 == null ? false : (params.max_c1 == 1))",
-      "MAX(c1) = 10" -> "(params.max_c1 == null ? false : (params.max_c1 == 10))",
-      "MAX(c1) IN (1, 2)" -> "(params.max_c1 == null ? false : (params.max_c1 == 1 || params.max_c1 == 2))"
+      "MAX(c1) = 1"       -> s"($m == null ? false : ($m == 1))",
+      "MAX(c1) = 10"      -> s"($m == null ? false : ($m == 10))",
+      "MAX(c1) IN (1, 2)" -> s"($m == null ? false : ($m == 1 || $m == 2))"
     ).foreach { case (condition, script) =>
       withClue(s"[$condition] ") {
         unvalidated(

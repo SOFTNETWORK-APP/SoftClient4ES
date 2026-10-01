@@ -759,7 +759,11 @@ object ElasticAggregation {
 
     // No filtering at this level is `None`, never a placeholder to strip out of a script: a
     // rendered comparison can hold the placeholder's text (`params.max_c1 == 1`).
-    val fullScript = MetricSelectorScript.selectorScript(criteria).map(_.trim).getOrElse("")
+    //
+    // F1 -- the NULL-AWARE script: an aggregate of a group that has none of its values reads as
+    // NULL, as SELECT returns it. The ONE function `Having.script` reads too (#292).
+    val fullScript =
+      MetricSelectorScript.nullAwareSelectorScript(criteria).map(_.trim).getOrElse("")
 
     //    println(s"[DEBUG] currentNestedPath = $currentNestedPath")
     //    println(s"[DEBUG] fullScript (complete) = $fullScript")

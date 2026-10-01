@@ -64,11 +64,13 @@ class MetricSelectorPrecedenceSpec extends AnyFlatSpec with Matchers {
     out.toList
   }
 
+  // The rendering BEFORE the null-aware read (`metricSelector` reads through it): the read replaces
+  // each metric in place and leaves the tree this spec evaluates as it is.
   private def scriptOf(sql: String): String = Parser(sql) match {
     case Right(s: SingleSearch) =>
-      MetricSelectorScript.metricSelector(
-        s.having.flatMap(_.criteria).getOrElse(fail(s"[$sql] no HAVING"))
-      )
+      MetricSelectorScript
+        .selectorScript(s.having.flatMap(_.criteria).getOrElse(fail(s"[$sql] no HAVING")))
+        .getOrElse("1 == 1")
     case other => fail(s"[$sql] $other")
   }
 

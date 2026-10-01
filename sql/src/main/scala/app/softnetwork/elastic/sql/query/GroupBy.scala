@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.operator._
 import scala.util.Try
 import scala.util.matching.Regex
@@ -390,8 +391,124 @@ object MetricSelectorScript {
 
   import MetricSelector._
 
+  /** The `bucket_selector` source of a `HAVING` criterion that reads every aggregate exactly as
+    * SELECT returns it, or `None` when there is nothing to filter. Throws exactly where
+    * [[metricSelector]] does.
+    *
+    * 🔴 ONE function for every consumer (#292): the bridge's `metricSelectorForBucket` (both
+    * bridges) and `Having.script` -- which a materialized view's transform `bucket_selector` is
+    * built from -- read it, so a group filter and a view's filter cannot disagree about the value
+    * of an empty group's aggregate.
+    *
+    * 🔴 Why [[selectorScript]] is not enough (F1). In a group where NO document has the aggregated
+    * column, SELECT answers NULL for every aggregate of `ClientAggregation.nullOverEmptyInput`
+    * (rule #336: `MIN`, `MAX`, `AVG`, the percentiles, the STDDEV / VARIANCE family, `FIRST_VALUE`
+    * / `LAST_VALUE`, and `bucket_script` arithmetic over them), but a `bucket_selector` never
+    * receives that NULL: under the default gap policy Elasticsearch hands it `NaN` in place of the
+    * metric's `-Infinity` / `+Infinity` / `NaN` sentinel. So the `params.x == null` guards never
+    * fired and every comparison ran on `NaN`. MEASURED on Elasticsearch 8.18.3: `MAX(v) <> 1`, `NOT
+    * MAX(v) = 1`, `MAX(v) NOT IN (1, 2)` and `ISNOTNULL(MAX(v))` KEPT the group, `ISNULL(MAX(v))`
+    * dropped it, and so did `COALESCE(MAX(v), 5) > 1`.
+    *
+    * Every read of such a metric therefore becomes [[nullAwareRead]]: NULL when the value is null,
+    * `NaN` or infinite. Exact, not a heuristic: Elasticsearch 6.8 to 9.0 index only finite numbers,
+    * so no group's real aggregate is `NaN` or infinite, and SELECT answers NULL for exactly those
+    * values. COUNT and SUM are read as before -- 0 and `0.0` over no value, never NULL. Nothing is
+    * added to the request: no hidden aggregation, and no `buckets_path` variable -- the read uses
+    * the metric's own `params.<name>`, so a consumer that derives its `buckets_path` from the
+    * clause (the materialized view's `extractAggregatePaths`) stays valid.
+    *
+    * Everything else is the existing rendering: a comparison's guard collapses the UNKNOWN to
+    * `false` OUTSIDE its `NOT` (`<operands non-null> && [!](<comparison>)`), `ISNULL` / `ISNOTNULL`
+    * test the value, and a `COALESCE` is guarded on its result, never on its arguments
+    * (`Expression.bucketPipelineGuard`). The read is substituted on the RENDERING, after every rule
+    * has been decided on the unchanged one: the representability gate, the guards and their
+    * placement are exactly those of [[selectorScript]], and a criterion with no such aggregate is
+    * returned byte for byte.
+    */
+  def nullAwareSelectorScript(expr: Criteria): Option[String] =
+    selectorScript(expr).map { script =>
+      val nullable = bucketMetricsOf(expr).filter(nullOverEmptyInput).map(_.metricPathKey).toSet
+      if (nullable.isEmpty) script else readAsSelectReturns(script, nullable)
+    }
+
+  /** How the selector reads the metric it is handed as `params.<name>` when SELECT answers NULL for
+    * that metric over a group with no value: NULL when the value is null, `NaN` or infinite.
+    *
+    * The `(def)` cast is load-bearing: without it Painless types the conditional from its position,
+    * and `Math.max((... ? null : params.max_v), 0)` fails to compile (`Cannot cast null to a
+    * primitive type [double]`, MEASURED). `Double.isNaN` and `Double.isInfinite` are whitelisted on
+    * every supported major (6.8 to 9.0), and the null test comes first: unboxing a null throws.
+    */
+  private def nullAwareRead(name: String): String = {
+    val param = s"params.$name"
+    s"((def) ($param == null || Double.isNaN($param) || Double.isInfinite($param) ? null : $param))"
+  }
+
+  /** Every metric the selector reads, in statement order, deduplicated by `metricPathKey` -- the
+    * leaves [[selector]] renders as a filter, through the same `Expression.bucketMetrics` their
+    * renderings guard.
+    */
+  private def bucketMetricsOf(expr: Criteria): Seq[Identifier] = {
+    def walk(c: Criteria): Seq[Identifier] = c match {
+      case Predicate(left, _, right, _, _) => walk(left) ++ walk(right)
+      case relation: ElasticRelation       => walk(relation.criteria)
+      case e: Expression                   => e.bucketMetrics
+      case _                               => Nil
+    }
+    walk(expr).foldLeft(Seq.empty[Identifier]) { (acc, id) =>
+      if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
+    }
+  }
+
+  /** Does SELECT answer NULL for this metric over a group with none of its values? F1's list: the
+    * rule of `ClientAggregation.nullOverEmptyInput`, restated over the parsed aggregate because
+    * this module cannot see the client one -- the core suite asserts that the two agree for every
+    * aggregation type.
+    */
+  private def nullOverEmptyInput(metric: Identifier): Boolean =
+    metric.aggregateFunction match {
+      case Some(af) => nullOverEmptyInput(af)
+      // `Identifier.bucketMetrics`' second arm: the alias of a SELECT `bucket_script` item,
+      // arithmetic over aggregates -- NULL whenever an operand is
+      case None => metric.hasAggregation
+    }
+
+  /** Deliberately a total match, with no default arm: a new aggregate must be classified here. */
+  private def nullOverEmptyInput(af: AggregateFunction): Boolean = af match {
+    // 0 and 0.0 over no value (#336), never NULL
+    case COUNT | SUM | _: CountAgg | _: SumAgg => false
+    // multi-valued: no comparison reads them
+    case _: ArrayAgg | _: RankingWindow                      => false
+    case MIN | MAX | AVG | _: MinAgg | _: MaxAgg | _: AvgAgg => true
+    case STDDEV | STDDEV_POP | STDDEV_SAMP | VARIANCE | VAR_POP | VAR_SAMP | _: ExtendedStatsAgg =>
+      true
+    case PERCENTILE_CONT | PERCENTILE_DISC | _: PercentileAgg => true
+    case _: FirstValue | _: LastValue                         => true
+    case _: BucketScriptAggregation                           => true
+  }
+
+  /** `script` with every read of a `nullable` metric turned into its [[nullAwareRead]]. String
+    * literals are skipped.
+    */
+  private def readAsSelectReturns(script: String, nullable: Set[String]): String = {
+    val out = new java.lang.StringBuilder(script.length * 2)
+    var last = 0
+    MetricRead.findAllMatchIn(blankStringLiterals(script)).foreach { m =>
+      if (nullable.contains(m.group(1))) {
+        out.append(script, last, m.start).append(nullAwareRead(m.group(1)))
+        last = m.end
+      }
+    }
+    out.append(script, last, script.length).toString
+  }
+
+  /** One `params.<name>` read, the name taken whole. */
+  private val MetricRead: Regex = """(?<![\w.$])params\.([A-Za-z_][A-Za-z0-9_]*)(?![\w$])""".r
+
   /** The bucket-pipeline script of a `HAVING` criterion, or `"1 == 1"` when there is nothing to
-    * filter at this level.
+    * filter at this level: [[nullAwareSelectorScript]] with its placeholder, so it reads every
+    * aggregate exactly as the bridge's `bucket_selector` and `Having.script` do (#292).
     *
     * 🔴 It THROWS on an [[MetricSelector.Unrepresentable]] criterion, and that is the point:
     * returning `""` is what let a predicate vanish. `Having.validate()` refuses every such
@@ -399,10 +516,11 @@ object MetricSelectorScript {
     * it is the invariant's second line of defence, for a `SingleSearch` assembled in code and
     * emitted without validation.
     */
-  def metricSelector(expr: Criteria): String = selectorScript(expr).getOrElse("1 == 1")
+  def metricSelector(expr: Criteria): String = nullAwareSelectorScript(expr).getOrElse("1 == 1")
 
-  /** [[metricSelector]] without its `"1 == 1"` placeholder: the script, or `None` when there is
-    * nothing to filter at this level. Throws exactly where [[metricSelector]] does.
+  /** The selector script BEFORE the null-aware read [[nullAwareSelectorScript]] substitutes into
+    * it, or `None` when there is nothing to filter at this level. Throws exactly where
+    * [[metricSelector]] does.
     *
     * 🔴 The emission must never look for the placeholder INSIDE a script. It used to strip it with
     * `replaceAll("1 == 1", "")`, and a rendered comparison can hold that very text: `MAX(c1) = 1`
