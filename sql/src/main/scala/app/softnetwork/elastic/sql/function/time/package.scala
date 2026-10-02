@@ -545,6 +545,27 @@ package object time {
   case object DateDiff extends Expr("DATE_DIFF") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".between"
     override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF")
+
+    /** A calendar date alone, in the two separators the DATE parse accepts (`SQLTypeUtils.coerce`).
+      */
+    private val CalendarDate = """\d{4}[-/]\d{2}[-/]\d{2}""".r
+
+    /** The temporal a STRING-LITERAL operand spells: a DATE when it is a calendar date alone
+      * (`'2024-01-01'`), a TIMESTAMP when it carries anything more -- a time of day, a zone
+      * (`'2024-01-01 10:00:00'`, `'2024-01-01T10:00:00Z'`). `None` for any other operand.
+      */
+    private[time] def literalType(operand: PainlessScript): Option[SQLType] = operand match {
+      case id: Identifier if id.name.isEmpty =>
+        id.functions match {
+          case List(s: StringValue) =>
+            Some(
+              if (CalendarDate.pattern.matcher(s.value).matches()) SQLTypes.Date
+              else SQLTypes.Timestamp
+            )
+          case _ => None
+        }
+      case _ => None
+    }
   }
 
   /** MySQL's `DATEDIFF`, which is a DIFFERENT function from the one above and needs its own token
@@ -625,14 +646,127 @@ package object time {
       case DateDiffSpelling.DateFirst => s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
     }
 
-    override def in: SQLType = SQLTypes.Date
+    /** The type a COLUMN operand is read as, whatever the unit: the instant it denotes, in UTC
+      * (`FunctionN`'s argument path folds that read onto the column's parameter).
+      * [[toPainlessCall]] then brings every operand to [[comparedIn]].
+      *
+      * 🔴 Not the unit's own type. One column is ONE parameter per script, shared by every call
+      * that reads it, and the conversion folded onto it is the first caller's (the
+      * parameter-identity family, issue #370). A fold that depended on the unit made `CASE WHEN
+      * DATE_DIFF(d, ts, HOUR) > 1 THEN DATE_DIFF(d, ts, DAY) END` read both calls through the
+      * HOUR's `ZonedDateTime` and count ELAPSED days. Read losslessly once, each call narrows its
+      * own operands.
+      */
+    override def in: SQLType = SQLTypes.Timestamp
 
+    /** The type the two operands are COMPARED in, and the UNIT decides it.
+      *
+      *   - `HOUR`, `MINUTE` and `SECOND` count the ELAPSED whole units between two instants (UTC),
+      *     truncated toward zero; a DATE operand is the start of its day. They used to be compared
+      *     as a `LocalDate`, which has no time of day, so every such call failed with `Unsupported
+      *     unit: Hours`.
+      *   - `DAY` and every larger unit compare the two CALENDAR dates (UTC): 23:30 and 00:30 the
+      *     next day are one day apart, as MySQL's `DATEDIFF` answers. That is what they computed.
+      */
+    private def comparedIn: SQLType = unit match {
+      case TimeUnit.HOURS | TimeUnit.MINUTES | TimeUnit.SECONDS => SQLTypes.Timestamp
+      case _                                                    => SQLTypes.Date
+    }
+
+    /** A context-free rendering over an aggregate is the PER-GROUP calculation: the `bucket_script`
+      * of a SELECT item (`DATEDIFF(MAX(d), '2024-01-01') AS x`), which a HAVING over `x` reads by
+      * name and a materialized view's pivot computes too (`SingleSearch.transformBucketScripts`).
+      * Its operands are converted in [[toPainlessCall]], the rendering row level ends in too.
+      *
+      * An empty group needs no guard here: under the default gap policy Elasticsearch SKIPS the
+      * script when an operand metric has no value (6.8 to 9.0, `BucketScriptPipelineAggregator`),
+      * so the item has no value for that group and SELECT and HAVING read NULL.
+      */
+    override def painless(context: Option[PainlessContext]): String =
+      context match {
+        case None if hasAggregation => toPainlessCall(args.map(_.painless(None)), context)
+        case _                      => super[BinaryFunction].painless(context)
+      }
+
+    /** One operand, brought to [[comparedIn]] through the coercion arms a CAST uses.
+      *
+      *   - A string LITERAL is first read as the temporal it spells ([[DateDiff.literalType]]: UTC
+      *     unless it names a zone). Row level used to hand Painless the bare string
+      *     (`between("2024-01-01", param1)`, which it cannot call), and per group parsed it as a
+      *     DATE whatever it held, so a time of day failed the search.
+      *   - Per group, an aggregate is the metric Elasticsearch computed, which a `bucket_script`
+      *     receives as a `java.lang.Double` holding EPOCH MILLIS (`(long)` is required: Painless
+      *     refuses to cast a `def` double to `long` implicitly). Any other operand is converted
+      *     from its own type.
+      *   - At row level a column operand holds its UTC instant ([[in]]), so its calendar date is
+      *     `toLocalDate()`. An operand with no column of its own (`'2025-01-10'::DATE`,
+      *     `CURRENT_DATE`, `NOW()`) renders as it did, except a DATE under a sub-day unit, which is
+      *     the start of its day: a `LocalDate` has no hours.
+      *
+      * 🔴 An INGEST processor renders as it did: there a column is the raw document value, parsed
+      * at runtime by `SQLTypeUtils.processorTemporal`.
+      */
+    private def operand(
+      arg: PainlessScript,
+      rendered: String,
+      context: Option[PainlessContext],
+      perGroup: Boolean
+    ): String =
+      DateDiff.literalType(arg) match {
+        case _ if context.exists(_.isProcessor) => rendered
+        case Some(literal) =>
+          val value =
+            SQLTypeUtils.coerce(rendered, SQLTypes.Varchar, literal, nullable = false, None)
+          SQLTypeUtils.coerce(value, literal, comparedIn, nullable = false, None)
+        case None if perGroup =>
+          arg match {
+            case metric: Identifier if metric.isAggregation =>
+              val epochMillis = SQLTypeUtils
+                .coerce(rendered, SQLTypes.Double, SQLTypes.BigInt, nullable = false, None)
+              // The instant in UTC already (`Instant.ofEpochMilli(...).atZone(ZoneId.of('Z'))`), so
+              // DAY and above read its calendar date off it: ONE conversion per aggregate. The
+              // TIMESTAMP -> DATE arm would normalise it to UTC a second time
+              // (`.toInstant().atZone(ZoneId.of('Z'))`), as it must an operand of unknown zone.
+              val utc = SQLTypeUtils
+                .coerce(epochMillis, SQLTypes.BigInt, SQLTypes.Timestamp, nullable = false, None)
+              if (comparedIn == SQLTypes.Date) s"$utc.toLocalDate()" else utc
+            case other =>
+              SQLTypeUtils.coerce(rendered, other.baseType, comparedIn, nullable = false, None)
+          }
+        case None if context.isDefined =>
+          arg match {
+            case column: Identifier if column.name.trim.nonEmpty =>
+              if (comparedIn == SQLTypes.Date) s"$rendered.toLocalDate()" else rendered
+            case value: Identifier
+                if comparedIn == SQLTypes.Timestamp && value.baseType == SQLTypes.Date =>
+              SQLTypeUtils.coerce(rendered, SQLTypes.Date, comparedIn, nullable = false, None)
+            case _ => rendered
+          }
+        case None => rendered
+      }
+
+    /** `ChronoUnit` has no `QUARTERS`, so a `QUARTER` call failed to compile in Elasticsearch. The
+      * ISO quarter-year unit counts the whole quarters between two calendar dates: the whole months
+      * between them, divided by 3.
+      */
+    private def unitPainless(context: Option[PainlessContext]): String = unit match {
+      case TimeUnit.QUARTERS => "java.time.temporal.IsoFields.QUARTER_YEARS"
+      case other             => other.painless(context)
+    }
+
+    /** The function's ONE rendering: row level reaches it from `FunctionN.painless` with its
+      * operands rendered, per group from [[painless]]; [[operand]] converts each one.
+      */
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
+      val perGroup = context.isEmpty && hasAggregation
+      val operands = args.zip(callArgs).map { case (arg, rendered) =>
+        operand(arg, rendered, context, perGroup)
+      }
       val ret =
-        s"Long.valueOf(${unit.painless(context)}${DateDiff.painless(context)}(${callArgs.mkString(", ")}))"
+        s"Long.valueOf(${unitPainless(context)}${DateDiff.painless(context)}(${operands.mkString(", ")}))"
       context match {
         case Some(ctx)
             if ctx.isProcessor => // to fix bug in painless script processor context with elasticsearch v6

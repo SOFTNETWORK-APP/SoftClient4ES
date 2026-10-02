@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.sql.parser
 
 import app.softnetwork.elastic.sql._
+import app.softnetwork.elastic.sql.function.convert.CastOperator
 import app.softnetwork.elastic.sql.function.time.DateTimeFunction
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.operator._
@@ -2066,9 +2067,13 @@ trait Parser
 
   lazy val separator: PackratParser[Delimiter] = "," ^^ (_ => Separator)
 
-  lazy val valueExpr: PackratParser[PainlessScript] = {
+  /** The value expression, typed as what every one of its alternatives produces: an [[Identifier]].
+    * ONE production with two static types -- [[valueExpr]] IS this parser, so the two share one
+    * packrat memo.
+    */
+  lazy val valueIdentifier: PackratParser[Identifier] = {
     // the order is important here
-    identifierWithWindowFunction |
+    (guard(callHead) ~> identifierWithWindowFunction) |
     identifierWithTransformation | // transformations applied to an identifier
     identifierWithIntervalFunction |
     identifierWithFunction | // fonctions applied to an identifier
@@ -2076,6 +2081,43 @@ trait Parser
     identifierWithValue |
     identifier
   }
+
+  /** The operand of `ISNULL` / `ISNOTNULL` and of the DATEDIFF family (`DATEDIFF`, `DATE_DIFF`,
+    * `TIMESTAMPDIFF`): a value expression, so an aggregate in it is the aggregate every other
+    * position builds.
+    *
+    * 🔴 These five used to list their own alternatives WITHOUT `identifierWithWindowFunction`, so
+    * `MIN(a)` reached `identifierWithFunction` and came out as the bare `MIN` token instead of the
+    * `MinAgg` every other position builds: the transform conversion did not recognise it, and its
+    * rendered name (`MIN(a)`) no longer matched a qualified SELECT item's (`MIN(r.a)`).
+    *
+    * 🔴 That reading of an aggregate stops at the call's `)`, while their own alternatives read a
+    * `::TYPE` cast or a `+ / - INTERVAL` after it (`ISNULL(MAX(a)::DOUBLE)`, `DATEDIFF(MAX(d) -
+    * INTERVAL 1 DAY, '2024-01-01')`). So where such a suffix follows, those alternatives read the
+    * operand, exactly as they always did, and the statement keeps the verdict and the message it
+    * had -- rather than failing with `end of input expected`, MEASURED on 13 shapes. Everywhere
+    * else they are the alternatives that follow.
+    */
+  lazy val operandIdentifier: PackratParser[Identifier] =
+    (guard(callHead) ~> identifierWithWindowFunction <~ not(CastOperator.regex) <~ not(
+      intervalFunction
+    )) |
+    identifierWithTransformation |
+    identifierWithIntervalFunction |
+    identifierWithFunction |
+    identifier
+
+  /** A name followed by its opening parenthesis, consuming nothing: what every alternative of
+    * `identifierWithWindowFunction` starts with (`MAX(`, `COUNT (`, `ROW_NUMBER(`, ...), so
+    * [[valueIdentifier]] and [[operandIdentifier]] try that production only where it can match. It
+    * changes no parse -- it declines only where every alternative would -- and it is ONE regex
+    * where the production tries one per window function. An operand that is a column or a literal
+    * (`d`, `CURRENT_DATE`, `'2024-01-01'`) paid them all once the DATEDIFF and ISNULL operands were
+    * read through the window functions: 2 to 4 microseconds per operand, MEASURED.
+    */
+  private lazy val callHead: Parser[String] = """[A-Za-z_][A-Za-z0-9_]*\s*\(""".r
+
+  lazy val valueExpr: PackratParser[PainlessScript] = valueIdentifier
 
   implicit def functionAsIdentifier(mf: Function): Identifier = mf match {
     case id: Identifier => id

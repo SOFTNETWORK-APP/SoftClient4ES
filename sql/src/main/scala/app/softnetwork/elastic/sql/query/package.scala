@@ -37,10 +37,12 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.function.{FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
+import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.transform.{
   AggregateConversion,
+  BucketScriptTransformAggregation,
   Delay,
   Frequency,
   TransformTimeInterval,
@@ -57,6 +59,7 @@ import com.fasterxml.jackson.databind.JsonNode
 
 import java.time.{Duration, Instant}
 import scala.collection.immutable.ListMap
+import scala.util.Try
 
 package object query {
 
@@ -148,10 +151,10 @@ package object query {
     * watcher renders its SELECT into a SEARCH body and therefore keeps all five, so it deliberately
     * does NOT read this.
     *
-    * SIX rules. Each was MEASURED at RENDER level (the generated `TransformConfig`) either silently
-    * dropping the clause or deploying a `bucket_selector` that cannot run, before it was refused.
-    * They are stated as paragraphs rather than a numbered list because the formatter rewraps list
-    * items into the previous item's prose.
+    * SEVEN rules. Each was MEASURED at RENDER level (the generated `TransformConfig`) either
+    * silently dropping the clause or deploying a `bucket_selector` that cannot run, before it was
+    * refused. They are stated as paragraphs rather than a numbered list because the formatter
+    * rewraps list items into the previous item's prose.
     *
     * RULE 1 -- NO `GROUP BY`. A transform's pivot is built from the GROUP BY alone, and with no
     * pivot there is nothing for a `bucket_selector` to hang on: the clause was never even
@@ -166,60 +169,50 @@ package object query {
     * RULE 3 -- an aggregate a view's transform cannot compute at all.
     * `AggregateConversion.toTransformAggregation` has arms for MIN / MAX / SUM / AVG / COUNT and
     * answers `None` for every other aggregate; `Stage.buildAggregations()` `flatMap`s that `None`
-    * away while `Stage.extractAggregatePaths` keys on *is this an aggregate*, so the two DIVERGE.
-    * MEASURED: `STDDEV`, `VARIANCE` and `PERCENTILE_CONT` in the SELECT list AND the HAVING
-    * produced a `buckets_path` naming an aggregation the transform never creates.
+    * away, so the filter would read an aggregation that is never created. MEASURED: `STDDEV`,
+    * `VARIANCE` and `PERCENTILE_CONT` in the SELECT list AND the HAVING produced a `buckets_path`
+    * naming an aggregation the transform never creates.
     *
-    * RULE 4 -- a SELECT `bucket_script` alias (`MAX(x) - MIN(x) AS d … HAVING d > 3`). This repo's
-    * transform pivot model has a `bucketSelector` field and NO `bucketScript` one
-    * (`TransformPivot`), and such a SELECT item is not an aggregate, so it never reaches the
-    * stage's aggregate list either: MEASURED `buckets_path` EMPTY, clause dropped.
-    *
-    * RULE 5 -- an aggregate on the RIGHT of a comparison THAT NO LEAF NAMES ON ITS LEFT.
-    * `Stage.extractAggregatePaths` walks `expr.identifier` ONLY and never `expr.maybeValue`, while
-    * core's own `Expression.extractAllMetricsPath` walks BOTH. So an aggregate reached only through
-    * a value side lands in `buildAggregations` and NEVER in `buckets_path`. MEASURED: the selector
-    * IS built, reads `params.<right>` which is null, the null guard short-circuits, and EVERY
-    * bucket is rejected -- an EMPTY view at HTTP 200.
-    *
-    * 🔴 Both halves of that sentence are load-bearing, and each was measured after a gate found the
-    * rule too wide. `extractAggregatePaths` declares the LEFT identifier of EVERY leaf in the whole
-    * clause, so (i) a sibling conjunct naming the same aggregate DECLARES it and the view runs
-    * correctly -- firing on mere presence over-refused 74 cells that are correct on `main`; and
-    * (ii) when nothing names it on the left but the SELECT list does not publish it either, adding
-    * the SELECT alias is what makes the selector declare it, so RULE 6 owns that family and this
-    * rule stands down. `HAVING MIN(amount) > 1 AND MAX(amount) > MIN(amount)` is ACCEPTED once
-    * `MIN(amount) AS mn` is published; `HAVING MAX(amount) > MIN(amount)` is not. See
-    * [[SingleSearch.havingLeftHandNames]].
+    * RULE 4 -- a SELECT `bucket_script` alias (`MAX(x) - MIN(x) AS d … HAVING d > 3`) the view's
+    * per-group calculation channel does not serve. A view computes such an item with the
+    * `bucket_script` of [[SingleSearch.transformBucketScripts]], and its filter reads it by name
+    * like any other metric. Not served: an item one of whose operands no transform computes (it is
+    * never created), and a condition whose rendering reads the item's operands rather than `d`
+    * (`ISNULL(d)`, [[SingleSearch.bucketScriptServed]]).
     *
     * RULE 6 -- an aggregate a transform COULD compute but the SELECT list does not publish, in the
     * spelling the HAVING uses. The selector would read a metric the view never creates: either
     * `buckets_path` comes back empty and the whole clause is dropped, or -- with a published metric
     * beside it -- the path is PARTIAL and the script reads a `params.*` the path never declares.
     *
-    * RULE 7 -- THE BACKSTOP: a `HAVING` leaf whose name matches no aggregation the pivot creates.
-    * It covers two families the six specific rules are structurally blind to. (a) An aggregate with
-    * NO SELECT alias: `Select.fieldAliases` mints a generated internal alias and
-    * `Identifier.update` copies it, so the script reads THAT name, while `RequiredField.apply`
-    * names the aggregation `fieldAlias.getOrElse(sourceField)` -- the USER alias only. The two
-    * never match, `buckets_path` comes back EMPTY and the clause is SILENTLY DROPPED; MEASURED
-    * invariant across every computable aggregate, every connective, one and two grouping keys, and
-    * a JOIN body. (b) A relation predicate (`NESTED` / `CHILD` / `PARENT`) beside a metric
-    * conjunct: `extractAggregatePaths` falls to its `case _ => acc` for a relation and
-    * `havingLeaves` excludes them, so the selector is emitted reading the metric alone -- a PARTIAL
-    * filter answering 200 with the wrong groups.
+    * RELATIONS -- a `NESTED` / `CHILD` / `PARENT` predicate. A view's filter is a `bucket_selector`
+    * over the pivot's own aggregations, and a relation predicate has no form there: beside a metric
+    * conjunct the selector reads the metric alone -- a PARTIAL filter answering 200 with the wrong
+    * groups.
+    *
+    * RULE 7 -- THE BACKSTOP: a metric the `HAVING` reads that the pivot does not create. The view's
+    * filter declares exactly `Having.metricNames` -- every metric the clause reads, the value side
+    * of a comparison and a function's arguments included (`Criteria.bucketMetrics`, #292) -- and
+    * the pivot names each aggregation after its SELECT alias ([[transformAggregationNames]]), so
+    * every name must be one of them. Its commonest family: an aggregate with NO SELECT alias.
+    * `Select.fieldAliases` mints a generated internal alias and `Identifier.update` copies it, so
+    * the script reads THAT name, while `RequiredField.apply` names the aggregation
+    * `fieldAlias.getOrElse(sourceField)` -- the USER alias only. The two never match, and the
+    * clause would be SILENTLY DROPPED; MEASURED invariant across every computable aggregate, every
+    * connective, one and two grouping keys, and a JOIN body.
+    *
+    * 🔴 Two aggregates in one condition -- `MAX(x) > MIN(y)`, `COALESCE(MAX(x), MIN(y)) > 1`,
+    * `MAX(x) > COALESCE(MIN(y), 1)` -- need no rule of their own. They used to (the old rule 5
+    * refused an aggregate on the value side of a comparison, and the backstop named only each
+    * leaf's left identifier) because the view's filter declared only the left-hand metric of each
+    * comparison. With the filter declaring `Having.metricNames`, every metric the script reads is
+    * declared, and the backstop asks the same question of every one of them.
     *
     * 🔴 The backstop is LAST, and the rule set is deliberately NOT collapsed into it. It subsumes
-    * rules 2, 3 and 4 entirely and 5 and 6 in part, so deleting them is tempting -- do not. Those
-    * rules exist for their SPECIFIC REMEDIES (filter the key in WHERE; this aggregate exists in no
-    * view; compare with a constant; publish it under an alias), and a single generic "names no
-    * aggregation this view creates" would lose every one of them. Specific first, backstop behind.
-    *
-    * ⚠️ MEASURED over 5,145 product points: rules 2, 3 and 4 have ZERO sole-owner cells -- every
-    * statement they refuse would be refused by a later rule anyway -- while rule 5 owns 25 (all of
-    * them genuinely broken), rule 6 owns 2, rule 1 owns 83 and the backstop owns 134. Their
-    * coverage contribution is nil ON PURPOSE and it is not a reason to delete them: the remedy is
-    * the deliverable, not the verdict.
+    * rules 3 and 4 and, in part, 6, so deleting them is tempting -- do not. Those rules exist for
+    * their SPECIFIC REMEDIES (filter the key in WHERE; this aggregate exists in no view; publish it
+    * under an alias), and a single generic "names no aggregation this view creates" would lose
+    * every one of them. Specific first, backstop behind.
     *
     * 🔴 Every remedy that puts an aggregate in the SELECT list says `AS <alias>`, and that is not
     * politeness: a view's HAVING can only read an aggregate that carries a SELECT alias, so *"spell
@@ -227,26 +220,16 @@ package object query {
     * broken artefact, because a HAVING never spells an alias. Applying each remedy literally is a
     * test.
     *
-    * 🔴 Rules 3, 4 and 5 run BEFORE rule 6 deliberately, and the reason is measured rather than
-    * aesthetic. Rule 6's remedy is *"add it to the SELECT list"*, and for the populations those
-    * three carry, applying it LANDS SOMEWHERE WORSE: adding `STDDEV(amount)` produces the broken
-    * `buckets_path` rule 3 refuses, and adding the right-hand `MIN(amount)` produces the
-    * every-bucket-rejected selector rule 5 refuses. A refusal whose remedy makes things worse is
-    * the issue-#389 trap ("verify the remedy a message prescribes, the same way you verify the
-    * defect"). Each precedence has its own test and its own mutation.
+    * 🔴 Rule 3 runs BEFORE rule 6 deliberately, and the reason is measured rather than aesthetic.
+    * Rule 6's remedy is *"add it to the SELECT list"*, and for the population rule 3 carries,
+    * applying it LANDS SOMEWHERE WORSE: adding `STDDEV(amount)` produces the broken `buckets_path`
+    * rule 3 refuses. A refusal whose remedy makes things worse is the issue-#389 trap ("verify the
+    * remedy a message prescribes, the same way you verify the defect").
     *
-    * 🔴 The converse is equally measured, and it is why rule 5 asks a counterfactual rather than
-    * *"is this parameter declared today"*: where SOME leaf names the right-hand aggregate on its
-    * left, rule 6's remedy DOES end the journey, so rule 5 must stand down and let rule 6 speak.
-    * Precedence is not a fixed order between two rules -- it is whichever remedy reaches a view
-    * that deploys. W1-W8 pin both directions, with the remedy applied literally in W5 and W8.
-    *
-    * 🔴 Rules 3 and 5 ask the real thing, never a copy of it: rule 3 calls `toTransformAggregation`
-    * ITSELF rather than matching a list of function names, and rule 5 is expressed as *the value
-    * side of the comparison*, which is exactly the operand `extractAggregatePaths` omits. A name
-    * list would be a second derivation of what the transform emitter does and would drift the first
-    * time that mapping changed -- the same reason [[SingleSearch.notPublishedBySelect]] is hoisted
-    * rather than copied.
+    * 🔴 Rule 3 asks the real thing, never a copy of it: it calls `toTransformAggregation` ITSELF
+    * rather than matching a list of function names. A name list would be a second derivation of
+    * what the transform emitter does and would drift the first time that mapping changed -- the
+    * same reason [[SingleSearch.notPublishedBySelect]] is hoisted rather than copied.
     *
     * ⚠️ Attribution: these are limitations of THIS ENGINE's transform model, not of Elasticsearch.
     * A `bucket_selector` demonstrably reaches a transform pivot -- `TransformPivot` carries one --
@@ -299,23 +282,29 @@ package object query {
               }
             }
             .orElse {
-              search.havingBucketScriptRefs.headOption.map { id =>
-                s"MATERIALIZED VIEW cannot filter on ${id.sql} in HAVING: it is an expression " +
-                "over aggregates, which a search evaluates with a bucket_script and this " +
-                "engine's transform pivot has no bucket_script channel for, so the condition " +
-                "would be silently dropped. Apply the condition when querying the view."
-              }
-            }
-            .orElse {
-              search.havingValueSideAggs.headOption.map { id =>
-                s"MATERIALIZED VIEW cannot compare two aggregates in HAVING (${id.sql} is on the " +
-                "right of the comparison): a materialized view's transform declares only the " +
-                "metric on the LEFT of each comparison in its bucket_selector buckets_path, so " +
-                "the right-hand aggregate is read as an undeclared parameter, the null guard " +
-                "rejects every group and the view comes out EMPTY. Compare the aggregate with a " +
-                "constant -- keeping its SELECT alias (SUM(x) AS s) -- or apply the condition " +
-                "when querying the view."
-              }
+              search.havingBucketScriptRefs
+                .collectFirst {
+                  case (leaf, id) if !search.bucketScriptServed(leaf, id) => (leaf, id)
+                }
+                .map { case (leaf, id) =>
+                  val alias = id.metricPathKey
+                  val item = search.select.fields.find(_.fieldAlias.exists(_.alias == alias))
+                  item.flatMap(search.bucketScriptOperandNoTransformComputes) match {
+                    case Some(operand) =>
+                      s"MATERIALIZED VIEW cannot filter on $alias in HAVING: it is an expression " +
+                        s"over aggregates (${item.map(_.identifier.sql).getOrElse(id.sql)}), which a " +
+                        "materialized view computes with a bucket_script over the aggregations its " +
+                        s"transform creates, and ${operand.sql} is not one a transform can create, " +
+                        "so the condition would read a value that is never computed. Apply the " +
+                        "condition when querying the view."
+                    case None =>
+                      s"MATERIALIZED VIEW cannot filter on ${leaf.sql} in HAVING: it reads $alias, " +
+                        "an expression over aggregates which a materialized view computes with a " +
+                        s"bucket_script, through its operands rather than as $alias, and the view's " +
+                        s"group filter declares only $alias. Compare $alias itself (HAVING $alias > " +
+                        "10), or apply the condition when querying the view."
+                  }
+                }
             }
             .orElse {
               search.havingOnlyAggs.headOption.map { f =>
@@ -334,19 +323,27 @@ package object query {
               }
             }
             .orElse {
+              search.havingRelation.map { relation =>
+                s"MATERIALIZED VIEW cannot filter on ${relation.sql} in HAVING: a materialized " +
+                "view's transform filters groups with a bucket_selector over the aggregations " +
+                "its pivot creates, and a nested, child or parent predicate has no form there, " +
+                "so the group filter would be applied only in part. Apply the condition when " +
+                "querying the view."
+              }
+            }
+            .orElse {
               // 🔴 THE BACKSTOP. Last on purpose; see the rule list above.
-              search.havingLeafWithNoMatchingAgg.map { case (leaf, _) =>
+              search.havingMetricNotCreated.map { metric =>
                 val created = search.transformAggregationNames.toSeq.sorted
                 val names =
                   if (created.isEmpty) "this view creates none"
                   else created.mkString(", ")
-                s"MATERIALIZED VIEW cannot filter on ${leaf.sql} in HAVING: a materialized " +
-                "view's transform names each aggregation after its SELECT alias, and this " +
-                s"condition matches none of the aggregations this view creates ($names), so the " +
-                "group filter would be silently dropped or applied only in part. Every " +
+                s"MATERIALIZED VIEW cannot filter on ${metric.sql} in HAVING: a materialized " +
+                "view's transform names each aggregation after its SELECT alias, and " +
+                s"${metric.sql} matches none of the aggregations this view creates ($names), so " +
+                "the group filter would be silently dropped or applied only in part. Every " +
                 "aggregate a view's HAVING reads must be written in the SELECT list with an " +
-                "alias (SUM(x) AS s), and a nested, child or parent predicate cannot be part of " +
-                "a view's HAVING at all."
+                "alias (SUM(x) AS s)."
               }
             }
       case _ => None
@@ -745,6 +742,25 @@ package object query {
     lazy val sorts: ListMap[String, SortOrder] =
       ListMap(orderBy.map { _.sorts.map(s => s.name -> s.direction) }.getOrElse(Seq.empty): _*)
 
+    /** The first DATEDIFF / DATE_DIFF / TIMESTAMPDIFF call of this statement with a window function
+      * as an operand (`MAX(d) OVER (PARTITION BY g)`, `FIRST_VALUE(d) OVER (ORDER BY d)`), as (the
+      * call, the operand): the SELECT list, WHERE, HAVING and ORDER BY ([[scriptedExpressions]]),
+      * at any depth of each. Read by the window rule in `validate()`.
+      *
+      * A window function written `OVER ()` partitions and orders nothing: it IS its aggregate.
+      */
+    private[query] lazy val dateDiffOverWindow: Option[(Identifier, Identifier)] =
+      scriptedExpressions.iterator
+        .flatMap(FunctionUtils.funIdentifiers(_))
+        .flatMap { call =>
+          call.functions
+            .collect { case dateDiff: DateDiff => dateDiff }
+            .flatMap(_.args.collect {
+              case operand: Identifier if operand.windows.exists(_.isWindowing) => call -> operand
+            })
+        }
+        .collectFirst { case found => found }
+
     def update(schema: Option[Schema] = None): SingleSearch = {
       schema match {
         case Some(s) => return this.copy(schema = Some(s)).update()
@@ -993,75 +1009,129 @@ package object query {
 
     /** The `HAVING` references that are an EXPRESSION over aggregates rather than an aggregate --
       * what a search emits as a `bucket_script` (`MAX(x) - MIN(x) AS d ... HAVING d > 3`, resolved
-      * to its SELECT item by `Having.resolveAggregateAliases`).
+      * to its SELECT item by `Having.resolveAggregateAliases`) -- each with the leaf reading it.
       *
-      * A transform's pivot has no `bucket_script` channel, and such a SELECT item is not an
-      * aggregate, so it never enters the stage's aggregate list either: MEASURED, `buckets_path`
-      * comes back EMPTY and the whole clause is dropped.
+      * A view computes such an item with the `bucket_script` [[transformBucketScripts]] derives,
+      * and its HAVING reads that aggregation by name. Rule 4 refuses the references that channel
+      * does not serve.
       *
       * The predicate is the one `SingleSearch.validate()` already uses to find inline arithmetic
       * over aggregates, minus its `fieldAlias.isEmpty` guard -- there it refuses the UNALIASED form
-      * for every venue; here the ALIASED form is the one a transform cannot honour.
+      * for every venue; here the ALIASED form is the one the channel must serve.
       */
-    private[query] lazy val havingBucketScriptRefs: Seq[Identifier] =
-      having
-        .flatMap(_.criteria)
-        .map(_.referencedIdentifiers)
-        .getOrElse(Nil)
-        .filter(id => !id.isAggregation && id.hasAggregation)
+    private[query] lazy val havingBucketScriptRefs: Seq[(Criteria, Identifier)] = {
+      def walk(c: Criteria): Seq[(Criteria, Identifier)] = c match {
+        case p: Predicate              => walk(p.leftCriteria) ++ walk(p.rightCriteria)
+        case relation: ElasticRelation => walk(relation.criteria)
+        case leaf =>
+          leaf.referencedIdentifiers
+            .filter(id => !id.isAggregation && id.hasAggregation)
+            .map(leaf -> _)
+      }
+      having.flatMap(_.criteria).toSeq.flatMap(walk)
+    }
 
-    /** The aggregates this statement's `HAVING` compares AGAINST -- the VALUE side of a comparison.
+    /** The per-group calculation channel of a materialized view: the `bucket_script` its pivot
+      * computes for each SELECT item that is arithmetic over aggregates (`MAX(a) - MIN(b) AS d`),
+      * keyed by the item's SELECT alias -- the name the pivot gives it, and the name a HAVING over
+      * `d` reads it by.
       *
-      * 🔴 The operand `Stage.extractAggregatePaths` omits. It walks `expr.identifier` only and
-      * never `expr.maybeValue`, while core's own [[Expression.extractAllMetricsPath]] walks BOTH,
-      * so a right-hand aggregate reaches `buildAggregations` (the view really does compute it) and
-      * never reaches `buckets_path`. MEASURED: the `bucket_selector` IS built, its script reads
-      * `params.<right>`, that parameter is undeclared and therefore null, the null guard
-      * short-circuits and EVERY bucket is rejected -- the view materialises EMPTY at HTTP 200.
+      * The script is the item's own bucket-pipeline rendering, the one a search's `bucket_script`
+      * runs: it reads each operand aggregate as `params.<metricPathKey>`. `bucketsPath` maps that
+      * key to the pivot aggregation computing the operand -- the SELECT item that publishes it
+      * (named after its alias), or else the auxiliary aggregation of
+      * [[transformBucketScriptOperands]], named after the key itself.
       *
-      * Expressed as *the value side*, deliberately: that is the same operand the consumer omits, so
-      * the rule and the defect cannot drift apart. Where publishing the aggregate does not help,
-      * this must be decided before the "not published by the SELECT list" rule -- and where it DOES
-      * help, [[havingLeftHandNames]] hands the statement to that rule instead (see below).
+      * Served only when every operand is an aggregate a transform computes
+      * (`toTransformAggregation`, asked itself) and the item carries a SELECT alias to be named
+      * after. An item it does not serve is never computed by a view; rule 4 refuses a HAVING over
+      * one.
       *
-      * 🔴 NARROWED after the coverage gate: PRESENCE of an aggregate on the value side is NOT the
-      * defect -- being UNDECLARED is. `extractAggregatePaths` declares a parameter for the left
-      * identifier of EVERY leaf in the whole clause, so a sibling conjunct naming the same
-      * aggregate declares it and the transform deploys and runs correctly. MEASURED on the control:
-      * `HAVING SUM(amount) > MAX(amount) AND MAX(amount) > 1` has UNDECLARED = none, and the same
-      * aggregate on both sides (`MAX(x) > MAX(x)`) declares itself. Firing on presence over-refused
-      * 74 cells that are CORRECT on main -- a regression, and its remedy ("compare with a
-      * constant") would have changed the meaning of a working query.
-      *
-      * 🔴 NARROWED a second time, by the same argument one step further out: the set of declaring
-      * names is [[havingLeftHandNames]], NOT the parameters the pivot declares TODAY. The question
-      * this rule must answer is the COUNTERFACTUAL -- would publishing the right-hand aggregate
-      * make the selector declare it? MEASURED: `HAVING MIN(amount) > 1 AND MAX(amount) >
-      * MIN(amount)` is ACCEPTED once `MIN(amount) AS mn` joins the SELECT list, so rule 6 owns it
-      * and its remedy ends the journey; `HAVING MAX(amount) > MIN(amount)`, where no leaf names
-      * `MIN(amount)` on the left, is refused again after publishing it, so this rule owns that one.
-      * Asking the today-question instead sent the first family here, whose remedy ("compare with a
-      * constant") would have changed the MEANING of a query a one-line SELECT alias fixes. Pinned
-      * by the W cells, remedy applied literally in W5 / W8.
-      *
-      * ⚠️ The `isAggregation` guard is a SECOND LINE OF DEFENCE and is unreachable from SQL, which
-      * is stated because it was MEASURED rather than assumed: a value side that is NOT an aggregate
-      * is already refused by the shared rules inside `dql.validate()`, before this runs
-      * -- a plain column (`HAVING COUNT(*) > amount`) and a grouping key (`… > city`) by
-      * `Having.unrepresentable` ("its rendering can evaluate to NULL"), and `HAVING city = status`
-      * by the key-predicate rule. A SELECT alias of an aggregate is SUBSTITUTED by
-      * `Having.resolveAggregateAliases` before it gets here, so it passes the guard as the
-      * aggregate it is. The guard therefore keeps the derivation's NAME true for a `SingleSearch`
-      * assembled in code -- the same role `MetricSelectorScript.metricSelector`'s throw plays --
-      * and its mutation is GREEN for that reason, not for want of a test.
+      * 🔴 PUBLIC for `softclient4es-extensions`, whose pivot emits each entry under its key, beside
+      * the aggregations of [[transformBucketScriptOperands]], and binds each of its `params`.
       */
-    /** The aggregation NAMES a materialized view's pivot actually creates.
+    lazy val transformBucketScripts: ListMap[String, BucketScriptTransformAggregation] =
+      ListMap(select.fields.flatMap { f =>
+        f.fieldAlias.map(_.alias) match {
+          case Some(alias)
+              if f.isBucketScript && bucketScriptOperandNoTransformComputes(f).isEmpty =>
+            // the rendering a search's `bucket_script` runs; one that cannot be rendered is not
+            // served, never an internal error
+            Try(f.identifier.painless(None)).toOption.map { script =>
+              val bucketsPath = ListMap(f.identifier.referencedAggregates.map { op =>
+                op.metricPathKey -> publisherOf(op).map(_.outputName).getOrElse(op.metricPathKey)
+              }: _*)
+              alias -> BucketScriptTransformAggregation(
+                expression = f.identifier.sql,
+                bucketsPath = bucketsPath,
+                script = script,
+                // what the script reads beyond its bucket paths (`__now__`), for the pivot to bind
+                params = MetricSelectorScript.paramsRead(script).filterNot(bucketsPath.contains)
+              )
+            }
+          case _ => None
+        }
+      }: _*)
+
+    /** The operand aggregates of [[transformBucketScripts]] the SELECT list does not publish, each
+      * aliased by the key its script reads it under -- the auxiliary aggregations a view's pivot
+      * must create for them, as a search creates them for its own `bucket_script`.
+      *
+      * 🔴 PUBLIC for `softclient4es-extensions`: the pivot computes each as it computes a SELECT
+      * aggregate, under its alias.
+      */
+    lazy val transformBucketScriptOperands: Seq[Field] =
+      select.fields
+        .filter(f => f.fieldAlias.exists(a => transformBucketScripts.contains(a.alias)))
+        .flatMap(_.identifier.referencedAggregates)
+        .filter(op => publisherOf(op).isEmpty)
+        .foldLeft(Seq.empty[Field]) { (acc, op) =>
+          if (acc.exists(_.identifier.metricPathKey == op.metricPathKey)) acc
+          else acc :+ Field(op, Some(Alias(op.metricPathKey)))
+        }
+
+    /** The SELECT aggregate that publishes `operand`, matched by expression like
+      * [[notPublishedBySelect]].
+      */
+    private def publisherOf(operand: Identifier): Option[Field] =
+      select.fields.find(f =>
+        f.isAggregation && f.identifier.identifierName == operand.identifierName
+      )
+
+    /** Does the view's per-group calculation channel serve this `HAVING` leaf's reference to a
+      * SELECT `bucket_script` item? The item is created ([[transformBucketScripts]]), and the
+      * leaf's filter reads it as the metric its alias names -- nothing but the metrics the leaf
+      * declares, so `Having.metricNames` covers every parameter the view's filter reads.
+      *
+      * 🔴 Asked of the RENDERING, because the reference alone cannot answer it: a null test over
+      * the alias (`ISNULL(d)`) references the item itself, yet renders over its OPERANDS
+      * (`params.max_a - params.min_b == null`) behind a guard on `params.d`, so its filter would
+      * read parameters the view never declares. `d > 1` reads `params.d` alone and is served.
+      */
+    private[query] def bucketScriptServed(leaf: Criteria, ref: Identifier): Boolean =
+      transformBucketScripts.contains(ref.metricPathKey) &&
+      Try(MetricSelectorScript.nullAwareSelectorScript(leaf)).toOption.exists(
+        _.forall(script =>
+          MetricSelectorScript
+            .metricsRead(script)
+            .subsetOf(leaf.bucketMetrics.map(_.metricPathKey).toSet)
+        )
+      )
+
+    /** The first operand of a SELECT `bucket_script` item no transform computes, if any. */
+    private[query] def bucketScriptOperandNoTransformComputes(item: Field): Option[Identifier] =
+      item.identifier.referencedAggregates.find(
+        _.aggregateFunction.flatMap(_.toTransformAggregation).isEmpty
+      )
+
+    /** The aggregation NAMES a materialized view's pivot actually creates for its SELECT list.
       *
       * `Stage.buildAggregations()` keeps a SELECT aggregate only when
       * `AggregateConversion.toTransformAggregation` answers `Some`, and `RequiredField.apply` names
       * it `field.fieldAlias.map(_.alias).getOrElse(field.sourceField)` -- which is
       * [[Field.outputName]] character for character, so core's own derivation is used rather than a
-      * copy of the consumer's formula (verified: writing either spells the same set).
+      * copy of the consumer's formula (verified: writing either spells the same set). A SELECT item
+      * that is arithmetic over aggregates is created under its alias by [[transformBucketScripts]].
       *
       * 🔴 What matters is the INPUT, not the formula: `select.fields`, RAW. The generated alias
       * `select.fieldsWithComputedAliases` mints for an unaliased item never reaches the consumer,
@@ -1070,82 +1140,51 @@ package object query {
       *
       * ⚠️ The `toTransformAggregation` filter is unreachable from SQL, because rule 3 refuses an
       * un-computable aggregate in a HAVING before the backstop runs; it is kept so the set is
-      * honestly "what the pivot creates" for a `SingleSearch` assembled in code. Its mutation is
-      * GREEN for that reason (see `havingValueSideAggs` for the same situation).
+      * honestly "what the pivot creates" for a `SingleSearch` assembled in code.
       */
-    /** The name `Stage.extractAggregatePaths` computes for an identifier -- ONE derivation, read by
-      * [[havingLeafAggNames]] (the declaring side) and by [[havingValueSideAggs]] (the value side),
-      * so the two sides of a comparison cannot be named by two different rules.
-      */
-    private[query] def transformFieldName(id: Identifier): String =
-      id.fieldAlias match {
-        case Some(alias)              => alias
-        case None if id.name.nonEmpty => id.name
-        case _                        => AliasUtils.normalize(id.identifierName)
-      }
-
     private[query] lazy val transformAggregationNames: Set[String] =
       select.fields.flatMap { f =>
         f.aggregateFunction.flatMap(_.toTransformAggregation).map(_ => f.outputName)
-      }.toSet
+      }.toSet ++ transformBucketScripts.keySet
 
-    /** The name each `HAVING` leaf would be looked up under, paired with the leaf itself.
-      *
-      * 🔴 This walks the WHOLE criteria tree, `ElasticRelation` INCLUDED -- unlike
-      * [[havingLeaves]], which deliberately excludes relation predicates. That difference is the
-      * whole point of the backstop: `Stage.extractAggregatePaths` falls to its `case _ => acc` for
-      * a relation, so a relation conjunct beside a metric one is invisible to every rule built on
-      * `havingLeaves` and the selector is emitted reading the metric alone -- a PARTIAL filter
-      * answering 200 with the wrong groups.
-      *
-      * The name is computed exactly as `extractAggregatePaths` computes it, so the two cannot
-      * disagree about which leaf resolves to which aggregation.
+    /** The first metric this statement's `HAVING` reads that the view's pivot does not create, or
+      * `None` -- rule 7, THE BACKSTOP: every name of `Having.metricNames` must be one of
+      * [[transformAggregationNames]], because those names are the `buckets_path` the view's filter
+      * declares. ONE derivation (`Criteria.bucketMetrics`) for the names the filter reads, the
+      * names it declares and this check (#292), so a metric on the value side of a comparison or
+      * inside a function argument is checked like the left-hand one.
       */
-    private[query] lazy val havingLeafAggNames: Seq[(Criteria, String)] = {
-      def walk(c: Criteria): Seq[(Criteria, String)] = c match {
-        case p: Predicate              => walk(p.leftCriteria) ++ walk(p.rightCriteria)
-        case relation: ElasticRelation => walk(relation.criteria)
-        case e: Expression             => Seq(c -> transformFieldName(e.identifier))
-        case _                         => Nil
+    private[query] lazy val havingMetricNotCreated: Option[Identifier] =
+      having
+        .flatMap(_.criteria)
+        .toSeq
+        .flatMap(_.bucketMetrics)
+        .find(m => !transformAggregationNames.contains(m.metricPathKey))
+
+    /** The first relation predicate (`NESTED` / `CHILD` / `PARENT`) of this statement's `HAVING`
+      * that carries a condition reading no metric -- a document-level condition (`CHILD(c.x = 1)`).
+      *
+      * A view's filter is a `bucket_selector` over the pivot's own aggregations: such a condition
+      * has no form there, and a selector built beside it reads the metric conjunct alone -- a
+      * PARTIAL filter answering 200 with the wrong groups.
+      *
+      * ⚠️ A relation whose every condition reads a metric is not one: `update` wraps a condition on
+      * an UNNEST aggregate in `ElasticNested` itself, and that condition reads its metric like any
+      * other, so rule 7 checks its name -- the verdict it always had.
+      */
+    private[query] lazy val havingRelation: Option[ElasticRelation] = {
+      def readsNoMetric(c: Criteria): Boolean = c match {
+        case p: Predicate => readsNoMetric(p.leftCriteria) || readsNoMetric(p.rightCriteria)
+        case relation: ElasticRelation => readsNoMetric(relation.criteria)
+        case other                     => other.bucketMetrics.isEmpty
       }
-      having.flatMap(_.criteria).toSeq.flatMap(walk)
+      def find(c: Criteria): Option[ElasticRelation] = c match {
+        case p: Predicate => find(p.leftCriteria).orElse(find(p.rightCriteria))
+        case relation: ElasticRelation if readsNoMetric(relation.criteria) => Some(relation)
+        case _                                                             => None
+      }
+      having.flatMap(_.criteria).flatMap(find)
     }
-
-    /** Every name some `HAVING` leaf carries on its LEFT -- the names the selector's `buckets_path`
-      * declares, or WOULD declare once the SELECT list publishes them.
-      *
-      * 🔴 `Stage.extractAggregatePaths` declares a parameter for the LEFT identifier of EVERY leaf
-      * in the WHOLE clause, keeping the ones the pivot creates. So a name is declared as soon as
-      * ANY leaf's identifier side carries it -- a sibling conjunct counts -- AND the SELECT list
-      * publishes it.
-      *
-      * 🔴 Deliberately NOT intersected with [[transformAggregationNames]], because rule 5 asks a
-      * COUNTERFACTUAL, not what the pivot declares today: would publishing this aggregate make the
-      * selector declare it? MEASURED both ways -- `HAVING MIN(amount) > 1 AND MAX(amount) >
-      * MIN(amount)` becomes ACCEPTED once `MIN(amount) AS mn` joins the SELECT list, so rule 6's
-      * remedy ends the journey and rule 6 must speak; `HAVING MAX(amount) > MIN(amount)`, where no
-      * leaf names `MIN(amount)` on the left, is still refused after publishing it, so rule 5 must
-      * speak for that one instead of steering the user into a second refusal. Intersecting here
-      * routes the first family to rule 5, whose remedy ("compare with a constant") changes the
-      * MEANING of a query a one-line SELECT alias would have fixed.
-      */
-    private[query] lazy val havingLeftHandNames: Set[String] =
-      havingLeafAggNames.map(_._2).toSet
-
-    /** The first `HAVING` leaf whose name matches no aggregation the pivot creates, or `None`.
-      *
-      * The UNIFIED backstop (see `materializedViewHavingRefusal`): it subsumes several of the
-      * specific rules, which are deliberately kept IN FRONT of it for their remedies.
-      */
-    private[query] lazy val havingLeafWithNoMatchingAgg: Option[(Criteria, String)] =
-      havingLeafAggNames.find { case (_, name) => !transformAggregationNames.contains(name) }
-
-    private[query] lazy val havingValueSideAggs: Seq[Identifier] =
-      havingLeaves.flatMap(_.maybeValue).collect {
-        case id: Identifier
-            if id.isAggregation && !havingLeftHandNames.contains(transformFieldName(id)) =>
-          id
-      }
 
     // Aggregations referenced only in HAVING, WHERE, or ORDER BY clauses (not in SELECT)
     private lazy val auxiliaryAggs: Seq[Field] = {
@@ -1840,11 +1879,16 @@ package object query {
         }
         _ <- {
           // The residual of the rule above, and the reason it needs the STATEMENT rather than the
-          // clause: `HAVING NULLIF(c, 0) > 1` names a SELECT aggregate by its ALIAS from inside a
-          // function ARGUMENT. `Having.resolveAggregateAliases` substitutes an OPERAND only, so `c`
-          // stays a bare column, the predicate references no aggregate at all, and the rule above
-          // cannot see it -- it renders `arg0 == 0 ? null : arg0 > 1`, reading a context parameter
-          // no bucket pipeline binds. MEASURED: dropped silently on `main`.
+          // clause: a function of a SELECT aggregate's ALIAS where `Having.resolveAggregateAliases`
+          // leaves the alias in place -- a relation predicate or a MATCH, which it does not touch
+          // (`HAVING NESTED(ABS(c) > 1)`), and a SELECT `bucket_script` alias among the arguments
+          // of a COALESCE / GREATEST / LEAST (`COALESCE(d, 0)`) or under a conversion (`CAST(d AS
+          // DOUBLE)`), which no group filter answers right (see there). There `c` stays a bare
+          // column, the predicate references
+          // no aggregate at all, and the rule above cannot see it -- it renders a context parameter
+          // no bucket pipeline binds (MEASURED before #389: dropped silently). Everywhere else the
+          // substitution reaches every depth (`NULLIF(c, 0)` IS `NULLIF(COUNT(*), 0)`), so no
+          // alias is left for this rule to find.
           //
           // ⚠️ The alias set is read from `Having.aggregateAliases`, the SAME map the substitution
           // uses, so the two cannot disagree about which bare names are aggregate references. A
@@ -2258,6 +2302,26 @@ package object query {
           } else {
             Right(())
           }
+        }
+        _ <- {
+          // A DATEDIFF-family call over a WINDOW function with no GROUP BY
+          // (`SELECT g, DATEDIFF(MAX(d) OVER (PARTITION BY g), '2024-01-01') AS x FROM t`): the
+          // window's values come from an aggregation of their own, merged into the rows, while the
+          // call over them is a per-group calculation with no group to run in. MEASURED on ES
+          // 8.18.3: every such statement failed in Elasticsearch ("bucket_script aggregation [x]
+          // must be declared inside of another aggregation"). Refused by name, as a window function
+          // under ISNULL is (the function-chain rule). With a GROUP BY it is computed per group,
+          // unchanged.
+          if (groupBy.isDefined) Right(())
+          else
+            dateDiffOverWindow match {
+              case Some((call, window)) =>
+                Left(
+                  "DATEDIFF, DATE_DIFF and TIMESTAMPDIFF over a window function are not supported " +
+                  s"yet (${window.sql} in ${call.sql}); select the window function on its own"
+                )
+              case None => Right(())
+            }
         }
       } yield ()
     }

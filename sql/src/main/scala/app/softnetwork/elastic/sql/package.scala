@@ -1618,10 +1618,10 @@ package object sql {
     }
 
     /** The aggregations a bucket pipeline reading THIS identifier addresses, in order -- the ONE
-      * derivation behind [[allMetricsPath]] (what `buckets_path` publishes), behind
-      * `Criteria.extractAggregationFields` (which aggregations are created) and behind the
-      * `bucket_selector` null guard. Three answers to one question would be three answers that
-      * drift (`project_self_join_alias_resolution`).
+      * derivation behind `Criteria.bucketMetrics` (what `buckets_path` publishes and a view's pivot
+      * must create), behind `Criteria.extractAggregationFields` (which aggregations are created)
+      * and behind the `bucket_selector` null guard. Three answers to one question would be three
+      * answers that drift (`project_self_join_alias_resolution`).
       *
       * Three arms, and the third is issue #389's:
       *   1. the identifier IS an aggregate -- one metric, itself; 2. it is the alias of a SELECT
@@ -1633,9 +1633,6 @@ package object sql {
     lazy val bucketMetrics: Seq[Identifier] =
       if (metricName.isDefined || (hasAggregation && fieldAlias.isDefined)) Seq(this)
       else referencedAggregates
-
-    lazy val allMetricsPath: Map[String, String] =
-      bucketMetrics.map(id => id.metricPathKey -> id.metricPathKey).toMap
 
     override def sql: String = {
       var parts: Seq[String] = name.split("\\.").toSeq
@@ -1731,7 +1728,7 @@ package object sql {
 
     /** The `buckets_path` key this identifier is addressed by: its derived [[metricName]] when it
       * is an aggregate, else the alias a SELECT `bucket_script` item published it under. ONE
-      * derivation, read by [[metricParam]] and by [[allMetricsPath]].
+      * derivation, read by [[metricParam]] and by `Criteria.bucketMetrics`.
       */
     lazy val metricPathKey: String = metricName.getOrElse(aliasOrName)
 
@@ -2242,6 +2239,20 @@ package object sql {
     override def reportedLeafType: SQLType = col.map(_.dataType).getOrElse(super.reportedLeafType)
 
     def update(request: SingleSearch): Identifier =
+      query.Having.aliasedAggregate(this) match {
+        // A SELECT alias named in a HAVING, at any depth (`query.Having.resolveAggregateAliases`):
+        // the aliased SELECT item, under whatever this name applied to it (`CAST(c AS DOUBLE)` is
+        // the cast of the aggregate `c` stands for, exactly the tree its bare spelling parses to).
+        case Some(item) =>
+          val target = item.update(request)
+          if (functions.isEmpty) target
+          else target.withFunctions(updateFunctions(request) ++ target.functions)
+        // An aggregate's operand is a document column, never a SELECT alias.
+        case None if isAggregation => query.Having.outsideAliasScope(resolved(request))
+        case None                  => resolved(request)
+      }
+
+    private def resolved(request: SingleSearch): Identifier =
       resolve(request) match {
         case resolved: GenericIdentifier => resolved.withNestedElementOf(request)
         case other                       => other

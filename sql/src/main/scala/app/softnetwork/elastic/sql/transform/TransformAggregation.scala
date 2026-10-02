@@ -21,6 +21,8 @@ import app.softnetwork.elastic.sql.schema.{mapper, sqlConfig}
 import app.softnetwork.elastic.sql.{DdlToken, Identifier}
 import com.fasterxml.jackson.databind.JsonNode
 
+import scala.collection.immutable.ListMap
+
 sealed trait TransformAggregation extends DdlToken {
   def name: String
 
@@ -64,6 +66,51 @@ case class CardinalityTransformAggregation(field: String) extends TransformAggre
   override def name: String = "cardinality"
 
   override def sql: String = s"COUNT(DISTINCT $field)"
+}
+
+/** The per-group calculation of a SELECT item that is arithmetic over aggregates (`MAX(a) - MIN(b)
+  * AS d`), as a `bucket_script` in a materialized view's pivot -- the same calculation a search
+  * runs for it (`SingleSearch.transformBucketScripts`).
+  *
+  * It reads its operands from sibling aggregations of the pivot BY NAME: `bucketsPath` maps each
+  * parameter the script reads (`params.<key>`) to the name of the pivot aggregation that computes
+  * it. The aggregation itself is named after the SELECT alias, so a view's HAVING over `d` reads it
+  * like any other metric.
+  *
+  * @param expression
+  *   the SQL expression it computes, for display
+  * @param params
+  *   the script parameters the script reads that are NOT bucket paths, in the order it first reads
+  *   them -- `__now__`, the request clock `CURRENT_DATE` / `NOW()` render against. The pivot must
+  *   bind each one ([[node]] carries none): every other parameter the script reads is a key of
+  *   `bucketsPath`.
+  */
+case class BucketScriptTransformAggregation(
+  expression: String,
+  bucketsPath: ListMap[String, String],
+  script: String,
+  params: Seq[String]
+) extends TransformAggregation {
+  override def name: String = "bucket_script"
+
+  /** The pivot aggregations it reads. */
+  override def field: String = bucketsPath.values.mkString(", ")
+
+  override def sql: String = expression
+
+  override def node: JsonNode = {
+    val node = mapper.createObjectNode()
+    val bucketScriptNode = mapper.createObjectNode()
+    val bucketsPathNode = mapper.createObjectNode()
+    bucketsPath.foreach { case (param, aggregation) =>
+      bucketsPathNode.put(param, aggregation)
+      ()
+    }
+    bucketScriptNode.set("buckets_path", bucketsPathNode)
+    bucketScriptNode.put("script", script)
+    node.set(name, bucketScriptNode)
+    node
+  }
 }
 
 case class TopHitsTransformAggregation(

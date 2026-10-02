@@ -140,15 +140,16 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
   // compile in the bucket-pipeline script context -- see the disqualifier tests below.
   // -------------------------------------------------------------------------------------------
 
-  "a null-PROPAGATING function of an aggregate" should "render guarded, exactly as a bare aggregate does" in {
-    // SQL says `GREATEST(NULL, 0) > 1` is UNKNOWN, so the group is excluded -- which is the `false`
-    // this guard supplies. Without it `Math.max(null, 0)` fails the whole search.
+  "a NULL-skipping function of an aggregate" should "skip a NULL argument, never guard on it" in {
+    // `GREATEST` / `LEAST` skip a NULL argument -- the docs, and WHERE: `GREATEST(NULL, 0)` is 0,
+    // never UNKNOWN. With a literal argument the value is never NULL, so nothing is guarded; and
+    // the skip is what keeps `Math.max(null, 0)` from failing the whole search.
     script(group + "GREATEST(COUNT(*), 0) > 1") shouldBe
-    "(params.c == null ? false : (Math.max(params.c, 0) > 1))"
+    "(params.c == null ? 0 : Math.max(params.c, 0)) > 1"
     script(group + "LEAST(COUNT(*), 99) > 1") shouldBe
-    "(params.c == null ? false : (Math.min(params.c, 99) > 1))"
+    "(params.c == null ? 99 : Math.min(params.c, 99)) > 1"
     script(group + "1 < GREATEST(COUNT(*), 0)") shouldBe
-    "(params.c == null ? false : (1 < Math.max(params.c, 0)))"
+    "1 < (params.c == null ? 0 : Math.max(params.c, 0))"
   }
 
   "a null-ABSORBING function of an aggregate" should "render UNguarded" in {
@@ -159,14 +160,16 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
 
   "BETWEEN and IN over a function of an aggregate" should "render as one guarded boolean" in {
     script(group + "GREATEST(COUNT(*), 0) BETWEEN 1 AND 5") shouldBe
-    "(params.c == null ? false : ((Math.max(params.c, 0) >= 1 && Math.max(params.c, 0) <= 5)))"
+    "((params.c == null ? 0 : Math.max(params.c, 0)) >= 1 && " +
+    "(params.c == null ? 0 : Math.max(params.c, 0)) <= 5)"
     script(group + "GREATEST(COUNT(*), 0) IN (1, 2)") shouldBe
-    "(params.c == null ? false : ((Math.max(params.c, 0) == 1 || Math.max(params.c, 0) == 2)))"
+    "((params.c == null ? 0 : Math.max(params.c, 0)) == 1 || " +
+    "(params.c == null ? 0 : Math.max(params.c, 0)) == 2)"
   }
 
   "NOT over a function of an aggregate" should "push the negation into the comparison" in {
     script(group + "NOT GREATEST(COUNT(*), 0) > 1") shouldBe
-    "(params.c == null ? false : (Math.max(params.c, 0) <= 1))"
+    "(params.c == null ? 0 : Math.max(params.c, 0)) <= 1"
   }
 
   "a conjunction of two expressible predicates" should "emit BOTH" in {
@@ -174,14 +177,14 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     // wrong -- a partial filter is a wrong answer, not a lesser fix.
     script(group + "COUNT(*) > 1 AND GREATEST(COUNT(*), 0) > 2") shouldBe
     "(params.c == null ? false : (params.c > 1)) && " +
-    "(params.c == null ? false : (Math.max(params.c, 0) > 2))"
+    "(params.c == null ? 0 : Math.max(params.c, 0)) > 2"
   }
 
   "a disjunction of two expressible predicates" should "emit BOTH" in {
     // The OR form is WORSE than the AND form when a branch is dropped: the surviving filter is
     // STRICTER than what was written, so rows silently disappear.
     script(group + "GREATEST(COUNT(*), 0) > 1 OR COUNT(*) > 5") shouldBe
-    "(params.c == null ? false : (Math.max(params.c, 0) > 1)) || " +
+    "(params.c == null ? 0 : Math.max(params.c, 0)) > 1 || " +
     "(params.c == null ? false : (params.c > 5))"
   }
 
@@ -200,8 +203,7 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     parsed(sql).sqlAggregations.keys.toList shouldBe List("c", "max_x")
     having(sql).extractAllMetricsPath shouldBe Map("c" -> "c", "max_x" -> "max_x")
     script(sql) shouldBe
-    "(params.c == null || params.max_x == null ? false : " +
-    "(params.c > Math.max(params.max_x, 0)))"
+    "(params.c == null ? false : (params.c > (params.max_x == null ? 0 : Math.max(params.max_x, 0))))"
   }
 
   // -------------------------------------------------------------------------------------------
@@ -256,12 +258,14 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
     )
   }
 
-  "an aggregate ALIAS used inside a function argument" should "be refused by name" in {
-    // `Having.resolveAggregateAliases` substitutes an OPERAND only, so `c` inside `NULLIF(c, 0)`
-    // stays a bare column and renders `arg0`, a context parameter nothing binds.
-    val msg = rejection(group + "NULLIF(c, 0) > 1")
-    msg should include("aggregate alias 'c'")
-    msg should include("NULLIF(c, 0)")
+  "an aggregate ALIAS used inside a function argument" should "be read as the aggregate it names" in {
+    // `Having.resolveAggregateAliases` substitutes an alias at EVERY depth, so `c` inside
+    // `NULLIF(c, 0)` is `COUNT(*)`: the alias spelling gets the bare spelling's verdict and message
+    // -- here the honest refusal of a rendering that can evaluate to NULL. It used to stay a bare
+    // column rendering `arg0`, a context parameter nothing binds, refused by name.
+    rejection(group + "NULLIF(c, 0) > 1") shouldBe rejection(group + "NULLIF(COUNT(*), 0) > 1")
+    rejection(group + "NULLIF(c, 0) > 1") should include("can evaluate to NULL")
+    script(group + "COALESCE(c, 0) > 1") shouldBe script(group + "COALESCE(COUNT(*), 0) > 1")
   }
 
   "a conjunction mixing an expressible and an un-expressible predicate" should "refuse the whole statement" in {
@@ -279,7 +283,7 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
 
   "the whole-table HAVING" should "follow the same rule" in {
     script("SELECT COUNT(*) AS c FROM t HAVING GREATEST(COUNT(*), 0) > 1") shouldBe
-    "(params.c == null ? false : (Math.max(params.c, 0) > 1))"
+    "(params.c == null ? 0 : Math.max(params.c, 0)) > 1"
     rejection("SELECT COUNT(*) AS c FROM t HAVING NULLIF(COUNT(*), 0) > 1") should include(
       "can evaluate to NULL"
     )
@@ -290,7 +294,7 @@ class HavingOverAggregateFunctionSpec extends AnyFlatSpec with Matchers with Opt
       "HAVING GREATEST(COUNT(e.address), 0) > 1"
     parsed(sql).sqlAggregations.keys.toList shouldBe List("e.filtered_agg.count_e_address")
     script(sql) shouldBe
-    "(params.count_e_address == null ? false : (Math.max(params.count_e_address, 0) > 1))"
+    "(params.count_e_address == null ? 0 : Math.max(params.count_e_address, 0)) > 1"
   }
 
   it should "be REFUSED inside the relation too, not only at the flat level" in {

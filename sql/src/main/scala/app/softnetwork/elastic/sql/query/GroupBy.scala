@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.query
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.operator._
-import scala.util.Try
+import scala.util.{DynamicVariable, Try}
 import scala.util.matching.Regex
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
@@ -420,15 +420,15 @@ object MetricSelectorScript {
     *
     * Everything else is the existing rendering: a comparison's guard collapses the UNKNOWN to
     * `false` OUTSIDE its `NOT` (`<operands non-null> && [!](<comparison>)`), `ISNULL` / `ISNOTNULL`
-    * test the value, and a `COALESCE` is guarded on its result, never on its arguments
-    * (`Expression.bucketPipelineGuard`). The read is substituted on the RENDERING, after every rule
-    * has been decided on the unchanged one: the representability gate, the guards and their
-    * placement are exactly those of [[selectorScript]], and a criterion with no such aggregate is
-    * returned byte for byte.
+    * test the value, and a `COALESCE`, a `GREATEST` or a `LEAST` is guarded on its result, never on
+    * its arguments (`Expression.bucketPipelineGuard`). The read is substituted on the RENDERING,
+    * after every rule has been decided on the unchanged one: the representability gate, the guards
+    * and their placement are exactly those of [[selectorScript]], and a criterion with no such
+    * aggregate is returned byte for byte.
     */
   def nullAwareSelectorScript(expr: Criteria): Option[String] =
     selectorScript(expr).map { script =>
-      val nullable = bucketMetricsOf(expr).filter(nullOverEmptyInput).map(_.metricPathKey).toSet
+      val nullable = expr.bucketMetrics.filter(nullOverEmptyInput).map(_.metricPathKey).toSet
       if (nullable.isEmpty) script else readAsSelectReturns(script, nullable)
     }
 
@@ -443,22 +443,6 @@ object MetricSelectorScript {
   private def nullAwareRead(name: String): String = {
     val param = s"params.$name"
     s"((def) ($param == null || Double.isNaN($param) || Double.isInfinite($param) ? null : $param))"
-  }
-
-  /** Every metric the selector reads, in statement order, deduplicated by `metricPathKey` -- the
-    * leaves [[selector]] renders as a filter, through the same `Expression.bucketMetrics` their
-    * renderings guard.
-    */
-  private def bucketMetricsOf(expr: Criteria): Seq[Identifier] = {
-    def walk(c: Criteria): Seq[Identifier] = c match {
-      case Predicate(left, _, right, _, _) => walk(left) ++ walk(right)
-      case relation: ElasticRelation       => walk(relation.criteria)
-      case e: Expression                   => e.bucketMetrics
-      case _                               => Nil
-    }
-    walk(expr).foldLeft(Seq.empty[Identifier]) { (acc, id) =>
-      if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
-    }
   }
 
   /** Does SELECT answer NULL for this metric over a group with none of its values? F1's list: the
@@ -505,6 +489,20 @@ object MetricSelectorScript {
 
   /** One `params.<name>` read, the name taken whole. */
   private val MetricRead: Regex = """(?<![\w.$])params\.([A-Za-z_][A-Za-z0-9_]*)(?![\w$])""".r
+
+  /** The metric names a bucket-pipeline `script` reads, string literals skipped -- every
+    * `params.<name>` but `__now__`, the opaque script parameter a temporal literal is rendered
+    * against (see the bridge's `metricSelectorForBucket`).
+    */
+  private[query] def metricsRead(script: String): Set[String] =
+    paramsRead(script).toSet - "__now__"
+
+  /** EVERY parameter a bucket-pipeline `script` reads (`params.<name>`, string literals skipped),
+    * in the order it first reads them: the metrics its `buckets_path` binds AND the script
+    * parameters its caller binds, such as `__now__` (`CURRENT_DATE`, `NOW()`, ...).
+    */
+  private[query] def paramsRead(script: String): Seq[String] =
+    MetricRead.findAllMatchIn(blankStringLiterals(script)).map(_.group(1)).toList.distinct
 
   /** The bucket-pipeline script of a `HAVING` criterion, or `"1 == 1"` when there is nothing to
     * filter at this level: [[nullAwareSelectorScript]] with its placeholder, so it reads every
@@ -678,11 +676,30 @@ object MetricSelectorScript {
     * never read as code.
     */
   private[query] def representable(e: Expression): Either[String, String] =
-    Try(e.functionBucketPipelinePainless).toOption match {
+    Try(groupFilter.withValue(true)(e.functionBucketPipelinePainless)).toOption match {
       case None =>
         Left("it cannot be rendered without a document, and a bucket pipeline has none")
       case Some(rendering) => disqualifyRendering(rendering).toLeft(rendering)
     }
+
+  /** `true` while [[representable]] renders a `HAVING` leaf -- the ONE rendering every group filter
+    * is built from (both bridges' `bucket_selector`, `Having.script`, the view rules) and the
+    * verdict is taken on -- and nothing else.
+    *
+    * Read by `GREATEST` / `LEAST` ([[rendersGroupFilter]]), which skip a NULL argument and must
+    * know that a metric argument can be one HERE: a group filter reads every aggregate as SELECT
+    * returns it, NULL over a group with none of its values ([[nullAwareRead]]). The SELECT list's
+    * `bucket_script` renders the same function context-free, and there the gap policy skips such a
+    * group before the script runs, so its script does not move.
+    *
+    * A thread-scoped carrier, as `Having.aliasScope`, for the same reason: the function sits at any
+    * depth of an operand and is reached only through the rendering of every function of the
+    * dialect, which takes nothing but its context. Rendering is synchronous.
+    */
+  private[this] val groupFilter: DynamicVariable[Boolean] = new DynamicVariable[Boolean](false)
+
+  /** Is a group filter being rendered ([[groupFilter]])? */
+  private[sql] def rendersGroupFilter: Boolean = groupFilter.value
 
   /** Rules 2-6 of [[representable]], asked of a RENDERING rather than of an expression.
     *

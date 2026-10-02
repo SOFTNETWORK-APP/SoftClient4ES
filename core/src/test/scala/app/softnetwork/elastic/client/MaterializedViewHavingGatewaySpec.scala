@@ -75,10 +75,10 @@ class MaterializedViewHavingGatewaySpec
     "CREATE MATERIALIZED VIEW mv AS SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING MAX(amount) > 1",
     "an aggregate no transform can compute" ->
     "CREATE MATERIALIZED VIEW mv AS SELECT city, STDDEV(amount) AS sd FROM customers GROUP BY city HAVING STDDEV(amount) > 1",
-    "an expression over aggregates" ->
-    "CREATE MATERIALIZED VIEW mv AS SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3",
-    "two aggregates compared" ->
-    "CREATE MATERIALIZED VIEW mv AS SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)"
+    "an expression over an aggregate no transform can compute" ->
+    "CREATE MATERIALIZED VIEW mv AS SELECT city, STDDEV(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3",
+    "a child predicate beside a metric" ->
+    "CREATE MATERIALIZED VIEW mv AS SELECT city, SUM(amount) AS s FROM customers GROUP BY city HAVING s > 5 AND child(c.x = 1)"
   )
 
   "an unmaterializable HAVING" should "answer 400, naming the clause" in {
@@ -129,6 +129,8 @@ class MaterializedViewHavingGatewaySpec
     Seq(
       "CREATE MATERIALIZED VIEW mv AS SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING COUNT(*) > 1",
       "CREATE MATERIALIZED VIEW mv AS SELECT city, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > 1",
+      "CREATE MATERIALIZED VIEW mv AS SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3",
+      "CREATE MATERIALIZED VIEW mv AS SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)",
       "CREATE OR REPLACE MATERIALIZED VIEW mv AS SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING COUNT(*) > 1",
       "CREATE MATERIALIZED VIEW mv AS SELECT city, COUNT(*) AS c FROM customers GROUP BY city"
     ).foreach { sql =>

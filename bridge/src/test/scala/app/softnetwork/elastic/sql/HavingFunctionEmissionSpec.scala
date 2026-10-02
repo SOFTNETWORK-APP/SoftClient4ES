@@ -183,14 +183,14 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     ).mkString
   }
 
-  "GREATEST over an aggregate" should "emit a bucket_selector, null-guarded" in {
+  "GREATEST over an aggregate" should "emit a bucket_selector skipping a NULL argument" in {
+    // `GREATEST(NULL, 0)` is 0 -- the docs, and WHERE: with a literal argument it is never NULL.
     queryOf(group + "GREATEST(COUNT(*), 0) > 1") shouldBe Seq(
       """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"status":{""",
       terms,
       ""","aggs":{"c":{"value_count":{"field":"_index"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"c":"c"},""",
-      """"script":{"source":"(params.c == null ? false : """,
-      """(Math.max(params.c, 0) > 1))"}}}}}}}"""
+      """"script":{"source":"(params.c == null ? 0 : Math.max(params.c, 0)) > 1"}}}}}}}"""
     ).mkString
   }
 
@@ -339,14 +339,14 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   "a conjunction of a bare and a wrapped aggregate" should "emit both conditions" in {
     queryOf(group + "COUNT(*) > 1 AND GREATEST(COUNT(*), 0) > 2") should include(
       """"script":{"source":"(params.c == null ? false : (params.c > 1)) && """ +
-      """(params.c == null ? false : (Math.max(params.c, 0) > 2))"}"""
+      """(params.c == null ? 0 : Math.max(params.c, 0)) > 2"}"""
     )
   }
 
   "a disjunction" should "emit both conditions" in {
     // Dropping a disjunct makes the filter STRICTER than written: rows disappear silently.
     queryOf(group + "GREATEST(COUNT(*), 0) > 1 OR COUNT(*) > 5") should include(
-      """(params.c == null ? false : (Math.max(params.c, 0) > 1)) || """ +
+      """(params.c == null ? 0 : Math.max(params.c, 0)) > 1 || """ +
       """(params.c == null ? false : (params.c > 5))"""
     )
   }
@@ -392,8 +392,8 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"count_all":{"value_count":{"field":"_index"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_all":"count_all"},""",
-      """"script":{"source":"(params.count_all == null ? false : """,
-      """(Math.max(params.count_all, 0) > 1))"}}}}}}}"""
+      """"script":{"source":"(params.count_all == null ? 0 : """,
+      """Math.max(params.count_all, 0)) > 1"}}}}}}}"""
     ).mkString
   }
 
@@ -408,8 +408,8 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       """"aggs":{"e.name":{"terms":{"field":"emails.name","size":65536,"min_doc_count":1},""",
       """"aggs":{"count_e_address":{"value_count":{"field":"emails.address"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"count_e_address":"count_e_address"},""",
-      """"script":{"source":"(params.count_e_address == null ? false : """,
-      """(Math.max(params.count_e_address, 0) > 1))"}}}}}}}}}"""
+      """"script":{"source":"(params.count_e_address == null ? 0 : """,
+      """Math.max(params.count_e_address, 0)) > 1"}}}}}}}}}"""
     ).mkString
   }
 
@@ -423,14 +423,13 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       terms,
       ""","aggs":{"c":{"value_count":{"field":"_index"}},"max_x":{"max":{"field":"x"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"c":"c","max_x":"max_x"},""",
-      """"script":{"source":"(params.c == null""",
-      """ || ((def) (params.max_x == null""",
+      """"script":{"source":"(params.c == null ? false : (params.c > (""",
+      """((def) (params.max_x == null""",
       """ || Double.isNaN(params.max_x)""",
-      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? false : """,
-      """(params.c > Math.max""",
-      """(((def) (params.max_x == null""",
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)) == null ? 0 : Math.max(""",
+      """((def) (params.max_x == null""",
       """ || Double.isNaN(params.max_x)""",
-      """ || Double.isInfinite(params.max_x) ? null : params.max_x)), 0)))"}}}}}}}"""
+      """ || Double.isInfinite(params.max_x) ? null : params.max_x)), 0))))"}}}}}}}"""
     ).mkString
   }
 
@@ -444,8 +443,7 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       """"aggs":{"__whole_table_having__":{"filters":{"filters":{"_all":{"match_all":{}}}},""",
       """"aggs":{"c":{"value_count":{"field":"_index"}},""",
       """"having_filter":{"bucket_selector":{"buckets_path":{"c":"c"},""",
-      """"script":{"source":"(params.c == null ? false : """,
-      """(Math.max(params.c, 0) > 1))"}}}}}}}"""
+      """"script":{"source":"(params.c == null ? 0 : Math.max(params.c, 0)) > 1"}}}}}}}"""
     ).mkString
   }
 

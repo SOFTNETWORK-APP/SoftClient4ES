@@ -85,11 +85,27 @@ class HavingNullAwareSelectorSpec extends AnyFlatSpec with Matchers with OptionV
   it should "leave a function of the aggregate its own NULL handling" in {
     // COALESCE decides what a NULL means: over a group with no value it answers 5, and 5 > 1.
     script(group + "COALESCE(MAX(v), 5) > 1") shouldBe s"($maxV != null ? $maxV : 5) > 1"
-    // GREATEST over a NULL aggregate is UNKNOWN in a HAVING, as before: the guard is the
-    // rendering's own. The cast keeps the read `def`: `Math.max(<conditional>, 0)` does not
-    // compile otherwise (`Cannot cast null to a primitive type [double]`).
+    // GREATEST skips a NULL argument, as the docs state and WHERE does: over a group with no value
+    // it answers 0, and 0 > 1 is false. The cast keeps the read `def`: `Math.max(<conditional>,
+    // 0)` does not compile otherwise (`Cannot cast null to a primitive type [double]`).
     script(group + "GREATEST(MAX(v), 0) > 1") shouldBe
-    s"($maxV == null ? false : (Math.max($maxV, 0) > 1))"
+    s"($maxV == null ? 0 : Math.max($maxV, 0)) > 1"
+  }
+
+  it should "skip a NULL argument of GREATEST / LEAST, and guard them on their result" in {
+    val a = read("max_a")
+    val b = read("min_b")
+    def reduced(fn: String) = s"($a == null ? $b : ($b == null ? $a : Math.$fn($a, $b)))"
+    // UNKNOWN only when every argument is NULL: a group with `a` and no `b` compares its `MAX(a)`
+    script(group + "GREATEST(MAX(a), MIN(b)) > 1") shouldBe
+    s"(${reduced("max")} == null ? false : (${reduced("max")} > 1))"
+    script(group + "LEAST(MAX(a), MIN(b)) < 3") shouldBe
+    s"(${reduced("min")} == null ? false : (${reduced("min")} < 3))"
+    // a literal argument: never NULL, so no guard at all
+    script(group + "LEAST(MIN(b), 1) < 3") shouldBe s"($b == null ? 1 : Math.min($b, 1)) < 3"
+    // on the right of an aggregate, whose own guard stays
+    script(group + "MAX(a) > GREATEST(MIN(b), 1)") shouldBe
+    s"($a == null ? false : ($a > ($b == null ? 1 : Math.max($b, 1))))"
   }
 
   it should "guard a COALESCE on its result, never on its arguments" in {

@@ -21,14 +21,13 @@ import org.scalatest.matchers.should.Matchers
   *     `AggregateConversion.toTransformAggregation` answers `None`, while
   *     `Stage.extractAggregatePaths` still names it: a `buckets_path` pointing at an aggregation
   *     that does not exist;
-  *   - a SELECT `bucket_script` alias (`MAX(x) - MIN(x) AS d`) -- a transform's pivot has no
+  *   - a SELECT `bucket_script` alias (`MAX(x) - MIN(x) AS d`) -- a transform's pivot had no
   *     `bucket_script` channel and such an item is not an aggregate, so `buckets_path` came back
-  *     EMPTY and the clause was dropped;
-  *   - an aggregate on the RIGHT of a comparison -- `Stage.extractAggregatePaths` walks
-  *     `expr.identifier` ONLY and never `expr.maybeValue`, while core's own
-  *     `Expression.extractAllMetricsPath` walks BOTH, so publishing it puts it in
-  *     `buildAggregations` and NEVER in `buckets_path`: the selector IS built, reads a null
-  *     parameter, the guard short-circuits and EVERY bucket is rejected -- an EMPTY view at 200;
+  *     EMPTY and the clause was dropped. A view now computes the item with the `bucket_script` of
+  *     `SingleSearch.transformBucketScripts`; what that channel does not serve stays refused;
+  *   - an aggregate on the RIGHT of a comparison -- the view's filter declared only the left-hand
+  *     metric of each comparison. It now declares `Having.metricNames`, every metric the clause
+  *     reads, so two aggregates in one condition are checked like one;
   *   - an aggregate a transform COULD compute but the SELECT list does not publish -- the selector
   *     reads a metric the view never creates: `buckets_path` empty (dropped) or, beside a published
   *     metric, PARTIAL, so the script reads a `params.*` the path never declares.
@@ -62,8 +61,8 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     val GroupKey = "grouping key"
     val NoTransformAgg = "computes only MIN, MAX, SUM, AVG"
     val BucketScript = "expression over aggregates"
-    val TwoAggregates = "compare two aggregates"
     val Unpublished = "to the SELECT list"
+    val Relation = "nested, child or parent predicate"
     val NoMatchingAgg = "matches none of the aggregations this view creates"
     val all: Seq[String] =
       Seq(
@@ -71,8 +70,8 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
         GroupKey,
         NoTransformAgg,
         BucketScript,
-        TwoAggregates,
         Unpublished,
+        Relation,
         NoMatchingAgg
       )
   }
@@ -262,10 +261,41 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       "SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING STDDEV(amount) > 1",
       Some(Rule.NoTransformAgg)
     ),
+    // A SELECT `bucket_script` item is computed by the view's own `bucket_script`
+    // (`SingleSearch.transformBucketScripts`), so a HAVING over its alias reads it like any metric
+    // -- whether or not the SELECT list publishes its operands.
     Cell(
       "N7 bucket_script alias",
       "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3",
+      None
+    ),
+    Cell(
+      "N7b bucket_script alias, operands published",
+      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn, MAX(amount) - MIN(amount) AS d " +
+      "FROM customers GROUP BY city HAVING d > 3",
+      None
+    ),
+    // …and what that channel does not serve: an operand no transform computes, and a null test
+    // over the alias, whose rendering reads the operands rather than `d`.
+    Cell(
+      "N7c bucket_script over an aggregate no transform computes",
+      "SELECT city, STDDEV(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3",
       Some(Rule.BucketScript)
+    ),
+    Cell(
+      "N7d null test over a bucket_script alias",
+      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn, MAX(amount) - MIN(amount) AS d " +
+      "FROM customers GROUP BY city HAVING ISNULL(d)",
+      Some(Rule.BucketScript)
+    ),
+    // A function of the alias reads the item's operands (`SIGN(d)`), which the view creates once the
+    // SELECT list publishes them. A conversion of it (`CAST(d AS DOUBLE)`) is refused in both venues
+    // by the search rules (`HavingAliasResolutionSpec`).
+    Cell(
+      "N7e a function of the alias, its operands published",
+      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn, MAX(amount) - MIN(amount) AS d " +
+      "FROM customers GROUP BY city HAVING SIGN(d) > 0",
+      None
     ),
     // 🔴 The non-over-reach row: an aggregate no transform can compute is fine in the SELECT list
     // as long as the HAVING does not read it. Without this, rule 3 could refuse the whole family.
@@ -284,70 +314,59 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       "SELECT city, COUNT(DISTINCT id) AS cd FROM customers GROUP BY city HAVING COUNT(DISTINCT id) > 1",
       None
     ),
-    // (R) an aggregate on the RIGHT of the comparison. 🔴 The population had NO row comparing two
-    // aggregates -- every earlier cell is `<agg> <op> <literal>` or `<key> <op> <literal>` -- which
-    // is why a whole rule could be added without one assertion moving.
-    //
-    // extensions' `Stage.extractAggregatePaths` walks `expr.identifier` ONLY and never
-    // `expr.maybeValue`, while core's own `Expression.extractAllMetricsPath` walks BOTH. So
-    // publishing the right-hand aggregate puts it in `buildAggregations` and NEVER in
-    // `buckets_path`. MEASURED: the selector IS built, reads `params.<right>` which is null, the
-    // null guard short-circuits, and EVERY bucket is rejected -- an EMPTY view at HTTP 200.
+    // (R) an aggregate on the RIGHT of the comparison. The view's filter declared only the
+    // left-hand metric of each comparison, so the right-hand one was read as an undeclared
+    // parameter and every group was rejected (an EMPTY view at HTTP 200); the old rule 5 refused
+    // the shape. The filter now declares `Having.metricNames` -- every metric the clause reads -- so
+    // these deploy, and an unpublished right-hand aggregate gets rule 6's remedy like any other.
     Cell(
       "R1 MAX > MIN, both published",
       "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
       "HAVING MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R2 same, alias spelling",
       "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city HAVING mx > mn",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R3 reversed operand order",
       "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
       "HAVING MIN(amount) < MAX(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R4 inequality",
       "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
       "HAVING MAX(amount) <> MIN(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R5 SUM > AVG",
       "SELECT city, SUM(amount) AS sm, AVG(amount) AS av FROM customers GROUP BY city " +
       "HAVING SUM(amount) > AVG(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R6 beside a well-formed metric, AND",
       "SELECT city, COUNT(*) AS c, MAX(amount) AS mx, MIN(amount) AS mn FROM customers " +
       "GROUP BY city HAVING COUNT(*) > 1 AND MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "R7 beside a well-formed metric, OR",
       "SELECT city, COUNT(*) AS c, MAX(amount) AS mx, MIN(amount) AS mn FROM customers " +
       "GROUP BY city HAVING COUNT(*) > 1 OR MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
+      None
     ),
-    // 🔴 The other direction: the right-hand aggregate is NOT published either. Both rules apply;
-    // the ordering test below pins which one speaks, and it must be this one -- rule 5's remedy
-    // ("add it to the SELECT list") is MEASURED to produce R1.
     Cell(
       "R8 right-hand aggregate NOT published",
       "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
+      Some(Rule.Unpublished)
     ),
-    // (V) 🔴 A right-hand aggregate is undeclared ONLY when its name appears on no leaf's LEFT
-    // side anywhere in the clause -- `Stage.extractAggregatePaths` declares a parameter for the
-    // left identifier of EVERY leaf in the whole tree. A sibling conjunct that names the same
-    // aggregate therefore declares it, and the transform deploys and runs correctly.
-    // MEASURED on the control: UNDECLARED = none, selector built, both aggregations created.
-    // These MUST stay accepted; refusing them is a regression against main.
+    // (V) a sibling conjunct naming the right-hand aggregate on its left -- accepted before, and
+    // still: the filter declares every metric the clause reads.
     Cell(
       "V1 sibling conjunct declares it, AND",
       "SELECT city, SUM(amount) AS m, MAX(amount) AS m2 FROM customers GROUP BY city " +
@@ -396,25 +415,9 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       "SELECT city, MAX(amount) AS m2 FROM customers GROUP BY city HAVING m2 > m2",
       None
     ),
-    // …and the negatives that keep rule 5 alive: nothing declares the right-hand name.
-    Cell(
-      "V9 no sibling declares it",
-      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
-      "HAVING MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
-    ),
-    Cell(
-      "V10 right-hand aggregate not published at all",
-      "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)",
-      Some(Rule.TwoAggregates)
-    ),
-    // (W) 🔴 Which of rule 5 and rule 6 speaks when BOTH apply -- the right-hand aggregate is
-    // undeclared AND the SELECT list does not publish it. The discriminator is the COUNTERFACTUAL:
-    // would publishing it make the selector declare it? `Stage.extractAggregatePaths` declares the
-    // LEFT identifier of EVERY leaf, so the answer is yes exactly when some leaf names it on the
-    // left. When it does, rule 6's remedy ends the journey (W5 / W8 are W1 / W3 with the remedy
-    // applied literally, and they are ACCEPTED); when nothing names it on the left, publishing it
-    // lands on V9 and rule 5 must speak instead (W6, R8/V10 above).
+    // (W) an unpublished aggregate anywhere in the condition -- on the left, on the right, named by
+    // a sibling or not -- is rule 6's, and its remedy ends the journey (W5 / W8 are W1 / W3 with
+    // the remedy applied literally, and they are ACCEPTED).
     Cell(
       "W1 a sibling leaf names it on the left, unpublished",
       "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city " +
@@ -445,22 +448,87 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       None
     ),
     Cell(
-      "W6 nothing names it on the left: publishing it would not help",
+      "W6 nothing names it on the left",
       "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city " +
       "HAVING MIN(amount) > 1 AND MIN(amount) > MAX(amount)",
-      Some(Rule.TwoAggregates)
+      Some(Rule.Unpublished)
     ),
     Cell(
       "W7 both published, alias spelling on the right",
       "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
       "HAVING MAX(amount) > mn",
-      Some(Rule.TwoAggregates)
+      None
     ),
     Cell(
       "W8 W3 with rule 6's remedy applied literally",
       "SELECT city, COUNT(*) AS c, MIN(amount) AS mn FROM customers GROUP BY city " +
       "HAVING MIN(amount) > MIN(amount)",
       None
+    ),
+    // (M) several aggregates through a FUNCTION, in every spelling: the filter reads each of them,
+    // so each must be published -- and then the view deploys.
+    Cell(
+      "M1 COALESCE of two aggregates",
+      "SELECT city, MAX(amount) AS mx, MIN(qty) AS mq FROM customers GROUP BY city " +
+      "HAVING COALESCE(MAX(amount), MIN(qty)) > 1",
+      None
+    ),
+    Cell(
+      "M2 same, alias spelling",
+      "SELECT city, MAX(amount) AS mx, MIN(qty) AS mq FROM customers GROUP BY city " +
+      "HAVING COALESCE(mx, mq) > 1",
+      None
+    ),
+    Cell(
+      "M3 GREATEST of two aggregates and a literal",
+      "SELECT city, MAX(amount) AS mx, MIN(qty) AS mq FROM customers GROUP BY city " +
+      "HAVING GREATEST(MAX(amount), MIN(qty), 3) > 1",
+      None
+    ),
+    Cell(
+      "M4 a function of an aggregate on the value side",
+      "SELECT city, MAX(amount) AS mx, MIN(qty) AS mq FROM customers GROUP BY city " +
+      "HAVING MAX(amount) > COALESCE(MIN(qty), 1)",
+      None
+    ),
+    Cell(
+      "M5 one aggregate and a literal",
+      "SELECT city, MIN(qty) AS mq FROM customers GROUP BY city HAVING COALESCE(MIN(qty), 1) > 1",
+      None
+    ),
+    Cell(
+      "M6 one of the two aggregates NOT published",
+      "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city " +
+      "HAVING COALESCE(MAX(amount), MIN(qty)) > 1",
+      Some(Rule.Unpublished)
+    ),
+    // (I) ISNULL / ISNOTNULL over an aggregate: its operand is the aggregate every other position
+    // builds, so the bare and qualified spellings deploy exactly as the alias spelling does.
+    Cell(
+      "I1 ISNULL, bare spelling",
+      "SELECT city, MIN(amount) AS mn FROM customers GROUP BY city HAVING ISNULL(MIN(amount))",
+      None
+    ),
+    Cell(
+      "I2 ISNOTNULL, bare spelling",
+      "SELECT city, MIN(amount) AS mn FROM customers GROUP BY city HAVING ISNOTNULL(MIN(amount))",
+      None
+    ),
+    Cell(
+      "I3 ISNULL, qualified spelling",
+      "SELECT c.city, MIN(c.amount) AS mn FROM customers AS c GROUP BY c.city " +
+      "HAVING ISNULL(MIN(c.amount))",
+      None
+    ),
+    Cell(
+      "I4 ISNULL, alias spelling",
+      "SELECT city, MIN(amount) AS mn FROM customers GROUP BY city HAVING ISNULL(mn)",
+      None
+    ),
+    Cell(
+      "I5 ISNULL over an aggregate the SELECT list does not publish",
+      "SELECT city, MIN(amount) AS mn FROM customers GROUP BY city HAVING ISNULL(MAX(amount))",
+      Some(Rule.Unpublished)
     ),
     // (U) the BACKSTOP population: a HAVING leaf whose selector parameter names no aggregation the
     // pivot creates. Two families, both PRE-EXISTING (accepted on the control too) and both still
@@ -520,15 +588,21 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       "SELECT city, SUM(amount) FROM customers GROUP BY city HAVING SUM(amount) BETWEEN 1 AND 9",
       Some(Rule.NoMatchingAgg)
     ),
-    // U-2: a relation predicate BESIDE a metric conjunct. `extractAggregatePaths` falls to its
-    // `case _ => acc` for an `ElasticRelation`, and `havingLeaves` deliberately excludes relation
-    // predicates -- so the grouping-key and two-aggregate rules are STRUCTURALLY blind to it. The
-    // selector IS built and reads the metric only: a PARTIAL filter answering 200 with the wrong
-    // groups, which is exactly the harm the grouping-key rule's own docstring names.
+    // U-2: a relation predicate BESIDE a metric conjunct, refused by its own arm. A condition
+    // reading no metric has no form in a `bucket_selector`, so the selector reads the metric only:
+    // a PARTIAL filter answering 200 with the wrong groups, which is exactly the harm the
+    // grouping-key rule's own docstring names.
     Cell(
       "U10 relation predicate beside a metric",
       "SELECT city, SUM(amount) AS s FROM customers GROUP BY city HAVING s > 5 AND child(c.x = 1)",
-      Some(Rule.NoMatchingAgg)
+      Some(Rule.Relation)
+    ),
+    // A relation predicate is never alias-substituted, so `s` inside it stays a column and the
+    // condition reads no metric. It was accepted by name before, and the view dropped it.
+    Cell(
+      "U11 an alias comparison inside a relation predicate",
+      "SELECT city, SUM(amount) AS s FROM customers GROUP BY city HAVING nested(s > 5)",
+      Some(Rule.Relation)
     ),
     // (P) the ONE materialized-view example in the shipped documentation that carries a HAVING --
     // `documentation/sql/materialized_views.md` "Materialized View with Aggregations", verbatim.
@@ -588,17 +662,16 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       ),
       Rule.BucketScript -> refusalOf(
         asView(
-          "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3"
-        )
-      ),
-      Rule.TwoAggregates -> refusalOf(
-        asView(
-          "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
-          "HAVING MAX(amount) > MIN(amount)"
+          "SELECT city, STDDEV(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3"
         )
       ),
       Rule.Unpublished -> refusalOf(
         asView("SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING MAX(amount) > 1")
+      ),
+      Rule.Relation -> refusalOf(
+        asView(
+          "SELECT city, SUM(amount) AS s FROM customers GROUP BY city HAVING s > 5 AND child(c.x = 1)"
+        )
       ),
       Rule.NoMatchingAgg -> refusalOf(
         asView("SELECT city, SUM(amount) FROM customers GROUP BY city HAVING SUM(amount) > 5")
@@ -838,18 +911,23 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     ) should include(Rule.NoTransformAgg)
   }
 
-  "the two-aggregate rule" should "win over the unpublished-aggregate rule" in {
-    // 🔴 Same reason as rule 3's precedence, one operand over: rule 5's remedy is "add it to the
-    // SELECT list", and MEASURED, applying it to this statement produces R1 -- a selector that
-    // reads an undeclared parameter and rejects every group. A refusal whose remedy leads
-    // somewhere worse is a defect, not a nicety.
+  "an unpublished aggregate on the value side" should "get the unpublished-aggregate remedy, which ends the journey" in {
+    // The old rule 5 spoke here, because publishing the right-hand aggregate used to land on R1 --
+    // a selector reading an undeclared parameter. With the filter declaring every metric it reads,
+    // R1 deploys, so rule 6's remedy is the one that ends the journey: applied literally, ACCEPTED.
     val reason = refusalOf(
       asView(
         "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)"
       )
     )
-    reason should include(Rule.TwoAggregates)
-    reason should not include Rule.Unpublished
+    reason should include(Rule.Unpublished)
+    reason should include("MIN(amount) AS <alias>")
+    verdict(
+      asView(
+        "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
+        "HAVING MAX(amount) > MIN(amount)"
+      )
+    ) shouldBe Accepted
   }
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -897,9 +975,6 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
       "R2 filter the key in WHERE" ->
       ("SELECT city, SUM(amount) AS s FROM customers GROUP BY city HAVING city = 'Paris'",
       "SELECT city, SUM(amount) AS s FROM customers WHERE city = 'Paris' GROUP BY city HAVING SUM(amount) > 5"),
-      "R5 compare with a constant" ->
-      ("SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city HAVING MAX(amount) > MIN(amount)",
-      "SELECT city, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > 5"),
       "R6 add it to the SELECT list" ->
       ("SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING MIN(qty) > 5",
       "SELECT city, COUNT(*) AS c, MIN(qty) AS mq FROM customers GROUP BY city HAVING MIN(qty) > 5")
@@ -921,7 +996,7 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "the backstop message" should "teach the alias rule and name the relation case" in {
+  "the backstop message" should "teach the alias rule, and the relation arm name its case" in {
     // 🔴 Same weakness M14 exposed one rule over: the population keys on "matches none of the
     // aggregations this view creates", which survives deleting everything that TEACHES. The
     // backstop is the message most users will see for the commonest mistake (no SELECT alias),
@@ -993,12 +1068,8 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  /** 🔴 Why the `isAggregation` guard on `havingValueSideAggs` has a GREEN mutation.
-    *
-    * A value side that is NOT an aggregate never reaches the view rules: the shared rules inside
-    * `dql.validate()` refuse it first. These rows pin THAT, which is what makes the guard dead from
-    * SQL -- if a shared rule ever stopped firing, the guard would become live and its mutation
-    * would start to matter. Recording the reason beats leaving a green cell unexplained.
+  /** A value side that is NOT an aggregate never reaches the view rules: the shared rules inside
+    * `dql.validate()` refuse it first, in both venues alike.
     */
   "a non-aggregate on the value side" should "be refused by the shared rules, before the view rules" in {
     Seq(
@@ -1016,13 +1087,13 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
         refusalOf(body) shouldBe reason
       }
     }
-    // …and a SELECT alias of an aggregate IS substituted before the guard sees it, so the guard
-    // admits it as the aggregate it is rather than excluding it.
-    refusalOf(
+    // …and a SELECT alias of an aggregate IS substituted, so it is read as the aggregate it is --
+    // published here, so the view deploys.
+    verdict(
       asView(
         "SELECT city, COUNT(*) AS c, MAX(amount) AS mx FROM customers GROUP BY city HAVING MAX(amount) > c"
       )
-    ) should include(Rule.TwoAggregates)
+    ) shouldBe Accepted
   }
 
   "the shared HAVING rules" should "still fire inside a view, unchanged" in {
@@ -1076,6 +1147,178 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     // CTAS renders through the ordinary search path, which HAS the include/exclude channel.
     verdict(
       "CREATE TABLE t2 AS SELECT city, COUNT(*) AS c FROM customers GROUP BY city HAVING city = 'Paris'"
+    ) shouldBe Accepted
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+  // What a view's filter declares (#292), and the per-group calculation channel.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+  private val ParamRead = """params\.([A-Za-z_][A-Za-z0-9_]*)""".r
+
+  private def viewSearch(body: String): SingleSearch = Parser(asView(body)) match {
+    case Right(cr: CreateMaterializedView) => cr.search
+    case other                             => fail(s"expected a view, got $other: [$body]")
+  }
+
+  "every view-accepted cell" should "declare exactly the metrics its filter reads, each one the pivot creates" in {
+    // The contract `softclient4es-extensions` builds the view's filter on: it declares
+    // `Having.metricNames` and nothing else, so those names must be EXACTLY the parameters the
+    // script reads, and every one of them an aggregation the pivot creates. Asked of the
+    // population, never of a hand list.
+    val accepted = population.filter(c => c.mvRefusedBy.isEmpty && c.body.contains("HAVING"))
+    accepted.size should be > 20
+    accepted.foreach { cell =>
+      withClue(s"[${cell.id}] ") {
+        val search = viewSearch(cell.body)
+        val names = search.having.toSeq.flatMap(_.metricNames)
+        val read = search.having
+          .flatMap(_.criteria)
+          .flatMap(MetricSelectorScript.nullAwareSelectorScript)
+          .toSeq
+          .flatMap(script => ParamRead.findAllMatchIn(script).map(_.group(1)))
+          .distinct
+        names should not be empty
+        names.toSet shouldBe read.toSet
+        names.foreach(n => search.transformAggregationNames should contain(n))
+      }
+    }
+  }
+
+  "the per-group calculation channel" should "compute a SELECT bucket_script item, its operands published or not" in {
+    import app.softnetwork.elastic.sql.transform.BucketScriptTransformAggregation
+    val published = viewSearch(
+      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn, MAX(amount) - MIN(amount) AS d " +
+      "FROM customers GROUP BY city HAVING d > 3"
+    )
+    published.transformBucketScripts.keys.toSeq shouldBe Seq("d")
+    published.transformBucketScripts("d") shouldBe a[BucketScriptTransformAggregation]
+    published.transformBucketScripts("d").node.toString shouldBe
+    """{"bucket_script":{"buckets_path":{"mx":"mx","mn":"mn"},"script":"params.mx - params.mn"}}"""
+    published.transformBucketScriptOperands shouldBe empty
+    published.having.toSeq.flatMap(_.metricNames) shouldBe Seq("d")
+
+    // The operands the SELECT list does not publish are created under the key the script reads.
+    val unpublished = viewSearch(
+      "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 3"
+    )
+    unpublished.transformBucketScripts("d").node.toString shouldBe
+    """{"bucket_script":{"buckets_path":{"max_amount":"max_amount","min_amount":"min_amount"},""" +
+    """"script":"params.max_amount - params.min_amount"}}"""
+    unpublished.transformBucketScriptOperands.map(f =>
+      s"${f.identifier.sql} AS ${f.fieldAlias.map(_.alias).getOrElse("")}"
+    ) shouldBe Seq("MAX(amount) AS max_amount", "MIN(amount) AS min_amount")
+
+    // With no HAVING too: the column the view declares is the one its pivot computes.
+    viewSearch(
+      "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city"
+    ).transformBucketScripts.keySet shouldBe Set("d")
+
+    // An operand no transform computes: the channel does not serve the item.
+    viewSearch(
+      "SELECT city, STDDEV(amount) - MIN(amount) AS d FROM customers GROUP BY city"
+    ).transformBucketScripts shouldBe empty
+  }
+
+  it should "compute a DATEDIFF over aggregates exactly as the search's bucket_script does" in {
+    // A date aggregate reaches a bucket_script as the epoch millis Elasticsearch computed and a
+    // string literal as a String: each operand is converted to a date first, an aggregate ONCE (it
+    // is the instant in UTC already). Both venues render ONE calculation (the item's context-free
+    // rendering); the RUN is GroupByCompletenessSpec's.
+    def date(metric: String) =
+      s"Instant.ofEpochMilli(((long) params.$metric)).atZone(ZoneId.of('Z')).toLocalDate()"
+    val literal =
+      """LocalDate.parse(("2024-01-01").replace("/", "-"), DateTimeFormatter.ofPattern("yyyy-MM-dd"))"""
+    Seq(
+      // MySQL's DATEDIFF is `first - second`, every other spelling `end - start`
+      "DATEDIFF(MAX(d), '2024-01-01')" -> s"Long.valueOf(ChronoUnit.DAYS.between($literal, ${date("mx")}))",
+      "DATE_DIFF(MAX(d), MIN(d), DAY)" -> s"Long.valueOf(ChronoUnit.DAYS.between(${date("mx")}, ${date("mn")}))",
+      "TIMESTAMPDIFF(DAY, MAX(d), '2024-01-01')" ->
+      s"Long.valueOf(ChronoUnit.DAYS.between(${date("mx")}, $literal))"
+    ).foreach { case (expression, script) =>
+      val body =
+        s"SELECT city, MAX(d) AS mx, MIN(d) AS mn, $expression AS x FROM customers GROUP BY city HAVING x > 1"
+      withClue(s"[$expression] ") {
+        val view = viewSearch(body)
+        view.transformBucketScripts("x").script shouldBe script
+        view.transformBucketScripts("x").bucketsPath.keySet shouldBe
+        ParamRead.findAllMatchIn(script).map(_.group(1)).toSet
+        view.transformBucketScripts("x").params shouldBe empty
+        view.having.toSeq.flatMap(_.metricNames) shouldBe Seq("x")
+        Parser(body) match {
+          case Right(search: SingleSearch) =>
+            search.select.fields
+              .find(_.fieldAlias.exists(_.alias == "x"))
+              .map(_.identifier.painless(None)) shouldBe Some(script)
+          case other => fail(s"expected a search, got $other")
+        }
+      }
+    }
+  }
+
+  it should "declare the script parameters it reads beyond its bucket paths: the request clock" in {
+    // CURRENT_DATE / NOW() render against `params.__now__`, which no bucket path binds: the model
+    // carries it, for the pivot to bind, and the script reads nothing else undeclared.
+    Seq(
+      "DATEDIFF(MAX(d), CURRENT_DATE)",
+      "DATE_DIFF(MAX(d), NOW(), HOUR)",
+      "TIMESTAMPDIFF(DAY, MIN(d), CURRENT_TIMESTAMP)"
+    ).foreach { expression =>
+      withClue(s"[$expression] ") {
+        val channel = viewSearch(
+          s"SELECT city, $expression AS x FROM customers GROUP BY city HAVING x > 1"
+        ).transformBucketScripts("x")
+        channel.params shouldBe Seq("__now__")
+        ParamRead.findAllMatchIn(channel.script).map(_.group(1)).toSet shouldBe
+        channel.bucketsPath.keySet ++ channel.params
+      }
+    }
+  }
+
+  "rule 4's refusals" should "each be accepted once their remedy is applied literally" in {
+    // An operand no transform computes: "apply the condition when querying the view".
+    verdict(
+      asView("SELECT city, STDDEV(amount) - MIN(amount) AS d FROM customers GROUP BY city")
+    ) shouldBe Accepted
+    // A null test over the alias: "compare d itself".
+    val nullTest = refusalOf(
+      asView(
+        "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING ISNULL(d)"
+      )
+    )
+    nullTest should include("Compare d itself (HAVING d > 10)")
+    verdict(
+      asView(
+        "SELECT city, MAX(amount) - MIN(amount) AS d FROM customers GROUP BY city HAVING d > 10"
+      )
+    ) shouldBe Accepted
+  }
+
+  "a condition on an UNNEST aggregate" should "keep the verdict it always had" in {
+    // `update` wraps it in `ElasticNested` itself; it reads its metric like any other condition, so
+    // it is not the relation arm's.
+    verdict(
+      asView(
+        "SELECT e.name, COUNT(e.address) AS c FROM t JOIN UNNEST(t.emails) AS e GROUP BY e.name HAVING c > 1"
+      )
+    ) shouldBe Accepted
+  }
+
+  "the inline-arithmetic refusal" should "stay shared, and its remedy reach an accepted view" in {
+    // Search is unchanged: inline arithmetic over aggregates is refused in every venue. Its remedy
+    // -- alias the expression in SELECT and reference the alias -- now ends the journey in a view
+    // too, through the per-group calculation channel.
+    val body =
+      "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn FROM customers GROUP BY city " +
+      "HAVING MAX(amount) - MIN(amount) > 3"
+    val reason = refusalOf(asView(body))
+    reason should include("alias the expression in SELECT and reference the alias")
+    refusalOf(body) shouldBe reason
+    verdict(
+      asView(
+        "SELECT city, MAX(amount) AS mx, MIN(amount) AS mn, MAX(amount) - MIN(amount) AS d " +
+        "FROM customers GROUP BY city HAVING d > 3"
+      )
     ) shouldBe Accepted
   }
 }

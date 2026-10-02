@@ -318,7 +318,8 @@ SELECT DATETIME_SUB('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 MONTH) AS last
 
 #### DATEDIFF / DATE_DIFF
 
-Difference between 2 dates (date1 - date2) in the specified time unit.
+Difference between 2 dates (date2 - date1) in the specified time unit: `date1` is the start and `date2` the end.
+MySQL's two-argument `DATEDIFF(a, b)` gives `a - b`.
 
 **Syntax:**
 ```sql
@@ -337,38 +338,47 @@ DATE_DIFF(date1, date2, unit)
 **Output:**
 - `BIGINT`
 
+**Units:**
+- `HOUR`, `MINUTE`, `SECOND` count the elapsed whole units between the two instants, in UTC, truncated toward zero. A `DATE` operand counts from the start of its day (00:00 UTC).
+- `DAY`, `WEEK`, `MONTH`, `QUARTER`, `YEAR` compare the two calendar dates, in UTC, whatever the time of day: `2025-01-10T23:30:00Z` and `2025-01-11T00:30:00Z` are 1 day apart, as MySQL's `DATEDIFF` counts them. A week is 7 whole days, a month counts once its day of month is reached, a quarter is 3 whole months and a year 12; every count is truncated toward zero.
+
+**Literals:**
+- A string literal is read as the temporal it spells: `'2025-01-10'` (or `'2025/01/10'`) is a `DATE`; a literal with a time of day (`'2025-01-10 14:00:00'`, `'2025-01-10T14:00:00Z'`) is a `TIMESTAMP`, in UTC unless it names a zone.
+- This holds in every clause, for each row and for each group: `DATEDIFF(MAX(created_at), '2025-01-10 08:00:00', HOUR)`.
+- A `NULL` operand, or an aggregate over a group that has no value, gives `NULL`.
+
 **Examples:**
 ```sql
--- Difference in days (default)
+-- Difference in days (default), MySQL's two-argument form: date1 - date2
 SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS diff;
 -- Result: 9
 
 -- Difference in days (explicit)
-SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff_days;
+SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE, DAY) AS diff_days;
 -- Result: 9
 
 -- Difference in weeks
-SELECT DATE_DIFF('2025-01-31'::DATE, '2025-01-01'::DATE, WEEK) AS diff_weeks;
+SELECT DATE_DIFF('2025-01-01'::DATE, '2025-01-31'::DATE, WEEK) AS diff_weeks;
 -- Result: 4
 
 -- Difference in months
-SELECT DATEDIFF('2025-06-01'::DATE, '2025-01-01'::DATE, MONTH) AS diff_months;
+SELECT DATEDIFF('2025-01-01'::DATE, '2025-06-01'::DATE, MONTH) AS diff_months;
 -- Result: 5
 
 -- Difference in years
-SELECT DATEDIFF('2027-01-01'::DATE, '2025-01-01'::DATE, YEAR) AS diff_years;
+SELECT DATEDIFF('2025-01-01'::DATE, '2027-01-01'::DATE, YEAR) AS diff_years;
 -- Result: 2
 
 -- Difference in hours (with timestamps)
-SELECT DATEDIFF('2025-01-10T14:00:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T14:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
 -- Result: 2
 
 -- Difference in minutes
-SELECT DATEDIFF('2025-01-10T12:30:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:30:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
 -- Result: 30
 
 -- Difference in seconds
-SELECT DATEDIFF('2025-01-10T12:00:45Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, SECOND) AS diff_seconds;
+SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:00:45Z'::TIMESTAMP, SECOND) AS diff_seconds;
 -- Result: 45
 ```
 
