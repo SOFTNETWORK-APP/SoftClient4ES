@@ -99,20 +99,21 @@ class TableauDialectSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  /** MySQL 8.4 defines `TIMESTAMPDIFF(unit, dt1, dt2)` as `dt2 - dt1`, and `date_diff_transact_sql`
-    * binds `(unit, d1, d2)` to `DateDiff(start = d1, end = d2)`, i.e. `between(d1, d2)` — the same
+  /** MySQL 8.4 defines `TIMESTAMPDIFF(unit, dt1, dt2)` as `dt2 - dt1` in whole units elapsed, and
+    * `date_diff_transact_sql` binds `(unit, d1, d2)` to `DateDiff(start = d1, end = d2)` — the same
     * answer with the same sign. The MySQL/ODBC order is the one that matters, so it is the one
     * asserted.
     */
-  "TIMESTAMPDIFF" should "be a spelling of DATE_DIFF, in the MySQL/ODBC unit-first order" in {
-    // 🔴 The ARGUMENT LIST, not just the function name: `include("DATE_DIFF(")` is satisfied by
-    // the sign-inverted render `DATE_DIFF(MONTH, end_date, start_date)` too, so it would prove
-    // nothing about the very binding this test exists to pin.
+  "TIMESTAMPDIFF" should "keep its name and the MySQL/ODBC unit-first order" in {
+    // 🔴 The ARGUMENT LIST, not just the function name: `include("TIMESTAMPDIFF(")` is satisfied by
+    // the sign-inverted render `TIMESTAMPDIFF(MONTH, end_date, start_date)` too, so it would prove
+    // nothing about the very binding this test exists to pin. The NAME is kept because it counts
+    // elapsed units where `DATE_DIFF` counts boundaries.
     canonicalises(
       "SELECT TIMESTAMPDIFF(MONTH, start_date, end_date) AS d FROM t",
-      "DATE_DIFF(MONTH, start_date, end_date)"
+      "TIMESTAMPDIFF(MONTH, start_date, end_date)"
     )
-    canonicalises("SELECT TIMESTAMPDIFF(DAY, a, b) AS d FROM t", "DATE_DIFF(DAY, a, b)")
+    canonicalises("SELECT TIMESTAMPDIFF(DAY, a, b) AS d FROM t", "TIMESTAMPDIFF(DAY, a, b)")
   }
 
   it should "leave the bare unit names alone" in {

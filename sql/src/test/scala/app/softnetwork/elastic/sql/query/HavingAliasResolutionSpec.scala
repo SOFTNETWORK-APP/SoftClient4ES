@@ -179,7 +179,7 @@ class HavingAliasResolutionSpec extends AnyFlatSpec with Matchers {
         "DATE_DIFF(DAY, MAX(d) - INTERVAL 1 DAY, '2024-01-01')"
       ),
       having + "TIMESTAMPDIFF(DAY, MAX(d)::DATE, '2024-01-01') > 1" -> inline(
-        "DATE_DIFF(DAY, MAX(d)::DATE, '2024-01-01')"
+        "TIMESTAMPDIFF(DAY, MAX(d)::DATE, '2024-01-01')"
       ),
       "SELECT g, ISNULL(MAX(a)::DOUBLE) AS x FROM t GROUP BY g"               -> chain,
       "SELECT g, ISNULL(MAX(d) - INTERVAL 1 DAY) AS x FROM t GROUP BY g"      -> chain,

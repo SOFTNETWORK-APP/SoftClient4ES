@@ -1421,13 +1421,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "w": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.MONDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
       |      }
       |    },
       |    "w2": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.SUNDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
+      |        "source": "def param1 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toInstant().atZone(ZoneId.of('Z')).with(DayOfWeek.MONDAY).truncatedTo(ChronoUnit.DAYS)); def param2 = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"); (param1 == null) ? null : param2.format(param1)"
       |      }
       |    },
       |    "d": {
@@ -1655,7 +1655,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "diff": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1.toLocalDate(), param2.toLocalDate()))"
+      |        "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1.toLocalDate(), param2.toLocalDate()))"
       |      }
       |    }
       |  },
@@ -1712,7 +1712,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "max": {
       |            "script": {
       |              "lang": "painless",
-      |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param3 = (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3.toLocalDate(), param2.toLocalDate()))"
+      |              "source": "def param1 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param3 = (param2 == null) ? null : ZonedDateTime.parse(param2, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1.toLocalDate(), param3.toLocalDate()))"
       |            }
       |          }
       |        }

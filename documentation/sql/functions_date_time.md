@@ -316,70 +316,158 @@ SELECT DATETIME_SUB('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 MONTH) AS last
 
 ### Date/Time Difference Functions
 
-#### DATEDIFF / DATE_DIFF
+#### DATEDIFF / DATE_DIFF / TIMESTAMPDIFF
 
-Difference between 2 dates (date2 - date1) in the specified time unit: `date1` is the start and `date2` the end.
-MySQL's two-argument `DATEDIFF(a, b)` gives `a - b`.
+Difference between 2 dates in a time unit. These functions follow the definitions of the databases they come from: the **layout** of the arguments decides which date is subtracted from which, and the **name** decides what is counted.
 
 **Syntax:**
 ```sql
-DATEDIFF(date1, date2)
+-- the dates first: date1 - date2
+DATEDIFF(date1, date2)              -- MySQL: in days
 DATEDIFF(date1, date2, unit)
-DATE_DIFF(date1, date2)
+DATE_DIFF(date1, date2)             -- BigQuery: DATE_DIFF(end_date, start_date, unit)
 DATE_DIFF(date1, date2, unit)
+
+-- the unit first: date2 - date1
+DATEDIFF(unit, date1, date2)        -- SQL Server, Snowflake, Redshift, DuckDB, Elasticsearch SQL
+DATE_DIFF(unit, date1, date2)
+TIMESTAMPDIFF(unit, date1, date2)   -- MySQL
 ```
 
 **Inputs:**
-- `date1` - `DATE` or `DATETIME`
-- `date2` - `DATE` or `DATETIME`
-- `unit` (optional) - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
-  - Default: `DAY`
+- `date1` - `DATE`, `DATETIME` or `TIMESTAMP`
+- `date2` - `DATE`, `DATETIME` or `TIMESTAMP`
+- `unit` - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND` (or their ODBC names, `SQL_TSI_YEAR` …)
+  - Default, when the dates come first: `DAY`
 
 **Output:**
 - `BIGINT`
 
-**Units:**
-- `HOUR`, `MINUTE`, `SECOND` count the elapsed whole units between the two instants, in UTC, truncated toward zero. A `DATE` operand counts from the start of its day (00:00 UTC).
-- `DAY`, `WEEK`, `MONTH`, `QUARTER`, `YEAR` compare the two calendar dates, in UTC, whatever the time of day: `2025-01-10T23:30:00Z` and `2025-01-11T00:30:00Z` are 1 day apart, as MySQL's `DATEDIFF` counts them. A week is 7 whole days, a month counts once its day of month is reached, a quarter is 3 whole months and a year 12; every count is truncated toward zero.
+**Direction, by layout:** every one of these databases computes *end − start*; the layout decides where the end sits.
+- The dates first: `date1 - date2`. `DATEDIFF('2025-01-10', '2025-01-01')` is `9`, as in MySQL; `DATE_DIFF('2010-07-07', '2008-12-25', DAY)` is `559`, as in BigQuery.
+- The unit first: `date2 - date1`. `DATEDIFF(DAY, '2025-01-01', '2025-01-10')` is `9`.
+
+**Counting, by name:**
+- `DATEDIFF` and `DATE_DIFF` count the calendar **boundaries crossed**, as SQL Server, Snowflake, Redshift, BigQuery and DuckDB do: one second across a year end is 1 `YEAR`, `1992-09-15` to `1992-11-14` is 2 `MONTH`s, `10:59` to `11:00` is 1 `HOUR`. `DAY` counts calendar days: `2025-01-10T23:30:00Z` and `2025-01-11T00:30:00Z` are 1 day apart.
+- `TIMESTAMPDIFF` counts the **whole units elapsed**, truncated toward zero, as MySQL does: a month counts once the same day of month and time of day are reached, so `2003-02-01` to `2003-05-01` is 3 `MONTH`s and `1992-09-15` to `1992-11-14` is 1. A `DATE` operand is the datetime at `00:00:00`.
+
+**Calendar:**
+- Every boundary is in UTC.
+- A `WEEK` starts on **Monday** (ISO 8601): the `WEEK` boundaries are the Mondays crossed, so a Saturday and the next Sunday are 0 weeks apart. A `QUARTER` starts on January 1, April 1, July 1 and October 1.
 
 **Literals:**
 - A string literal is read as the temporal it spells: `'2025-01-10'` (or `'2025/01/10'`) is a `DATE`; a literal with a time of day (`'2025-01-10 14:00:00'`, `'2025-01-10T14:00:00Z'`) is a `TIMESTAMP`, in UTC unless it names a zone.
-- This holds in every clause, for each row and for each group: `DATEDIFF(MAX(created_at), '2025-01-10 08:00:00', HOUR)`.
+- This holds in every clause, for each row and for each group, and in a computed column (`SCRIPT AS`): `DATEDIFF(MAX(created_at), '2025-01-10 08:00:00', HOUR)`.
 - A `NULL` operand, or an aggregate over a group that has no value, gives `NULL`.
+
+> 🔴 **Changed in 0.24.0 — these functions follow their vendors' definitions.** Statements written
+> against the old behaviour return other values, without an error:
+> - **The dates first subtract the second date from the first.** `DATEDIFF(a, b)`,
+>   `DATEDIFF(a, b, unit)`, `DATE_DIFF(a, b)` and `DATE_DIFF(a, b, unit)` returned `b - a`; they
+>   return `a - b`, as MySQL's `DATEDIFF` and BigQuery's `DATE_DIFF` do. The unit-first forms
+>   (`DATEDIFF(unit, a, b)`, `DATE_DIFF(unit, a, b)`) keep `b - a`.
+> - **`DATEDIFF` and `DATE_DIFF` count the boundaries crossed.** From `WEEK` up they counted the
+>   whole units elapsed between the two calendar dates (a week was 7 days, a month counted once its
+>   day of month was reached): `DATE_DIFF(MONTH, '1992-09-15', '1992-11-14')` was `1` and is `2`, and
+>   a `WEEK` boundary is now a Monday. `HOUR`, `MINUTE` and `SECOND` count the boundaries crossed too:
+>   `DATEDIFF(HOUR, '2025-01-10 10:59:00', '2025-01-10 11:00:00')` is `1`. `DAY` still counts
+>   calendar days.
+> - **A computed column answers what a query answers.** In a `SCRIPT AS` column these functions
+>   counted the whole units elapsed between two instants whatever the unit (a `DAY` was 24 hours), and
+>   a string literal operand made the `CREATE TABLE` fail.
+>
+> New in 0.24.0, where they failed or were refused before: `TIMESTAMPDIFF`, the `QUARTER` unit,
+> `HOUR` / `MINUTE` / `SECOND` over a column or an aggregate, and a string literal operand in a query.
+>
+> **What was deployed before 0.24.0 keeps its 0.23 results until it is re-created.** A computed
+> column (`SCRIPT AS`), an ingest pipeline and a materialized view keep the script they were
+> deployed with: adding a column with `ALTER TABLE`, `SHOW CREATE` and re-running the pipeline text
+> that `SHOW CREATE PIPELINE` returns leave it as it was.
+> - Re-creating it from the same SQL adopts the new definition, and these shapes then return other
+>   values: `DATEDIFF(a, b[, unit])` and `DATE_DIFF(a, b[, unit])` (the sign, and the count),
+>   `DATE_DIFF(unit, a, b)` (the count), `DATE_TRUNC(x, WEEK)` (the Monday), and `DAY` in a computed
+>   column (calendar days).
+> - `CREATE OR REPLACE MATERIALIZED VIEW` with an unchanged text keeps the old results: to adopt the
+>   new definition, `DROP` the view and `CREATE` it.
+> - `SHOW CREATE` shows the stored text, and that text now means the new definition.
+> - To keep a 0.23 value, swap the dates: `DATE_DIFF(a, b, unit)` becomes `DATE_DIFF(b, a, unit)`,
+>   which restores the sign. Where it counted whole units elapsed, use `TIMESTAMPDIFF`:
+>   `TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)` is the age that
+>   `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` returned.
 
 **Examples:**
 ```sql
--- Difference in days (default), MySQL's two-argument form: date1 - date2
+-- MySQL's two-argument form, in days: date1 - date2
 SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS diff;
 -- Result: 9
 
--- Difference in days (explicit)
-SELECT DATEDIFF('2025-01-01'::DATE, '2025-01-10'::DATE, DAY) AS diff_days;
+-- The dates first, with a unit: still date1 - date2
+SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS diff_days;
 -- Result: 9
 
--- Difference in weeks
-SELECT DATE_DIFF('2025-01-01'::DATE, '2025-01-31'::DATE, WEEK) AS diff_weeks;
+-- BigQuery's own example: the end date first
+SELECT DATE_DIFF('2010-07-07'::DATE, '2008-12-25'::DATE, DAY) AS diff_days;
+-- Result: 559
+
+-- The unit first: date2 - date1
+SELECT DATEDIFF(DAY, '2025-01-01'::DATE, '2025-01-10'::DATE) AS diff_days;
+-- Result: 9
+
+-- Difference in weeks: the Mondays crossed (January 6, 13, 20 and 27)
+SELECT DATE_DIFF('2025-01-31'::DATE, '2025-01-01'::DATE, WEEK) AS diff_weeks;
 -- Result: 4
 
+-- A week starts on Monday: Saturday to Sunday crosses none, Sunday to Monday one
+SELECT DATEDIFF(WEEK, '2025-01-11'::DATE, '2025-01-12'::DATE) AS sat_to_sun,
+       DATEDIFF(WEEK, '2025-01-12'::DATE, '2025-01-13'::DATE) AS sun_to_mon;
+-- Result: 0, 1
+
 -- Difference in months
-SELECT DATEDIFF('2025-01-01'::DATE, '2025-06-01'::DATE, MONTH) AS diff_months;
+SELECT DATEDIFF('2025-06-01'::DATE, '2025-01-01'::DATE, MONTH) AS diff_months;
 -- Result: 5
 
+-- Two month boundaries are crossed, one whole month elapses
+SELECT DATE_DIFF(MONTH, '1992-09-15'::DATE, '1992-11-14'::DATE) AS boundaries,
+       TIMESTAMPDIFF(MONTH, '1992-09-15'::DATE, '1992-11-14'::DATE) AS elapsed;
+-- Result: 2, 1
+
+-- MySQL's own example
+SELECT TIMESTAMPDIFF(MONTH, '2003-02-01', '2003-05-01') AS diff_months;
+-- Result: 3
+
 -- Difference in years
-SELECT DATEDIFF('2025-01-01'::DATE, '2027-01-01'::DATE, YEAR) AS diff_years;
+SELECT DATEDIFF('2027-01-01'::DATE, '2025-01-01'::DATE, YEAR) AS diff_years;
 -- Result: 2
+
+-- One second across a year end
+SELECT DATEDIFF(YEAR, '2025-12-31 23:59:59', '2026-01-01 00:00:00') AS boundaries,
+       TIMESTAMPDIFF(YEAR, '2025-12-31 23:59:59', '2026-01-01 00:00:00') AS elapsed;
+-- Result: 1, 0
 
 -- Difference in hours (with timestamps)
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T14:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
+SELECT DATEDIFF('2025-01-10T14:00:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, HOUR) AS diff_hours;
 -- Result: 2
 
+-- One minute across an hour
+SELECT DATEDIFF(HOUR, '2025-01-10 10:59:00', '2025-01-10 11:00:00') AS boundaries,
+       TIMESTAMPDIFF(HOUR, '2025-01-10 10:59:00', '2025-01-10 11:00:00') AS elapsed;
+-- Result: 1, 0
+
+-- One hour across midnight
+SELECT DATEDIFF(DAY, '2025-01-10 23:30:00', '2025-01-11 00:30:00') AS boundaries,
+       TIMESTAMPDIFF(DAY, '2025-01-10 23:30:00', '2025-01-11 00:30:00') AS elapsed;
+-- Result: 1, 0
+
 -- Difference in minutes
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:30:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
+SELECT DATEDIFF('2025-01-10T12:30:00Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, MINUTE) AS diff_minutes;
 -- Result: 30
 
 -- Difference in seconds
-SELECT DATEDIFF('2025-01-10T12:00:00Z'::TIMESTAMP, '2025-01-10T12:00:45Z'::TIMESTAMP, SECOND) AS diff_seconds;
+SELECT DATEDIFF('2025-01-10T12:00:45Z'::TIMESTAMP, '2025-01-10T12:00:00Z'::TIMESTAMP, SECOND) AS diff_seconds;
 -- Result: 45
+
+-- An age in whole years: the years elapsed, not the year boundaries crossed
+SELECT TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE) AS age FROM users;
 ```
 
 ---
@@ -617,6 +705,14 @@ DATE_TRUNC(date_or_datetime_expr, unit)
 
 **Output:**
 - `DATE` or `DATETIME` (same type as input)
+
+**Week:**
+- `WEEK` truncates to the **Monday** that starts the ISO-8601 week, at 00:00 UTC, in every clause: a `GROUP BY DATE_TRUNC(…, WEEK)` buckets on that same Monday.
+
+> 🔴 **Changed in 0.24.0 — `DATE_TRUNC(…, WEEK)` is the Monday that starts the week.** Before 0.24.0, a
+> `SELECT` item, a `WHERE` condition or a computed column (`SCRIPT AS`) moved a date FORWARD to the
+> Sunday that ends its week (`2025-01-15` gave `2025-01-19`), while a `GROUP BY` of the same
+> expression bucketed on the Monday.
 
 **Examples:**
 ```sql

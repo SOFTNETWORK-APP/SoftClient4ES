@@ -27,7 +27,7 @@ import app.softnetwork.elastic.sql.query.SelectStatement
 import com.typesafe.config.ConfigFactory
 
 import java.time.temporal.ChronoUnit
-import java.time.{LocalDate, ZoneOffset, ZonedDateTime}
+import java.time.{LocalDate, ZoneOffset}
 
 // ---------------------------------------------------------------------------
 // Base test trait — to be mixed with ElasticDockerTestKit
@@ -130,13 +130,13 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |  id INT NOT NULL COMMENT 'user identifier',
         |  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
         |  birthdate DATE,
-        |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+        |  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
         |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
         |  profile STRUCT FIELDS(
         |    bio VARCHAR,
         |    followers INT,
         |    join_date DATE,
-        |    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+        |    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY))
         |  ) COMMENT 'user profile',
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false));""".stripMargin
@@ -157,13 +157,13 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // of conflating the two facts. The runtime type now lives in `SQLTypeUtils.runtimeType`,
     // reached only through `GenericIdentifier.baseType`, so no release note is owed.
     ddl should include("birthdate DATE")
-    ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
+    ddl should include("age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))")
     ddl should include("ingested_at TIMESTAMP DEFAULT _ingest.timestamp")
     ddl should include("profile STRUCT FIELDS (")
     ddl should include("bio VARCHAR")
     ddl should include("followers INT")
     ddl should include("join_date DATE")
-    ddl should include("seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))")
+    ddl should include("seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))")
     ddl should include("PRIMARY KEY (id)")
     ddl should include("PARTITION BY birthdate (MONTH)")
   }
@@ -1479,7 +1479,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |    bio VARCHAR,
         |    followers INT,
         |    join_date DATE,
-        |    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+        |    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY))
         |  )
         |);""".stripMargin
 
@@ -1491,7 +1491,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |    bio VARCHAR,
         |    followers INT,
         |    join_date DATE,
-        |    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY)),
+        |    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY)),
         |    reputation DOUBLE DEFAULT 0.0
         |  );""".stripMargin
 
@@ -1534,7 +1534,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |  id INT NOT NULL,
         |  join_date DATE,
         |  reputation DOUBLE DEFAULT 0.0,
-        |  seniority INT SCRIPT AS (DATEDIFF(join_date, CURRENT_DATE, DAY))
+        |  seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, join_date, DAY))
         |);""".stripMargin
 
     assertDdl(System.nanoTime(), client.run(create).futureValue)
@@ -2756,7 +2756,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     * the document being indexed, NOT the temporal object `doc['d'].value` hands a query — that part
     * of the earlier reading was right, and `SQLTypeUtils.coerce` still guards its temporal arms on
     * `isProcessorContext` for exactly that reason. What was wrong was the conclusion drawn from it:
-    * that `DATEDIFF(d, CURRENT_DATE, DAY)` therefore CANNOT compute at ingest. It can, once the
+    * that `DATEDIFF(CURRENT_DATE, d, DAY)` therefore CANNOT compute at ingest. It can, once the
     * operand is parsed first — and until story 21.8 Part C it did not, so `ignore_failure` left the
     * column unset and the value was silently missing from every stored document.
     *
@@ -2768,8 +2768,9 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     *     `ZonedDateTime` throughout instead of narrowing `CURRENT_DATE` to a `LocalDate`.
     *
     * ⚠️ The expected value is COMPUTED, not pinned: it is a distance from `now`, so a literal would
-    * have been correct for one day. It is derived the way the ingest script derives it, and the ±1
-    * tolerance covers an ingest and an assertion that straddle UTC midnight.
+    * have been correct for one day. It is derived the way the ingest script derives it — the dates
+    * come first, so it is `CURRENT_DATE - d` in calendar days (UTC) — and the ±1 tolerance covers
+    * an ingest and an assertion that straddle UTC midnight.
     */
   it should "record what an ingest script sees for a DATE column (ctx runtime type)" in {
     val create =
@@ -2777,7 +2778,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |  id INT NOT NULL,
         |  d DATE,
         |  label KEYWORD,
-        |  days INT SCRIPT AS (DATEDIFF(d, CURRENT_DATE, DAY))
+        |  days INT SCRIPT AS (DATEDIFF(CURRENT_DATE, d, DAY))
         |);""".stripMargin
     assertDdl(System.nanoTime(), client.run(create).futureValue)
 
@@ -2803,8 +2804,8 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
 
     val days = row.get("days").map(_ => scalarOf(row, "days")).orNull
     val expected = ChronoUnit.DAYS.between(
-      LocalDate.of(2024, 3, 15).atStartOfDay(ZoneOffset.UTC),
-      ZonedDateTime.now(ZoneOffset.UTC)
+      LocalDate.of(2024, 3, 15),
+      LocalDate.now(ZoneOffset.UTC)
     )
     withClue(s"ingest-computed days = [$days], expected ~$expected: ") {
       // The measurement. Asserted, not merely printed, so a change in either direction is loud —
@@ -3276,7 +3277,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |        value = "anonymous"
         |    ),
         |    SCRIPT (
-        |        description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))",
+        |        description = "age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))",
         |        lang = "painless",
         |        source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))",
         |        ignore_failure = true
@@ -3289,7 +3290,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |        value = "_ingest.timestamp"
         |    ),
         |    SCRIPT (
-        |        description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))",
+        |        description = "profile.seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))",
         |        lang = "painless",
         |        source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))",
         |        ignore_failure = true

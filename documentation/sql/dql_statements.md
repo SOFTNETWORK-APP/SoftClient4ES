@@ -1297,7 +1297,7 @@ FROM dql_users;
 | `DATE_SUB(date, INTERVAL n unit)`   | Subtract interval                                                                             |
 | `DATETIME_ADD(ts, INTERVAL n unit)` | Add interval to timestamp                                                                     |
 | `DATETIME_SUB(ts, INTERVAL n unit)` | Subtract interval from timestamp                                                              |
-| `DATE_DIFF(date1, date2, unit)`     | Difference in units: elapsed `HOUR` / `MINUTE` / `SECOND`, calendar dates from `DAY` up (UTC) |
+| `DATE_DIFF(date1, date2, unit)`     | `date1 - date2` in units: the calendar boundaries crossed (UTC, weeks start on Monday)        |
 | `DATE_TRUNC(date, unit)`            | Truncate to unit                                                                              |
 
 ##### **Formatting & parsing:**
@@ -1327,7 +1327,7 @@ SELECT id,
        MONTH(CURRENT_DATE) AS current_month,
        DAY(CURRENT_DATE) AS current_day,
        YEAR(birthdate) AS year_b,
-       DATE_DIFF(birthdate, CURRENT_DATE, YEAR) AS diff_years,
+       DATE_DIFF(CURRENT_DATE, birthdate, YEAR) AS diff_years,
        DATE_TRUNC(birthdate, MONTH) AS trunc_month,
        DATETIME_FORMAT(birthdate, '%Y-%m-%d') AS birth_str
 FROM dql_users;
@@ -1561,13 +1561,13 @@ CREATE TABLE IF NOT EXISTS users (
   id INT NOT NULL COMMENT 'user identifier',
   name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
   birthdate DATE,
-  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
   ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
   profile STRUCT FIELDS(
     bio VARCHAR,
     followers INT,
     join_date DATE,
-    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY))
   ) COMMENT 'user profile',
   PRIMARY KEY (id)
 ) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false));
@@ -1579,14 +1579,14 @@ SHOW TABLE users;
 
 | Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
 |-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|
-| age               | INT       | yes  |     | NULL              |                 | DATE_DIFF(birthdate, CURRENT_DATE, YEAR)        | ()                                                |
+| age               | INT       | yes  |     | NULL              |                 | TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)    | ()                                                |
 | birthdate         | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
 | id                | INT       | no   | PRI | NULL              | user identifier |                                                 | ()                                                |
 | ingested_at       | TIMESTAMP | yes  |     | _ingest.timestamp |                 |                                                 | ()                                                |
 | name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
 | name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
 | profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
-| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(profile.join_date, CURRENT_DATE, DAY) | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
 | profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
@@ -1606,7 +1606,7 @@ _meta: (primary_key = ('id'), partition_by = (column = 'birthdate', granularity 
 📝 DDL:
 ```sql
 CREATE OR REPLACE TABLE users (
-	age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+	age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
 	birthdate DATE,
 	id INT NOT NULL COMMENT 'user identifier',
 	ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
@@ -1614,7 +1614,7 @@ CREATE OR REPLACE TABLE users (
 		raw KEYWORD COMMENT 'sortable'
 	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
 	profile STRUCT FIELDS (
-		seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)),
+		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)),
 		join_date DATE,
 		followers INT,
 		bio VARCHAR
@@ -1640,7 +1640,7 @@ SHOW CREATE TABLE users;
 
 ```sql
 CREATE OR REPLACE TABLE users (
-	age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+	age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
 	birthdate DATE,
 	id INT NOT NULL COMMENT 'user identifier',
 	ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
@@ -1648,7 +1648,7 @@ CREATE OR REPLACE TABLE users (
 		raw KEYWORD COMMENT 'sortable'
 	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
 	profile STRUCT FIELDS (
-		seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)),
+		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)),
 		join_date DATE,
 		followers INT,
 		bio VARCHAR
@@ -1682,14 +1682,14 @@ Returns the **normalized SQL schema**, including :
 
 | Field             | Type      | Null | Key | Default           | Comment         | Script                                          | Extra                                             |
 |-------------------|-----------|------|-----|-------------------|-----------------|-------------------------------------------------|---------------------------------------------------|
-| age               | INT       | yes  |     | NULL              |                 | DATE_DIFF(birthdate, CURRENT_DATE, YEAR)        | ()                                                |
+| age               | INT       | yes  |     | NULL              |                 | TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)    | ()                                                |
 | birthdate         | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
 | id                | INT       | no   | PRI | NULL              | user identifier |                                                 | ()                                                |
 | ingested_at       | TIMESTAMP | yes  |     | _ingest.timestamp |                 |                                                 | ()                                                |
 | name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
 | name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
 | profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
-| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(profile.join_date, CURRENT_DATE, DAY) | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
 | profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
@@ -1787,9 +1787,9 @@ Processors: (6)
 | processor_type  | description                                                                       | field             | ignore_failure | options                                                                                                                                                                                                                                                                                             |
 |-----------------|-----------------------------------------------------------------------------------|-------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | set             | DEFAULT 'anonymous'                                                               | name              | yes            | (value = "anonymous", if = "ctx.name == null")                                                                                                                                                                                                                                                      |
-| script          | age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))                      | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
+| script          | age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))                  | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
 | set             | DEFAULT _ingest.timestamp                                                         | ingested_at       | yes            | (value = "_ingest.timestamp", if = "ctx.ingested_at == null")                                                                                                                                                                                                                                       |
-| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
+| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
 | date_index_name | PARTITION BY birthdate (MONTH)                                                    | birthdate         | yes            | (date_rounding = "M", date_formats = ["yyyy-MM"], index_name_prefix = "users-")                                                                                                                                                                                                                     |
 | set             | PRIMARY KEY (id)                                                                  | _id               | no             | (value = "{{id}}", ignore_empty_value = false)                                                                                                                                                                                                                                                      |
 
@@ -1804,7 +1804,7 @@ CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
 		if = "ctx.name == null"
 	), 
 	SCRIPT(
-		description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))", 
+		description = "age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))", 
 		lang = "painless", 
 		source = "...", 
 		ignore_failure = true
@@ -1817,7 +1817,7 @@ CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
 		if = "ctx.ingested_at == null"
 	), 
 	SCRIPT(
-		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))", 
+		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))", 
 		lang = "painless", 
 		source = "...", 
 		ignore_failure = true
@@ -1868,7 +1868,7 @@ CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
 		if = "ctx.name == null"
 	), 
 	SCRIPT(
-		description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))", 
+		description = "age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))", 
 		lang = "painless", 
 		source = "...", 
 		ignore_failure = true
@@ -1881,7 +1881,7 @@ CREATE OR REPLACE PIPELINE user_pipeline WITH PROCESSORS (
 		if = "ctx.ingested_at == null"
 	), 
 	SCRIPT(
-		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY))", 
+		description = "profile.seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))", 
 		lang = "painless", 
 		source = "...", 
 		ignore_failure = true
@@ -1928,9 +1928,9 @@ DESCRIBE PIPELINE user_pipeline;
 | processor_type  | description                                                                       | field             | ignore_failure | options                                                                                                                                                                                                                                                                                             |
 |-----------------|-----------------------------------------------------------------------------------|-------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | set             | DEFAULT 'anonymous'                                                               | name              | yes            | (value = "anonymous", if = "ctx.name == null")                                                                                                                                                                                                                                                      |
-| script          | age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))                      | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
+| script          | age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))                  | age               | yes            | (lang = "painless", source = "def param1 = ctx.birthdate; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.age = (param1 == null) ? null : Long.valueOf(ChronoUnit.YEARS.between(param1, param2))")                       |
 | set             | DEFAULT _ingest.timestamp                                                         | ingested_at       | yes            | (value = "_ingest.timestamp", if = "ctx.ingested_at == null")                                                                                                                                                                                                                                       |
-| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(profile.join_date, CURRENT_DATE, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
+| script          | profile.seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)) | profile.seniority | yes            | (lang = "painless", source = "def param1 = ctx.profile?.join_date; def param2 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(ctx['_ingest']['timestamp']), ZoneId.of('Z')).toLocalDate(); ctx.profile.seniority = (param1 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))") |
 | date_index_name | PARTITION BY birthdate (MONTH)                                                    | birthdate         | yes            | (date_rounding = "M", date_formats = ["yyyy-MM"], index_name_prefix = "users-")                                                                                                                                                                                                                     |
 | set             | PRIMARY KEY (id)                                                                  | _id               | no             | (value = "{{id}}", ignore_empty_value = false)                                                                                                                                                                                                                                                      |
 📊 6 row(s) (1ms)

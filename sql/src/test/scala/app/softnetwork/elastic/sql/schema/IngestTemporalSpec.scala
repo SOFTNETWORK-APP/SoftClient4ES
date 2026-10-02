@@ -14,8 +14,9 @@ import org.scalatest.prop.TableDrivenPropertyChecks
   * no `get(ChronoField)`, the script threw, `ignore_failure: true` swallowed the throw, and the
   * computed column was simply ABSENT from the stored document. Measured on real Elasticsearch for
   * `YEAR`, `MONTH`, `DATE_TRUNC`, `DATE_ADD`/`DATE_SUB`, `DATE_FORMAT` and `DATE_DIFF` — and
-  * `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` is a PUBLISHED example
-  * (`documentation/sql/ddl_statements.md`, and the REPL testkit's `users` table).
+  * `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` was a PUBLISHED example
+  * (`documentation/sql/ddl_statements.md`, and the REPL testkit's `users` table), published since
+  * 0.24.0 as `TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)` (pinned below).
   *
   * 🔴 Three separate things had to be true for that example to work, and only the first was known:
   *
@@ -35,8 +36,9 @@ import org.scalatest.prop.TableDrivenPropertyChecks
   *      `SQLTypeUtils.runtimeType` already applies to a query.
   *
   * ⚠️ Every emission below was executed as a real ingest pipeline on ES 6.8.23, 7.17.29, 8.18.3 AND
-  * 9.0.3, against both document shapes. `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` stores `age: 36`
-  * for `{"birthdate":"1990-05-20"}` and for `{"birthdate":643161600000}` on all four.
+  * 9.0.3, against both document shapes. `DATE_DIFF(birthdate, CURRENT_DATE, YEAR)` stored `age: 36`
+  * for `{"birthdate":"1990-05-20"}` and for `{"birthdate":643161600000}` on all four, before 0.24.0
+  * aligned its direction and counting with the vendors' (see the published example's pin below).
   *
   * KNOWN AND UNCHANGED: a document MISSING the source field still leaves the computed column
   * absent. `instanceof` on null throws and `ignore_failure: true` swallows it, which is the same
@@ -138,9 +140,10 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
   }
 
   it should "keep the ZonedDateTime for CURRENT_DATE too" in {
-    // Narrowing to a `LocalDate` here is what made `ChronoUnit.YEARS.between` refuse the pair in
-    // the published DATE_DIFF example. A query is unaffected and still narrows -- asserted in
-    // ParserSpec, whose query-side pins did not move.
+    // Narrowing the clock's parameter to a `LocalDate` here is what made `ChronoUnit.YEARS.between`
+    // refuse the pair in the published DATE_DIFF example. The CALL reads each operand's calendar
+    // date with `LocalDate.from`, which takes a `ZonedDateTime` and a `LocalDate` alike, so both
+    // sides of `between` are one type whatever the parameter holds.
     val s = source(
       "CREATE TABLE t (birthdate DATE, age INTEGER SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)))",
       "age"
@@ -150,11 +153,13 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
   }
 
   it should "emit the published example exactly as it was executed" in {
-    // The whole point, pinned end to end. This byte string was run as an ingest pipeline on ES
-    // 6.8.23, 7.17.29, 8.18.3 and 9.0.3: `{"birthdate":"1990-05-20"}` and
-    // `{"birthdate":643161600000}` both store `age: 36`.
+    // The whole point, pinned end to end. The published age is `TIMESTAMPDIFF(YEAR, birthdate,
+    // CURRENT_DATE)`: the whole years elapsed from `birthdate` to the start of `CURRENT_DATE`
+    // (UTC), which the processor holds as the current instant and reads as a date. Run as an
+    // ingest pipeline on ES 8.18.3, `{"birthdate":"1990-05-20"}` and `{"birthdate":643161600000}`
+    // both store that age.
     source(
-      "CREATE TABLE t (birthdate DATE, age INTEGER SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)))",
+      "CREATE TABLE t (birthdate DATE, age INTEGER SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)))",
       "age"
     ) shouldBe
     "def param1 = ctx.birthdate; " +
@@ -163,8 +168,12 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
     ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(param1).atZone(ZoneId.of('Z'))); " +
     "def param3 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(System.currentTimeMillis()), " +
     "ZoneId.of('Z')); " +
-    "def param4 = Long.valueOf(ChronoUnit.YEARS.between(param2, param3)); " +
-    "ctx.age = (param1 == null) ? null : param4"
+    "def param4 = LocalDate.from(param3).atStartOfDay(ZoneId.of('Z')); " +
+    "def param5 = Long.valueOf((((param4.getYear() * 12L + param4.getMonthValue()) * 4294967296L " +
+    "+ (param4.getDayOfMonth() - 1) * 86400000L + param4.getLong(ChronoField.MILLI_OF_DAY)) - " +
+    "((param2.getYear() * 12L + param2.getMonthValue()) * 4294967296L + (param2.getDayOfMonth() " +
+    "- 1) * 86400000L + param2.getLong(ChronoField.MILLI_OF_DAY))) / 4294967296L / 12); " +
+    "ctx.age = (param1 == null) ? null : param5"
   }
 
   /** 🔴 Issue #384 — a COMPARISON inside a computed column must not be given the query path's
