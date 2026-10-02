@@ -1291,14 +1291,14 @@ FROM dql_users;
 
 ##### **Arithmetic:**
 
-| Function                            | Description                      |
-|-------------------------------------|----------------------------------|
-| `DATE_ADD(date, INTERVAL n unit)`   | Add interval                     |
-| `DATE_SUB(date, INTERVAL n unit)`   | Subtract interval                |
-| `DATETIME_ADD(ts, INTERVAL n unit)` | Add interval to timestamp        |
-| `DATETIME_SUB(ts, INTERVAL n unit)` | Subtract interval from timestamp |
-| `DATE_DIFF(date1, date2, unit)`     | Difference in units              |
-| `DATE_TRUNC(date, unit)`            | Truncate to unit                 |
+| Function                            | Description                                                                                   |
+|-------------------------------------|-----------------------------------------------------------------------------------------------|
+| `DATE_ADD(date, INTERVAL n unit)`   | Add interval                                                                                  |
+| `DATE_SUB(date, INTERVAL n unit)`   | Subtract interval                                                                             |
+| `DATETIME_ADD(ts, INTERVAL n unit)` | Add interval to timestamp                                                                     |
+| `DATETIME_SUB(ts, INTERVAL n unit)` | Subtract interval from timestamp                                                              |
+| `DATE_DIFF(date1, date2, unit)`     | Difference in units: elapsed `HOUR` / `MINUTE` / `SECOND`, calendar dates from `DAY` up (UTC) |
+| `DATE_TRUNC(date, unit)`            | Truncate to unit                                                                              |
 
 ##### **Formatting & parsing:**
 
@@ -1327,7 +1327,7 @@ SELECT id,
        MONTH(CURRENT_DATE) AS current_month,
        DAY(CURRENT_DATE) AS current_day,
        YEAR(birthdate) AS year_b,
-       DATE_DIFF(CURRENT_DATE, birthdate, YEAR) AS diff_years,
+       DATE_DIFF(birthdate, CURRENT_DATE, YEAR) AS diff_years,
        DATE_TRUNC(birthdate, MONTH) AS trunc_month,
        DATETIME_FORMAT(birthdate, '%Y-%m-%d') AS birth_str
 FROM dql_users;

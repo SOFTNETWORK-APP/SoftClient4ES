@@ -206,7 +206,7 @@ SELECT FLOOR(123.999) AS f;
 SELECT 
   user_id,
   name,
-  FLOOR(DATEDIFF(CURRENT_DATE, birth_date, DAY) / 365.25) AS age
+  FLOOR(DATEDIFF(birth_date, CURRENT_DATE, DAY) / 365.25) AS age
 FROM users;
 
 -- Bucket values

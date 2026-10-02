@@ -37,6 +37,8 @@ import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -121,6 +123,7 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(index)
     client.deleteIndex(nullIndex)
     client.deleteIndex(coalesceIndex)
+    client.deleteIndex(dateDiffIndex)
     super.afterAll()
   }
 
@@ -1797,6 +1800,473 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     withClue(
       s"${wrong.size} wrong statements ($wrongGroups wrong groups), ${errors.size} errors:\n" +
       (report.take(20) ++ errors.take(10)).mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+      errors shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The spellings a HAVING used to refuse and now answers: a SELECT alias inside a function, read
+  // as the aggregate it names at every depth (`COALESCE(ma, mb) > 1` is `COALESCE(MAX(a), MIN(b))
+  // > 1`), and ISNULL / ISNOTNULL over a QUALIFIED aggregate, whose operand is now the aggregate
+  // every other position builds -- it was refused as "a different aggregate" than its own SELECT
+  // item.
+  //
+  // The population is DERIVED from the COALESCE one above: every operand of it in its alias
+  // spelling, under every form, plus the same operands on the VALUE side of a published aggregate,
+  // over the same fixture and the same three-valued oracle -- and, under the same forms, the alias
+  // of a SELECT bucket_script item (`MAX(a) - MIN(b) AS d`) under SIGN, NULL whenever an operand
+  // is. Every statement runs through the gateway; every one of them was refused before.
+  // ---------------------------------------------------------------------------------------------
+
+  private val coalesceSelect = "g, MAX(a) AS ma, MIN(b) AS mb, MAX(b) AS xb, SUM(a) AS sa"
+
+  /** An operand in its SELECT-alias spelling. */
+  private def aliasSql(operand: CoalesceOperand): String = operand match {
+    case Aggregate(sql) =>
+      Map("MAX(a)" -> "ma", "MIN(b)" -> "mb", "MAX(b)" -> "xb", "SUM(a)" -> "sa")
+        .getOrElse(sql, fail(s"no SELECT alias for $sql"))
+    case Literal(k)          => k.toString
+    case CoalesceOf(as @ _*) => as.map(aliasSql).mkString("COALESCE(", ", ", ")")
+    case SignOf(argument)    => s"SIGN(${aliasSql(argument)})"
+    case GreatestOf(as @ _*) => as.map(aliasSql).mkString("GREATEST(", ", ", ")")
+    case LeastOf(as @ _*)    => as.map(aliasSql).mkString("LEAST(", ", ", ")")
+  }
+
+  private lazy val respelledPopulation: Seq[NullStatement] = {
+    val oracle: Seq[(String, CoalesceGroup)] = coalesceGroups.map { case (g, rows) =>
+      g -> CoalesceGroup(rows.size, rows.flatMap(_._1), rows.flatMap(_._2))
+    }
+    def keep(eval: CoalesceGroup => Option[Boolean]): Set[String] =
+      oracle.collect { case (g, group) if eval(group).contains(true) => g }.toSet
+    // the alias spelling of every COALESCE-family statement above
+    val aliasInFunction = for {
+      operand <- coalesceOperands
+      c       <- coalesceForms
+      if !(operand.isInstanceOf[SignOf] && readsNullTest(c))
+    } yield NullStatement(
+      s"SELECT $coalesceSelect FROM $coalesceIndex GROUP BY g HAVING ${c.sql(aliasSql(operand))}",
+      keep(group => c.eval(operand.value(group), group.rows))
+    )
+    // the same operands on the VALUE side of a published aggregate, alias spelling on both sides
+    val valueSide = for {
+      operand <- coalesceOperands ++ Seq(CoalesceOf(minB, Literal(1)), SignOf(minB))
+      op      <- Seq(">", "<=")
+    } yield NullStatement(
+      s"SELECT $coalesceSelect FROM $coalesceIndex GROUP BY g HAVING ma $op ${aliasSql(operand)}",
+      keep { group =>
+        for {
+          left  <- maxA.value(group)
+          right <- operand.value(group)
+        } yield compares(left, op, right)
+      }
+    )
+    // the alias of a SELECT bucket_script item under SIGN, NULL whenever an operand is: the filter
+    // reads the operands and declares them
+    val bucketScriptInFunction = for {
+      c <- coalesceForms
+      // the null test of SIGN, as above
+      if !readsNullTest(c)
+    } yield {
+      val having = c.sql("SIGN(d)")
+      NullStatement(
+        s"SELECT g, MAX(a) AS ma, MIN(b) AS mb, MAX(a) - MIN(b) AS d FROM $coalesceIndex GROUP BY g HAVING $having",
+        keep { group =>
+          c.eval(
+            for {
+              x <- maxA.value(group)
+              y <- minB.value(group)
+            } yield math.signum(x - y),
+            group.rows
+          )
+        }
+      )
+    }
+    // ISNULL / ISNOTNULL over a qualified aggregate
+    val qualifiedNullTests = for {
+      aggregate <- Seq(maxA, minB, maxB)
+      isNull    <- Seq(true, false)
+    } yield {
+      val qualified = aggregate.sql.replace("(", "(r.")
+      val test = if (isNull) s"ISNULL($qualified)" else s"ISNOTNULL($qualified)"
+      NullStatement(
+        s"SELECT r.g, $qualified AS m FROM $coalesceIndex AS r GROUP BY r.g HAVING $test",
+        keep(group => Some(aggregate.value(group).isEmpty == isNull))
+      )
+    }
+    aliasInFunction ++ valueSide ++ bucketScriptInFunction ++ qualifiedNullTests
+  }
+
+  "a HAVING spelling that used to be refused" should
+  "keep exactly the groups SQL's three-valued logic keeps" in {
+    coalesceGroupsLoaded
+    val population = respelledPopulation
+    // Non-vacuity: every statement parses now, and the oracle keeps and drops a group whose `a`
+    // or `b` has no value.
+    population.size should be >= 200
+    population.foreach(st => withClue(s"[${st.sql}] ")(Parser(st.sql).isRight shouldBe true))
+    Seq("g1", "g2", "g4").foreach { g =>
+      withClue(s"[$g] ") {
+        population.exists(_.expected.contains(g)) shouldBe true
+        population.exists(st => !st.expected.contains(g)) shouldBe true
+      }
+    }
+
+    val outcomes = population.map(st => st -> keptGroups(st))
+    val wrong = outcomes.collect {
+      case (st, Right(actual)) if actual != st.expected => (st, actual)
+    }
+    val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
+    val wrongGroups = wrong.map { case (st, actual) =>
+      ((st.expected -- actual) ++ (actual -- st.expected)).size
+    }.sum
+    info(
+      s"HAVING spellings that used to be refused: ${population.size} statements; wrong: " +
+      s"${wrong.size} statements / $wrongGroups groups; errors: ${errors.size}"
+    )
+    val report = wrong.map { case (st, actual) =>
+      s"[${st.sql}] kept ${actual.toSeq.sorted.mkString(",")}, expected ${st.expected.toSeq.sorted.mkString(",")}"
+    }
+    report.foreach(info(_))
+    errors.foreach(info(_))
+    withClue(
+      s"${wrong.size} wrong statements ($wrongGroups wrong groups), ${errors.size} errors:\n" +
+      (report.take(20) ++ errors.take(10)).mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+      errors shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // GREATEST / LEAST over aggregates in HAVING skip a NULL argument -- what the docs state and
+  // WHERE does: the result is NULL only when every argument is. The group filter emitted
+  // `Math.max(params.m, k)` with no NULL skip, behind a guard on EVERY argument, so a group was
+  // dropped as soon as ONE argument was NULL: MEASURED on Elasticsearch 8.18.3, 5 of the 6 shapes
+  // below kept the wrong groups (`LEAST(MIN(b), 1) < 3` dropped every group with no `b`).
+  //
+  // The population is DERIVED from the COALESCE one above -- the same fixture, the same forms and
+  // the same three-valued oracle, NULL arguments skipped -- over several aggregates and an
+  // aggregate with a literal, in the bare, alias and qualified spellings, on the value side of an
+  // aggregate, and in the implicit whole-table group. Every statement runs through the gateway.
+  // ---------------------------------------------------------------------------------------------
+
+  private final case class GreatestOf(arguments: CoalesceOperand*) extends CoalesceOperand {
+    def sql: String = arguments.map(_.sql).mkString("GREATEST(", ", ", ")")
+    def value(group: CoalesceGroup): Option[Double] =
+      arguments.flatMap(_.value(group)).reduceOption(_ max _)
+  }
+
+  private final case class LeastOf(arguments: CoalesceOperand*) extends CoalesceOperand {
+    def sql: String = arguments.map(_.sql).mkString("LEAST(", ", ", ")")
+    def value(group: CoalesceGroup): Option[Double] =
+      arguments.flatMap(_.value(group)).reduceOption(_ min _)
+  }
+
+  private val reducerOperands: Seq[CoalesceOperand] = Seq(
+    GreatestOf(maxA, minB),
+    LeastOf(maxA, minB),
+    GreatestOf(minB, Literal(1)),
+    LeastOf(minB, Literal(1)),
+    GreatestOf(maxA, minB, maxB),
+    LeastOf(Literal(5), maxA, minB),
+    // SUM is never NULL (#336)
+    GreatestOf(Aggregate("SUM(a)"), minB),
+    LeastOf(GreatestOf(maxA, minB), maxB),
+    CoalesceOf(GreatestOf(maxA, minB), Literal(5)),
+    GreatestOf(CoalesceOf(maxA, Literal(0)), minB),
+    SignOf(LeastOf(maxA, minB))
+  )
+
+  /** The measured shapes with the reducer on the LEFT, in the form they were measured in; the two
+    * on the value side (`MAX(a) > GREATEST(MIN(b), 1)`, `... LEAST(...)`) are in `valueSide`.
+    */
+  private val reducerMeasured: Seq[(CoalesceOperand, NullCond)] = Seq(
+    GreatestOf(maxA, minB)       -> Cmp(">", 1),
+    GreatestOf(minB, Literal(1)) -> Cmp(">", 1),
+    LeastOf(maxA, minB)          -> Cmp("<", 3),
+    LeastOf(minB, Literal(1))    -> Cmp("<", 3)
+  )
+
+  private val reducerForms: Seq[NullCond] = coalesceForms :+ Cmp("<", 3)
+
+  /** A GREATEST / LEAST with a literal argument: never NULL, and its rendering is a primitive. */
+  private def primitiveReducer(operand: CoalesceOperand): Boolean = operand match {
+    case GreatestOf(as @ _*) => as.exists(_.isInstanceOf[Literal])
+    case LeastOf(as @ _*)    => as.exists(_.isInstanceOf[Literal])
+    case _                   => false
+  }
+
+  private lazy val reducerPopulation: Seq[NullStatement] = {
+    val oracle: Seq[(String, CoalesceGroup)] = coalesceGroups.map { case (g, rows) =>
+      g -> CoalesceGroup(rows.size, rows.flatMap(_._1), rows.flatMap(_._2))
+    }
+    def keep(eval: CoalesceGroup => Option[Boolean]): Set[String] =
+      oracle.collect { case (g, group) if eval(group).contains(true) => g }.toSet
+    def qualified(operand: CoalesceOperand): String =
+      operand.sql.replace("(a)", "(r.a)").replace("(b)", "(r.b)")
+    val qualifiedSelect = "r.g, MAX(r.a) AS ma, MIN(r.b) AS mb, MAX(r.b) AS xb, SUM(r.a) AS sa"
+    val grouped = for {
+      operand <- reducerOperands
+      c       <- reducerForms
+      // As for COALESCE: the null test of a function rendering a primitive fails to compile in
+      // Elasticsearch on main already (`Cannot cast from [double] to [java.lang.Object]`) -- SIGN,
+      // and a GREATEST / LEAST with a literal argument, which is never NULL.
+      if !((operand.isInstanceOf[SignOf] || primitiveReducer(operand)) && readsNullTest(c))
+      (select, from, key, spelled) <- Seq(
+        ("g, COUNT(*) AS c", coalesceIndex, "g", operand.sql),
+        (coalesceSelect, coalesceIndex, "g", operand.sql),
+        (coalesceSelect, coalesceIndex, "g", aliasSql(operand)),
+        (qualifiedSelect, s"$coalesceIndex AS r", "r.g", qualified(operand))
+      )
+    } yield NullStatement(
+      s"SELECT $select FROM $from GROUP BY $key HAVING ${c.sql(spelled)}",
+      keep(group => c.eval(operand.value(group), group.rows))
+    )
+    // on the VALUE side of an aggregate, bare and alias spellings
+    val valueSide = for {
+      operand         <- reducerOperands
+      op              <- Seq(">", "<=")
+      (left, spelled) <- Seq(("MAX(a)", operand.sql), ("ma", aliasSql(operand)))
+    } yield NullStatement(
+      s"SELECT $coalesceSelect FROM $coalesceIndex GROUP BY g HAVING $left $op $spelled",
+      keep { group =>
+        for {
+          l <- maxA.value(group)
+          r <- operand.value(group)
+        } yield compares(l, op, r)
+      }
+    )
+    // The implicit whole-table group, one group at a time.
+    val wholeTable = for {
+      (operand, c) <- reducerMeasured
+      (g, group)   <- oracle
+    } yield NullStatement(
+      s"SELECT COUNT(*) AS c FROM $coalesceIndex WHERE g = '$g' HAVING ${c.sql(operand.sql)}",
+      if (c.eval(operand.value(group), group.rows).contains(true)) Set(g) else Set.empty,
+      wholeTable = Some(g)
+    )
+    grouped ++ valueSide ++ wholeTable
+  }
+
+  "a HAVING over GREATEST / LEAST of aggregates" should
+  "keep exactly the groups SQL's three-valued logic keeps, NULL arguments skipped" in {
+    coalesceGroupsLoaded
+    val population = reducerPopulation
+    // Non-vacuity, computed over the material: the measured shapes are in it, in both spellings,
+    // and the oracle keeps and drops each group whose `a` or `b` has no value.
+    reducerMeasured.foreach { case (operand, c) =>
+      Seq(
+        s"SELECT g, COUNT(*) AS c FROM $coalesceIndex GROUP BY g HAVING ${c.sql(operand.sql)}",
+        s"SELECT $coalesceSelect FROM $coalesceIndex GROUP BY g HAVING ${c.sql(aliasSql(operand))}"
+      ).foreach(sql => withClue(s"[$sql] ")(population.exists(_.sql == sql) shouldBe true))
+    }
+    Seq("g1", "g2", "g4", "g5", "g6").foreach { g =>
+      withClue(s"[$g] ") {
+        population.exists(st => st.wholeTable.isEmpty && st.expected.contains(g)) shouldBe true
+        population.exists(st => st.wholeTable.isEmpty && !st.expected.contains(g)) shouldBe true
+      }
+    }
+    population.foreach(st => withClue(s"[${st.sql}] ")(Parser(st.sql).isRight shouldBe true))
+
+    val outcomes = population.map(st => st -> keptGroups(st))
+    val wrong = outcomes.collect {
+      case (st, Right(actual)) if actual != st.expected => (st, actual)
+    }
+    val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
+    val wrongGroups = wrong.map { case (st, actual) =>
+      ((st.expected -- actual) ++ (actual -- st.expected)).size
+    }.sum
+    info(
+      s"HAVING over GREATEST / LEAST of aggregates: ${population.size} statements; wrong: " +
+      s"${wrong.size} statements / $wrongGroups groups; errors: ${errors.size}"
+    )
+    val report = wrong.map { case (st, actual) =>
+      s"[${st.sql}] kept ${actual.toSeq.sorted.mkString(",")}, expected ${st.expected.toSeq.sorted.mkString(",")}"
+    }
+    report.foreach(info(_))
+    errors.foreach(info(_))
+    withClue(
+      s"${wrong.size} wrong statements ($wrongGroups wrong groups), ${errors.size} errors:\n" +
+      (report.take(20) ++ errors.take(10)).mkString("\n") + "\n"
+    ) {
+      wrong shouldBe empty
+      errors shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // DATEDIFF / DATE_DIFF / TIMESTAMPDIFF over aggregates, computed per group. The calculation is a
+  // bucket_script, which reads a date aggregate as the epoch millis Elasticsearch computed: it failed
+  // the search for every statement below -- `java.lang.Double cannot be cast to ... Temporal` over
+  // two aggregates, `Cannot cast from [java.lang.String] to [java.time.temporal.Temporal]` over an
+  // aggregate and a literal.
+  //
+  // The population is every spelling of the family (MySQL's DATEDIFF with and without a unit,
+  // DATEDIFF / DATE_DIFF / TIMESTAMPDIFF unit-first, DATE_DIFF date-first), over an aggregate and a
+  // literal and over two aggregates, bare and table-qualified: as a SELECT item, whose value is
+  // checked in every group, and through its SELECT alias in HAVING -- the route the "alias it in
+  // SELECT" remedy of an inline DATEDIFF leads to. The fixture holds a group with no date, a group
+  // with some and groups with all of them; the expected values are computed HERE, NULL when an
+  // operand has no value.
+  // ---------------------------------------------------------------------------------------------
+
+  private val dateDiffIndex = "having_datediff_groups"
+
+  /** Each group and the `d` of each of its documents (`None`: the document lacks it). */
+  private val dateDiffGroups: Seq[(String, Seq[Option[String]])] = Seq(
+    "s1" -> Seq(None, None),
+    "s2" -> Seq(Some("2023-12-01")),
+    "s3" -> Seq(Some("2024-03-01"), Some("2024-01-01")),
+    "s4" -> Seq(Some("2023-06-01"), None, Some("2024-02-15")),
+    "s5" -> Seq(Some("2024-01-02")),
+    "s6" -> Seq(Some("2024-01-01"), Some("2024-01-02"))
+  )
+
+  private lazy val dateDiffGroupsLoaded: Unit = {
+    client
+      .createIndex(dateDiffIndex, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client
+      .setMapping(
+        dateDiffIndex,
+        """{"properties": {"id": {"type": "keyword"}, "sensor_id": {"type": "keyword"}, "d": {"type": "date"}}}"""
+      )
+      .get shouldBe true
+    val docs = for {
+      (s, ds)     <- dateDiffGroups.toList
+      (d, offset) <- ds.zipWithIndex
+    } yield (Seq(s""""id":"$s-$offset"""", s""""sensor_id":"$s"""") ++ d.map(x => s""""d":"$x""""))
+      .mkString("{", ",", "}")
+    implicit val bulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = dateDiffIndex, logEvery = 100)
+    implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(dateDiffIndex)
+      case ElasticFailure(error) =>
+        fail(s"Bulk indexing into $dateDiffIndex failed: ${error.message}")
+    }
+  }
+
+  /** A spelling of the family over two operands, and the days it answers for them: `end - start`,
+    * except MySQL's two-argument DATEDIFF, which is `first - second`.
+    */
+  private final case class DateDiffForm(
+    sql: (String, String) => String,
+    days: (LocalDate, LocalDate) => Long
+  )
+
+  private val dateDiffForms: Seq[DateDiffForm] = {
+    def between(start: LocalDate, end: LocalDate): Long = ChronoUnit.DAYS.between(start, end)
+    Seq(
+      DateDiffForm((a, b) => s"DATEDIFF($a, $b)", (a, b) => between(b, a)),
+      DateDiffForm((a, b) => s"DATEDIFF($a, $b, DAY)", between),
+      DateDiffForm((a, b) => s"DATEDIFF(DAY, $a, $b)", between),
+      DateDiffForm((a, b) => s"DATE_DIFF($a, $b, DAY)", between),
+      DateDiffForm((a, b) => s"DATE_DIFF(DAY, $a, $b)", between),
+      DateDiffForm((a, b) => s"TIMESTAMPDIFF(DAY, $a, $b)", between)
+    )
+  }
+
+  /** A statement of the population: its value of `x_inline` in each group (`None`: NULL) for a
+    * SELECT, or the groups it keeps for a HAVING.
+    */
+  private final case class DateDiffStatement(
+    sql: String,
+    values: Option[Map[String, Option[Long]]],
+    kept: Option[Set[String]]
+  )
+
+  private lazy val dateDiffPopulation: Seq[DateDiffStatement] = {
+    val literal = LocalDate.parse("2024-01-01")
+    val groups: Seq[(String, Seq[LocalDate])] = dateDiffGroups.map { case (s, ds) =>
+      s -> ds.flatten.map(x => LocalDate.parse(x))
+    }
+    def maxOf(ds: Seq[LocalDate]) = ds.reduceOption((x, y) => if (x.isAfter(y)) x else y)
+    def minOf(ds: Seq[LocalDate]) = ds.reduceOption((x, y) => if (x.isBefore(y)) x else y)
+    for {
+      spelling <- dateDiffForms
+      (second, readsMin, secondValue) <- Seq(
+        ("'2024-01-01'", false, (_: Seq[LocalDate]) => Option(literal)),
+        ("MIN(d)", true, minOf _)
+      )
+      qualified <- Seq(false, true)
+      (form, filter) <- Seq[(String, Option[Long => Boolean])](
+        ("", None),
+        (" HAVING x_inline > 1", Some((v: Long) => v > 1)),
+        (" HAVING x_inline < -1", Some((v: Long) => v < -1))
+      )
+    } yield {
+      val q = if (qualified) "r." else ""
+      val items = s"MAX(${q}d) AS max_d" + (if (readsMin) s", MIN(${q}d) AS min_d" else "")
+      val expr = spelling.sql(s"MAX(${q}d)", second.replace("(d)", s"(${q}d)"))
+      val from = if (qualified) s"$dateDiffIndex AS r" else dateDiffIndex
+      val sql =
+        s"SELECT ${q}sensor_id, $items, $expr AS x_inline FROM $from GROUP BY ${q}sensor_id$form"
+      val values = groups.map { case (s, ds) =>
+        s -> (for {
+          first <- maxOf(ds)
+          other <- secondValue(ds)
+        } yield spelling.days(first, other))
+      }.toMap
+      filter match {
+        case None => DateDiffStatement(sql, Some(values), None)
+        case Some(f) =>
+          DateDiffStatement(
+            sql,
+            None,
+            Some(values.collect { case (s, Some(v)) if f(v) => s }.toSet)
+          )
+      }
+    }
+  }
+
+  "DATEDIFF / DATE_DIFF / TIMESTAMPDIFF over aggregates" should
+  "answer per group, NULL where an operand has no value" in {
+    dateDiffGroupsLoaded
+    val population = dateDiffPopulation
+    // Non-vacuity, computed over the material: every spelling in both venues, the group with no
+    // date is NULL in every SELECT and kept by no HAVING, and the HAVINGs keep and drop groups.
+    population.size shouldBe dateDiffForms.size * 2 * 2 * 3
+    population.foreach(st => withClue(s"[${st.sql}] ")(Parser(st.sql).isRight shouldBe true))
+    population.flatMap(_.values).foreach(values => values("s1") shouldBe None)
+    population.flatMap(_.kept).foreach(kept => kept should not contain "s1")
+    population.flatMap(_.kept).exists(_.nonEmpty) shouldBe true
+    population.flatMap(_.kept).exists(_.size < dateDiffGroups.size - 1) shouldBe true
+
+    def number(v: Any): Option[Double] = Option(v).map(_.toString.toDouble)
+    val outcomes: Seq[(DateDiffStatement, Either[String, String])] = population.map { st =>
+      st -> gatewayRows(st.sql).map { rows =>
+        (st.values, st.kept) match {
+          case (Some(expected), _) =>
+            val actual = rows
+              .map(r => r.getOrElse("sensor_id", "?").toString -> r.get("x_inline").flatMap(number))
+              .toMap
+            val wanted = expected.map { case (s, v) => s -> v.map(_.toDouble) }
+            if (actual == wanted) ""
+            else s"answered ${actual.toSeq.sortBy(_._1)}, expected ${wanted.toSeq.sortBy(_._1)}"
+          case (_, Some(expected)) =>
+            val actual = rows.map(_.getOrElse("sensor_id", "?").toString).toSet
+            if (actual == expected) ""
+            else
+              s"kept ${actual.toSeq.sorted.mkString(",")}, expected ${expected.toSeq.sorted.mkString(",")}"
+          case _ => "no expectation"
+        }
+      }
+    }
+    val wrong = outcomes.collect { case (st, Right(diff)) if diff.nonEmpty => s"[${st.sql}] $diff" }
+    val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
+    info(
+      s"DATEDIFF family over aggregates: ${population.size} statements; wrong: ${wrong.size}; " +
+      s"errors: ${errors.size}"
+    )
+    wrong.foreach(info(_))
+    errors.foreach(info(_))
+    withClue(
+      s"${wrong.size} wrong statements, ${errors.size} errors:\n" +
+      (wrong.take(20) ++ errors.take(10)).mkString("\n") + "\n"
     ) {
       wrong shouldBe empty
       errors shouldBe empty

@@ -45,14 +45,16 @@ package object cond {
 
   trait CondParser { self: Parser with WhereParser =>
 
+    // The operand is a value expression (`Parser.operandIdentifier`), so an aggregate in it is the
+    // aggregate every other position builds.
     lazy val is_null: PackratParser[ConditionalFunction[_]] =
-      "(?i)isnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => IsNull(i)
+      "(?i)isnull".r ~ start ~ operandIdentifier ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+        IsNull(i)
       }
 
     lazy val is_notnull: PackratParser[ConditionalFunction[_]] =
-      "(?i)isnotnull".r ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ end ^^ {
-        case _ ~ _ ~ i ~ _ => IsNotNull(i)
+      "(?i)isnotnull".r ~ start ~ operandIdentifier ~ end ^^ { case _ ~ _ ~ i ~ _ =>
+        IsNotNull(i)
       }
 
     lazy val coalesce: PackratParser[Coalesce] =

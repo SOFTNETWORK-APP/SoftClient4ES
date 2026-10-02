@@ -1655,7 +1655,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "diff": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1, param2))"
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param1.toLocalDate(), param2.toLocalDate()))"
         |      }
         |    }
         |  },
@@ -1712,7 +1712,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "max": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value.toLocalDate()); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate()); def param3 = (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))); def param4 = (param3 != null ? param3.toLocalDate() : null); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param4, param2))"
+        |              "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = (doc['updatedAt'].size() == 0 ? null : doc['updatedAt'].value.toInstant().atZone(ZoneId.of('Z'))); def param3 = (param1 == null) ? null : ZonedDateTime.parse(param1, new DateTimeFormatterBuilder().appendPattern(\"yyyy-MM-dd HH:mm:ss\").appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).toFormatter().withZone(ZoneId.of('Z'))); (param1 == null || param2 == null) ? null : Long.valueOf(ChronoUnit.DAYS.between(param3.toLocalDate(), param2.toLocalDate()))"
         |            }
         |          }
         |        }

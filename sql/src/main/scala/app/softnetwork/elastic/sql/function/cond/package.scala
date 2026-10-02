@@ -1028,6 +1028,27 @@ package object cond {
 
     override def nullable: Boolean = values.forall(_.nullable)
 
+    /** Can this argument's rendering be NULL here?
+      *
+      * 🔴 In a group filter (`HAVING`), an argument that reads a metric is NULL whenever the group
+      * has none of its values -- the filter reads every aggregate as SELECT returns it
+      * (`MetricSelectorScript.nullAwareSelectorScript`) -- so it is skipped like any other NULL
+      * argument, the rule the docs state and WHERE applies to a missing column. `nullable` alone
+      * answers `false` for an aggregate, and the reducer emitted `Math.max(params.m, k)`: only the
+      * comparison's guard kept it from throwing, and that guard dropped the group as soon as ONE
+      * argument was NULL. MEASURED on Elasticsearch 8.18.3: 5 of 6 shapes kept the wrong groups.
+      *
+      * Asked of the group filter alone ([[query.MetricSelectorScript.rendersGroupFilter]]): the
+      * SELECT list's `bucket_script` renders this same function context-free, and its gap policy
+      * never hands it a NULL metric, so its script does not move.
+      */
+    private def nullableArgument(argument: PainlessScript, context: Option[PainlessContext]) =
+      argument.nullable || (context.isEmpty && query.MetricSelectorScript.rendersGroupFilter &&
+      (argument match {
+        case id: Identifier => id.bucketMetrics.nonEmpty
+        case _              => false
+      }))
+
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
@@ -1061,7 +1082,7 @@ package object cond {
         case Nil =>
           throw new IllegalArgumentException(s"$operator requires at least one argument")
         case x :: Nil => x
-        case _        => fold(callArgs.zip(values.map(_.nullable)))._1
+        case _        => fold(callArgs.zip(values.map(nullableArgument(_, context))))._1
       }
     }
   }

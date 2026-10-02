@@ -27,7 +27,13 @@ import app.softnetwork.elastic.sql.`type`.{
 }
 import app.softnetwork.elastic.sql.function.cond.Case
 import app.softnetwork.elastic.sql.function._
-import app.softnetwork.elastic.sql.function.cond.{Coalesce, ConditionalFunction, IsNotNull, IsNull}
+import app.softnetwork.elastic.sql.function.cond.{
+  Coalesce,
+  ConditionalFunction,
+  IsNotNull,
+  IsNull,
+  NumericReducer
+}
 import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.parser.Validator
@@ -196,15 +202,34 @@ sealed trait Criteria extends Updateable with PainlessScript {
     }
   }
 
-  def extractAllMetricsPath: Map[String, String] =
-    this match {
-      case Predicate(left, _, right, _, _) =>
-        left.extractAllMetricsPath ++ right.extractAllMetricsPath
-      case relation: ElasticRelation => relation.criteria.extractAllMetricsPath
-      case _: MultiMatchCriteria     => Map.empty
-      case e: Expression             => e.extractAllMetricsPath
-      case _                         => Map.empty
+  /** Every metric a bucket pipeline reading this criteria tree addresses, in statement order,
+    * deduplicated by `metricPathKey`: what the `bucket_selector` script reads, what `buckets_path`
+    * publishes, and -- for a materialized view -- the SELECT aliases its pivot must create.
+    *
+    * 🔴 ONE function for every consumer (#292): [[extractAllMetricsPath]] (the search bridges'
+    * `buckets_path`), `MetricSelectorScript.nullAwareSelectorScript` (which of the metrics it reads
+    * as SELECT returns them), `Having.metricNames` and the materialized-view rules all read it, so
+    * the parameters a filter reads and the ones its path declares cannot drift apart. It walks both
+    * operands of every leaf through `Expression.leafBucketMetrics`, so an aggregate on the value
+    * side of a comparison, or inside a function argument, is never missed.
+    */
+  def bucketMetrics: Seq[Identifier] = {
+    val all: Seq[Identifier] = this match {
+      case Predicate(left, _, right, _, _) => left.bucketMetrics ++ right.bucketMetrics
+      case relation: ElasticRelation       => relation.criteria.bucketMetrics
+      case e: Expression                   => e.leafBucketMetrics
+      case _                               => Nil
     }
+    all.foldLeft(Seq.empty[Identifier]) { (acc, id) =>
+      if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
+    }
+  }
+
+  /** The `buckets_path` of a bucket pipeline reading this criteria tree: each metric of
+    * [[bucketMetrics]] under its own key.
+    */
+  def extractAllMetricsPath: Map[String, String] =
+    bucketMetrics.map(m => m.metricPathKey -> m.metricPathKey).toMap
 
   /** Extracts aggregation fields from criteria expressions (e.g. HAVING COUNT(*) > 1). Used to
     * ensure aggregations referenced only in HAVING/WHERE are included in the query. Note: returned
@@ -536,6 +561,18 @@ private[query] object PredicatePrecedence {
     }
 }
 
+/** A function that decides what a NULL argument means, and its arguments -- read by the group
+  * filter's null guard (`Expression.bucketPipelineGuard`). `COALESCE` takes the first argument that
+  * is not NULL, `GREATEST` / `LEAST` skip every NULL one: each is NULL only when every argument is.
+  */
+private[query] object NullDecider {
+  def unapply(f: Function): Option[List[PainlessScript]] = f match {
+    case coalesce: Coalesce      => Some(coalesce.values)
+    case reducer: NumericReducer => Some(reducer.values)
+    case _                       => None
+  }
+}
+
 sealed trait ElasticFilter
 
 case class ElasticBoolQuery(
@@ -630,13 +667,6 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     maybeValue match {
       case Some(id: Identifier) => identifier.dependencies ++ id.dependencies
       case _                    => identifier.dependencies
-    }
-
-  override def extractAllMetricsPath: Map[String, String] =
-    maybeValue match {
-      case Some(v: Identifier) =>
-        identifier.allMetricsPath ++ v.allMetricsPath
-      case _ => identifier.allMetricsPath
     }
 
   override def includes(
@@ -1362,24 +1392,22 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     }
   }
 
-  /** Every metric THIS predicate reads, left operand and right operand alike, deduplicated and in
-    * order -- what [[bucketPipelineGuard]] guards, and the same derivation
-    * `Criteria.extractAggregationFields` creates the aggregations from and `extractAllMetricsPath`
-    * publishes.
+  /** Every metric THIS predicate reads, left operand and right operand alike, in order -- the leaf
+    * arm of `Criteria.bucketMetrics`, which deduplicates it. What [[bucketPipelineGuard]] guards,
+    * and the same derivation `Criteria.extractAggregationFields` creates the aggregations from and
+    * `extractAllMetricsPath` publishes.
     *
     * 🔴 It used to be `identifier +: maybeValue.collect { case id if id.isAggregation }`, which
     * misses an aggregate reached through a function: `HAVING COUNT(*) > ABS(MAX(x))` emitted
     * `params.max_x` UNGUARDED (issue #389, measured on `main` -- `Math.abs(null)` fails the
     * search).
     */
-  private[query] def bucketMetrics: Seq[Identifier] =
-    (identifier.bucketMetrics ++ maybeValue.toSeq
+  private[query] def leafBucketMetrics: Seq[Identifier] =
+    identifier.bucketMetrics ++ maybeValue.toSeq
       .collect { case id: Identifier =>
         id
       }
-      .flatMap(_.bucketMetrics)).foldLeft(Seq.empty[Identifier]) { (acc, id) =>
-      if (acc.exists(_.metricPathKey == id.metricPathKey)) acc else acc :+ id
-    }
+      .flatMap(_.bucketMetrics)
 
   /** The bucket-pipeline rendering of a predicate that reads an aggregate through a FUNCTION
     * (`HAVING COALESCE(COUNT(*), 0) > 1`, issue #389).
@@ -1423,11 +1451,13 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * Guarding an argument instead made `HAVING COALESCE(MAX(a), MIN(b)) > 1` drop a group whose
     * documents all lack `b` although `MAX(a)` is 5 (MEASURED on Elasticsearch 8.18.3, once such a
     * group's `MIN(b)` read as NULL): the guard landed on the argument the rendering does not test,
-    * the last one. Every other predicate keeps exactly the guard it had.
+    * the last one. `GREATEST` and `LEAST` decide it too -- they skip every NULL argument, and are
+    * NULL only when every argument is -- so they are guarded the same way, and their rendering
+    * skips a NULL metric (`NumericReducer`). Every other predicate keeps exactly the guard it had.
     */
   private[query] def bucketPipelineGuard(rendering: Option[String]): Seq[String] = {
     val operands = identifier +: maybeValue.toSeq.collect { case id: Identifier => id }
-    if (operands.exists(readsCoalesce)) {
+    if (operands.exists(readsNullDecider)) {
       val nullTest = operator == IS_NULL || operator == IS_NOT_NULL
       val terms = operands.zipWithIndex.flatMap { case (operand, i) =>
         // a null test reads its operand's value, NULL included
@@ -1447,24 +1477,24 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   /** The guard terms of ONE operand of the comparison.
     *
     * `nullHandled`: what surrounds the operand decides what its NULL means -- an enclosing
-    * `COALESCE`, or the null test it is the operand of -- so its NULL is not guarded, only what
-    * would make it unreadable. A metric is always readable (a missing one reads as `null`); a
-    * function of one dereferences it.
+    * `COALESCE`, `GREATEST` or `LEAST`, or the null test it is the operand of -- so its NULL is not
+    * guarded, only what would make it unreadable. A metric is always readable (a missing one reads
+    * as `null`); a function of one dereferences it.
     *
-    * A `COALESCE` guards its arguments as `nullHandled` and adds the test of its own value,
-    * `<rendering> == null`, which holds exactly when every argument is NULL -- unless it cannot be
-    * NULL at all (a literal other than `NULL` among its arguments), or what surrounds it handles
-    * its NULL in turn. A function OF a `COALESCE` (`SIGN(COALESCE(...))`) propagates or
-    * dereferences that value, so its arguments are guarded as values. Anything else keeps the guard
-    * of every metric it reads.
+    * A function that decides what a NULL argument means ([[NullDecider]]) guards its arguments as
+    * `nullHandled` and adds the test of its own value, `<rendering> == null`, which holds exactly
+    * when every argument is NULL -- unless it cannot be NULL at all (a literal other than `NULL`
+    * among its arguments), or what surrounds it handles its NULL in turn. A function OF one
+    * (`SIGN(COALESCE(...))`) propagates or dereferences that value, so its arguments are guarded as
+    * values. Anything else keeps the guard of every metric it reads.
     */
   private def nullGuardTerms(operand: Identifier, nullHandled: Boolean): Seq[String] =
     operand.functions match {
-      case List(coalesce: Coalesce) if !isMetric(operand) =>
-        coalesce.values match {
-          // `COALESCE(x)` IS `x`
+      case List(NullDecider(values)) if !isMetric(operand) =>
+        values match {
+          // `COALESCE(x)` IS `x`, and so are `GREATEST(x)` and `LEAST(x)`
           case List(single: Identifier) => nullGuardTerms(single, nullHandled)
-          case values =>
+          case _ =>
             val arguments = values
               .collect { case argument: Identifier => argument }
               .flatMap(nullGuardTerms(_, nullHandled = true))
@@ -1473,7 +1503,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               else Seq(s"${operand.painless(None)} == null")
             arguments ++ result
         }
-      case List(f: FunctionN[_, _]) if readsCoalesce(operand) =>
+      case List(f: FunctionN[_, _]) if readsNullDecider(operand) =>
         f.args
           .collect { case argument: Identifier => argument }
           .flatMap(nullGuardTerms(_, nullHandled = false))
@@ -1489,19 +1519,20 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     case _           => false
   }
 
-  /** Does this operand read a `COALESCE` -- its own, or one among its functions' arguments? */
-  private def readsCoalesce(operand: Identifier): Boolean =
+  /** Does this operand read a [[NullDecider]] -- its own, or one among its functions' arguments? */
+  private def readsNullDecider(operand: Identifier): Boolean =
     !isMetric(operand) && operand.functions.exists {
-      case _: Coalesce => true
+      case NullDecider(_) => true
       case f: FunctionN[_, _] =>
         f.args.exists {
-          case argument: Identifier => readsCoalesce(argument)
+          case argument: Identifier => readsNullDecider(argument)
           case _                    => false
         }
       case _ => false
     }
 
-  /** A `COALESCE` argument that is a literal other than `NULL`: that `COALESCE` is never NULL. */
+  /** A [[NullDecider]] argument that is a literal other than `NULL`: that function is never NULL.
+    */
   private def nonNullLiteral(argument: PainlessScript): Boolean = argument match {
     case literal: Value[_] => !literal.nullable
     case wrapped: Identifier if wrapped.name.isEmpty && !isMetric(wrapped) =>

@@ -200,8 +200,12 @@ package object time {
   trait TemporalParser extends CurrentParser with TimeParser with DateParser with DateTimeParser {
     self: Parser =>
 
+    // The operands of the three DATEDIFF productions are value expressions
+    // (`Parser.operandIdentifier`), as `ISNULL`'s is: an aggregate in them is the aggregate every
+    // other position builds, not the bare `MAX` token -- which a view's transform did not
+    // recognise, and whose rendered name (`MAX(d)`) did not match a qualified SELECT item's.
     lazy val date_diff: PackratParser[BinaryFunction[_, _, _]] =
-      DateDiff.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ (separator ~ time_unit).? ~ end ^^ {
+      DateDiff.regex ~ start ~ operandIdentifier ~ separator ~ operandIdentifier ~ (separator ~ time_unit).? ~ end ^^ {
         case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
           DateDiff(
             d1,
@@ -223,7 +227,7 @@ package object time {
       * on a plain column, so `DATEDIFF(a, b)` still falls through to the MySQL form.
       */
     lazy val date_diff_transact_sql: PackratParser[BinaryFunction[_, _, _]] =
-      (DateDiff.regex | MySqlDateDiff.regex) ~ start ~> time_unit ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) <~ end ^^ {
+      (DateDiff.regex | MySqlDateDiff.regex) ~ start ~> time_unit ~ separator ~ operandIdentifier ~ separator ~ operandIdentifier <~ end ^^ {
         case u ~ _ ~ d1 ~ _ ~ d2 =>
           DateDiff(d1, d2, u, DateDiffSpelling.UnitFirst)
       }
@@ -241,7 +245,7 @@ package object time {
       * rather than discovered.
       */
     lazy val mysql_date_diff: PackratParser[BinaryFunction[_, _, _]] =
-      MySqlDateDiff.regex ~ start ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ separator ~ (identifierWithTransformation | identifierWithIntervalFunction | identifierWithFunction | identifier) ~ (separator ~ time_unit).? ~ end ^^ {
+      MySqlDateDiff.regex ~ start ~ operandIdentifier ~ separator ~ operandIdentifier ~ (separator ~ time_unit).? ~ end ^^ {
         case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
           u match {
             case Some(_ ~ unit) => DateDiff(d1, d2, unit, DateDiffSpelling.DateFirst)
