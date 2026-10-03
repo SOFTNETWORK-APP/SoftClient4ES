@@ -35,6 +35,7 @@ import app.softnetwork.elastic.sql.query.{Asc, Criteria, Desc, SQLAggregation, S
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.transform.{
   AvgTransformAggregation,
+  BucketScriptTransformAggregation,
   CardinalityTransformAggregation,
   CountTransformAggregation,
   Delay,
@@ -177,7 +178,10 @@ import org.elasticsearch.search.aggregations.metrics.{
   TopHitsAggregationBuilder,
   ValueCountAggregationBuilder
 }
-import org.elasticsearch.search.aggregations.pipeline.BucketSelectorPipelineAggregationBuilder
+import org.elasticsearch.search.aggregations.pipeline.{
+  BucketScriptPipelineAggregationBuilder,
+  BucketSelectorPipelineAggregationBuilder
+}
 import org.elasticsearch.search.builder.{PointInTimeBuilder, SearchSourceBuilder}
 import org.elasticsearch.search.slice.SliceBuilder
 import org.elasticsearch.search.sort.{FieldSortBuilder, SortOrder}
@@ -2865,7 +2869,7 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
     )
   }
 
-  private def convertToElasticTransformConfig(
+  private[client] def convertToElasticTransformConfig(
     config: TransformConfig
   )(implicit criteriaToNode: Criteria => JsonNode): ElasticTransformConfig = {
     val builder = ElasticTransformConfig.builder()
@@ -2965,6 +2969,21 @@ trait RestHighLevelClientTransformApi extends TransformApi with RestHighLevelCli
               topHitsBuilder.sort(sortField.name, sortOrder)
             }
             aggBuilder.addAggregator(topHitsBuilder)
+          case BucketScriptTransformAggregation(expression, bucketsPath, script, params) =>
+            // the model names these parameters but carries no value for them: refuse rather
+            // than send a script that reads them unbound
+            if (params.nonEmpty)
+              throw new UnsupportedOperationException(
+                s"Unsupported aggregation: the calculation $name ($expression) reads script " +
+                s"parameters the transform does not bind (${params.mkString(", ")})"
+              )
+            aggBuilder.addPipelineAggregator(
+              new BucketScriptPipelineAggregationBuilder(
+                name,
+                bucketsPath.asJava,
+                new org.elasticsearch.script.Script(script)
+              )
+            )
           case _ =>
             throw new UnsupportedOperationException(s"Unsupported aggregation: $agg")
         }
