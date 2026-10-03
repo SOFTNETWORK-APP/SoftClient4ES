@@ -42,6 +42,9 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
     with JestClientCompanion =>
 
   /** Create an index with the given settings.
+    *
+    * A mapping says `include_type_name=false` where Elasticsearch must be told it is typeless
+    * ([[sendsTypelessMappings]]): without it 6.8 refused every `CREATE TABLE`.
     * @see
     *   [[IndicesApi.createIndex]]
     */
@@ -67,6 +70,7 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
       }
       mappings.foreach { mapping =>
         builder.mappings(mapping)
+        if (sendsTypelessMappings) builder.setParameter("include_type_name", "false")
       }
       builder.build()
     }

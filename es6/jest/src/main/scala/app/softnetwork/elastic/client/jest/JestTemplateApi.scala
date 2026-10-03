@@ -103,7 +103,7 @@ trait JestTemplateApi extends TemplateApi with JestClientHelpers {
       operation = "createLegacyTemplate",
       retryable = false // Creation can not be retried
     ) {
-      Template.Create(templateName, templateDefinition)
+      Template.Create(templateName, templateDefinition, typelessMappings = sendsTypelessMappings)
     }
 
   override private[client] def executeDeleteLegacyTemplate(

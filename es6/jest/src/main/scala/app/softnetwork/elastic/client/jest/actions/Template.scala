@@ -24,14 +24,20 @@ object Template {
   import io.searchbox.client.JestResult
   import com.google.gson.Gson
 
-  case class Create(templateName: String, json: String) extends AbstractAction[JestResult] {
+  /** `PUT /_template/<name>`. `typelessMappings` says `include_type_name=false`, without which
+    * Elasticsearch 6.8 reads the template's typeless mappings as typed and refuses them
+    * (`JestVersionApi.sendsTypelessMappings`).
+    */
+  case class Create(templateName: String, json: String, typelessMappings: Boolean = false)
+      extends AbstractAction[JestResult] {
 
     payload = json
 
     override def getRestMethodName: String = "PUT"
 
     override def getURI(elasticsearchVersion: ElasticsearchVersion): String =
-      s"/_template/$templateName"
+      if (typelessMappings) s"/_template/$templateName?include_type_name=false"
+      else s"/_template/$templateName"
 
     override def createNewElasticSearchResult(
       json: String,
