@@ -1225,16 +1225,18 @@ class MaterializedViewHavingSpec extends AnyFlatSpec with Matchers {
     // string literal as a String: each operand is converted to a date first, an aggregate ONCE (it
     // is the instant in UTC already). Both venues render ONE calculation (the item's context-free
     // rendering); the RUN is GroupByCompletenessSpec's.
-    def date(metric: String) =
-      s"Instant.ofEpochMilli(((long) params.$metric)).atZone(ZoneId.of('Z')).toLocalDate()"
+    def instant(metric: String) =
+      s"Instant.ofEpochMilli(((long) params.$metric)).atZone(ZoneId.of('Z'))"
+    def date(metric: String) = s"${instant(metric)}.toLocalDate()"
     val literal =
       """LocalDate.parse(("2024-01-01").replace("/", "-"), DateTimeFormatter.ofPattern("yyyy-MM-dd"))"""
     Seq(
-      // MySQL's DATEDIFF is `first - second`, every other spelling `end - start`
+      // the dates first are `first - second`, the unit first `last - middle`; DATEDIFF and
+      // DATE_DIFF count calendar days, TIMESTAMPDIFF whole days elapsed between two instants
       "DATEDIFF(MAX(d), '2024-01-01')" -> s"Long.valueOf(ChronoUnit.DAYS.between($literal, ${date("mx")}))",
-      "DATE_DIFF(MAX(d), MIN(d), DAY)" -> s"Long.valueOf(ChronoUnit.DAYS.between(${date("mx")}, ${date("mn")}))",
+      "DATE_DIFF(MAX(d), MIN(d), DAY)" -> s"Long.valueOf(ChronoUnit.DAYS.between(${date("mn")}, ${date("mx")}))",
       "TIMESTAMPDIFF(DAY, MAX(d), '2024-01-01')" ->
-      s"Long.valueOf(ChronoUnit.DAYS.between(${date("mx")}, $literal))"
+      s"Long.valueOf(ChronoUnit.DAYS.between(${instant("mx")}, $literal.atStartOfDay(ZoneId.of('Z'))))"
     ).foreach { case (expression, script) =>
       val body =
         s"SELECT city, MAX(d) AS mx, MIN(d) AS mn, $expression AS x FROM customers GROUP BY city HAVING x > 1"

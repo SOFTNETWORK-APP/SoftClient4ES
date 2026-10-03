@@ -204,51 +204,61 @@ package object time {
     // (`Parser.operandIdentifier`), as `ISNULL`'s is: an aggregate in them is the aggregate every
     // other position builds, not the bare `MAX` token -- which a view's transform did not
     // recognise, and whose rendered name (`MAX(d)`) did not match a qualified SELECT item's.
+    //
+    // The node means `end - start`, and the LAYOUT decides which operand is the end (see
+    // `DateDiffSpelling`): dates first is `first - second`, so the SECOND operand is stored as the
+    // start; unit first is `last - middle`. The NAME decides the counting: `TIMESTAMPDIFF` is the
+    // second word of `DateDiff.regex`, so the word read is kept.
     lazy val date_diff: PackratParser[BinaryFunction[_, _, _]] =
       DateDiff.regex ~ start ~ operandIdentifier ~ separator ~ operandIdentifier ~ (separator ~ time_unit).? ~ end ^^ {
-        case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
+        case name ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
           DateDiff(
-            d1,
             d2,
+            d1,
             u match {
               case Some(_ ~ unit) => unit
               case None           => TimeUnit.DAYS
-            }
+            },
+            if (name.equalsIgnoreCase(DateDiff.timestampDiff))
+              DateDiffSpelling.TimestampDiffDateFirst
+            else DateDiffSpelling.DateFirst
           )
       }
 
-    /** 🔴 BOTH names. `DATEDIFF(unit, start, end)` is T-SQL's and DuckDB's spelling — what a BI
-      * tool set to a SQL Server or DuckDB dialect emits — and it is `end - start` in both, which is
-      * exactly what this production binds. Issue #363 moved `DATEDIFF` onto its own token to give
-      * the TWO-argument MySQL form its own meaning, and keying this production on `DateDiff.regex`
-      * alone silently dropped the unit-first spelling with it.
+    /** 🔴 BOTH names. `DATEDIFF(unit, start, end)` is the spelling of SQL Server, Snowflake,
+      * Redshift, DuckDB and Elasticsearch SQL — what a BI tool set to one of those dialects emits —
+      * and it is `end - start` in all of them, which is exactly what this production binds. Issue
+      * #363 moved `DATEDIFF` onto its own token to give the TWO-argument MySQL form its own
+      * meaning, and keying this production on `DateDiff.regex` alone silently dropped the
+      * unit-first spelling with it.
       *
       * Ordering is safe: this production is tried BEFORE `mysql_date_diff`, and `time_unit` fails
       * on a plain column, so `DATEDIFF(a, b)` still falls through to the MySQL form.
       */
     lazy val date_diff_transact_sql: PackratParser[BinaryFunction[_, _, _]] =
-      (DateDiff.regex | MySqlDateDiff.regex) ~ start ~> time_unit ~ separator ~ operandIdentifier ~ separator ~ operandIdentifier <~ end ^^ {
-        case u ~ _ ~ d1 ~ _ ~ d2 =>
-          DateDiff(d1, d2, u, DateDiffSpelling.UnitFirst)
+      (DateDiff.regex | MySqlDateDiff.regex) ~ start ~ time_unit ~ separator ~ operandIdentifier ~ separator ~ operandIdentifier ~ end ^^ {
+        case name ~ _ ~ u ~ _ ~ d1 ~ _ ~ d2 ~ _ =>
+          DateDiff(
+            d1,
+            d2,
+            u,
+            if (name.equalsIgnoreCase(DateDiff.timestampDiff)) DateDiffSpelling.TimestampDiff
+            else DateDiffSpelling.UnitFirst
+          )
       }
 
-    /** MySQL's `DATEDIFF` (issue #363), which is NOT the function `date_diff` above parses.
+    /** `DATEDIFF` with the dates first, which `date_diff` above does not parse (issue #363).
       *
-      * Two arguments — the shape MySQL actually defines — means `expr1 - expr2`, so the operands
-      * are stored SWAPPED and the node keeps its single meaning of `end - start`. The dialect lives
-      * here and in `toSQL`, nowhere else.
-      *
-      * 🔴 The THREE-argument `DATEDIFF(a, b, unit)` is NOT MySQL — MySQL's is days-only — it is
-      * this engine's own extension, and a lead ruling keeps it exactly as it behaved before: `end -
-      * start`, rendered as `DATE_DIFF`. So on this ONE spelling the arity changes the sign, and
-      * `DateDiffSignSpec` pins both readings side by side so that stays deliberate and visible
-      * rather than discovered.
+      * Two arguments is MySQL's `DATEDIFF(expr1, expr2)`, `expr1 - expr2` in days; with a unit it
+      * is the same layout, so the same direction: `first - second` either way, and the operands are
+      * stored SWAPPED so that the node keeps its single meaning of `end - start`. Before 0.24.0 the
+      * three-argument form subtracted the other way round (see `DateDiffSpelling`).
       */
     lazy val mysql_date_diff: PackratParser[BinaryFunction[_, _, _]] =
       MySqlDateDiff.regex ~ start ~ operandIdentifier ~ separator ~ operandIdentifier ~ (separator ~ time_unit).? ~ end ^^ {
         case _ ~ _ ~ d1 ~ _ ~ d2 ~ u ~ _ =>
           u match {
-            case Some(_ ~ unit) => DateDiff(d1, d2, unit, DateDiffSpelling.DateFirst)
+            case Some(_ ~ unit) => DateDiff(d2, d1, unit, DateDiffSpelling.DateFirst)
             case None           => DateDiff(d2, d1, TimeUnit.DAYS, DateDiffSpelling.MySql)
           }
       }

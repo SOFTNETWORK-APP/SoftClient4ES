@@ -220,26 +220,44 @@ trait BiDialectExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     ) shouldBe -31L
   }
 
-  it should "stay the opposite of DATE_DIFF, which keeps BigQuery's order" in {
-    val mysql = longAt(
+  /** Every vendor computes `end - start`; with the dates first the END comes first (MySQL's
+    * `DATEDIFF(expr1, expr2)`, BigQuery's `DATE_DIFF(end_date, start_date, part)`), with the unit
+    * first it comes last. Until 0.24.0 the dates-first forms WITH a unit answered the opposite
+    * sign, on a misreading of BigQuery's signature (issue #363).
+    */
+  it should "agree with DATE_DIFF, the dates first being first - second at every arity" in {
+    Seq(
+      s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS n FROM $index LIMIT 1",
+      s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1",
+      s"SELECT DATE_DIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1"
+    ).foreach(sql => withClue(s"[$sql] ")(longAt(rowsOf(sql).head, "n") shouldBe 9L))
+    // BigQuery's own documented example.
+    longAt(
       rowsOf(
-        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS n FROM $index LIMIT 1"
+        s"SELECT DATE_DIFF('2010-07-07'::DATE, '2008-12-25'::DATE, DAY) AS n FROM $index LIMIT 1"
       ).head,
       "n"
-    )
-    val bigQuery = longAt(
-      rowsOf(
-        s"SELECT DATE_DIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1"
-      ).head,
-      "n"
-    )
-    mysql shouldBe 9L
-    bigQuery shouldBe -9L
-    mysql shouldBe -bigQuery
+    ) shouldBe 559L
   }
 
-  it should "agree with TIMESTAMPDIFF, which MySQL defines as dt2 - dt1" in {
-    // MySQL is itself asymmetric here, and we match it on BOTH names.
+  it should "count the calendar boundaries crossed, on SQL Server's and DuckDB's documented examples" in {
+    // SQL Server: one year boundary between the last instant of 2005 and the first of 2006.
+    longAt(
+      rowsOf(
+        s"SELECT DATEDIFF(YEAR, '2005-12-31 23:59:59.9999999', '2006-01-01 00:00:00.0000000') AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    ) shouldBe 1L
+    // DuckDB's date_diff: two month boundaries, though not two whole months.
+    longAt(
+      rowsOf(
+        s"SELECT DATEDIFF(MONTH, '1992-09-15'::DATE, '1992-11-14'::DATE) AS n FROM $index LIMIT 1"
+      ).head,
+      "n"
+    ) shouldBe 2L
+  }
+
+  it should "agree with TIMESTAMPDIFF on the sign, which MySQL defines as dt2 - dt1" in {
     longAt(
       rowsOf(
         s"SELECT TIMESTAMPDIFF(DAY, '2025-01-01'::DATE, '2025-01-10'::DATE) AS n FROM $index LIMIT 1"
@@ -248,24 +266,18 @@ trait BiDialectExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     ) shouldBe 9L
   }
 
-  /** The lead ruling, executed: on this ONE spelling the arity changes the sign, because the
-    * 3-argument form is this engine's own extension and is not MySQL.
-    */
-  it should "keep this engine's order in the three-argument form, unlike the two-argument one" in {
-    val two = longAt(
-      rowsOf(
-        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE) AS n FROM $index LIMIT 1"
-      ).head,
-      "n"
-    )
-    val three = longAt(
-      rowsOf(
-        s"SELECT DATEDIFF('2025-01-10'::DATE, '2025-01-01'::DATE, DAY) AS n FROM $index LIMIT 1"
-      ).head,
-      "n"
-    )
-    two shouldBe 9L
-    three shouldBe -9L
+  "TIMESTAMPDIFF" should "count the whole units elapsed, on MySQL's own documented examples" in {
+    Seq(
+      "TIMESTAMPDIFF(MONTH, '2003-02-01', '2003-05-01')"           -> 3L,
+      "TIMESTAMPDIFF(YEAR, '2002-05-01', '2001-01-01')"            -> -1L,
+      "TIMESTAMPDIFF(MINUTE, '2003-02-01', '2003-05-01 12:05:55')" -> 128885L,
+      // two month boundaries, one whole month: the counting DATEDIFF does not share
+      "TIMESTAMPDIFF(MONTH, '1992-09-15', '1992-11-14')" -> 1L
+    ).foreach { case (expression, expected) =>
+      withClue(s"[$expression] ") {
+        longAt(rowsOf(s"SELECT $expression AS n FROM $index LIMIT 1").head, "n") shouldBe expected
+      }
+    }
   }
 
   "TIMESTAMPADD" should "execute as DATETIME_ADD does, on the same statement" in {

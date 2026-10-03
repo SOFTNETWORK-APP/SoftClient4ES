@@ -126,7 +126,7 @@
     {
       "title": "Table with computed column",
       "description": "Create table with script-based computed field",
-      "sql": "CREATE TABLE employees (\n  id INT NOT NULL,\n  birthdate DATE,\n  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),\n  hire_date DATE,\n  tenure INT SCRIPT AS (DATEDIFF(hire_date, CURRENT_DATE, DAY)),\n  PRIMARY KEY (id)\n)"
+      "sql": "CREATE TABLE employees (\n  id INT NOT NULL,\n  birthdate DATE,\n  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),\n  hire_date DATE,\n  tenure INT SCRIPT AS (DATEDIFF(CURRENT_DATE, hire_date, DAY)),\n  PRIMARY KEY (id)\n)"
     },
     {
       "title": "Partitioned table",

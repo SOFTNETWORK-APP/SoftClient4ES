@@ -7,26 +7,26 @@
     "DATE_DIFF(unit, date1, date2)",
     "TIMESTAMPDIFF(unit, date1, date2)"
   ],
-  "description": "Returns the difference between two dates in the specified unit, as date2 - date1: the first argument is the START and the second is the END.",
+  "description": "Returns the difference between two dates in the specified unit. With the dates first it is date1 - date2, as in BigQuery's DATE_DIFF(end_date, start_date, unit); with the unit first it is date2 - date1. DATE_DIFF counts the calendar boundaries crossed; TIMESTAMPDIFF counts the whole units elapsed, as MySQL does.",
   "parameters": [
     {
       "name": "date1",
       "type": "DATE/TIMESTAMP",
-      "description": "First date (start)",
+      "description": "First date: the end when the dates come first, the start when the unit comes first",
       "optional": false,
       "defaultValue": null
     },
     {
       "name": "date2",
       "type": "DATE/TIMESTAMP",
-      "description": "Second date (end)",
+      "description": "Second date: the start when the dates come first, the end when the unit comes first",
       "optional": false,
       "defaultValue": null
     },
     {
       "name": "unit",
       "type": "KEYWORD",
-      "description": "Unit for result (YEAR, MONTH, WEEK, DAY, HOUR, MINUTE, SECOND)",
+      "description": "Unit for result (YEAR, QUARTER, MONTH, WEEK, DAY, HOUR, MINUTE, SECOND)",
       "optional": true,
       "defaultValue": "DAY"
     }
@@ -34,33 +34,39 @@
   "returnType": "BIGINT",
   "examples": [
     {
-      "title": "Calculate age",
-      "description": "Years between birthdate and now",
-      "sql": "SELECT DATE_DIFF(birthdate, CURRENT_DATE, YEAR) as age FROM users"
+      "title": "BigQuery's own documented example",
+      "description": "The end date first: returns 559",
+      "sql": "SELECT DATE_DIFF('2010-07-07'::DATE, '2008-12-25'::DATE, DAY) as days FROM orders"
     },
     {
       "title": "Days since event",
-      "description": "Calculate days elapsed",
-      "sql": "SELECT DATE_DIFF(event_date, CURRENT_DATE, DAY) as days_ago FROM events"
+      "description": "Calendar days from the event to today, positive for a past event",
+      "sql": "SELECT DATE_DIFF(CURRENT_DATE, event_date, DAY) as days_ago FROM events"
     },
     {
       "title": "Hours between timestamps",
-      "description": "Calculate duration",
-      "sql": "SELECT DATE_DIFF(start_time, end_time, HOUR) as duration_hours FROM sessions"
+      "description": "The hour boundaries crossed from start_time to end_time",
+      "sql": "SELECT DATE_DIFF(HOUR, start_time, end_time) as duration_hours FROM sessions"
+    },
+    {
+      "title": "Calculate age",
+      "description": "The whole years elapsed since birthdate, which TIMESTAMPDIFF counts",
+      "sql": "SELECT TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE) as age FROM users"
     }
   ],
   "notes": [
-    "Returns a negative value if date2 is before date1",
-    "Truncates to whole units (no fractions)",
-    "DATEDIFF is NOT an alias of this function. It is MySQL's, and subtracts the other way round (expr1 - expr2). See HELP DATEDIFF.",
-    "TIMESTAMPDIFF is the ODBC/JDBC spelling and takes the unit first; MySQL defines it as dt2 - dt1, which is what this function already computes."
+    "Every vendor computes end - start, and the layout decides where the end sits: the dates first is date1 - date2, the unit first is date2 - date1.",
+    "DATE_DIFF and DATEDIFF count the calendar boundaries crossed: one second across a year end is 1 YEAR, and 1992-09-15 to 1992-11-14 is 2 MONTHs.",
+    "TIMESTAMPDIFF counts the whole units elapsed, truncated toward zero: 1992-09-15 to 1992-11-14 is 1 MONTH. A DATE is the datetime at 00:00:00.",
+    "Boundaries are in UTC. A WEEK starts on Monday (ISO 8601); a QUARTER on January 1, April 1, July 1 and October 1.",
+    "DATEDIFF follows the same rules, and also takes MySQL's two-argument DATEDIFF(date1, date2), in days. See HELP DATEDIFF.",
+    "TIMESTAMPDIFF is not an alias of DATE_DIFF: it takes the same layouts but counts the whole units elapsed, where DATE_DIFF counts the boundaries crossed. TIMESTAMPDIFF(YEAR, '2025-12-31 23:59:59', '2026-01-01 00:00:00') is 0; DATE_DIFF(YEAR, '2025-12-31 23:59:59', '2026-01-01 00:00:00') is 1.",
+    "Changed in 0.24.0: the dates-first forms returned date2 - date1, and the units from WEEK up counted the whole units elapsed between two calendar dates. HOUR, MINUTE and SECOND count the boundaries crossed too: DATE_DIFF(HOUR, '2025-01-10 10:59:00', '2025-01-10 11:00:00') is 1."
   ],
   "seeAlso": [
     "DATEDIFF",
     "DATE_ADD",
     "DATE_SUB"
   ],
-  "aliases": [
-    "TIMESTAMPDIFF"
-  ]
+  "aliases": []
 }

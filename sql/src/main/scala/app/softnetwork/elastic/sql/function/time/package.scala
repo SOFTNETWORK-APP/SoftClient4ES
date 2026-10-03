@@ -266,6 +266,18 @@ package object time {
       else Today.sql
   }
 
+  /** The start of the ISO-8601 week a temporal falls in: its MONDAY. It is what `DATE_TRUNC(…,
+    * WEEK)` truncates to and where `DATEDIFF` / `DATE_DIFF` count a WEEK boundary, and it is what
+    * Elasticsearch's calendar week (`date_histogram`, `/w` date math) rounds to, so every venue
+    * that truncates to a week agrees.
+    *
+    * 🔴 `with(DayOfWeek.SUNDAY)`, rendered before, is NOT a Sunday-start week: `DayOfWeek` adjusts
+    * within the Monday-to-Sunday week, so it moved a Wednesday FORWARD to the Sunday that ENDS its
+    * week (2025-01-08 -> 2025-01-12, JDK-verified), while a `GROUP BY` of the same expression went
+    * back to the Monday.
+    */
+  private[sql] val isoWeekStart: String = ".with(DayOfWeek.MONDAY)"
+
   case object DateTrunc extends Expr("DATE_TRUNC") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".truncatedTo"
     override lazy val words: List[String] = List(sql, "DATETRUNC")
@@ -341,7 +353,7 @@ package object time {
       unit match {
         case TimeUnit.YEARS  => s".withDayOfYear(1)$truncateTime"
         case TimeUnit.MONTHS => s".withDayOfMonth(1)$truncateTime"
-        case TimeUnit.WEEKS  => s".with(DayOfWeek.SUNDAY)$truncateTime"
+        case TimeUnit.WEEKS  => s"$isoWeekStart$truncateTime"
         case TimeUnit.QUARTERS =>
           context match {
             case Some(ctx) =>
@@ -546,6 +558,12 @@ package object time {
     override def painless(context: Option[PainlessContext]): String = ".between"
     override lazy val words: List[String] = List(sql, "TIMESTAMPDIFF")
 
+    /** MySQL's `TIMESTAMPDIFF`, this token's second word. It takes the layouts `DATE_DIFF` takes
+      * but COUNTS differently (whole units elapsed, see [[DateDiffSpelling]]), so the parser asks
+      * which word it read and the render writes this one back.
+      */
+    lazy val timestampDiff: String = words(1)
+
     /** A calendar date alone, in the two separators the DATE parse accepts (`SQLTypeUtils.coerce`).
       */
     private val CalendarDate = """\d{4}[-/]\d{2}[-/]\d{2}""".r
@@ -566,44 +584,145 @@ package object time {
         }
       case _ => None
     }
+
+    /** The scale of [[monthKey]]: more milliseconds than any month holds (31 days: 2678400000). */
+    private[time] val MonthKeyScale: Long = 4294967296L
+
+    /** A temporal as one number whose difference with another, divided by [[MonthKeyScale]] and
+      * truncated toward zero, is MySQL's whole months elapsed between them (`TIMESTAMPDIFF`): the
+      * months between the two, less one when the later one's day of month and time of day come
+      * before the earlier one's.
+      *
+      * 🔴 Not `ChronoUnit.MONTHS.between`, which differs on one edge. It first moves an end whose
+      * time of day comes before the start's back by one DAY — on the 1st of a month, into the month
+      * before — and then counts that month short as well: `2024-12-31 23:59:59` to `2025-07-01
+      * 00:00:00` is 5 months there and 6 in MySQL (found by the testkit's population).
+      */
+    private[time] def monthKey(rendered: String): String = {
+      val t = if (postfixable(rendered)) rendered else s"($rendered)"
+      s"(($t.getYear() * 12L + $t.getMonthValue()) * ${MonthKeyScale}L + ($t.getDayOfMonth() - 1) * 86400000L + $t.getLong(ChronoField.MILLI_OF_DAY))"
+    }
+
+    /** A temporal as the instant it denotes, in UTC, decided by its RUNTIME type: a `LocalDate` is
+      * the start of its day, a `LocalDateTime` that wall-clock time in UTC, anything zoned the same
+      * instant. `TIMESTAMPDIFF` compares instants, and an operand's declared type does not say
+      * which of the three it holds: `COALESCE(ts, CURRENT_DATE)` is either, row by row. `DATEDIFF`
+      * and `DATE_DIFF` read a calendar date through it too, off a row-level operand that is not a
+      * column: a zoned value there may be Elasticsearch 6.8's doc value, which is no `java.time`
+      * type until `withZoneSameInstant` (as in [[utcZoned]]) returns the `ZonedDateTime` it wraps.
+      *
+      * `ref` is read up to four times, so it is a name or an expression cast to `def` (the methods
+      * below are resolved at runtime). NULL stays NULL: the MONTH, QUARTER and YEAR calls bind this
+      * value in the script's prologue, which runs before the null guard.
+      */
+    private[time] def utcInstant(ref: String): String =
+      s"($ref == null ? null : $ref instanceof LocalDate ? $ref.atStartOfDay(ZoneId.of('Z')) : $ref instanceof LocalDateTime ? $ref.atZone(ZoneId.of('Z')) : $ref.withZoneSameInstant(ZoneId.of('Z')))"
+
+    /** A column a SEARCH script reads, as a genuine `java.time.ZonedDateTime` in UTC; NULL stays
+      * NULL (the MONTH, QUARTER and YEAR calls bind it in the prologue, before the null guard).
+      *
+      * The column's script parameter is shared by every call that reads the column, and holds what
+      * the FIRST of them made of it (the parameter-identity family, issue #370): the UTC instant
+      * `DateDiff.in` folds onto it, or the raw doc value when a function over the same column read
+      * it first (`TIMESTAMPDIFF(MONTH, ts::DATE, ts)`). On Elasticsearch 6.8 that value is a
+      * `JodaCompatibleZonedDateTime`, which implements no `java.time` interface: it has no
+      * `getLong` ([[monthKey]] failed with `dynamic method [..., getLong/1] not found`) and is no
+      * `Temporal` (`ChronoUnit.between` failed with a `ClassCastException`). `withZoneSameInstant`
+      * is on its allow-list and returns the `ZonedDateTime` it wraps; on 7.x, 8.x and 9.x it reads
+      * the same instant, so every major counts the same units.
+      */
+    private[time] def utcZoned(ref: String): String = {
+      val r = if (postfixable(ref)) ref else s"($ref)"
+      s"($r == null ? null : $r.withZoneSameInstant(ZoneId.of('Z')))"
+    }
+
+    /** Whether a method can be appended to a rendered operand as it stands: outside parentheses,
+      * brackets and string literals it holds nothing but names, digits and dots. Anything else — a
+      * ternary (`p4 ? p3 : p1`, which is how a CASE operand renders), a cast (`(long) x`) — is
+      * parenthesised first, or the method would bind to its last term alone.
+      */
+    private[time] def postfixable(rendered: String): Boolean = {
+      var depth = 0
+      var quote: Char = 0
+      var i = 0
+      while (i < rendered.length) {
+        val c = rendered.charAt(i)
+        if (quote != 0) {
+          if (c == '\\') i += 1
+          else if (c == quote) quote = 0
+        } else if (c == '"' || c == '\'') quote = c
+        else if (c == '(' || c == '[') depth += 1
+        else if (c == ')' || c == ']') depth -= 1
+        else if (depth == 0 && !(c.isLetterOrDigit || c == '_' || c == '.')) return false
+        i += 1
+      }
+      true
+    }
   }
 
-  /** MySQL's `DATEDIFF`, which is a DIFFERENT function from the one above and needs its own token
-    * so the parser can tell them apart (issue #363).
-    *
-    * MySQL 8.4 defines `DATEDIFF(expr1, expr2)` as `expr1 - expr2`; `DATE_DIFF(start, end, unit)`
-    * is BigQuery's and is `end - start`. While `DATEDIFF` was merely a WORD of the token above it
-    * inherited BigQuery's order, so it returned the opposite sign from the function it is named
-    * after — MySQL's own documented `DATEDIFF('2007-12-31','2007-12-30') -> 1` answered `-1` here.
+  /** `DATEDIFF`, the name MySQL, SQL Server, Snowflake, Redshift, DuckDB and Elasticsearch SQL give
+    * the function. It needs its own token because its two-argument form is MySQL's, which the
+    * `DATE_DIFF` productions do not parse (issue #363).
     *
     * 🔴 Neither spelling is a prefix of the other (`DATE_DIFF` has an underscore where `DATEDIFF`
     * has a `D`), so the two regexes cannot shadow one another whatever order they are tried in.
     */
   case object MySqlDateDiff extends Expr("DATEDIFF") with TokenRegex
 
-  /** Which spelling a `DateDiff` was written as. It decides the RENDER and nothing else — the node
-    * itself always means `end - start`, so every consumer (`args`, `left`/`right`, the Painless
-    * emission, validation, `update`) has exactly ONE encoding of the decision to read.
+  /** How a `DateDiff` was written, which decides its RENDER and what it COUNTS. The node itself
+    * always means `end - start`: the parser stores the operands so, and every other consumer
+    * (`args`, `left`/`right`, the Painless emission, validation, `update`) reads that one encoding.
     *
-    * A `Boolean` cannot carry three forms, and silently widening one is how the old `transactSql`
-    * flag would have rotted; being sealed, the compiler now forces every render arm.
+    * The vendors' definitions, fetched from their references (2026-10-02), and the lead's ruling to
+    * follow them on both axes:
+    *
+    *   - DIRECTION, by layout. Every vendor computes `end - start`; the layout decides where the
+    *     end sits. Dates first is `first - second`: MySQL's `DATEDIFF(expr1, expr2)`, BigQuery's
+    *     `DATE_DIFF(end_date, start_date, part)` (`DATE_DIFF('2010-07-07', '2008-12-25', DAY)` is
+    *     559). Unit first is `last - middle`: `DATEDIFF(unit, start, end)` in SQL Server,
+    *     Snowflake, Redshift, DuckDB and Elasticsearch SQL, and MySQL's `TIMESTAMPDIFF(unit, dt1,
+    *     dt2)`.
+    *   - COUNTING, by name. `DATEDIFF` and `DATE_DIFF` count the calendar BOUNDARIES crossed, as
+    *     SQL Server, Snowflake, Redshift, BigQuery and DuckDB's `date_diff` do: one second across a
+    *     year end is one YEAR. `TIMESTAMPDIFF` counts the whole units ELAPSED, truncated toward
+    *     zero, as MySQL does: a month counts once its day and time of day are reached.
+    *
+    * 🔴 Issue #363 read BigQuery's `DATE_DIFF` as `(start, end, unit)`, so until 0.24.0 the
+    * dates-first forms with a unit subtracted the other way round, and every unit from WEEK up
+    * counted elapsed units. Sealed, so the compiler forces every arm of the render.
     */
-  sealed trait DateDiffSpelling
+  sealed trait DateDiffSpelling {
+
+    /** `TIMESTAMPDIFF` counts whole units ELAPSED; every other spelling counts BOUNDARIES. */
+    def elapsed: Boolean = false
+  }
   object DateDiffSpelling {
 
-    /** `DATE_DIFF(start, end, unit)` — BigQuery's order, this engine's canonical render. */
+    /** `DATE_DIFF(end, start[, unit])` (BigQuery's order) and `DATEDIFF(end, start, unit)`: dates
+      * first, so the parser stores the SECOND operand as the start.
+      */
     case object DateFirst extends DateDiffSpelling
 
-    /** `DATE_DIFF(unit, start, end)` / `TIMESTAMPDIFF(unit, start, end)` — the ODBC/T-SQL and MySQL
-      * `TIMESTAMPDIFF` order. MySQL defines that one as `dt2 - dt1`, which is what this engine
-      * already computed, so it needed no change.
-      */
+    /** `DATE_DIFF(unit, start, end)` / `DATEDIFF(unit, start, end)`: unit first. */
     case object UnitFirst extends DateDiffSpelling
 
-    /** `DATEDIFF(expr1, expr2)` — MySQL's, `expr1 - expr2`, days only. The parser stores it with
-      * `start`/`end` SWAPPED, so the node still means `end - start`; the render swaps them back.
+    /** `DATEDIFF(end, start)`: MySQL's, in days. It means what `DATE_DIFF(end, start, DAY)` means;
+      * the spelling is kept so that `SHOW CREATE …` hands back what was written.
       */
     case object MySql extends DateDiffSpelling
+
+    /** `TIMESTAMPDIFF(unit, start, end)`: MySQL's, whole units ELAPSED. */
+    case object TimestampDiff extends DateDiffSpelling {
+      override val elapsed: Boolean = true
+    }
+
+    /** `TIMESTAMPDIFF(end, start[, unit])`. No vendor writes it; it parses because `TIMESTAMPDIFF`
+      * is a word of the `DATE_DIFF` token, and the two rules above give it its meaning: dates
+      * first, whole units elapsed.
+      */
+    case object TimestampDiffDateFirst extends DateDiffSpelling {
+      override val elapsed: Boolean = true
+    }
   }
 
   case class DateDiff(
@@ -628,22 +747,24 @@ package object time {
       * `MaterializedViewExtension` persists this text and re-runs `client.run(alter.sql)`, `SHOW
       * CREATE MATERIALIZED VIEW` echoes it, and `SCRIPT AS` stores it beside the Painless.
       *
-      * 🔴 Keeping the `DATEDIFF` spelling is a READABILITY choice, not a correctness one, and the
-      * distinction is worth stating because the opposite claim is easy to reach for. Because the
-      * parser already stored MySQL's operands swapped, rendering this node as `DATE_DIFF(start,
-      * end, unit)` would ALSO re-parse to the same node and mean the same thing — a mutation that
-      * does exactly that reddens one assertion here, and it is the spelling one. What the swap
-      * protects against is the OTHER design, the one where the node keeps the operands as written
-      * and reverses them at emission: there the canonical render really does flip the sign of a
-      * stored statement on its next round trip (issue #363).
+      * 🔴 The dates-first forms are stored with their operands SWAPPED (the second is the start),
+      * and the render swaps them back. What the swap protects against is the other design, the one
+      * where the node keeps the operands as written and reverses them at emission: there the
+      * canonical render flips the sign of a stored statement on its next round trip (issue #363).
       *
-      * The spelling is preserved so that `SHOW CREATE …` hands back what was written, rather than
-      * the same statement with its two arguments visibly exchanged.
+      * 🔴 `TIMESTAMPDIFF` keeps its name, and that is correctness, not readability: it counts
+      * elapsed units where `DATE_DIFF` counts boundaries, so a render as `DATE_DIFF` would change
+      * what a stored statement answers. `DATEDIFF(a, b)` keeps its name for readability only (it
+      * means `DATE_DIFF(a, b, DAY)`), so that `SHOW CREATE …` hands back what was written.
       */
     override def toSQL(base: String): String = spelling match {
       case DateDiffSpelling.UnitFirst => s"$sql(${unit.sql}, ${start.sql}, ${end.sql})"
       case DateDiffSpelling.MySql     => s"${MySqlDateDiff.sql}(${end.sql}, ${start.sql})"
-      case DateDiffSpelling.DateFirst => s"$sql(${start.sql}, ${end.sql}, ${unit.sql})"
+      case DateDiffSpelling.DateFirst => s"$sql(${end.sql}, ${start.sql}, ${unit.sql})"
+      case DateDiffSpelling.TimestampDiff =>
+        s"${DateDiff.timestampDiff}(${unit.sql}, ${start.sql}, ${end.sql})"
+      case DateDiffSpelling.TimestampDiffDateFirst =>
+        s"${DateDiff.timestampDiff}(${end.sql}, ${start.sql}, ${unit.sql})"
     }
 
     /** The type a COLUMN operand is read as, whatever the unit: the instant it denotes, in UTC
@@ -659,19 +780,38 @@ package object time {
       */
     override def in: SQLType = SQLTypes.Timestamp
 
-    /** The type the two operands are COMPARED in, and the UNIT decides it.
+    /** The type the two operands are COMPARED in, in UTC; the counting and the unit decide it.
       *
-      *   - `HOUR`, `MINUTE` and `SECOND` count the ELAPSED whole units between two instants (UTC),
-      *     truncated toward zero; a DATE operand is the start of its day. They used to be compared
-      *     as a `LocalDate`, which has no time of day, so every such call failed with `Unsupported
-      *     unit: Hours`.
-      *   - `DAY` and every larger unit compare the two CALENDAR dates (UTC): 23:30 and 00:30 the
-      *     next day are one day apart, as MySQL's `DATEDIFF` answers. That is what they computed.
+      *   - `TIMESTAMPDIFF` counts the whole units ELAPSED between two instants, whatever the unit:
+      *     a DATE operand is the start of its day.
+      *   - `DATEDIFF` / `DATE_DIFF` count BOUNDARIES: between two calendar dates from `DAY` up
+      *     (23:30 and 00:30 the next day are one day apart), between two instants for `HOUR`,
+      *     `MINUTE` and `SECOND`, which a `LocalDate` cannot hold (`Unsupported unit: Hours`).
       */
     private def comparedIn: SQLType = unit match {
+      case _ if spelling.elapsed                                => SQLTypes.Timestamp
       case TimeUnit.HOURS | TimeUnit.MINUTES | TimeUnit.SECONDS => SQLTypes.Timestamp
       case _                                                    => SQLTypes.Date
     }
+
+    /** What each operand is moved to before the units between them are counted: for a BOUNDARY
+      * count, the start of the unit it falls in (UTC), so that the whole units elapsed between the
+      * two starts are the boundaries crossed between the operands — 2005-12-31 23:59:59 and
+      * 2006-01-01 00:00:00 are one YEAR apart, 1992-09-15 and 1992-11-14 two MONTHs, 10:59 and
+      * 11:00 one HOUR. A WEEK starts on the ISO Monday ([[isoWeekStart]]), a QUARTER on January,
+      * April, July or October 1st. An ELAPSED count moves nothing.
+      */
+    private def unitStart: String =
+      if (spelling.elapsed) ""
+      else
+        unit match {
+          case TimeUnit.YEARS    => ".withDayOfYear(1)"
+          case TimeUnit.QUARTERS => ".with(java.time.temporal.IsoFields.DAY_OF_QUARTER, 1)"
+          case TimeUnit.MONTHS   => ".withDayOfMonth(1)"
+          case TimeUnit.WEEKS    => isoWeekStart
+          case TimeUnit.DAYS     => ""
+          case subDay            => s".truncatedTo(${subDay.painless(None)})"
+        }
 
     /** A context-free rendering over an aggregate is the PER-GROUP calculation: the `bucket_script`
       * of a SELECT item (`DATEDIFF(MAX(d), '2024-01-01') AS x`), which a HAVING over `x` reads by
@@ -688,32 +828,40 @@ package object time {
         case _                      => super[BinaryFunction].painless(context)
       }
 
-    /** One operand, brought to [[comparedIn]] through the coercion arms a CAST uses.
+    /** One operand, brought to [[comparedIn]] through the coercion arms a CAST uses, then to the
+      * start of its unit ([[unitStart]]).
       *
       *   - A string LITERAL is first read as the temporal it spells ([[DateDiff.literalType]]: UTC
-      *     unless it names a zone). Row level used to hand Painless the bare string
-      *     (`between("2024-01-01", param1)`, which it cannot call), and per group parsed it as a
-      *     DATE whatever it held, so a time of day failed the search.
+      *     unless it names a zone), in every venue. Row level used to hand Painless the bare string
+      *     (`between("2024-01-01", param1)`, which it cannot call), and an ingest processor still
+      *     did.
       *   - Per group, an aggregate is the metric Elasticsearch computed, which a `bucket_script`
       *     receives as a `java.lang.Double` holding EPOCH MILLIS (`(long)` is required: Painless
       *     refuses to cast a `def` double to `long` implicitly). Any other operand is converted
       *     from its own type.
+      *   - In an INGEST processor any other operand is a UTC temporal the processor made itself: a
+      *     column parsed at runtime by `SQLTypeUtils.processorTemporal`, the clock, a `::DATE`
+      *     literal. The first two are `ZonedDateTime`s whatever their type, the last a `LocalDate`,
+      *     and `LocalDate.from` reads the calendar date of either. A DATE under a time-of-day
+      *     comparison is the start of its day, as at row level — `CURRENT_DATE` included, which a
+      *     processor holds as the current instant.
       *   - At row level a column operand holds its UTC instant ([[in]]), so its calendar date is
-      *     `toLocalDate()`. An operand with no column of its own (`'2025-01-10'::DATE`,
-      *     `CURRENT_DATE`, `NOW()`) renders as it did, except a DATE under a sub-day unit, which is
-      *     the start of its day: a `LocalDate` has no hours.
-      *
-      * 🔴 An INGEST processor renders as it did: there a column is the raw document value, parsed
-      * at runtime by `SQLTypeUtils.processorTemporal`.
+      *     `toLocalDate()`. Any other operand (`'2025-01-10'::DATE`, `CURRENT_DATE`, `NOW()`, a
+      *     COALESCE, a CASE) is read for a calendar date by `LocalDate.from`, once it is a UTC
+      *     `java.time` value by its RUNTIME type ([[DateDiff.utcInstant]]): a COALESCE or a CASE
+      *     over a column hands on the column's raw doc value, which on Elasticsearch 6.8 is no
+      *     `java.time` type, and `LocalDate.from` refused it (`ClassCastException`). For a
+      *     time-of-day comparison a DATE is the start of its day (a `LocalDate` has no hours) and
+      *     anything else renders as it did.
+      *   - `TIMESTAMPDIFF` takes [[elapsedOperand]] instead, in every venue.
       */
     private def operand(
       arg: PainlessScript,
       rendered: String,
       context: Option[PainlessContext],
       perGroup: Boolean
-    ): String =
-      DateDiff.literalType(arg) match {
-        case _ if context.exists(_.isProcessor) => rendered
+    ): String = {
+      val compared = DateDiff.literalType(arg) match {
         case Some(literal) =>
           val value =
             SQLTypeUtils.coerce(rendered, SQLTypes.Varchar, literal, nullable = false, None)
@@ -724,15 +872,22 @@ package object time {
               val epochMillis = SQLTypeUtils
                 .coerce(rendered, SQLTypes.Double, SQLTypes.BigInt, nullable = false, None)
               // The instant in UTC already (`Instant.ofEpochMilli(...).atZone(ZoneId.of('Z'))`), so
-              // DAY and above read its calendar date off it: ONE conversion per aggregate. The
-              // TIMESTAMP -> DATE arm would normalise it to UTC a second time
-              // (`.toInstant().atZone(ZoneId.of('Z'))`), as it must an operand of unknown zone.
+              // a calendar date is read off it: ONE conversion per aggregate. The TIMESTAMP -> DATE
+              // arm would normalise it to UTC a second time (`.toInstant().atZone(ZoneId.of('Z'))`),
+              // as it must an operand of unknown zone.
               val utc = SQLTypeUtils
                 .coerce(epochMillis, SQLTypes.BigInt, SQLTypes.Timestamp, nullable = false, None)
               if (comparedIn == SQLTypes.Date) s"$utc.toLocalDate()" else utc
+            case _ if spelling.elapsed => elapsedOperand(arg, rendered, context)
             case other =>
               SQLTypeUtils.coerce(rendered, other.baseType, comparedIn, nullable = false, None)
           }
+        case None if spelling.elapsed => elapsedOperand(arg, rendered, context)
+        case None if context.exists(_.isProcessor) =>
+          if (comparedIn == SQLTypes.Date) s"LocalDate.from($rendered)"
+          else if (arg.baseType == SQLTypes.Date)
+            s"LocalDate.from($rendered).atStartOfDay(ZoneId.of('Z'))"
+          else rendered
         case None if context.isDefined =>
           arg match {
             case column: Identifier if column.name.trim.nonEmpty =>
@@ -740,19 +895,85 @@ package object time {
             case value: Identifier
                 if comparedIn == SQLTypes.Timestamp && value.baseType == SQLTypes.Date =>
               SQLTypeUtils.coerce(rendered, SQLTypes.Date, comparedIn, nullable = false, None)
+            // a `ZonedDateTime` here (`'…'::TIMESTAMP`, `NOW()`, a CASE) would keep its time of day
+            // through `unitStart`, and a calendar unit would count it; read by its runtime type
+            // first, for a COALESCE or a CASE may hand on a column's raw 6.8 doc value
+            case _ if comparedIn == SQLTypes.Date =>
+              s"LocalDate.from(${DateDiff.utcInstant(bound(rendered, context))})"
             case _ => rendered
           }
         case None => rendered
       }
+      if (unitStart.isEmpty) compared
+      else if (DateDiff.postfixable(compared)) s"$compared$unitStart"
+      else s"($compared)$unitStart"
+    }
+
+    /** A `TIMESTAMPDIFF` operand, as the instant it denotes in UTC. The function compares INSTANTS:
+      * `ChronoUnit.between` reads its end as the type of its start, so a `ZonedDateTime` start
+      * refused a `LocalDate` or a `LocalDateTime` end, and the month count ([[DateDiff.monthKey]])
+      * reads a time of day a `LocalDate` does not have. Either way the statement failed.
+      *
+      *   - An ingest processor reads a DATE-typed operand as the start of its calendar day
+      *     (`LocalDate.from`): it holds `CURRENT_DATE` as the current INSTANT, so there the
+      *     declared type, not the runtime one, is what says "a date".
+      *   - A column is an instant in a script that reads it, though not always a `java.time` one.
+      *     An ingest processor parses it into a UTC `ZonedDateTime`
+      *     (`SQLTypeUtils.processorTemporal`). Row level reads its column parameter, which holds
+      *     its UTC instant ([[in]]) unless a function over the same column read it first: then it
+      *     is the raw doc value, which on Elasticsearch 6.8 is no `java.time` type, so it goes
+      *     through [[DateDiff.utcZoned]]. A function over a column need not be an instant at all:
+      *     `ts::DATE` is a `LocalDate`.
+      *   - Any other operand is converted by its RUNTIME type ([[DateDiff.utcInstant]]), which its
+      *     declared type does not give: `COALESCE(ts, CURRENT_DATE)`, or a CASE over `CURRENT_DATE`
+      *     and a DATE, is a `LocalDate` on one row and a `ZonedDateTime` on another, a `::DATETIME`
+      *     a `LocalDateTime`. It is evaluated once, bound to a name where the script can bind one;
+      *     a `bucket_script` cannot, and per group such an operand is a constant of the request.
+      */
+    private def elapsedOperand(
+      arg: PainlessScript,
+      rendered: String,
+      context: Option[PainlessContext]
+    ): String = arg match {
+      case _ if context.exists(_.isProcessor) && arg.baseType == SQLTypes.Date =>
+        s"LocalDate.from($rendered).atStartOfDay(ZoneId.of('Z'))"
+      case column: Identifier
+          if context.isDefined && column.name.trim.nonEmpty && column.functions.isEmpty =>
+        if (context.exists(_.isProcessor)) rendered else DateDiff.utcZoned(rendered)
+      case _ => DateDiff.utcInstant(bound(rendered, context))
+    }
+
+    /** A rendered operand as [[DateDiff.utcInstant]] may read it, up to four times: a name as it
+      * stands, any other expression evaluated once into a parameter where the script can bind one,
+      * cast to `def` where it cannot.
+      */
+    private def bound(rendered: String, context: Option[PainlessContext]): String =
+      context match {
+        case Some(_) if FunctionN.isName(rendered) => rendered
+        case Some(ctx) => ctx.addParam(LiteralParam(rendered)).getOrElse(s"((def) ($rendered))")
+        case None      => s"((def) ($rendered))"
+      }
 
     /** `ChronoUnit` has no `QUARTERS`, so a `QUARTER` call failed to compile in Elasticsearch. The
-      * ISO quarter-year unit counts the whole quarters between two calendar dates: the whole months
-      * between them, divided by 3.
+      * ISO quarter-year unit counts the whole quarters between two calendar dates, which between
+      * two quarter starts ([[unitStart]]) are the quarter boundaries crossed.
       */
     private def unitPainless(context: Option[PainlessContext]): String = unit match {
       case TimeUnit.QUARTERS => "java.time.temporal.IsoFields.QUARTER_YEARS"
       case other             => other.painless(context)
     }
+
+    /** `TIMESTAMPDIFF`'s MONTH, QUARTER and YEAR are whole months elapsed, divided by 1, 3 or 12.
+      */
+    private def monthsPerUnit: Option[Int] =
+      if (!spelling.elapsed) None
+      else
+        unit match {
+          case TimeUnit.MONTHS   => Some(1)
+          case TimeUnit.QUARTERS => Some(3)
+          case TimeUnit.YEARS    => Some(12)
+          case _                 => None
+        }
 
     /** The function's ONE rendering: row level reaches it from `FunctionN.painless` with its
       * operands rendered, per group from [[painless]]; [[operand]] converts each one.
@@ -765,8 +986,17 @@ package object time {
       val operands = args.zip(callArgs).map { case (arg, rendered) =>
         operand(arg, rendered, context, perGroup)
       }
-      val ret =
-        s"Long.valueOf(${unitPainless(context)}${DateDiff.painless(context)}(${operands.mkString(", ")}))"
+      val ret = monthsPerUnit match {
+        case Some(perUnit) =>
+          // each operand is read four times by `monthKey`: bound once where a script can bind it
+          val bound =
+            operands.map(op => context.flatMap(_.addParam(LiteralParam(op))).getOrElse(op))
+          val months =
+            s"(${DateDiff.monthKey(bound(1))} - ${DateDiff.monthKey(bound.head)}) / ${DateDiff.MonthKeyScale}L"
+          s"Long.valueOf(${if (perUnit == 1) months else s"$months / $perUnit"})"
+        case None =>
+          s"Long.valueOf(${unitPainless(context)}${DateDiff.painless(context)}(${operands.mkString(", ")}))"
+      }
       context match {
         case Some(ctx)
             if ctx.isProcessor => // to fix bug in painless script processor context with elasticsearch v6

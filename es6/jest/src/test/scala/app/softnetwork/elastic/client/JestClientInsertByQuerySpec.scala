@@ -5,6 +5,4 @@ import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 
 class JestClientInsertByQuerySpec extends InsertByQuerySpec with ElasticDockerTestKit {
   override lazy val client: ElasticClientApi = new JestClientSpi().client(elasticConfig)
-
-  override def elasticVersion: String = "6.7.2"
 }

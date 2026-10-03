@@ -127,13 +127,13 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
         |  id INT NOT NULL COMMENT 'user identifier',
         |  name VARCHAR FIELDS(raw Keyword COMMENT 'sortable') DEFAULT 'anonymous' OPTIONS (analyzer = 'french', search_analyzer = 'french'),
         |  birthdate DATE,
-        |  age INT SCRIPT AS (DATEDIFF(birthdate, CURRENT_DATE, YEAR)),
+        |  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
         |  ingested_at TIMESTAMP DEFAULT _ingest.timestamp,
         |  profile STRUCT FIELDS(
         |    bio VARCHAR,
         |    followers INT,
         |    join_date DATE,
-        |    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+        |    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY))
         |  ) COMMENT 'user profile',
         |  PRIMARY KEY (id)
         |) PARTITION BY birthdate (MONTH), OPTIONS (mappings = (dynamic = false))""".stripMargin
@@ -146,7 +146,7 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     ddl should include("CREATE OR REPLACE TABLE users")
     ddl should include("id INT NOT NULL COMMENT 'user identifier'")
     ddl should include("birthdate DATE")
-    ddl should include("age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))")
+    ddl should include("age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))")
     ddl should include("PRIMARY KEY (id)")
     ddl should include("PARTITION BY birthdate (MONTH)")
   }

@@ -176,7 +176,7 @@ CREATE TABLE users (
       zip VARCHAR
     ),
     join_date DATE,
-    seniority INT SCRIPT AS (DATEDIFF(profile.join_date, CURRENT_DATE, DAY))
+    seniority INT SCRIPT AS (DATEDIFF(CURRENT_DATE, profile.join_date, DAY))
   )
 )
 ```
@@ -304,7 +304,7 @@ CREATE TABLE users (
   id INT,
   name VARCHAR DEFAULT 'anonymous',
   birthdate DATE,
-  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)),
+  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)),
   PRIMARY KEY (id)
 );
 ```
@@ -399,7 +399,7 @@ value derived for it.
 CREATE TABLE users (
   id INT,
   birthdate DATE,
-  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))
+  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))
 );
 ```
 
@@ -410,7 +410,7 @@ computing it here:
 CREATE TABLE users_view (
   id INT,
   birthdate DATE,
-  age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR)) STORED
+  age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)) STORED
 );
 ```
 
@@ -705,7 +705,7 @@ WITH PROCESSORS (
         value = "anonymous"
     ),
     SCRIPT (
-        description = "age INT SCRIPT AS (DATE_DIFF(birthdate, CURRENT_DATE, YEAR))",
+        description = "age INT SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE))",
         lang = "painless",
         source = "...",
         ignore_failure = true

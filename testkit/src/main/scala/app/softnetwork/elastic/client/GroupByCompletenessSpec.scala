@@ -2151,7 +2151,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   }
 
   /** A spelling of the family over two operands, and the days it answers for them: `end - start`,
-    * except MySQL's two-argument DATEDIFF, which is `first - second`.
+    * where the dates first is `first - second` and the unit first `last - middle`. Between two
+    * calendar dates, the days crossed and the whole days elapsed are the same number.
     */
   private final case class DateDiffForm(
     sql: (String, String) => String,
@@ -2162,9 +2163,9 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     def between(start: LocalDate, end: LocalDate): Long = ChronoUnit.DAYS.between(start, end)
     Seq(
       DateDiffForm((a, b) => s"DATEDIFF($a, $b)", (a, b) => between(b, a)),
-      DateDiffForm((a, b) => s"DATEDIFF($a, $b, DAY)", between),
+      DateDiffForm((a, b) => s"DATEDIFF($a, $b, DAY)", (a, b) => between(b, a)),
       DateDiffForm((a, b) => s"DATEDIFF(DAY, $a, $b)", between),
-      DateDiffForm((a, b) => s"DATE_DIFF($a, $b, DAY)", between),
+      DateDiffForm((a, b) => s"DATE_DIFF($a, $b, DAY)", (a, b) => between(b, a)),
       DateDiffForm((a, b) => s"DATE_DIFF(DAY, $a, $b)", between),
       DateDiffForm((a, b) => s"TIMESTAMPDIFF(DAY, $a, $b)", between)
     )
