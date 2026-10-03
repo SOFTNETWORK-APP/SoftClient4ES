@@ -5,6 +5,4 @@ import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 
 class JestClientTemplateApiSpec extends TemplateApiSpec with ElasticDockerTestKit {
   override lazy val client: TemplateApi with VersionApi = new JestClientSpi().client(elasticConfig)
-
-  override def elasticVersion: String = "6.7.2"
 }

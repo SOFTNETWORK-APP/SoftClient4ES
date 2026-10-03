@@ -320,10 +320,13 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     constant("'2024-12-31 23:59:59'::TIMESTAMP", AtInstant(Instant.parse("2024-12-31T23:59:59Z")))
   )
 
-  private val diffRowOperands: Seq[DiffOperand] = Seq(
-    DiffOperand("d", aggregate = false)(_.head._3.map(x => OnDate(LocalDate.parse(x)))),
+  private val diffDate: DiffOperand =
+    DiffOperand("d", aggregate = false)(_.head._3.map(x => OnDate(LocalDate.parse(x))))
+
+  private val diffInstant: DiffOperand =
     DiffOperand("ts", aggregate = false)(_.head._4.map(x => AtInstant(Instant.parse(x))))
-  ) ++ diffLiterals
+
+  private val diffRowOperands: Seq[DiffOperand] = Seq(diffDate, diffInstant) ++ diffLiterals
 
   private val diffGroupOperands: Seq[DiffOperand] = Seq(
     DiffOperand("MAX(d)", aggregate = true)(
@@ -465,6 +468,30 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     for (a <- diffGroupOperands; b <- diffGroupOperands if a.aggregate || b.aggregate)
       yield (a, b)
 
+  /** A spelling over two operands in a venue, and its answer for each document or group. */
+  private def diffStatement(
+    spelling: DiffSpelling,
+    venue: String,
+    a: DiffOperand,
+    b: DiffOperand,
+    scopes: Seq[(String, Seq[DiffDoc])]
+  ): DiffStatement = {
+    val e = spelling.sql(a.sql, b.sql)
+    val sql = venue match {
+      case "SELECT" => s"SELECT id, $e AS x FROM $diffIndex"
+      case "WHERE"  => s"SELECT id FROM $diffIndex WHERE $e > 0"
+      case "GROUP"  => s"SELECT g, $e AS x FROM $diffIndex GROUP BY g"
+      case _        => s"SELECT g, $e AS x FROM $diffIndex GROUP BY g HAVING x > 0"
+    }
+    val expected = scopes.map { case (key, docs) =>
+      key -> (for {
+        first  <- a.value(docs)
+        second <- b.value(docs)
+      } yield answer(spelling, first, second))
+    }.toMap
+    DiffStatement(sql, venue, spelling.unit, expected)
+  }
+
   private lazy val diffPopulation: Seq[DiffStatement] = {
     // A WHERE over two literals reads no column: it is a constant predicate, rendered as a bare
     // comparison of the function's boxed result, which fails to compile whatever the function is
@@ -481,22 +508,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
         ("HAVING", diffGroupPairs, diffPerGroup)
       )
       (a, b) <- pairs
-    } yield {
-      val e = spelling.sql(a.sql, b.sql)
-      val sql = venue match {
-        case "SELECT" => s"SELECT id, $e AS x FROM $diffIndex"
-        case "WHERE"  => s"SELECT id FROM $diffIndex WHERE $e > 0"
-        case "GROUP"  => s"SELECT g, $e AS x FROM $diffIndex GROUP BY g"
-        case _        => s"SELECT g, $e AS x FROM $diffIndex GROUP BY g HAVING x > 0"
-      }
-      val expected = scopes.map { case (key, docs) =>
-        key -> (for {
-          first  <- a.value(docs)
-          second <- b.value(docs)
-        } yield answer(spelling, first, second))
-      }.toMap
-      DiffStatement(sql, venue, spelling.unit, expected)
-    }
+    } yield diffStatement(spelling, venue, a, b, scopes)
   }
 
   /** Every pair of operand values the population computes over, in written order. */
@@ -583,6 +595,13 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       x.isInstanceOf[OnDate] && y.isInstanceOf[AtInstant] && instantOf(x) == instantOf(y)
     } shouldBe true
 
+    assertDiffPopulation("DATEDIFF family", population)
+  }
+
+  /** Every statement of a population through the gateway, against its answer: the documents or
+    * groups a filter keeps, or each one's value; `label` names the population in the report.
+    */
+  private def assertDiffPopulation(label: String, population: Seq[DiffStatement]): Unit = {
     val outcomes: Seq[(DiffStatement, Either[String, String])] = population.map { st =>
       st -> diffRows(st.sql).flatMap { rows =>
         val key = if (st.venue == "SELECT" || st.venue == "WHERE") "id" else "g"
@@ -612,9 +631,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     }
     val wrong = outcomes.collect { case (st, Right(diff)) if diff.nonEmpty => s"[${st.sql}] $diff" }
     val errors = outcomes.collect { case (st, Left(error)) => s"[${st.sql}] $error" }
-    info(
-      s"DATEDIFF family: ${population.size} statements; wrong: ${wrong.size}; errors: ${errors.size}"
-    )
+    info(s"$label: ${population.size} statements; wrong: ${wrong.size}; errors: ${errors.size}")
     wrong.foreach(info(_))
     errors.foreach(info(_))
     withClue(
@@ -624,6 +641,97 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       wrong shouldBe empty
       errors shouldBe empty
     }
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // DATE_DIFF and DATEDIFF over an operand that holds a column's value without being the column,
+  // `COALESCE(ts, d)` or `COALESCE(d, ts)`. A calendar unit compares such an operand as a date,
+  // from the value the node hands the script for the column; Elasticsearch 6.8 hands one of its
+  // own, which is no `java.time` value, and until the engine brought it to one first, every
+  // statement below failed there with a `class_cast_exception`. The oracle above answers them as
+  // it answers any operand, a COALESCE being its first argument where the document has a value for
+  // it and its second where it has not: `DATE_DIFF(a, b, unit)` and `DATEDIFF(unit, a, b)` in each
+  // calendar unit, and `DATEDIFF(a, b)`, each COALESCE against the column it falls back to, both
+  // ways round, as a SELECT item and in a WHERE.
+  // -----------------------------------------------------------------------------------------------
+
+  /** `COALESCE(x, y)` over a document: `x`'s value where the document has one, else `y`'s. */
+  private def coalesce(x: DiffOperand, y: DiffOperand): DiffOperand =
+    DiffOperand(s"COALESCE(${x.sql}, ${y.sql})", aggregate = false)(docs =>
+      x.value(docs).orElse(y.value(docs))
+    )
+
+  /** The arguments of each COALESCE: the timestamp column first, then the date column first. */
+  private val diffCoalesces: Seq[(DiffOperand, DiffOperand)] =
+    Seq(diffInstant -> diffDate, diffDate -> diffInstant)
+
+  /** Each COALESCE against the column it falls back to, both ways round. */
+  private val diffCoalescedPairs: Seq[(DiffOperand, DiffOperand)] =
+    diffCoalesces.flatMap { case (x, y) =>
+      val c = coalesce(x, y)
+      Seq(c -> y, y -> c)
+    }
+
+  /** `DATE_DIFF(a, b, unit)` and `DATEDIFF(unit, a, b)` per calendar unit, and `DATEDIFF(a, b)`. */
+  private val diffCoalescedSpellings: Seq[DiffSpelling] =
+    Seq("YEAR", "QUARTER", "MONTH", "WEEK", "DAY").flatMap { u =>
+      Seq(
+        DiffSpelling(u, datesFirst = true, countsElapsed = false)((a, b) =>
+          s"DATE_DIFF($a, $b, $u)"
+        ),
+        DiffSpelling(u, datesFirst = false, countsElapsed = false)((a, b) =>
+          s"DATEDIFF($u, $a, $b)"
+        )
+      )
+    } :+ DiffSpelling("DAY", datesFirst = true, countsElapsed = false)((a, b) =>
+      s"DATEDIFF($a, $b)"
+    )
+
+  private lazy val diffCoalescedPopulation: Seq[DiffStatement] =
+    for {
+      spelling <- diffCoalescedSpellings
+      venue    <- Seq("SELECT", "WHERE")
+      (a, b)   <- diffCoalescedPairs
+    } yield diffStatement(spelling, venue, a, b, diffPerDocument)
+
+  it should "answer the same definitions over a COALESCE of the date and the timestamp column" in {
+    diffIndexLoaded
+    val population = diffCoalescedPopulation
+    // Non-vacuity, computed over the material: 11 spellings x 4 operand pairs x 2 venues, every
+    // unit answering a negative, a zero and a positive somewhere, each COALESCE answered by its
+    // first argument on some document and by its second on another, NULL in both venues, and the
+    // filters keeping some and dropping some.
+    population.size shouldBe 11 * 4 * 2
+    population.foreach(st => withClue(s"[${st.sql}] ")(Parser(st.sql).isRight shouldBe true))
+    diffCoalescedSpellings.map(_.unit).distinct.foreach { u =>
+      val answers = population.filter(_.unit == u).flatMap(_.expected.values.flatten)
+      withClue(s"$u: ") {
+        Seq(answers.exists(_ < 0), answers.contains(0L), answers.exists(_ > 0)) shouldBe
+        Seq(true, true, true)
+      }
+    }
+    diffCoalesces.foreach { case (x, y) =>
+      withClue(s"COALESCE(${x.sql}, ${y.sql}): ") {
+        Seq(
+          diffPerDocument.exists { case (_, docs) => x.value(docs).isDefined },
+          diffPerDocument.exists { case (_, docs) =>
+            x.value(docs).isEmpty && y.value(docs).isDefined
+          }
+        ) shouldBe Seq(true, true)
+      }
+    }
+    Seq("SELECT", "WHERE").foreach { venue =>
+      withClue(s"$venue: ") {
+        population.filter(_.venue == venue).exists(_.expected.values.exists(_.isEmpty)) shouldBe
+        true
+      }
+    }
+    population
+      .filter(_.filters)
+      .exists(st => st.kept.nonEmpty && st.kept != st.expected.keySet) shouldBe
+    true
+
+    assertDiffPopulation("DATEDIFF family over COALESCE", population)
   }
 
   // -----------------------------------------------------------------------------------------------
