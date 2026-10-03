@@ -606,7 +606,10 @@ package object time {
     /** A temporal as the instant it denotes, in UTC, decided by its RUNTIME type: a `LocalDate` is
       * the start of its day, a `LocalDateTime` that wall-clock time in UTC, anything zoned the same
       * instant. `TIMESTAMPDIFF` compares instants, and an operand's declared type does not say
-      * which of the three it holds: `COALESCE(ts, CURRENT_DATE)` is either, row by row.
+      * which of the three it holds: `COALESCE(ts, CURRENT_DATE)` is either, row by row. `DATEDIFF`
+      * and `DATE_DIFF` read a calendar date through it too, off a row-level operand that is not a
+      * column: a zoned value there may be Elasticsearch 6.8's doc value, which is no `java.time`
+      * type until `withZoneSameInstant` (as in [[utcZoned]]) returns the `ZonedDateTime` it wraps.
       *
       * `ref` is read up to four times, so it is a name or an expression cast to `def` (the methods
       * below are resolved at runtime). NULL stays NULL: the MONTH, QUARTER and YEAR calls bind this
@@ -614,6 +617,24 @@ package object time {
       */
     private[time] def utcInstant(ref: String): String =
       s"($ref == null ? null : $ref instanceof LocalDate ? $ref.atStartOfDay(ZoneId.of('Z')) : $ref instanceof LocalDateTime ? $ref.atZone(ZoneId.of('Z')) : $ref.withZoneSameInstant(ZoneId.of('Z')))"
+
+    /** A column a SEARCH script reads, as a genuine `java.time.ZonedDateTime` in UTC; NULL stays
+      * NULL (the MONTH, QUARTER and YEAR calls bind it in the prologue, before the null guard).
+      *
+      * The column's script parameter is shared by every call that reads the column, and holds what
+      * the FIRST of them made of it (the parameter-identity family, issue #370): the UTC instant
+      * `DateDiff.in` folds onto it, or the raw doc value when a function over the same column read
+      * it first (`TIMESTAMPDIFF(MONTH, ts::DATE, ts)`). On Elasticsearch 6.8 that value is a
+      * `JodaCompatibleZonedDateTime`, which implements no `java.time` interface: it has no
+      * `getLong` ([[monthKey]] failed with `dynamic method [..., getLong/1] not found`) and is no
+      * `Temporal` (`ChronoUnit.between` failed with a `ClassCastException`). `withZoneSameInstant`
+      * is on its allow-list and returns the `ZonedDateTime` it wraps; on 7.x, 8.x and 9.x it reads
+      * the same instant, so every major counts the same units.
+      */
+    private[time] def utcZoned(ref: String): String = {
+      val r = if (postfixable(ref)) ref else s"($ref)"
+      s"($r == null ? null : $r.withZoneSameInstant(ZoneId.of('Z')))"
+    }
 
     /** Whether a method can be appended to a rendered operand as it stands: outside parentheses,
       * brackets and string literals it holds nothing but names, digits and dots. Anything else — a
@@ -825,11 +846,13 @@ package object time {
       *     comparison is the start of its day, as at row level — `CURRENT_DATE` included, which a
       *     processor holds as the current instant.
       *   - At row level a column operand holds its UTC instant ([[in]]), so its calendar date is
-      *     `toLocalDate()`. An operand with no column of its own (`'2025-01-10'::DATE`,
-      *     `CURRENT_DATE`, `NOW()`) is read by `LocalDate.from` for a calendar date, which takes
-      *     the `LocalDate` and the UTC `ZonedDateTime` alike; for a time-of-day comparison a DATE
-      *     is the start of its day (a `LocalDate` has no hours) and anything else renders as it
-      *     did.
+      *     `toLocalDate()`. Any other operand (`'2025-01-10'::DATE`, `CURRENT_DATE`, `NOW()`, a
+      *     COALESCE, a CASE) is read for a calendar date by `LocalDate.from`, once it is a UTC
+      *     `java.time` value by its RUNTIME type ([[DateDiff.utcInstant]]): a COALESCE or a CASE
+      *     over a column hands on the column's raw doc value, which on Elasticsearch 6.8 is no
+      *     `java.time` type, and `LocalDate.from` refused it (`ClassCastException`). For a
+      *     time-of-day comparison a DATE is the start of its day (a `LocalDate` has no hours) and
+      *     anything else renders as it did.
       *   - `TIMESTAMPDIFF` takes [[elapsedOperand]] instead, in every venue.
       */
     private def operand(
@@ -873,9 +896,11 @@ package object time {
                 if comparedIn == SQLTypes.Timestamp && value.baseType == SQLTypes.Date =>
               SQLTypeUtils.coerce(rendered, SQLTypes.Date, comparedIn, nullable = false, None)
             // a `ZonedDateTime` here (`'…'::TIMESTAMP`, `NOW()`, a CASE) would keep its time of day
-            // through `unitStart`, and a calendar unit would count it
-            case _ if comparedIn == SQLTypes.Date => s"LocalDate.from($rendered)"
-            case _                                => rendered
+            // through `unitStart`, and a calendar unit would count it; read by its runtime type
+            // first, for a COALESCE or a CASE may hand on a column's raw 6.8 doc value
+            case _ if comparedIn == SQLTypes.Date =>
+              s"LocalDate.from(${DateDiff.utcInstant(bound(rendered, context))})"
+            case _ => rendered
           }
         case None => rendered
       }
@@ -892,10 +917,13 @@ package object time {
       *   - An ingest processor reads a DATE-typed operand as the start of its calendar day
       *     (`LocalDate.from`): it holds `CURRENT_DATE` as the current INSTANT, so there the
       *     declared type, not the runtime one, is what says "a date".
-      *   - A column is an instant already, in a script that reads it: row level reads it as its UTC
-      *     instant ([[in]]), an ingest processor parses it into one
-      *     (`SQLTypeUtils.processorTemporal`). A function over it need not be one: `ts::DATE` is a
-      *     `LocalDate`.
+      *   - A column is an instant in a script that reads it, though not always a `java.time` one.
+      *     An ingest processor parses it into a UTC `ZonedDateTime`
+      *     (`SQLTypeUtils.processorTemporal`). Row level reads its column parameter, which holds
+      *     its UTC instant ([[in]]) unless a function over the same column read it first: then it
+      *     is the raw doc value, which on Elasticsearch 6.8 is no `java.time` type, so it goes
+      *     through [[DateDiff.utcZoned]]. A function over a column need not be an instant at all:
+      *     `ts::DATE` is a `LocalDate`.
       *   - Any other operand is converted by its RUNTIME type ([[DateDiff.utcInstant]]), which its
       *     declared type does not give: `COALESCE(ts, CURRENT_DATE)`, or a CASE over `CURRENT_DATE`
       *     and a DATE, is a `LocalDate` on one row and a `ZonedDateTime` on another, a `::DATETIME`
@@ -911,15 +939,20 @@ package object time {
         s"LocalDate.from($rendered).atStartOfDay(ZoneId.of('Z'))"
       case column: Identifier
           if context.isDefined && column.name.trim.nonEmpty && column.functions.isEmpty =>
-        rendered
-      case _ =>
-        val ref = context match {
-          case Some(_) if FunctionN.isName(rendered) => rendered
-          case Some(ctx) => ctx.addParam(LiteralParam(rendered)).getOrElse(s"((def) ($rendered))")
-          case None      => s"((def) ($rendered))"
-        }
-        DateDiff.utcInstant(ref)
+        if (context.exists(_.isProcessor)) rendered else DateDiff.utcZoned(rendered)
+      case _ => DateDiff.utcInstant(bound(rendered, context))
     }
+
+    /** A rendered operand as [[DateDiff.utcInstant]] may read it, up to four times: a name as it
+      * stands, any other expression evaluated once into a parameter where the script can bind one,
+      * cast to `def` where it cannot.
+      */
+    private def bound(rendered: String, context: Option[PainlessContext]): String =
+      context match {
+        case Some(_) if FunctionN.isName(rendered) => rendered
+        case Some(ctx) => ctx.addParam(LiteralParam(rendered)).getOrElse(s"((def) ($rendered))")
+        case None      => s"((def) ($rendered))"
+      }
 
     /** `ChronoUnit` has no `QUARTERS`, so a `QUARTER` call failed to compile in Elasticsearch. The
       * ISO quarter-year unit counts the whole quarters between two calendar dates, which between
