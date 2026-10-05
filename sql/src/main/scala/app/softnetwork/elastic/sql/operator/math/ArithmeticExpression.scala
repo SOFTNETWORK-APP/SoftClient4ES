@@ -18,9 +18,14 @@ package app.softnetwork.elastic.sql.operator.math
 
 import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
-import app.softnetwork.elastic.sql.function.{BinaryFunction, TransformFunction}
+import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, TransformFunction}
+import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, NumericReducer}
+import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.query.NestedElement
+
+import scala.util.Try
 
 case class ArithmeticExpression(
   left: PainlessScript,
@@ -36,7 +41,24 @@ case class ArithmeticExpression(
   override def inputType: SQLNumeric = SQLTypes.Numeric
   override def outputType: SQLNumeric = SQLTypes.Numeric
 
-  override def applyType(in: SQLType): SQLType = in
+  /** Date arithmetic hands its OWN type to the chain it heads, so that a cast over it converts from
+    * what it computes: `(d - d2)::TIMESTAMP` is a number of days cast to TIMESTAMP, which is core's
+    * epoch-millisecond conversion, as for any other number. Every other arithmetic keeps handing on
+    * the type it is given, as it always has.
+    */
+  override def applyType(in: SQLType): SQLType = dateArithmetic.flatMap(_.runtimeType).getOrElse(in)
+
+  /** A cast OVER this expression converts what it computes; it does not change what it computes.
+    *
+    * 🔴 A conversion's constructor casts its operand (`value.cast(targetType)`), and on an
+    * arithmetic that set `out` -- the type the arithmetic coerces its OWN operands to. So `(x *
+    * 2)::INT` truncated `x` BEFORE multiplying (1.6 * 2 answered 2, not 3), and `(n + x)::BIGINT`
+    * -- whose operands are nullable, so not coerced at all -- answered 3.25 while the conversion,
+    * reading the cast type back as its source, emitted nothing. MEASURED on main. The arithmetic
+    * now keeps its own type and the conversion applies core's cast rule to its RESULT
+    * (`convert.Conversion`), as SQL engines do: `(n + x)::BIGINT` is 3 for 1 + 2.25.
+    */
+  override def cast(targetType: SQLType): SQLType = out
 
   override def sql: String = {
     val expr = s"${left.sql}$operator${right.sql}"
@@ -70,10 +92,23 @@ case class ArithmeticExpression(
     * The non-`Identifier` arm keeps today's `_.out` exactly: a nested arithmetic renders what its
     * own `out` says, and a literal's `out` already carries any cast applied to it.
     */
-  private def argTypeOf(operand: PainlessScript): SQLType = operand match {
-    case i: Identifier => i.chainType
-    case other         => other.out
-  }
+  private def argTypeOf(operand: PainlessScript): SQLType =
+    literalNumber(operand)
+      .map(_.sqlType)
+      .getOrElse(operand match {
+        case i: Identifier => ArithmeticExpression.identifierType(i)
+        case other         => other.out
+      })
+
+  /** A string LITERAL beside a NUMBER is the number it spells -- the ONE comparison rule's reading
+    * (`ComparisonRule.readingOf`), as PostgreSQL reads `n + '1'`: 4 for n = 3, where the
+    * concatenation `"31"` was answered. Beside anything else it stays what it is (a temporal beside
+    * it is date arithmetic, which reads it itself).
+    */
+  private def literalNumber(operand: PainlessScript): Option[ComparisonRule.NumberReading] =
+    ComparisonRule
+      .readingOf(operand, ComparisonRule.declaredTypeOf(if (operand eq left) right else left))
+      .collect { case number: ComparisonRule.NumberReading => number }
 
   override def argTypes: List[SQLType] = args.map(argTypeOf)
 
@@ -125,10 +160,72 @@ case class ArithmeticExpression(
     * Measured on a clean clone at `origin/main`, so it is pre-existing and UNFILED. The documented
     * way to truncate is to compute the quotient into a column and cast THAT column.
     */
-  override def baseType: SQLType = {
-    val folded = SQLTypeUtils.leastCommonSuperType(argTypes)
-    if (operator == DIVIDE && (folded.isNumber || folded.isUnknown)) SQLTypes.Double else folded
+  override def baseType: SQLType = dateArithmetic.flatMap(_.runtimeType).getOrElse {
+    val types = argTypes
+    // 🔴 `+` and `-` answer UNKNOWN while an operand's type is unknown -- a column before its
+    // schema is attached, a field no schema describes. They are the two operators a DATE may
+    // take, so the fold could not know the answer: `d + 7` folded `[ANY, BIGINT]` to BIGINT, and
+    // `d + 7 > CURRENT_DATE` was refused as BIGINT against DATE before the column's type was ever
+    // read. `*`, `/` and `%` keep their fold: no date survives them.
+    if ((operator == ADD || operator == SUBTRACT) && types.exists(_.isUnknown)) SQLTypes.Any
+    else {
+      val folded = SQLTypeUtils.leastCommonSuperType(types)
+      if (operator == DIVIDE && (folded.isNumber || folded.isUnknown)) SQLTypes.Double else folded
+    }
   }
+
+  /** What the date-arithmetic rules make of this expression (see [[ArithmeticExpression]] 's
+    * companion), or `None` when neither operand is a DATE, a TIMESTAMP or a DATETIME -- every such
+    * expression keeps the derivation and the rendering it always had.
+    *
+    * 🔴 Decided on the operands' DECLARED types, never on `out`. Elasticsearch stores DATE,
+    * TIMESTAMP and DATETIME alike as a `date`, so the type a query hands Painless (`runtimeType`)
+    * is TIMESTAMP for all three, and the difference between a DATE and a TIMESTAMP -- days between
+    * two dates, or a fraction of a day between two instants -- lives only in the declaration.
+    * Folding `out` is what typed `MAX(d) - MIN(d)` TIMESTAMP and answered it in milliseconds.
+    *
+    * Computed once per instance: `out` reads `baseType` on every call, and the operands of an
+    * instance do not change -- resolution (`update`) builds a new one.
+    */
+  private[sql] lazy val dateArithmetic: Option[ArithmeticExpression.DateArithmetic] =
+    ArithmeticExpression.dateArithmetic(this)
+
+  /** The type a consumer DECLARING a column for this expression reports: DATE for a date moved by
+    * whole days, although Painless renders it as the UTC instant that day starts at.
+    */
+  override def reportedType: SQLType = dateArithmetic.flatMap(_.reportedType).getOrElse(out)
+
+  /** The by-name refusal the DATE-ARITHMETIC rules give this expression, if any: a temporal operand
+    * under `*`, `/` or `%`, two temporals added, a number minus a temporal, or a temporal combined
+    * with something that is neither a number nor a temporal.
+    */
+  def dateArithmeticError: Option[String] =
+    dateArithmetic.collect { case ArithmeticExpression.Refused(message) => message }
+
+  /** The by-name refusal this expression earns once the types of its operands are known, if any:
+    * [[dateArithmeticError]], or -- for any other arithmetic -- two operands whose types do not
+    * match, the rule `validate()` used to apply when the statement was parsed, where every column
+    * is still `Any`.
+    *
+    * 🔴 Asked AFTER the schema is attached (`SingleSearch.validateResolved`), never at parse time:
+    * no type is refused before the column types are known (the lead's ruling of 2026-10-05). Each
+    * operand's type is the one it RENDERS ([[ArithmeticExpression.identifierType]]), not `out`,
+    * which a resolved column answers with its column's type whatever function it wears.
+    */
+  override def typeError: Option[String] =
+    dateArithmetic match {
+      case Some(_) => dateArithmeticError
+      case None =>
+        Validator.validateTypesMatching(argTypeOf(left), argTypeOf(right)).left.toOption
+    }
+
+  /** [[dateArithmeticError]], here and in every arithmetic among the operands, however deep. */
+  private[sql] def dateArithmeticErrors: Seq[String] =
+    dateArithmeticError.toSeq ++ args.flatMap {
+      case nested: ArithmeticExpression => nested.dateArithmeticErrors
+      case chain: FunctionChain         => ArithmeticExpression.typeErrorsOf(chain)
+      case _                            => Nil
+    }
 
   /** Is this the numeric division the ruling above governs? Keyed on the coercion TARGET rather
     * than on [[baseType]] so that an explicit `CAST(a / b AS INTEGER)` -- which sets `out` -- is
@@ -215,10 +312,28 @@ case class ArithmeticExpression(
     * leaves the whole estate green, so nothing here distinguishes the two for a non-`Identifier`
     * operand. Measured, recorded on #382, and not smuggled in.
     */
-  private def renderedType(operand: PainlessScript): SQLType = operand match {
-    case i: Identifier => i.chainType
-    case other         => other.baseType
-  }
+  private def renderedType(operand: PainlessScript): SQLType =
+    literalNumber(operand)
+      .map(_.sqlType)
+      .getOrElse(operand match {
+        case i: Identifier => ArithmeticExpression.identifierType(i)
+        case other         => other.baseType
+      })
+
+  /** An operand as it renders, a string literal read as a number ([[literalNumber]]) as that
+    * number.
+    */
+  private def operandPainless(
+    operand: PainlessScript,
+    idx: Int,
+    context: Option[PainlessContext]
+  ): String =
+    literalNumber(operand)
+      .map(_.painless)
+      .getOrElse(operand match {
+        case t: TransformFunction[_, _] => t.toPainless("", idx + 1, context)
+        case _                          => operand.painless(context)
+      })
 
   /** 🔴 A numeric coercion is skipped only over a NULLABLE operand, and the reason is exactly what
     * Painless refuses -- a primitive cast over a null-guarded expression, in BOTH directions,
@@ -298,21 +413,44 @@ case class ArithmeticExpression(
   private def needsDoubleCast(target: SQLType): Boolean =
     floatingDivision(target) && !args.exists(operand => isFloating(emittedType(operand, target)))
 
-  override def validate(): Either[String, Unit] = {
+  /** STRUCTURE only: the operands. Every TYPE rule of this expression -- the date-arithmetic rules
+    * and the operand match alike -- is [[typeError]], asked once the column types are known (the
+    * lead's ruling of 2026-10-05: no refusal before the column types are known). Asked here, at
+    * parse time, it refused `d + 7 > CURRENT_DATE` as BIGINT against DATE before `d` had a type.
+    */
+  override def validate(): Either[String, Unit] =
     for {
       _ <- left.validate()
       _ <- right.validate()
-      _ <- Validator.validateTypesMatching(left.out, right.out)
     } yield ()
-  }
 
-  override def nullable: Boolean = left.nullable || right.nullable
+  /** Is an operand a NULL literal, bare or cast, in date arithmetic? Then the expression is NULL on
+    * every row, whatever the other operand holds.
+    */
+  private def nullValued: Boolean =
+    dateArithmetic.exists {
+      case ArithmeticExpression.NullOperand => true
+      case _: ArithmeticExpression.Computed =>
+        ArithmeticExpression.nullLiteral(left) || ArithmeticExpression.nullLiteral(right)
+      case _ => false
+    }
+
+  /** A NULL literal beside a temporal makes the expression NULL on every row, whatever the other
+    * operand holds, so a consumer must guard it.
+    */
+  override def nullable: Boolean = left.nullable || right.nullable || nullValued
 
   override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
     context match {
       case Some(ctx) =>
         ctx.addParam(left)
         ctx.addParam(right)
+      case _ =>
+    }
+    if (nullValued) return s"$base${nullOperandPainless(context)}"
+    dateArithmetic match {
+      case Some(computed: ArithmeticExpression.Computed) =>
+        return s"$base${dateArithmeticPainless(computed, idx, context)}"
       case _ =>
     }
     if (nullable) {
@@ -331,10 +469,8 @@ case class ArithmeticExpression(
         else
           SQLTypeUtils.coerce(rendered, renderedType(operand), target, nullable = false, context)
 
-      def render(operand: PainlessScript): String = operand match {
-        case t: TransformFunction[_, _] => coerced(t.toPainless("", idx + 1, context), operand)
-        case _                          => coerced(operand.painless(context), operand)
-      }
+      def render(operand: PainlessScript): String =
+        coerced(operandPainless(operand, idx, context), operand)
 
       /** A rendering that IS a Painless name needs no local of its own. */
       def isBareName(e: String): Boolean =
@@ -444,10 +580,179 @@ case class ArithmeticExpression(
     s"$base${painless(context)}"
   }
 
-  override def painless(context: Option[PainlessContext]): String = {
+  override def painless(context: Option[PainlessContext]): String =
+    if (nullValued) nullOperandPainless(context)
+    else
+      dateArithmetic match {
+        case Some(computed: ArithmeticExpression.Computed) =>
+          dateArithmeticPainless(computed, 0, context)
+        case _ => numericPainless(context)
+      }
+
+  /** A NULL literal beside a temporal: NULL. A `bucket_script` returns a Number, and a bare `null`
+    * is an Object to Painless -- `Cannot cast from [java.lang.Object] to [java.lang.Number]` at
+    * compile time (MEASURED, ES 8.18.3); typed `def`, it compiles and the group has no value, as it
+    * has for any NULL operand.
+    */
+  private def nullOperandPainless(context: Option[PainlessContext]): String = {
+    val value = if (context.isEmpty) "((def) null)" else "null"
+    if (group) s"($value)" else value
+  }
+
+  /** Date arithmetic, rendered in the milliseconds Elasticsearch stores a `date` in -- ONE formula
+    * per rule for every venue, which differ only in how an operand becomes a number of milliseconds
+    * and how a temporal result is handed back.
+    *
+    *   - Per group (`bucket_script`, `bucket_selector`, a view's per-group calculation), which is
+    *     every rendering without a context, an aggregate is the metric Elasticsearch computed: a
+    *     number, epoch millis for a date. A temporal result is handed back as epoch millis too,
+    *     which is what a date aggregate is there and what a `bucket_selector` compares a date with.
+    *   - Per document, a column is the `date` value Elasticsearch hands the script (`toInstant()`
+    *     exists on the `JodaCompatibleZonedDateTime` of 6.8 as on the `ZonedDateTime` of 7 and up),
+    *     or, in an ingest processor, the raw value of the document, parsed as a CAST parses it.
+    *     Anything else is read by its RUNTIME type (`DateDiff.utcInstant`): `CURRENT_DATE` is a
+    *     `LocalDate` in a query and the current instant in a processor. A temporal result is the
+    *     UTC `ZonedDateTime` it denotes -- the one temporal an ingest processor may assign to a
+    *     field.
+    *
+    * A DATE operand is its UTC calendar day: the days between two dates are the days between their
+    * days, and a date moved by days starts at the start of its day. A NULL operand makes the result
+    * NULL, behind the same guard every arithmetic emits.
+    */
+  private def dateArithmeticPainless(
+    shape: ArithmeticExpression.Computed,
+    idx: Int,
+    context: Option[PainlessContext]
+  ): String = {
+    import ArithmeticExpression.{
+      isBareName,
+      DayMillis,
+      DaysBetween,
+      DaysShift,
+      FractionalDayMillis,
+      FractionalDaysBetween
+    }
+
+    var declarations = ""
+
+    def grouped(e: String): String = if (group) s"($e)" else e
+
+    // the operand as it renders -- no coercion: the conversion below starts from what it IS
+    // A string literal that is a number counts as that number (`d + '1'`), so it renders as one.
+    def rendered(operand: PainlessScript): String =
+      (operand match {
+        case i: Identifier if i.functions.isEmpty => context.flatMap(_.get(i))
+        case _ => ArithmeticExpression.numericString(operand).map(_._1)
+      }).getOrElse {
+        val r = operand match {
+          case t: TransformFunction[_, _] => t.toPainless("", idx + 1, context)
+          case _                          => operand.painless(context)
+        }
+        if (PainlessOperandForm.placeable(r)) r else context.flatMap(_.get(operand)).getOrElse(r)
+      }
+
+    // An operand that can be NULL when it runs: one whose own nullability says so, or one that
+    // READS a document field through a function. The nameless identifier around a `CASE`, a
+    // `COALESCE` or a `NULLIF` answers `nullable = false` whatever its branches hold, so it went
+    // unguarded and a NULL branch failed the script on `.toInstant()` instead of answering NULL.
+    // (An AGGREGATE is the metric Elasticsearch computed: a group with no value never runs the
+    // per-group script -- the `bucket_script`'s gap policy skips it -- so it keeps its own answer.)
+    def mayBeNull(operand: PainlessScript): Boolean =
+      operand.nullable || (operand match {
+        case i: Identifier if !i.isAggregation =>
+          i.dependencies.nonEmpty || i.functions.exists(_.nullable)
+        case _ => false
+      })
+
+    // A string literal read as the temporal it spells beside the other operand (`d -
+    // '2024-01-31'`): the instant it denotes, known here, so it is a constant -- never NULL, never
+    // parsed per document.
+    def literalInstant(operand: PainlessScript): Option[Long] =
+      ArithmeticExpression
+        .temporalString(operand, if (operand eq left) right else left)
+        .map(_.epochMillis)
+
+    // a nullable operand the guard reads is evaluated once, under a name
+    def named(operand: PainlessScript, fallback: String): String =
+      literalInstant(operand).map(millis => s"${millis}L").getOrElse {
+        val r = rendered(operand)
+        if (!mayBeNull(operand) || isBareName(r)) r
+        else
+          context match {
+            case Some(ctx) => ctx.bindLocal(r, "lv")
+            case None =>
+              declarations += s"def $fallback = $r; "
+              fallback
+          }
+      }
+
+    // Per group there is no document: every operand is a number already, and so is the result.
+    val perGroup = context.isEmpty
+
+    // the UTC day of a temporal operand, and the instant it denotes -- a DATE its day's start --
+    // in epoch milliseconds: the conversion GREATEST / LEAST over dates shares
+    def day(operand: PainlessScript, ref: String): String =
+      literalInstant(operand)
+        .map(millis => s"${Math.floorDiv(millis, 86400000L)}L")
+        .getOrElse(ArithmeticExpression.epochDay(operand, ref, context))
+
+    def instant(operand: PainlessScript, ref: String): String =
+      literalInstant(operand)
+        .map(millis => s"${millis}L")
+        .getOrElse(ArithmeticExpression.instantMillis(operand, ref, context))
+
+    def days(ref: String, fractional: Boolean): String =
+      if (fractional) s"Math.round($ref * $FractionalDayMillis)" else s"$ref * $DayMillis"
+
+    // Per document, a whole number of days or of milliseconds is a `long` again; per group it stays
+    // the double a `bucket_script` returns anyway, and a `bucket_selector` compares as it is.
+    def integral(e: String): String = if (perGroup) e else s"((long) $e)"
+
+    val l = named(left, s"lv$idx")
+    val r = named(right, s"rv$idx")
+
+    val value = shape match {
+      case DaysBetween => integral(s"(${day(left, l)} - ${day(right, r)})")
+      case FractionalDaysBetween =>
+        s"((${instant(left, l)} - ${instant(right, r)}) / $FractionalDayMillis)"
+      case DaysShift(temporalLeft, _, fractional) =>
+        val ((temporal, t), n) = if (temporalLeft) ((left, l), r) else ((right, r), l)
+        val moved =
+          s"(${instant(temporal, t)} ${operator.painless(context)} ${days(n, fractional)})"
+        if (perGroup) moved else s"Instant.ofEpochMilli(${integral(moved)}).atZone(ZoneId.of('Z'))"
+    }
+
+    // (a literal instant is a primitive constant: never NULL, and `<long> == null` does not compile)
+    val guards =
+      (if (mayBeNull(left) && literalInstant(left).isEmpty) List(s"$l == null") else Nil) :::
+      (if (mayBeNull(right) && literalInstant(right).isEmpty) List(s"$r == null") else Nil)
+    val body =
+      if (guards.isEmpty) value else s"(${guards.mkString(" || ")}) ? null : (def)($value)"
+    s"$declarations${grouped(body)}"
+  }
+
+  private def numericPainless(context: Option[PainlessContext]): String = {
     val target = out
-    val l = SQLTypeUtils.coerce(left, target, context)
-    val r = SQLTypeUtils.coerce(right, target, context)
+    // 🔴 An aggregate is coerced FROM what it computes (`AggregateFunction.outputTypeOf`), never
+    // from the column it aggregates: per group it is the metric Elasticsearch already computed, a
+    // number, and `COUNT(d) - 1` used to read the DATE column's type and emit
+    // `params.count_d.toInstant().toEpochMilli() - 1`.
+    def coerced(operand: PainlessScript): String = operand match {
+      case metric: Identifier if metric.isAggregation =>
+        SQLTypeUtils.coerce(
+          metric.painless(context),
+          ArithmeticExpression.identifierType(metric),
+          target,
+          nullable = false,
+          context
+        )
+      case literal if literalNumber(literal).isDefined =>
+        val number = literalNumber(literal).get
+        SQLTypeUtils.coerce(number.painless, number.sqlType, target, nullable = false, context)
+      case _ => SQLTypeUtils.coerce(operand, target, context)
+    }
+    val l = coerced(left)
+    val r = coerced(right)
     val core = s"$l ${operator.painless(context)} $r"
     /* The non-nullable rendering: both operands are literals or system values, so each is coerced
      * to `out` and a DOUBLE `out` is all it takes to make `SELECT 10 / 3` answer 3.333 instead of
@@ -499,4 +804,351 @@ case class ArithmeticExpression(
       case _ =>
         None
     }
+}
+
+/** The date-arithmetic rules: what `+` and `-` mean when an operand is a DATE, a TIMESTAMP or a
+  * DATETIME, and which combinations are type errors.
+  *
+  * | Expression                                       | Result                                     |
+  * |:-------------------------------------------------|:-------------------------------------------|
+  * | DATE - DATE                                      | the calendar days between the two (BIGINT) |
+  * | TIMESTAMP - TIMESTAMP, or a DATE and a TIMESTAMP | the milliseconds between, in days (DOUBLE) |
+  * | DATE +/- a whole number n                        | the date n days later / earlier (DATE)     |
+  * | DATE +/- a fractional number n                   | n days later / earlier, as an instant      |
+  * | TIMESTAMP +/- a number n                         | n days later / earlier (TIMESTAMP)         |
+  * | n + a temporal                                   | the temporal + n                           |
+  * | a NULL literal beside a temporal                 | NULL                                       |
+  * | two temporals added; a temporal under * / or %;  | a type error, refused by name before       |
+  * | n - a temporal; a temporal and a non-number      | anything runs                              |
+  *
+  * They are the lead's ruling of 2026-10-04, aligned on the SQL engines a JDBC client knows:
+  * PostgreSQL, DuckDB, Oracle and Snowflake subtract two dates into days; PostgreSQL, DuckDB,
+  * Oracle and BigQuery move a date by a number of days; Oracle, whose DATE carries a time of day,
+  * answers fractional days, and moves a date by a fractional number of days into a time of day;
+  * PostgreSQL, DuckDB, Oracle, Trino, Snowflake and SQL Server refuse the other combinations.
+  *
+  * A temporal operand is recognised by its DECLARED type (`Token.reportedType`): a TIME, and an
+  * operand whose type is unknown (a column with no schema attached), leave the expression to the
+  * arithmetic it always was -- except under `*`, `/` and `%`, which refuse a temporal operand
+  * whatever the other one is.
+  */
+object ArithmeticExpression {
+
+  /** One day, in the milliseconds Elasticsearch stores a `date` in. */
+  private val DayMillis = "86400000L"
+
+  /** The same, as a floating-point number, for a fraction of a day. */
+  private val FractionalDayMillis = "86400000.0"
+
+  /** What the date-arithmetic rules make of an expression. */
+  private[sql] sealed trait DateArithmetic {
+
+    /** The type the rendering produces (`Token.baseType`): a temporal result is rendered as the
+      * instant it denotes, so it is a TIMESTAMP whether it is reported as a DATE or not -- the same
+      * collapse `SQLTypeUtils.runtimeType` applies to a DATE column.
+      */
+    def runtimeType: Option[SQLType] = None
+
+    /** The type a consumer declaring a column reports (`Token.reportedType`). */
+    def reportedType: Option[SQLType] = runtimeType
+  }
+
+  /** A value the date-arithmetic rendering computes -- as opposed to a NULL, or a refusal. */
+  private[sql] sealed trait Computed extends DateArithmetic
+
+  /** DATE - DATE: the calendar days between the UTC days of the two dates. */
+  private[sql] case object DaysBetween extends Computed {
+    override def runtimeType: Option[SQLType] = Some(SQLTypes.BigInt)
+  }
+
+  /** A difference with an instant on one side at least: the milliseconds between, in days. */
+  private[sql] case object FractionalDaysBetween extends Computed {
+    override def runtimeType: Option[SQLType] = Some(SQLTypes.Double)
+  }
+
+  /** A temporal moved by a number of days, the number on either side of a `+`.
+    *
+    * @param temporalLeft
+    *   whether the temporal is the LEFT operand
+    * @param calendarDate
+    *   whether the temporal is a DATE, which is moved from the start of its day
+    * @param fractional
+    *   whether the number of days has a fractional type, whose fraction becomes a time of day
+    */
+  private[sql] final case class DaysShift(
+    temporalLeft: Boolean,
+    calendarDate: Boolean,
+    fractional: Boolean
+  ) extends Computed {
+    override def runtimeType: Option[SQLType] = Some(SQLTypes.Timestamp)
+    override def reportedType: Option[SQLType] =
+      Some(if (calendarDate && !fractional) SQLTypes.Date else SQLTypes.Timestamp)
+  }
+
+  /** A NULL literal beside a temporal: NULL, with the type the expression derives otherwise. */
+  private[sql] case object NullOperand extends DateArithmetic
+
+  /** A combination no rule allows. */
+  private[sql] final case class Refused(message: String) extends DateArithmetic
+
+  /** One operand, as the rules see it. */
+  private sealed trait Operand
+  private case object CalendarDate extends Operand
+  private case object Moment extends Operand
+  private final case class Days(fractional: Boolean) extends Operand
+  private case object NullLiteral extends Operand
+  private case object Undecided extends Operand
+  private case object NonNumber extends Operand
+
+  private def temporal(operand: Operand): Boolean = operand == CalendarDate || operand == Moment
+
+  /** The type an IDENTIFIER operand of an arithmetic computes: an aggregate is the metric it
+    * produces ([[AggregateFunction.outputTypeOf]]: `COUNT(d)` counts, whatever `d` is), anything
+    * else is what its chain renders (#382's `chainType`).
+    *
+    * 🔴 The ONE derivation the arithmetic asks, for its own type and for the coercion of each
+    * operand alike (#292): reading the aggregated COLUMN's type typed `COUNT(d) - 1` as a TIMESTAMP
+    * and emitted `params.count_d.toInstant()` on the count.
+    */
+  private[sql] def identifierType(i: Identifier): SQLType = renderedTypeOf(i)
+
+  /** The type an operand is DECLARED with -- its REPORTED type, an aggregate's being the metric it
+    * produces: the ONE derivation the comparison rule reads too (`ComparisonRule.declaredTypeOf`).
+    *
+    * An Elasticsearch `date` field elasticsql never declared is a TIMESTAMP at the declaration seam
+    * itself (`schema.IndexField`), so it keeps its time here as everywhere else, and every chain
+    * over it follows: `MAX(ts)`, `COALESCE(ts, ts2)`, `CASE … THEN ts …`.
+    */
+  private def declaredType(operand: PainlessScript): SQLType =
+    ComparisonRule.declaredTypeOf(operand)
+
+  /** `NULL`, bare or cast: its VALUE is NULL in every venue. */
+  private[sql] def nullLiteral(operand: PainlessScript): Boolean = operand match {
+    case Null          => true
+    case i: Identifier => i.name.trim.isEmpty && i.functions.lastOption.contains(Null)
+    case _             => false
+  }
+
+  /** A BARE `NULL`, which has no type of its own. A cast gives one -- `CAST(NULL AS DATE)` is a
+    * DATE, `CAST(NULL AS INT)` a whole number -- and a typed NULL is then judged by its type,
+    * whatever its value.
+    */
+  private def bareNull(operand: PainlessScript): Boolean = operand match {
+    case Null          => true
+    case i: Identifier => i.name.trim.isEmpty && i.functions == List(Null)
+    case _             => false
+  }
+
+  /** A string LITERAL whose text is a number, as the Painless literal of that number and whether it
+    * is fractional (the lead's ruling of 2026-10-05) -- the ONE reader the comparison rule uses too
+    * (`ComparisonRule.numberOf`).
+    *
+    * PostgreSQL reads an untyped literal by what it is added to: `d + '1'` is the next day and `d -
+    * '1.5'` a day and a half earlier. A whole number is a `long` literal (`'99999999999'` does not
+    * fit an `int`), a fractional one the `double` it denotes.
+    */
+  private[math] def numericString(operand: PainlessScript): Option[(String, Boolean)] =
+    ComparisonRule
+      .stringLiteral(operand)
+      .flatMap(ComparisonRule.numberOf)
+      .map(number => number.painless -> number.fractional)
+
+  /** A string LITERAL read as the temporal it spells beside the temporal `other` -- the comparison
+    * rule's reading (`ComparisonRule.readingOf`), so `d - '2024-01-31'` is DATE minus DATE, as
+    * PostgreSQL reads it, and `ts - '2024-01-31T10:00:00Z'` TIMESTAMP minus TIMESTAMP. Beside
+    * anything else, or spelling no date, the literal is no temporal.
+    */
+  private[math] def temporalString(
+    operand: PainlessScript,
+    other: PainlessScript
+  ): Option[ComparisonRule.TemporalReading] =
+    ComparisonRule.stringLiteral(operand).flatMap { _ =>
+      operandOf(other) match {
+        case CalendarDate | Moment =>
+          ComparisonRule.readingOf(operand, declaredType(other)).collect {
+            case t: ComparisonRule.TemporalReading => t
+          }
+        case _ => None
+      }
+    }
+
+  private def operandOf(o: PainlessScript): Operand =
+    if (bareNull(o)) NullLiteral
+    else
+      numericString(o) match {
+        case Some((_, fractional)) => Days(fractional)
+        case None =>
+          declaredType(o) match {
+            case SQLTypes.Date                                              => CalendarDate
+            case SQLTypes.Timestamp | SQLTypes.DateTime | SQLTypes.Temporal => Moment
+            case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt =>
+              Days(fractional = false)
+            case SQLTypes.Double | SQLTypes.Real | SQLTypes.Numeric => Days(fractional = true)
+            // a TIME is outside these rules, and an unknown type cannot be judged
+            case t if t == SQLTypes.Time || t.isUnknown => Undecided
+            case _                                      => NonNumber
+          }
+      }
+
+  /** One operand beside the other: a string literal that spells a date or a timestamp beside a
+    * temporal is that temporal ([[temporalString]]); anything else is what it is alone.
+    */
+  private def operandOf(o: PainlessScript, other: PainlessScript): Operand =
+    temporalString(o, other) match {
+      case Some(t) if t.sqlType == SQLTypes.Date => CalendarDate
+      case Some(_)                               => Moment
+      case None                                  => operandOf(o)
+    }
+
+  private[math] def isCalendarDate(o: PainlessScript): Boolean = operandOf(o) == CalendarDate
+
+  private[sql] def isBareName(e: String): Boolean =
+    e.nonEmpty && e.forall(c => c.isLetterOrDigit || c == '_')
+
+  /** A TEMPORAL operand as the epoch milliseconds it denotes, in the venue `context` renders for --
+    * the ONE conversion date arithmetic and `GREATEST` / `LEAST` over dates share (#292):
+    *
+    *   - per group (`bucket_script`, `bucket_selector`: no context) an aggregate is the metric
+    *     Elasticsearch computed, a number -- in a view's per-group calculation too -- and so is a
+    *     value this module renders from metrics there: a date moved by days, `GREATEST` / `LEAST`
+    *     over dates;
+    *   - per document, a column is the `date` value Elasticsearch hands the script (`toInstant()`
+    *     exists on the `JodaCompatibleZonedDateTime` of 6.8 as on the `ZonedDateTime` of 7 and up),
+    *     or, in an ingest processor, whatever the incoming document holds -- the raw JSON string or
+    *     number of a column, or what a function made of it -- read by its RUNTIME class
+    *     (`SQLTypeUtils.processorInstant`), never by the type it is declared with;
+    *   - anything else is read by its RUNTIME type (`DateDiff.utcInstant`): `CURRENT_DATE` is a
+    *     `LocalDate` in a query and the current instant in a processor.
+    *
+    * `ref` is the operand's rendering: a name whenever the operand can be NULL (the caller guards
+    * it).
+    */
+  private[sql] def epochMillis(
+    operand: PainlessScript,
+    ref: String,
+    context: Option[PainlessContext]
+  ): String = {
+    val perGroup = context.isEmpty
+    val processor = context.exists(_.isProcessor)
+    operand match {
+      case metric: Identifier
+          if metric.isAggregation && (perGroup || context.exists(_.isTransform)) =>
+        ref
+      case nested: ArithmeticExpression
+          if nested.dateArithmetic.exists(_.isInstanceOf[DaysShift]) =>
+        if (perGroup) ref else s"$ref.toInstant().toEpochMilli()"
+      case reducer
+          if (perGroup || context.exists(_.isTransform)) && NumericReducer.overDates(reducer) =>
+        ref
+      case column: Identifier if column.name.trim.nonEmpty && column.functions.isEmpty =>
+        if (processor) s"${SQLTypeUtils.processorInstant(ref)}.toInstant().toEpochMilli()"
+        else s"$ref.toInstant().toEpochMilli()"
+      case other =>
+        context match {
+          case None =>
+            s"${SQLTypeUtils.coerce(ref, other.baseType, SQLTypes.Timestamp, nullable = false, None)}.toInstant().toEpochMilli()"
+          case Some(ctx) =>
+            val name =
+              if (isBareName(ref)) ref
+              else ctx.addParam(LiteralParam(ref)).getOrElse(s"((def) ($ref))")
+            if (processor) s"${SQLTypeUtils.processorInstant(name)}.toInstant().toEpochMilli()"
+            else s"${DateDiff.utcInstant(name)}.toInstant().toEpochMilli()"
+        }
+    }
+  }
+
+  /** The UTC day a temporal operand falls in, in days since the epoch. `Math.floor` is the one
+    * floor Painless allows -- `Math.floorDiv` is on no major's allow-list -- and it is exact here:
+    * a date's milliseconds are far below 2^53, and so is every quotient's distance to an integer.
+    */
+  private[sql] def epochDay(
+    operand: PainlessScript,
+    ref: String,
+    context: Option[PainlessContext]
+  ): String =
+    s"Math.floor(${epochMillis(operand, ref, context)} / $FractionalDayMillis)"
+
+  /** The instant a temporal operand denotes, in epoch milliseconds: a DATE is the instant its UTC
+    * day starts at, so two dates compare -- and move -- by their days.
+    */
+  private[sql] def instantMillis(
+    operand: PainlessScript,
+    ref: String,
+    context: Option[PainlessContext]
+  ): String =
+    if (isCalendarDate(operand)) s"${epochDay(operand, ref, context)} * $FractionalDayMillis"
+    else epochMillis(operand, ref, context)
+
+  /** A temporal operand of a COMPARISON -- a simple `CASE`, `NULLIF` -- as the instant it denotes:
+    * [[instantMillis]], the conversion date arithmetic and `GREATEST` / `LEAST` share, so a DATE is
+    * the instant its UTC day starts at and equals a TIMESTAMP exactly at midnight, as SQL engines
+    * promote it. A string literal the comparison READS as a temporal (`ComparisonRule.readingOf`)
+    * is its instant, computed here rather than parsed per document.
+    */
+  private[sql] def comparedMillis(
+    operand: PainlessScript,
+    reading: Option[ComparisonRule.Reading],
+    ref: String,
+    context: Option[PainlessContext]
+  ): String =
+    reading match {
+      case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
+      case _                                       => instantMillis(operand, ref, context)
+    }
+
+  private[math] def dateArithmetic(e: ArithmeticExpression): Option[DateArithmetic] = {
+    val l = operandOf(e.left, e.right)
+    val r = operandOf(e.right, e.left)
+    if (!temporal(l) && !temporal(r)) None
+    else
+      e.operator match {
+        case MULTIPLY | DIVIDE | MODULO => Some(refused(e))
+        case ADD =>
+          (l, r) match {
+            case (t, Days(fractional)) if temporal(t) =>
+              Some(DaysShift(temporalLeft = true, t == CalendarDate, fractional))
+            case (Days(fractional), t) if temporal(t) =>
+              Some(DaysShift(temporalLeft = false, t == CalendarDate, fractional))
+            case (NullLiteral, _) | (_, NullLiteral) => Some(NullOperand)
+            case (Undecided, _) | (_, Undecided)     => None
+            case _                                   => Some(refused(e))
+          }
+        case SUBTRACT =>
+          (l, r) match {
+            case (CalendarDate, CalendarDate)         => Some(DaysBetween)
+            case (a, b) if temporal(a) && temporal(b) => Some(FractionalDaysBetween)
+            case (t, Days(fractional)) if temporal(t) =>
+              Some(DaysShift(temporalLeft = true, t == CalendarDate, fractional))
+            case (NullLiteral, _) | (_, NullLiteral) => Some(NullOperand)
+            case (Undecided, _) | (_, Undecided)     => None
+            case _                                   => Some(refused(e))
+          }
+      }
+  }
+
+  /** The type a refusal names an operand by: the one DESCRIBE shows for it. */
+  private def typeName(o: PainlessScript): String =
+    if (bareNull(o)) SQLTypes.Null.typeId else declaredType(o).typeId
+
+  private def refused(e: ArithmeticExpression): Refused =
+    Refused(
+      s"Type mismatch: operator ${e.operator.sql} cannot be applied to ${typeName(e.left)} and " +
+      s"${typeName(e.right)} in expression: ${e.sql.trim}; subtract two dates for the days between " +
+      "them, or add or subtract a number of days"
+    )
+
+  /** Every date-arithmetic type error in an expression, wherever an arithmetic sits in it.
+    *
+    * 🔴 Asked of a SCHEMA-RESOLVED expression, as `NullIf.mismatchesOf` is: a computed column's
+    * resolved table (`schema.validateScriptReferences`) -- a statement asks every type rule at once
+    * (`SingleSearch.typeErrors`). Before a schema is attached a column's type is unknown, which
+    * these rules accept. `functionsOf` is the walk every such rule shares; an arithmetic nested
+    * directly in another is not a chain, so each arithmetic walks its own operands
+    * ([[ArithmeticExpression.dateArithmeticErrors]]).
+    */
+  def typeErrorsOf(chain: FunctionChain): Seq[String] =
+    functionsOf(chain)
+      .collect { case a: ArithmeticExpression => a }
+      .flatMap(_.dateArithmeticErrors)
+      .distinct
 }

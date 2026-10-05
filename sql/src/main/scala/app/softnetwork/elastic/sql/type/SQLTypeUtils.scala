@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.{
   PainlessScript
 }
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
+import app.softnetwork.elastic.sql.function.time.DateDiff
 
 object SQLTypeUtils {
 
@@ -422,8 +423,24 @@ object SQLTypeUtils {
           s"((${painlessType(t)}) $expr)"
 
         // ---- NUMERIC <-> TEMPORAL ----
+        // A number cast to a TIMESTAMP is the instant that many milliseconds from the epoch --
+        // core's rule, and it holds for EVERY numeric source, not only a BIGINT one: with the
+        // BIGINT arm alone `CAST(x AS TIMESTAMP)` over a DOUBLE, and `(ts - ts2)::TIMESTAMP` (a
+        // DOUBLE number of days), fell to the identity fallback and answered the number itself --
+        // a cast that silently did nothing. A fractional number of milliseconds is truncated, as
+        // every other fractional-to-integral cast here is.
         case (SQLTypes.BigInt, SQLTypes.Timestamp | SQLTypes.DateTime) =>
           s"Instant.ofEpochMilli($expr).atZone(ZoneId.of('Z'))"
+        case (
+              SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int,
+              SQLTypes.Timestamp | SQLTypes.DateTime
+            ) =>
+          s"Instant.ofEpochMilli(((long) $expr)).atZone(ZoneId.of('Z'))"
+        case (
+              SQLTypes.Double | SQLTypes.Real | SQLTypes.Numeric,
+              SQLTypes.Timestamp | SQLTypes.DateTime
+            ) =>
+          s"Instant.ofEpochMilli(((long) $expr)).atZone(ZoneId.of('Z'))"
         case (SQLTypes.Timestamp | SQLTypes.DateTime, SQLTypes.BigInt) =>
           s"$expr.toInstant().toEpochMilli()"
 
@@ -719,10 +736,19 @@ object SQLTypeUtils {
     val parsed = declared match {
       // A DATE is written date-only, and `ZonedDateTime.parse` REFUSES a date with no time
       // (measured), so it is parsed as a `LocalDate` and then given the UTC start of day.
+      //
+      // 🔴 ...unless it is longer than a date: Elasticsearch accepts a date-time string into a
+      // `date` field declared DATE, and the strict `yyyy-MM-dd` parse threw on it -- which a
+      // computed column's `ignore_failure: true` stored as NULL (`CASE WHEN .. THEN d ELSE d2 END -
+      // d`, MEASURED on Elasticsearch 8.18.3). Such a value is the instant it spells, given its UTC
+      // day, as `processorInstant` reads it and as the query venue's doc value is.
       case SQLTypes.Date =>
+        val dateTime = coerce(expr, SQLTypes.Varchar, SQLTypes.Timestamp, nullable = false, None)
         Some(
+          s"($expr.length() > 10 ? $dateTime.withZoneSameInstant(ZoneId.of('Z'))" +
+          ".truncatedTo(ChronoUnit.DAYS) : " +
           coerce(expr, SQLTypes.Varchar, SQLTypes.Date, nullable = false, None) +
-          ".atStartOfDay(ZoneId.of('Z'))"
+          ".atStartOfDay(ZoneId.of('Z')))"
         )
       case SQLTypes.DateTime | SQLTypes.Timestamp | SQLTypes.Temporal =>
         Some(coerce(expr, SQLTypes.Varchar, SQLTypes.Timestamp, nullable = false, None))
@@ -732,6 +758,31 @@ object SQLTypeUtils {
       case _ => None
     }
     parsed.map(p => s"($expr instanceof String ? $p : $epoch)")
+  }
+
+  /** An INGEST operand as the UTC instant it denotes, decided by its RUNTIME class: a string is
+    * parsed by its shape -- a date at the start of its UTC day, a date-time as the instant it
+    * spells, through the very `<string> -> <temporal>` conversions a `CAST` uses -- a number is
+    * epoch milliseconds, and anything else is a temporal a function already made
+    * (`DateDiff.utcInstant`).
+    *
+    * 🔴 Found by review, measured on Elasticsearch 8.18.3: an operand that is not a bare column
+    * (`COALESCE(d, d2) - d2`, `NULLIF(d, d2) - d2`) holds the raw JSON string, and reading it as a
+    * temporal threw on every document -- which a computed column's `ignore_failure: true` stored as
+    * NULL on every row. And a DATE column holding a date-time string (Elasticsearch accepts one)
+    * failed the strict `yyyy-MM-dd` parse the same way. Both now read the instant the value spells,
+    * as the query venue's doc value does, and a DATE operand is then floored to its UTC day.
+    *
+    * `ref` is read up to five times: it is a name.
+    */
+  private[sql] def processorInstant(ref: String): String = {
+    val dateTime = coerce(ref, SQLTypes.Varchar, SQLTypes.Timestamp, nullable = false, None)
+    val date =
+      coerce(ref, SQLTypes.Varchar, SQLTypes.Date, nullable = false, None) +
+      ".atStartOfDay(ZoneId.of('Z'))"
+    s"($ref == null ? null : $ref instanceof String ? ($ref.length() > 10 ? $dateTime : $date) : " +
+    s"$ref instanceof Number ? Instant.ofEpochMilli($ref).atZone(ZoneId.of('Z')) : " +
+    s"${DateDiff.utcInstant(ref)})"
   }
 
   private val painlessPrimitives: Set[String] =

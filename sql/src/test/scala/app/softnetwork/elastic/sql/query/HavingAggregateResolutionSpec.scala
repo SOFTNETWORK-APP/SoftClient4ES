@@ -1,6 +1,8 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -101,12 +103,32 @@ class HavingAggregateResolutionSpec extends AnyFlatSpec with Matchers {
     ).foreach { sql =>
       withClue(s"[$sql] ") {
         Parser(sql).isRight shouldBe true
+        resolved(sql).validateResolved() shouldBe Right(())
       }
     }
-    // A genuine mismatch stays loud, and names the ELEMENT types.
-    val msg = rejection("SELECT id FROM t GROUP BY id HAVING COUNT(x) IN ('a', 'b')")
+    // A genuine mismatch stays loud, and names the ELEMENT types -- once the column types are
+    // known (the lead's ruling of 2026-10-05: no TYPE refusal when the statement is parsed).
+    val sql = "SELECT id FROM t GROUP BY id HAVING COUNT(x) IN ('a', 'b')"
+    Parser(sql).isRight shouldBe true
+    val msg =
+      resolved(sql).validateResolved().swap.getOrElse(fail(s"expected a refusal for [$sql]"))
     msg should include("Type mismatch")
     msg should include("'BIGINT' is not compatible with 'VARCHAR'")
-    msg should not startWith Parser.InternalParseFailure
   }
+
+  private val schema = SchemaTable(
+    "t",
+    columns = List(
+      Column("id", SQLTypes.Int),
+      Column("x", SQLTypes.Int),
+      Column("name", SQLTypes.Keyword),
+      Column("createdAt", SQLTypes.Timestamp)
+    )
+  )
+
+  private def resolved(sql: String): SingleSearch =
+    Parser(sql) match {
+      case Right(single: SingleSearch) => single.update(Some(schema))
+      case other                       => fail(s"[$sql] $other")
+    }
 }

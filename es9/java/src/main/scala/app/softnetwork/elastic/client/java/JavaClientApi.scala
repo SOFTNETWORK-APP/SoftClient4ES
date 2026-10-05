@@ -37,7 +37,7 @@ import app.softnetwork.elastic.sql.policy.{
   EnrichPolicyTaskStatus,
   EnrichPolicyType
 }
-import app.softnetwork.elastic.sql.PainlessContextType
+import app.softnetwork.elastic.sql.{PainlessContextType, PainlessTarget}
 import app.softnetwork.elastic.sql.schema.TableAlias
 import app.softnetwork.elastic.sql.serialization._
 import app.softnetwork.elastic.sql.transform.{
@@ -1033,6 +1033,13 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
     * [[JavaClientSearchBodySerializer]].
     */
   implicit def searchBodySerializer: SearchBodySerializer = JavaClientSearchBodySerializer
+
+  /** The Elasticsearch major every script made from this trait is rendered for (implicit scope of
+    * the bridge's conversions, as [[searchBodySerializer]] is): see `PainlessTarget`.
+    *
+    * A `date` doc value is a `ZonedDateTime` here: scripts render as they always have.
+    */
+  implicit def painlessTarget: PainlessTarget = PainlessTarget(9)
 
   override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
     timestamp: Long,

@@ -317,6 +317,11 @@ class MetricsElasticClient(
       delegate.loadSchema(index)
     }
 
+  override private[client] def loadPatternSchema(pattern: String): ElasticResult[Schema] =
+    measureResult("loadSchema", Some(pattern.indices.mkString(","))) {
+      delegate.loadPatternSchema(pattern)
+    }
+
   override def invalidateSchema(index: String): Unit = delegate.invalidateSchema(index)
   override def invalidateAllSchemas(): Unit = delegate.invalidateAllSchemas()
 

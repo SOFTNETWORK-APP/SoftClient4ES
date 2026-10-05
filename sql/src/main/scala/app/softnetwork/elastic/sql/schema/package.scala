@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.function.{
   FunctionWithIdentifier
 }
 import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.serialization._
@@ -788,6 +789,78 @@ package object schema {
       .filter(path => projection.find(path).isEmpty)
       .distinct
 
+  /** The schema an index PATTERN or a comma list (`FROM logs-*`) answers with, so it is typed as
+    * the single index is: the union of its indices' columns, merged FIELD BY FIELD (the lead's
+    * ruling of 2026-10-05).
+    *
+    *   - A field every index that maps it maps the SAME way -- the same type (a field no index
+    *     declared is typed at the declaration seam, `schema.IndexField`: an undeclared `date` is a
+    *     TIMESTAMP, like a declared one), the same date `format` (the one mapping option a
+    *     statement's meaning depends on: a temporal literal is read against it) -- keeps that type,
+    *     whatever the indices disagree on elsewhere. A field one index maps and another does not is
+    *     the one index's.
+    *   - A field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot be chosen
+    *     between them, so nothing is refused on it and Elasticsearch answers for it, as it does
+    *     with no schema at all (the ruling's rule 4). It stays IN the schema: the name exists, and
+    *     a subquery's scope must know it does.
+    *   - Sub-fields (multi-fields, object properties) merge by the same rule, under their parent.
+    *
+    * 🔴 Found by review, MEASURED on Elasticsearch 8.18.3: `SELECT g, MAX(d) - MIN(d) FROM zwild_*
+    * GROUP BY g` answered 2592000000 (milliseconds) where the single index answered 30 (days) --
+    * with no schema attached a pattern was typed `Any` throughout, and the date-arithmetic rules
+    * could not see a date. A first merge attached NOTHING as soon as the indices disagreed on one
+    * field, which left every other field of such a pattern in that state.
+    *
+    * @return
+    *   the merged schema, and every field the indices disagree on, by path, with the types they
+    *   give it
+    */
+  private[elastic] def mergedSchema(
+    name: String,
+    members: Seq[(String, Schema)]
+  ): (Schema, Seq[String]) = {
+    def format(c: Column): Option[Value[_]] = c.options.get("format")
+    def sameMapping(a: Column, b: Column): Boolean =
+      a.dataType == b.dataType && format(a) == format(b)
+    val conflicts = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
+    def merge(into: List[Column], columns: List[Column], parent: String): List[Column] = {
+      val merged = scala.collection.mutable.LinkedHashMap(into.map(c => c.name -> c): _*)
+      columns.foreach { column =>
+        val path = s"$parent${column.name}"
+        merged.get(column.name) match {
+          case None => merged.put(column.name, column)
+          case Some(first) =>
+            val multiFields = merge(first.multiFields, column.multiFields, s"$path.")
+            if (sameMapping(first, column))
+              merged.put(column.name, first.copy(multiFields = multiFields))
+            else {
+              conflicts.put(
+                path,
+                conflicts.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
+              )
+              merged.put(
+                column.name,
+                first.copy(
+                  dataType = SQLTypes.Any,
+                  options = first.options - "format",
+                  multiFields = multiFields
+                )
+              )
+            }
+        }
+      }
+      merged.values.toList
+    }
+    val columns =
+      members.foldLeft(List.empty[Column]) { case (acc, (_, schema)) =>
+        merge(acc, schema.columns, "")
+      }
+    val disagreements = conflicts.toSeq.map { case (path, types) =>
+      s"'$path' (${types.filterNot(_ == SQLTypes.Any.typeId).toSeq.sorted.mkString(", ")})"
+    }
+    (Table(name, columns = columns.sortBy(_.name)).update(), disagreements)
+  }
+
   /** Reject a computed column whose expression reads a column the table does not declare, or hands
     * a column to a function that cannot take its declared type.
     *
@@ -874,6 +947,27 @@ package object schema {
       case errors => return Left(errors.mkString("; "))
     }
 
+    // Date arithmetic refused by name -- `d * 2`, `d + d2`, `2 - d` -- for the same two reasons as
+    // the NULLIF rule above: it needs the RESOLVED table, and no reference population, so it sits
+    // above the `isRegular` carve-out too. An ingest script would otherwise fail per document, and
+    // `ignore_failure` would swallow it into an absent column.
+    def arithmeticErrors(column: Column): Seq[String] =
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.validationExpr)
+        .flatMap {
+          case chain: FunctionChain => ArithmeticExpression.typeErrorsOf(chain)
+          case _                    => Nil
+        }
+        .map(reason => s"Column '${column.path}': $reason") ++
+      column.multiFields.flatMap(arithmeticErrors)
+
+    schema.columns.flatMap(arithmeticErrors).distinct match {
+      case Nil    =>
+      case errors => return Left(errors.mkString("; "))
+    }
+
     if (!schema.isRegular) return Right(())
 
     def columnErrors(column: Column): Seq[String] =
@@ -898,6 +992,14 @@ package object schema {
             case Some(referenced) =>
               consumer.collect { case fn: FunctionN[_, _] => fn }.toSeq.flatMap { fn =>
                 if (acceptableOperand(referenced.dataType, fn.inputType)) Nil
+                // A DATE, TIMESTAMP or DATETIME operand of `+` / `-` is date arithmetic, which the
+                // rule above judges on BOTH operands -- a NUMERIC input type cannot say whether
+                // `d - d2` is legal. A TIME is outside those rules and keeps this check.
+                else if (
+                  fn.isInstanceOf[ArithmeticExpression] && referenced.dataType.isTemporal &&
+                  referenced.dataType != SQLTypes.Time
+                )
+                  Nil
                 else
                   Seq(
                     s"Column '${column.path}' applies ${fn.sql} to '${id.path}', which is " +

@@ -157,15 +157,20 @@ class IngestTemporalSpec extends AnyFlatSpec with Matchers with TableDrivenPrope
     // CURRENT_DATE)`: the whole years elapsed from `birthdate` to the start of `CURRENT_DATE`
     // (UTC), which the processor holds as the current instant and reads as a date. Run as an
     // ingest pipeline on ES 8.18.3, `{"birthdate":"1990-05-20"}` and `{"birthdate":643161600000}`
-    // both store that age.
+    // both store that age. A date-time string in the DATE column (Elasticsearch accepts one) is
+    // read as the UTC day of the instant it spells -- the arm `DateArithmeticSpec`'s computed
+    // columns execute -- where the strict date parse threw and stored nothing.
     source(
       "CREATE TABLE t (birthdate DATE, age INTEGER SCRIPT AS (TIMESTAMPDIFF(YEAR, birthdate, CURRENT_DATE)))",
       "age"
     ) shouldBe
     "def param1 = ctx.birthdate; " +
     "def param2 = (param1 instanceof String ? " +
+    """(param1.length() > 10 ? ZonedDateTime.parse((param1).replace(" ", "T"), """ +
+    "DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z'))).withZoneSameInstant(ZoneId.of('Z'))" +
+    ".truncatedTo(ChronoUnit.DAYS) : " +
     """LocalDate.parse((param1).replace("/", "-"), DateTimeFormatter.ofPattern("yyyy-MM-dd"))""" +
-    ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(param1).atZone(ZoneId.of('Z'))); " +
+    ".atStartOfDay(ZoneId.of('Z'))) : Instant.ofEpochMilli(param1).atZone(ZoneId.of('Z'))); " +
     "def param3 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(System.currentTimeMillis()), " +
     "ZoneId.of('Z')); " +
     "def param4 = LocalDate.from(param3).atStartOfDay(ZoneId.of('Z')); " +

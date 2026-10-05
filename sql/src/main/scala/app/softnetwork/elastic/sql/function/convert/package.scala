@@ -28,6 +28,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 
 package object convert {
 
@@ -112,7 +113,7 @@ package object convert {
           }
         case _ => // do nothing
       }
-      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable, context)
+      val ret = SQLTypeUtils.coerce(base, sourceType, targetType, sourceNullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
       val retWithBrackets = if (bloc) ret else s"{ $ret }"
       if (!safe) ret
@@ -150,6 +151,46 @@ package object convert {
           case _ => s"try $retWithBrackets catch (Exception e) { return null; }"
         }
     }
+
+    /** The arithmetic this conversion converts, when its operand IS one: `(n + x)::BIGINT`, whose
+      * operand is the nameless identifier carrying that one arithmetic.
+      */
+    private def arithmetic: Option[ArithmeticExpression] = value match {
+      case a: ArithmeticExpression => Some(a)
+      case i: Identifier if i.name.trim.isEmpty =>
+        i.functions match {
+          case (a: ArithmeticExpression) :: Nil => Some(a)
+          case _                                => None
+        }
+      case _ => None
+    }
+
+    /** The type the conversion converts FROM: what an arithmetic operand COMPUTES (its own type,
+      * which a cast no longer overwrites -- `ArithmeticExpression.cast`), or the operand's type.
+      *
+      * 🔴 The nameless identifier around an arithmetic folds its chain from the arithmetic's INPUT
+      * type, so it answered NUMERIC for `(n + x)`, and `NUMERIC -> BIGINT` has no conversion arm:
+      * the cast was silently ignored (`(n + x)::BIGINT` answered 3.25 on main).
+      */
+    private def sourceType: SQLType = arithmetic.map(_.out).getOrElse(value.baseType)
+
+    /** Can the value converted be NULL? Asked of the chain's innermost PRODUCER: the nameless
+      * identifier around an arithmetic answers `false` whatever its operands hold, so the
+      * conversion was emitted unguarded -- `((long) <null>)` failed with `Cannot cast null to a
+      * primitive type`, `String.valueOf(<null>)` answered the text "null", and `<null> != 0`
+      * answered TRUE. Guarded, the value is bound once and the conversion applies to it when it is
+      * not NULL (`SQLTypeUtils.coerce`'s nullable form): `(v == null ? null : conversion)`.
+      */
+    private def sourceNullable: Boolean =
+      value.nullable || (value match {
+        case i: Identifier if i.name.trim.isEmpty =>
+          i.functions.lastOption.exists {
+            case a: ArithmeticExpression => a.nullable
+            case _                       => false
+          }
+        case a: ArithmeticExpression => a.nullable
+        case _                       => false
+      })
 
     override def roundingScript: Option[String] = DateMathRounding(targetType)
 

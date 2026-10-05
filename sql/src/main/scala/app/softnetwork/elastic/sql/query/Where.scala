@@ -36,8 +36,8 @@ import app.softnetwork.elastic.sql.function.cond.{
 }
 import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
-import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql._
 
 import scala.annotation.tailrec
@@ -84,6 +84,33 @@ sealed trait Criteria extends Updateable with PainlessScript {
     // CAST(ts AS TIME) > ts THEN 1 ELSE 0 END = 1` puts the offending predicate inside the LEFT
     // operand of an equality, where the arm above sees only the equality itself. Found by review.
   }) ++ referencedIdentifiers.flatMap(Case.conditionsOf).flatMap(_.temporalComparisonErrors)
+
+  /** Every TYPE refusal of this criteria tree once the column types are known: each comparison's
+    * own rules ([[temporalComparisonErrors]]' TIME rule, then `Validation.typeError`), and every
+    * type rule of the functions its operands apply (`chainTypeErrors`), a CASE nested in an operand
+    * included.
+    *
+    * 🔴 Asked of a SCHEMA-RESOLVED statement only (`SingleSearch.validateResolved`): the lead's
+    * ruling of 2026-10-05 -- no refusal before the column types are known. The same walk as
+    * [[temporalComparisonErrors]], so a criteria type that one reaches, this one reaches too.
+    *
+    * `scripted`: whether every comparison of this tree runs as a SCRIPT -- a CASE condition does,
+    * wherever the CASE sits. A `WHERE` / `HAVING` clause's own comparison of a BARE column with a
+    * literal runs as a query on the column's mapping instead, which Elasticsearch judges itself
+    * (`Expression.comparisonError`).
+    */
+  def typeErrors: Seq[String] = typeErrors(scripted = false)
+
+  def typeErrors(scripted: Boolean): Seq[String] = ((this match {
+    case Predicate(left, _, right, _, _) => left.typeErrors(scripted) ++ right.typeErrors(scripted)
+    case e: Expression =>
+      e.temporalComparisonError.toSeq ++ e.comparisonError(scripted).toSeq
+    case relation: ElasticRelation => relation.criteria.typeErrors(scripted)
+    case _                         => Nil
+  }) ++ referencedIdentifiers.flatMap(chainTypeErrors) ++
+    referencedIdentifiers
+      .flatMap(Case.conditionsOf)
+      .flatMap(_.typeErrors(scripted = true))).distinct
 
   def dependencies: Seq[Identifier] = this match {
     case Predicate(left, _, right, _, _) => left.dependencies ++ right.dependencies
@@ -780,7 +807,34 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   def painlessOp: String = effectiveOperator.painless(None)
 
   def painlessValue(context: Option[PainlessContext]): String =
-    maybeValue.map(painlessOperand(_, context)).getOrElse("")
+    maybeValue match {
+      case Some(value) => readingPainless(literalReading, value, context)
+      case None        => ""
+    }
+
+  /** One operand as it is compared: a string literal by what the comparison reads it as
+    * ([[literalReading]] -- the number, the boolean, or the temporal it spells, the last converted
+    * exactly as `CAST('…' AS DATE)` / `CAST('…' AS TIMESTAMP)` converts it), anything else as it
+    * renders.
+    */
+  protected def readingPainless(
+    reading: Option[ComparisonRule.Reading],
+    token: Token,
+    context: Option[PainlessContext]
+  ): String =
+    reading match {
+      case Some(t: ComparisonRule.TemporalReading) =>
+        SQLTypeUtils.coerce(
+          s""""${t.text}"""",
+          SQLTypes.Varchar,
+          t.sqlType,
+          nullable = false,
+          context
+        )
+      case Some(scalar) =>
+        ComparisonRule.scalarPainless(scalar).getOrElse(painlessOperand(token, context))
+      case None => painlessOperand(token, context)
+    }
 
   /** One operand's Painless rendering. A `Token` that is not a [[PainlessScript]] has only its SQL
     * spelling to offer -- which is why `BetweenExpr` must go through this and not `toString`: a
@@ -909,11 +963,47 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * right-hand type: this predicate's target type, and `check`'s per-type dispatch.
     */
   protected def valueType: SQLType =
-    maybeValue match {
-      case Some(id: Identifier)    => id.chainType
-      case Some(v: PainlessScript) => v.out
-      case Some(other)             => other.out
-      case None                    => SQLTypes.Any
+    literalReading
+      .map(_.sqlType)
+      .getOrElse(maybeValue match {
+        case Some(id: Identifier)    => id.chainType
+        case Some(v: PainlessScript) => v.out
+        case Some(other)             => other.out
+        case None                    => SQLTypes.Any
+      })
+
+  /** What a STRING literal on the right is READ as -- the ONE comparison rule
+    * (`ComparisonRule.readingOf`), against the type the left operand is DECLARED with: `COALESCE(n,
+    * 0) = '3'` compares a number with the number 3, `d + 1 > '2024-01-01'` a date with a date, as
+    * SQL engines read an untyped literal by what it is compared with.
+    *
+    * A temporal is rendered by the very `<string> -> <temporal>` conversion a `CAST` uses
+    * ([[painlessValue]]) and reconciled with the left operand like any typed temporal; a number or
+    * a boolean renders as one.
+    *
+    * It decides only what a SCRIPT renders: a bare column compared with a literal in a `WHERE` runs
+    * as a query on the column's mapping, which never renders this comparison.
+    *
+    * A comparison that reads an AGGREGATE is a group filter, and a group filter reads every metric
+    * as a NUMBER -- a date metric as epoch milliseconds -- so while the metric's type is still
+    * unknown (before the schema is attached, or when none ever is) a literal is read there as the
+    * number or the instant it spells: nothing else can be compared with a metric. `HAVING MAX(n) >
+    * '4'` therefore renders the same comparison before and after resolution; the type rule judges
+    * it once the type is known.
+    */
+  protected def literalReading: Option[ComparisonRule.Reading] = maybeValue.flatMap(readingFor)
+
+  /** What `value` -- the right-hand side, a `BETWEEN` bound, an `IN` element -- is read as against
+    * this comparison's left operand ([[literalReading]]).
+    */
+  protected def readingFor(value: Token): Option[ComparisonRule.Reading] =
+    ComparisonRule.stringLiteral(value).flatMap { text =>
+      val declared = ComparisonRule.declaredTypeOf(identifier)
+      ComparisonRule.readingOf(value, declared).orElse {
+        if (identifier.hasAggregation && declared.isUnknown)
+          ComparisonRule.numberOf(text).orElse(ComparisonRule.temporalOf(text, SQLTypes.Timestamp))
+        else None
+      }
     }
 
   /** The JAVA type the RIGHT-hand side renders — what `Identifier.renderedType` answers for the
@@ -1279,6 +1369,13 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     value: String,
     op: Operator
   ): String = {
+    // A bucket pipeline reads every metric as a NUMBER -- a date aggregate, and the alias of a
+    // per-group date calculation (`MAX(d) + 1 AS x ... HAVING x > ...`), arrive as epoch
+    // milliseconds -- and [[bucketPipelineCheck]] converts a temporal value to the same unit, so the
+    // two are compared as numbers. The `java.time` methods below would be called on a `Double`
+    // (`dynamic method [java.lang.Double, isAfter/1] not found`).
+    val readsMetric =
+      isAggregation || hasBucket || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
     op match {
       case _: ComparisonOperator =>
         // 🔴 Story BIDC-8 AD-9 — dispatch on the EFFECTIVE operator, i.e. with a `NOT` folded in,
@@ -1300,7 +1397,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) < 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isBefore($value)"
               case _ =>
             }
@@ -1308,7 +1405,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) > 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isAfter($value)"
               case _ =>
             }
@@ -1331,7 +1428,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               // spellings are otherwise identical for a `LocalTime`, nanoseconds included.
               case SQLTypes.Varchar | SQLTypes.Time =>
                 return s"$param.compareTo($value) == 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isEqual($value)"
               case _ =>
             }
@@ -1339,7 +1436,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             valueType match {
               case SQLTypes.Varchar | SQLTypes.Time =>
                 return s"$param.compareTo($value) != 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isEqual($value) == false"
               case _ =>
             }
@@ -1347,7 +1444,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) >= 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isBefore($value) == false"
               case _ =>
             }
@@ -1355,7 +1452,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
             valueType match {
               case SQLTypes.Varchar =>
                 return s"$param.compareTo($value) <= 0"
-              case _: SQLTemporal if !isAggregation && !hasBucket =>
+              case _: SQLTemporal if !readsMetric =>
                 return s"$param.isAfter($value) == false"
               case _ =>
             }
@@ -1546,19 +1643,45 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   /** The comparison body of the bucket-pipeline rendering, `param` (= `params.<metric>`) against
     * the right-hand side. BETWEEN and IN, whose `painless` never goes through `check`, override it.
     */
-  protected def bucketPipelineCheck(param: String): String = {
+  protected def bucketPipelineCheck(param: String): String =
+    check(None, param, bucketPipelineValue)
+
+  /** The right-hand side as a group filter compares it with a metric: a NUMBER, epoch milliseconds
+    * for a temporal -- the unit a date metric arrives in.
+    */
+  protected def bucketPipelineValue: String = literalReading match {
+    // a string literal read as a date or a timestamp ([[literalReading]]): its instant, computed
+    // once, here, rather than parsed per bucket
+    case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
+    case _                                       => bucketPipelineOperand
+  }
+
+  private def bucketPipelineOperand: String = {
     val rhs = painlessValue(None)
-    val value = maybeValue match {
-      case Some(v) if operator.isInstanceOf[ComparisonOperator] && !v.isAggregation =>
+    maybeValue match {
+      // A date-arithmetic value already renders epoch milliseconds here, the number a per-group
+      // date is (`HAVING MAX(d) > CAST('2024-03-01' AS DATE) - 30`): it is compared as it stands.
+      case Some(v)
+          if operator.isInstanceOf[ComparisonOperator] && !v.isAggregation &&
+            !Expression.carriesArithmetic(v) =>
         v.out match {
-          case SQLTypes.Date => s"$rhs.truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli()"
+          // 🔴 A DATE value is read through `getLong(ChronoField.EPOCH_DAY)`, which every
+          // `java.time` value with a date answers, whatever it renders: a `LocalDate`
+          // (`CAST('2024-01-01' AS DATE)`), which has neither `truncatedTo` nor `toInstant` --
+          // `HAVING MAX(d) > CAST('2024-01-01' AS DATE)` failed to compile in Elasticsearch
+          // (`member method [java.time.LocalDate, truncatedTo/1] not found`, MEASURED on 8.18.3)
+          // -- or a UTC `ZonedDateTime` (date arithmetic, the clock). No `instanceof` and no NULL
+          // arm: the group-filter gate refuses both, and the value is a literal or the clock,
+          // never NULL. A TIMESTAMP value (a `ZonedDateTime`) was compared with the metric's
+          // number as it stood; it is converted like a DATETIME.
+          case SQLTypes.Date => s"(($rhs).getLong(ChronoField.EPOCH_DAY) * 86400000L)"
           case SQLTypes.Time => s"$rhs.truncatedTo(ChronoUnit.SECONDS).toInstant().toEpochMilli()"
-          case SQLTypes.DateTime => s"$rhs.toInstant().toEpochMilli()"
-          case _                 => rhs
+          case SQLTypes.DateTime  => s"$rhs.toInstant().toEpochMilli()"
+          case SQLTypes.Timestamp => s"($rhs).toInstant().toEpochMilli()"
+          case _                  => rhs
         }
       case _ => rhs
     }
-    check(None, param, value)
   }
 
   /** True when this predicate reads a bucket-pipeline metric: an aggregate, or the alias of a
@@ -1570,9 +1693,20 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   def referencesBucketMetric: Boolean =
     identifier.isAggregation || (identifier.hasAggregation && identifier.fieldAlias.isDefined)
 
+  /** `GREATEST` / `LEAST` over date AGGREGATES, inline in a group filter (`HAVING GREATEST(MAX(d),
+    * MAX(d2)) > CAST('2024-02-01' AS DATE)`): per group they render the epoch milliseconds of the
+    * date that wins (`NumericReducer`), the number a date aggregate is there, so they are compared
+    * as one -- the value converted to the same unit ([[bucketPipelineCheck]]). Compared as a
+    * `java.time` value, the group filter called `isAfter` on a `Double`.
+    */
+  private def reducesDateMetrics: Boolean =
+    NumericReducer.overDates(identifier) && identifier.hasAggregation
+
   override def painless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
     if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
+    if (context.isEmpty && reducesDateMetrics)
+      return s"$painlessNot(${bucketPipelineCheck(identifier.painless(None))})"
     val (chainRendering, innerLeft) = leftOperand(context)
 
     // The right-hand side is rendered ONCE: `painlessValue` can register a parameter on the context,
@@ -1671,6 +1805,38 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     val leftNullable = readsDocumentField(Some(identifier))
     val rightNullable = readsDocumentField(maybeValue)
 
+    /** 🔴 Elasticsearch 6.8 hands a QUERY script a `date` doc value as a
+      * `JodaCompatibleZonedDateTime`, and its `isBefore` / `isAfter` / `isEqual` against a genuine
+      * `ZonedDateTime` -- which every function, every literal and date arithmetic produce -- fail
+      * the shard with `Class.cast` (MEASURED on 6.8.23, in both directions: `d > d2 - 1` and
+      * `CURRENT_DATE > d`). So each operand that READS a document and is compared as an instant is
+      * normalised to the `ZonedDateTime` it denotes, in UTC -- the conversion `DateDiff.utcInstant`
+      * already relies on (`withZoneSameInstant`), a no-op on a `ZonedDateTime` already in UTC.
+      *
+      * Only where the comparison is between INSTANTS (`comparisonTargetType` TIMESTAMP): an operand
+      * narrowed to a `LocalDate` or a `LocalTime` has no zone, and normalising one is what broke
+      * five comparisons in the first attempt at this. Only a QUERY script: an ingest processor
+      * parses its operands into `ZonedDateTime`s itself, and a view's transform reads its own
+      * index. The operand is a name or a call chain here, so the conversion is appended to it; it
+      * is never NULL there -- every route below tests it against NULL first.
+      *
+      * Only for Elasticsearch 6.8 ([[PainlessTarget.jodaCompatibleDates]], the major the client
+      * module gives the bridge): 7 and up hand a genuine `ZonedDateTime`, and there the conversion
+      * cost 2 to 4% of a per-document filter for nothing (MEASURED on 8.18.3), so the scripts of
+      * those majors stay what they were.
+      */
+    val utcComparison: Boolean =
+      context.exists(c => !c.isProcessor && !c.isTransform && c.target.jodaCompatibleDates) &&
+      valueType.isInstanceOf[SQLTemporal] && !isAggregation && !hasBucket &&
+      comparisonTargetType == SQLTypes.Timestamp
+    def instantOperand(rendered: SQLType, readsDocument: Boolean): Boolean =
+      utcComparison && readsDocument &&
+      (rendered == SQLTypes.Timestamp || rendered == SQLTypes.Date)
+    val leftUtc = instantOperand(operandRenderedType, leftNullable)
+    val rightUtc = instantOperand(valueRenderedType, rightNullable)
+    def utc(operand: String, normalise: Boolean): String =
+      if (normalise) s"$operand.withZoneSameInstant(ZoneId.of('Z'))" else operand
+
     context match {
       case Some(ctx) =>
         ctx.get(identifier) match {
@@ -1705,9 +1871,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           // `ABS(amount)` already used, and the reason those were never affected.
           case Some(p) if !rightNullable && p == chainRendering =>
             if (identifier.nullable)
-              return s"$p == null ? false : $painlessNot(${check(context, p, rightPromoted)})"
+              return s"$p == null ? false : $painlessNot(${check(context, utc(p, leftUtc), utc(rightPromoted, rightUtc))})"
             else
-              return s"$painlessNot(${check(context, p, rightPromoted)})"
+              return s"$painlessNot(${check(context, utc(p, leftUtc), utc(rightPromoted, rightUtc))})"
           case _ =>
         }
       case _ =>
@@ -1771,7 +1937,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         if (rightNullable) Some(s"$rightRef == null") else None
       ).flatten
     if (guards.nonEmpty && context.nonEmpty)
-      return s"(${guards.mkString(" || ")} ? false : ($painlessNot(${check(context, leftRef, promotedRight(rightRef, context))})))"
+      return s"(${guards.mkString(" || ")} ? false : ($painlessNot(${check(context, utc(leftRef, leftUtc), utc(promotedRight(rightRef, context), rightUtc))})))"
     // 🔴 INVARIANT (story BIDC-8, review L-11): a statement sequence is legal ONLY with no
     // `PainlessContext`. `Criteria.painless` is spliced into larger expressions -- a `Predicate`
     // joins two renderings with `&&`/`||`, and a `CASE` condition captures one as
@@ -1780,43 +1946,88 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // route is the HAVING / bucket-pipeline one, which is never spliced. Gated by
     // `PainlessOperandFormSpec`, which FAILS (14 shapes) if `bindLocal` stops hoisting.
     if (identifier.nullable)
-      return s"def left = $leftRef; left == null ? false : $painlessNot(${check(context, "left", rightPromoted)})"
-    s"$painlessNot${check(context, leftRef, rightPromoted)}"
+      return s"def left = $leftRef; left == null ? false : $painlessNot(${check(context, utc("left", leftUtc), utc(rightPromoted, rightUtc))})"
+    s"$painlessNot${check(context, utc(leftRef, leftUtc), utc(rightPromoted, rightUtc))}"
   }
 
-  override def validate(): Either[String, Unit] = {
+  /** STRUCTURE only: the two operands. The TYPE rule is [[typeError]], asked once the column types
+    * are known (the lead's ruling of 2026-10-05).
+    */
+  override def validate(): Either[String, Unit] =
     for {
       _ <- identifier.validate()
       _ <- maybeValue match {
-        case Some(v) =>
-          v.validate() match {
-            case Left(err) => Left(s"$err in expression: $this")
-            case Right(_)  =>
-              // 🔴 Issue #384, item 4 — the types COMPARED are the ones the two operands END UP
-              // with, not the ones their COLUMNS have. `identifier.out` is the column's type, so
-              // this rule was wrong in BOTH directions: it accepted `CAST(ts AS TIME) > ts`
-              // (TIMESTAMP against TIMESTAMP, the cast invisible) and rejected
-              // `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)` (TIMESTAMP against TIME, two
-              // `LocalTime`s that compare perfectly well). It is the same `out`-vs-`chainType`
-              // lie issue #367 fixed for EMISSION, still live in VALIDATION -- and `chainType`
-              // and `valueType` are the two derivations that already answer it for each side.
-              Validator.validateTypesMatching(identifier.chainType, valueType) match {
-                // 🔴 ...and a comparison additionally accepts any two DATE-CARRYING temporals,
-                // because it is the one caller that RECONCILES them (issue #384, item 2). See
-                // `SQLTypeUtils.comparableTemporals` for why that allowance is NOT in `matches`.
-                case Left(_) if SQLTypeUtils.comparableTemporals(identifier.chainType, valueType) =>
-                  Right(())
-                case Left(_) =>
-                  Left(
-                    s"Type mismatch: '${identifier.chainType.typeId}' is not compatible with '${valueType.typeId}' in expression: $this"
-                  )
-                case Right(_) => Right(())
-              }
-          }
-        case _ => Right(())
+        case Some(v) => v.validate().left.map(err => s"$err in expression: $this")
+        case _       => Right(())
       }
     } yield ()
+
+  /** The comparison's TYPE rule, asked once the column types are known, as a `WHERE` / `HAVING`
+    * clause asks it ([[comparisonError]]).
+    */
+  override def typeError: Option[String] = comparisonError(scripted = false)
+
+  /** The comparison's TYPE rule -- the ONE comparison rule (`ComparisonRule`, the lead's ruling of
+    * 2026-10-05) -- asked once the column types are known.
+    *
+    * 🔴 It used to run when the statement was PARSED, where every column is `Any`: it refused `d +
+    * 7 > CURRENT_DATE` as BIGINT against DATE before `d` had a type, and could not see `s = n` at
+    * all. Asked after resolution it reads the types the two operands are DECLARED with, and
+    * accepts:
+    *   - two matching types, and a DATE against a TIMESTAMP, judged on their declarations, never on
+    *     the runtime collapse of every temporal to TIMESTAMP (`SQLTypeUtils.comparableTemporals`; a
+    *     comparison RECONCILES them, issue #384);
+    *   - a STRING literal read by what it is compared with: `COALESCE(n, 0) = '3'` is a number
+    *     against 3, `d + 1 > '2024-01-01'` a date against a date (`ComparisonRule.readingOf`);
+    *   - in a `WHERE` or `HAVING` clause's own comparison (`scripted = false`), any LITERAL against
+    *     a BARE column: that comparison is a query Elasticsearch runs against the column's mapping,
+    *     which coerces the literal (`n = '5'`, `d >= '2024-01-01'`) or refuses it itself, as it
+    *     always has. A CASE condition is a script, so the rule judges it like any other comparison.
+    */
+  def comparisonError(scripted: Boolean): Option[String] =
+    maybeValue.flatMap { value =>
+      if (!scripted && Expression.literalAgainstBareColumn(identifier, value)) None
+      else
+        ComparisonRule.mismatch(identifier, value).map { case (left, right) =>
+          s"Type mismatch: '${left.typeId}' is not compatible with '${right.typeId}' in expression: $this"
+        }
+    }
+}
+
+object Expression {
+
+  /** Does a value carry arithmetic -- itself, or as a function of its chain? In a bucket pipeline,
+    * date arithmetic renders the epoch milliseconds a per-group date is.
+    */
+  private[query] def carriesArithmetic(value: Token): Boolean = value match {
+    case _: ArithmeticExpression => true
+    case i: Identifier           => i.functions.exists(_.isInstanceOf[ArithmeticExpression])
+    case _                       => false
   }
+
+  /** A column named with no function applied to it. */
+  private[query] def bareColumn(token: Token): Boolean = token match {
+    case i: Identifier => i.name.trim.nonEmpty && i.functions.isEmpty
+    case _             => false
+  }
+
+  /** A literal value, bare or as the one function of a nameless identifier. */
+  private[query] def literal(token: Token): Boolean = token match {
+    case _: Value[_] => true
+    case i: Identifier =>
+      i.name.trim.isEmpty && (i.functions match {
+        case (_: Value[_]) :: Nil => true
+        case _                    => false
+      })
+    case _ => false
+  }
+
+  /** A LITERAL against a BARE column, on either side: the comparison runs as a query on the
+    * column's own mapping, and Elasticsearch coerces the literal or refuses it -- core never
+    * refused it, column types or not.
+    */
+  private[query] def literalAgainstBareColumn(left: Token, right: Token): Boolean =
+    (bareColumn(left) && literal(right)) || (literal(left) && bareColumn(right))
 }
 
 case class GenericExpression(
@@ -2082,19 +2293,45 @@ case class InExpr[R, +T <: Value[R]](
     for {
       _ <- identifier.validate()
       _ <- values.validate()
-      _ <- {
-        val elementType = values.out match {
-          case a: SQLArray => a.elementType
-          case other       => other
-        }
-        Validator
-          .validateTypesMatching(identifier.out, elementType)
-          .left
-          .map(_ =>
-            s"Type mismatch: '${identifier.out.typeId}' is not compatible with '${elementType.typeId}' in expression: $this"
-          )
-      }
     } yield ()
+
+  /** Each element against the operand, by the ONE comparison rule (`ComparisonRule`), asked once
+    * the column types are known (the lead's ruling of 2026-10-05): `x IN (a, b)` is `x = a OR x =
+    * b`, so `COALESCE(n, 0) IN ('3', '10')` compares a number with two numbers, and `COALESCE(d,
+    * d2) IN ('2024-01-31', '2024-02-01')` a date with two dates. Judged on the operand's DECLARED
+    * type: `CAST(s AS INT) IN (1, 2)` over a KEYWORD `s` compares numbers.
+    *
+    * In a `WHERE` / `HAVING` clause's own IN over a BARE column (`scripted = false`), a `terms`
+    * query on the column's own mapping, which coerces the list or refuses it itself, as it always
+    * has.
+    */
+  override def comparisonError(scripted: Boolean): Option[String] =
+    if (!scripted && Expression.bareColumn(identifier)) None
+    else
+      values.values
+        .flatMap(element => ComparisonRule.mismatch(identifier, element))
+        .headOption
+        .map { case (left, right) =>
+          s"Type mismatch: '${left.typeId}' is not compatible with '${right.typeId}' in expression: $this"
+        }
+
+  /** What every element is READ as (`readingFor`), when each one is a string literal the operand
+    * reads -- the list is then the numbers, the dates, the timestamps or the booleans they spell.
+    */
+  private def elementReadings: Option[Seq[ComparisonRule.Reading]] =
+    if (values.values.isEmpty) None
+    else {
+      val readings = values.values.map(readingFor)
+      if (readings.forall(_.isDefined)) Some(readings.flatten) else None
+    }
+
+  /** The type the list is compared IN when its elements are read ([[elementReadings]]), as the
+    * right-hand side of a single comparison is; the list's own type otherwise, as it always was.
+    */
+  override protected def valueType: SQLType =
+    elementReadings
+      .map(rs => SQLTypeUtils.leastCommonSuperType(rs.map(_.sqlType).toList))
+      .getOrElse(super.valueType)
 
   /** `[v1, v2].contains(<param>)` -- the LIST owns `contains`, not the element.
     *
@@ -2124,9 +2361,36 @@ case class InExpr[R, +T <: Value[R]](
     //
     // A non-numeric list keeps `contains`: for strings `equals` is what IN means, and the rendering
     // is one term rather than N.
-    if (numericList)
-      values.values.map(v => s"$param == ${v.painless(context)}").mkString("(", " || ", ")")
-    else s"$value.contains($param)"
+    //
+    // A list of string literals the operand READS (`elementReadings`) is compared element by
+    // element, as the single comparison `x = <element>` compares: numbers and booleans with `==`,
+    // temporals through the shared per-type dispatch (`isEqual`), each element brought to the
+    // operand's java.time type first. `contains` asked a `ZonedDateTime` whether it EQUALS the
+    // string "2024-01-31" -- never, so `COALESCE(d, d2) IN ('2024-01-31', …)` matched no row.
+    elementReadings match {
+      case Some(readings) =>
+        values.values
+          .zip(readings)
+          .map {
+            case (literal, t: ComparisonRule.TemporalReading) =>
+              val rendered = readingPainless(Some(t), literal, context)
+              val target = comparisonTargetType
+              val element =
+                if (
+                  t.sqlType != target && target.isInstanceOf[SQLTemporal] &&
+                  !context.exists(_.isProcessor)
+                )
+                  SQLTypeUtils.coerce(rendered, t.sqlType, target, nullable = false, context)
+                else rendered
+              super.check(context, param, element, EQ)
+            case (element, reading) =>
+              s"$param == ${readingPainless(Some(reading), element, context)}"
+          }
+          .mkString("(", " || ", ")")
+      case None if numericList =>
+        values.values.map(v => s"$param == ${v.painless(context)}").mkString("(", " || ", ")")
+      case None => s"$value.contains($param)"
+    }
 
   /** True when every element of the list is a number — the case `List.contains` gets wrong. */
   private def numericList: Boolean =
@@ -2138,9 +2402,20 @@ case class InExpr[R, +T <: Value[R]](
   // measured live, `MAX(age) IN (40, 50)` returned no bucket. Painless `==` promotes numerics and
   // uses `equals` for strings. The NOT is NOT rendered here: `IN` has no negated operator, so
   // `painlessNot` renders the `!` for it (review M-6) and `bucketPipelinePainless` already wraps
-  // this call in it -- negating twice was a double negation.
+  // this call in it -- negating twice was a double negation. A string element is the number, or
+  // the epoch milliseconds, it is read as -- a metric is a number (`readingFor`).
   override protected def bucketPipelineCheck(param: String): String =
-    values.values.map(v => s"$param == ${v.painless(None)}").mkString(" || ")
+    values.values
+      .map { v =>
+        val element = readingFor(v) match {
+          case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
+          case Some(scalar) =>
+            ComparisonRule.scalarPainless(scalar).getOrElse(v.painless(None))
+          case None => v.painless(None)
+        }
+        s"$param == $element"
+      }
+      .mkString(" || ")
 
 }
 
@@ -2524,9 +2799,59 @@ case class BetweenExpr(
     for {
       _ <- identifier.validate()
       _ <- fromTo.validate()
-      _ <- Validator.validateTypesMatching(identifier.out, fromTo.out)
     } yield ()
   }
+
+  /** Each bound against the operand, by the ONE comparison rule (`ComparisonRule`), asked once the
+    * column types are known (the lead's ruling of 2026-10-05): `x BETWEEN a AND b` is `x >= a AND x
+    * <= b`, so a bound is compared with the operand, never with the other bound -- `COALESCE(d, d2)
+    * BETWEEN '2024-01-01' AND '2024-02-01'` compares a date with two dates, and `d BETWEEN CAST(…
+    * AS DATE) AND CAST(… AS TIMESTAMP)` a date with a date and a timestamp.
+    *
+    * In a `WHERE` / `HAVING` clause's own BETWEEN over a BARE column (`scripted = false`), a
+    * `range` query on the column's own mapping, which coerces the bounds or refuses them itself, as
+    * it always has: only the bounds' own match is asked there.
+    */
+  override def comparisonError(scripted: Boolean): Option[String] =
+    if (!scripted && Expression.bareColumn(identifier)) fromTo.typeError
+    else
+      Seq(fromTo.from, fromTo.to)
+        .flatMap(bound => ComparisonRule.mismatch(identifier, bound))
+        .headOption
+        .map { case (left, right) =>
+          s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
+        }
+
+  /** The SQL type of a bound as it is compared: its reading, or its own type -- the question
+    * `valueType` answers for the right-hand side of a single comparison.
+    */
+  private def boundType(bound: Token): SQLType =
+    readingFor(bound)
+      .map(_.sqlType)
+      .getOrElse(bound match {
+        case id: Identifier => id.chainType
+        case other          => other.out
+      })
+
+  /** The JAVA type a bound renders -- the question `valueRenderedType` answers for a single one. */
+  private def boundRenderedType(bound: Token): SQLType =
+    readingFor(bound)
+      .map(_.sqlType)
+      .getOrElse(bound match {
+        case id: Identifier => id.renderedType
+        case other          => other.out
+      })
+
+  /** The type the bounds are compared IN -- what the shared dispatch ([[check]]) and the operand's
+    * target type ([[comparisonTargetType]]) read for the right-hand side of a single comparison.
+    */
+  override protected def valueType: SQLType =
+    SQLTypeUtils.leastCommonSuperType(List(boundType(fromTo.from), boundType(fromTo.to)))
+
+  override protected def valueRenderedType: SQLType =
+    SQLTypeUtils.leastCommonSuperType(
+      List(boundRenderedType(fromTo.from), boundRenderedType(fromTo.to))
+    )
 
   /** Two comparisons, `param >= from && param <= to`, each rendered by the SHARED per-type
     * dispatch.
@@ -2539,6 +2864,13 @@ case class BetweenExpr(
     * [[Expression.check]] knows. Overriding `check` puts BETWEEN on the ONE guarded emission path
     * and reuses that dispatch via the explicit `GE` / `LE` operators. The NOT is rendered by
     * `painlessNot` (`BETWEEN` has no negated operator).
+    *
+    * Each bound is rendered as the comparison reads it (a string literal by its reading: the
+    * number, or the temporal, it spells) and, like the right-hand side of a single comparison,
+    * brought to the operand's java.time type when the two differ: a DATE bound beside a TIMESTAMP
+    * operand is the instant its day starts at. Compared as rendered, a string bound was compared as
+    * TEXT (`String.valueOf(<date>).compareTo("2024-02-01")`, right only while the two spellings
+    * happened to sort alike) and a `LocalDate` bound failed against a `ZonedDateTime`.
     */
   override protected def check(
     context: Option[PainlessContext],
@@ -2546,17 +2878,35 @@ case class BetweenExpr(
     value: String,
     op: Operator
   ): String = {
-    val from = painlessOperand(fromTo.from, context)
-    val to = painlessOperand(fromTo.to, context)
+    def bound(b: Token): String = {
+      val rendered = readingPainless(readingFor(b), b, context)
+      val from = boundRenderedType(b)
+      val to = comparisonTargetType
+      if (
+        from != to && from.isInstanceOf[SQLTemporal] && to.isInstanceOf[SQLTemporal] &&
+        !context.exists(_.isProcessor)
+      )
+        SQLTypeUtils.coerce(rendered, from, to, nullable = false, context)
+      else rendered
+    }
+    val from = bound(fromTo.from)
+    val to = bound(fromTo.to)
     s"(${super.check(context, param, from, GE)} && ${super.check(context, param, to, LE)})"
   }
 
   // The guarded bucket form of `<aggregate> BETWEEN a AND b` -- two comparisons, not a chained
   // `a <= p <= b` (Painless rejects `boolean <= int`). The NOT is NOT rendered here: `BETWEEN` has
   // no negated operator, so `painlessNot` renders the `!` (review M-6) and
-  // `bucketPipelinePainless` already wraps this call in it.
-  override protected def bucketPipelineCheck(param: String): String =
-    s"$param >= ${fromTo.from} && $param <= ${fromTo.to}"
+  // `bucketPipelinePainless` already wraps this call in it. A string bound is the number, or the
+  // epoch milliseconds, it is read as -- a metric is a number (`readingFor`).
+  override protected def bucketPipelineCheck(param: String): String = {
+    def bound(b: Token): String = readingFor(b) match {
+      case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
+      case Some(scalar) => ComparisonRule.scalarPainless(scalar).getOrElse(b.toString)
+      case None         => b.toString
+    }
+    s"$param >= ${bound(fromTo.from)} && $param <= ${bound(fromTo.to)}"
+  }
 
 }
 

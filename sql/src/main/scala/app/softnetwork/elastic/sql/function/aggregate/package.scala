@@ -39,6 +39,55 @@ package object aggregate {
 
   }
 
+  object AggregateFunction {
+
+    /** The type an AGGREGATE produces -- the metric Elasticsearch computes for a group -- as
+      * opposed to the type of the column it aggregates, which is what the aggregate identifier's
+      * `out` reports.
+      *
+      * 🔴 ONE derivation for every consumer (#292): the date-arithmetic rules (`COUNT(d) - 1` is a
+      * number, never a date), the coercion a per-group calculation applies to a metric
+      * (`params.count_d` is a count, so it is never read as an instant), and the type rules that
+      * compare a metric once the column types are known (`HAVING COUNT(d) > 1`). Reading the
+      * column's type instead is what rendered `params.count_d.toInstant()`.
+      *
+      *   - `COUNT` counts: BIGINT, whatever it counts.
+      *   - `AVG` averages: DOUBLE.
+      *   - `SUM` adds: the summed column's numeric type (whole stays whole, fractional stays
+      *     fractional); a sum of anything else is the DOUBLE Elasticsearch answers -- a sum of
+      *     dates is not a date.
+      *   - `MIN`, `MAX`, `FIRST_VALUE`, `LAST_VALUE` return one of the values they aggregate: the
+      *     REPORTED type of the aggregated chain, so a DATE stays a DATE and `MAX(CAST(ts AS
+      *     DATE))` is a DATE.
+      *   - every other aggregate answers its own declared type when it has one (STDDEV and the
+      *     percentiles are DOUBLE, the ranking windows BIGINT), else the aggregated chain's.
+      *
+      * `None` when `aggregate` aggregates nothing.
+      */
+    def outputTypeOf(aggregate: Identifier): Option[SQLType] =
+      aggregate.aggregateFunction.map { function =>
+        def aggregated: SQLType =
+          aggregate
+            .withFunctions(aggregate.functions.filterNot(_.isInstanceOf[AggregateFunction]))
+            .reportedType
+        function match {
+          case COUNT | _: CountAgg => SQLTypes.BigInt
+          case AVG | _: AvgAgg     => SQLTypes.Double
+          case SUM | _: SumAgg =>
+            aggregated match {
+              case whole @ (SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int |
+                  SQLTypes.BigInt) =>
+                whole
+              case fractional @ (SQLTypes.Real | SQLTypes.Double) => fractional
+              case _                                              => SQLTypes.Double
+            }
+          case MIN | MAX | _: MinAgg | _: MaxAgg | _: FirstValue | _: LastValue => aggregated
+          case other =>
+            Some(other.out).filterNot(t => t.isUnknown || t == SQLTypes.Null).getOrElse(aggregated)
+        }
+      }
+  }
+
   case object COUNT extends Expr("COUNT") with AggregateFunction with Window
 
   case object MIN extends Expr("MIN") with AggregateFunction with Window

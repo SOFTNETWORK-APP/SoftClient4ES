@@ -74,10 +74,10 @@ package object time {
       }
     }
 
-    override def validate(): Either[String, Unit] = interval.checkType(out) match {
-      case Left(err) => Left(err)
-      case Right(_)  => Right(())
-    }
+    /** The interval's unit against the type it applies to, asked once the column types are known
+      * (the lead's ruling of 2026-10-05), never when the statement is parsed.
+      */
+    override def typeError: Option[String] = interval.checkType(out).left.toOption
 
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
       context match {
@@ -380,6 +380,20 @@ package object time {
             case _ =>
           }
           super.toPainlessCall(callArgs, context)
+        // 🔴 A DAY truncation of a date-only receiver is the receiver itself, and `truncatedTo`
+        // would fail on it: `DATE_TRUNC(ts, DAY) = '2024-01-31'` (or `> '…'`, or `= CAST(… AS
+        // DATE)`) narrows `ts` to a `LocalDate` to meet the date, and `LocalDate.truncatedTo` does
+        // not exist (all shards failed, MEASURED on 8.18.3). Rendered as the start of that day, as
+        // a date: the same value, through methods a `LocalDate` has -- and a `ZonedDateTime`
+        // receiver misjudged as date-only fails loudly on `atStartOfDay` rather than silently
+        // keeping its time.
+        //
+        // ⚠️ DAY only. HOUR, MINUTE and SECOND keep `truncatedTo`: on a receiver NARROWED to its
+        // date the time is already gone, and SQL compares `DATE_TRUNC(ts, HOUR)` with a date as
+        // the instant the date starts at, which a date cannot be compared as -- that comparison
+        // still fails loudly, rather than answering for every hour of the day.
+        case TimeUnit.DAYS if receiverIsDateOnly =>
+          ".atStartOfDay(ZoneId.of('Z')).toLocalDate()"
         case _ => super.toPainlessCall(callArgs, context)
       }
     }
@@ -610,12 +624,14 @@ package object time {
       * and `DATE_DIFF` read a calendar date through it too, off a row-level operand that is not a
       * column: a zoned value there may be Elasticsearch 6.8's doc value, which is no `java.time`
       * type until `withZoneSameInstant` (as in [[utcZoned]]) returns the `ZonedDateTime` it wraps.
+      * Date arithmetic (`ArithmeticExpression`) reads such an operand through it for the same
+      * reason: one conversion, shared.
       *
       * `ref` is read up to four times, so it is a name or an expression cast to `def` (the methods
       * below are resolved at runtime). NULL stays NULL: the MONTH, QUARTER and YEAR calls bind this
       * value in the script's prologue, which runs before the null guard.
       */
-    private[time] def utcInstant(ref: String): String =
+    private[sql] def utcInstant(ref: String): String =
       s"($ref == null ? null : $ref instanceof LocalDate ? $ref.atStartOfDay(ZoneId.of('Z')) : $ref instanceof LocalDateTime ? $ref.atZone(ZoneId.of('Z')) : $ref.withZoneSameInstant(ZoneId.of('Z')))"
 
     /** A column a SEARCH script reads, as a genuine `java.time.ZonedDateTime` in UTC; NULL stays

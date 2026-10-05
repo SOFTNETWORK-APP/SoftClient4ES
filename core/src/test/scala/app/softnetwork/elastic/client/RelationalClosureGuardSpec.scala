@@ -22,6 +22,7 @@ import app.softnetwork.elastic.sql.query.{
   ctesPresent,
   relationalClosureRequired,
   setOperationsPresent,
+  MultiSearch,
   SearchStatement,
   SingleSearch
 }
@@ -364,15 +365,26 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  /** Story 22.6 AD-4's second half: at parse time a bare column is `SQLTypes.Any` and passes, so
-    * the check must RE-RUN once schemas are attached. `NopeClientApi` attaches none, so this row
-    * pins the LITERAL case the parse-time half already rejects plus the seam's own wiring; the
-    * schema-attached case is covered by `TemporalLiteralSearchSpec`'s stub-schema idiom.
+  /** Story 22.6 AD-4: the branch TYPE check. The lead's ruling of 2026-10-05 -- no TYPE refusal
+    * before the column types are known -- took it off parsing entirely: the seam asks it once a
+    * branch's schema is attached, which `TemporalLiteralSearchSpec`'s stub-schema idiom pins, with
+    * nothing sent. `NopeClientApi` attaches no schema, so this row pins the rest: the statement
+    * PARSES, the rule the seam asks refuses it by name, and with no schema at all nothing is
+    * refused on types -- Elasticsearch answers.
     */
-  it should "reject a typeable branch mismatch before any request is built" in {
-    Parser("SELECT 1 AS n FROM t UNION ALL SELECT 'a' AS n FROM u").swap.toOption
-      .map(_.msg)
-      .getOrElse("") should include("compatible types at column 1")
+  it should "ask the branch type check after resolution, and refuse nothing on types without a schema" in {
+    val sql = "SELECT 1 AS n FROM t UNION ALL SELECT 'a' AS n FROM u"
+    Parser(sql) match {
+      case Right(multi: MultiSearch) =>
+        MultiSearch.branchTypes(multi.requests).swap.getOrElse("") should include(
+          "compatible types at column 1"
+        )
+      case other => fail(s"[$sql] parsed as $other: no TYPE is refused at parse")
+    }
+    client().search(searchStatement(sql)) match {
+      case ElasticFailure(e) => fail(s"refused without a schema: ${e.message}")
+      case ElasticSuccess(_) => succeed
+    }
   }
 
   it should "refuse an INSERT ... SELECT carrying a set operation" in {

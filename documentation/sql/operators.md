@@ -30,10 +30,11 @@ expr1 + expr2
 ```
 
 **Inputs:**
-- `expr1`, `expr2` - Numeric expressions (`INT`, `DOUBLE`, `DECIMAL`, etc.)
+- `expr1`, `expr2` - Numeric expressions (`INT`, `DOUBLE`, `DECIMAL`, etc.), or a `DATE`,
+  `TIMESTAMP` or `DATETIME` and a number of days (see [Date arithmetic](#date-arithmetic--and---with-a-date-timestamp-or-datetime))
 
 **Output:**
-- Numeric type (result type depends on operand types)
+- Numeric type (result type depends on operand types); a date or a timestamp for date arithmetic
 
 **Examples:**
 
@@ -65,6 +66,15 @@ SELECT 10.5 + 20.3 AS total;
 -- Mixed types (INT + DOUBLE)
 SELECT 10 + 20.5 AS total;
 -- Result: 30.5 (promoted to DOUBLE)
+
+-- A number and a string column (n INT, s KEYWORD) are a type error, refused by name once the
+-- column types are known
+SELECT n + s AS x FROM t;
+-- Error: Type mismatch: output 'INT' is not compatible with input 'KEYWORD'
+
+-- To join them as text, convert the number
+SELECT CONCAT(CAST(n AS VARCHAR), s) AS x FROM t;
+-- Result: '3a' for n = 3, s = 'a'
 ```
 
 **NULL Handling:**
@@ -129,10 +139,14 @@ SELECT 100 + (-50) AS result;
 -- Result: 50
 ```
 
-**Date Arithmetic:**
+**Date Arithmetic** (see [Date arithmetic](#date-arithmetic--and---with-a-date-timestamp-or-datetime)):
 ```sql
--- Date subtraction (days between)
-SELECT order_date - ship_date AS days_to_ship
+-- Date subtraction: the days between the two dates (BIGINT)
+SELECT ship_date - order_date AS days_to_ship
+FROM orders;
+
+-- A date moved back by days (DATE)
+SELECT order_date - 7 AS week_before
 FROM orders;
 
 -- With INTERVAL
@@ -453,6 +467,130 @@ SELECT 10 % -3 AS result;
 
 ---
 
+### Date arithmetic: `+` and `-` with a `DATE`, `TIMESTAMP` or `DATETIME`
+
+**Description:**  
+Since `0.24.0`, `+` and `-` follow the rules SQL engines apply to dates, in every place a script
+runs: a row `SELECT`, a `WHERE`, a per-group calculation over aggregates (`MAX(d) - MIN(d) AS x`),
+a `HAVING` over its alias, a computed column (`SCRIPT AS`) and a materialized view.
+
+| Expression | Result | Type |
+|---|---|---|
+| `DATE - DATE` | the calendar days between the two dates | `BIGINT` |
+| `TIMESTAMP - TIMESTAMP`, or a `DATE` and a `TIMESTAMP` | the milliseconds between the two, in days (`1.5` is a day and a half) | `DOUBLE` |
+| `DATE + n`, `DATE - n`, `n` a whole number (`INT`, `BIGINT`, ...) | the date `n` days later / earlier | `DATE` |
+| `DATE + n`, `DATE - n`, `n` a fractional number (`DOUBLE`, `REAL`, `DECIMAL`) | `n` days later / earlier, the fraction as a time of day | `TIMESTAMP` |
+| `TIMESTAMP + n`, `TIMESTAMP - n`, any number `n` | `n` days later / earlier | `TIMESTAMP` |
+| `n + temporal` | the same as `temporal + n` | as above |
+| a temporal and a string literal that is a number (`'30'`, `'1.5'`) | the same as with that number | as above |
+| a temporal and `NULL` | `NULL` | the type above, for a typed `NULL` (`CAST(NULL AS DATE) - d` is a `BIGINT`) |
+| two temporals added, a temporal under `*`, `/` or `%`, a number minus a temporal, a temporal combined with any other string or a boolean | a type error, refused before anything runs | — |
+
+`DATETIME` behaves as `TIMESTAMP`. Days are UTC calendar days: a `DATE` operand is the UTC day it
+falls in, so `DATE - DATE` is the same number as `DATEDIFF(date1, date2)`.
+
+An operand's type is the type it produces: a column's declared type; an aggregate's own type
+(`COUNT` is a `BIGINT`, `AVG` a `DOUBLE`, `SUM` the column's numeric type, `MIN`, `MAX`,
+`FIRST_VALUE` and `LAST_VALUE` the column's type); `CASE`, `COALESCE`, `NULLIF`, `GREATEST` and
+`LEAST` the common type of their branches or arguments. So `MAX(order_date) - AVG(delay)` is a
+`TIMESTAMP`, `COUNT(order_date) - 1` a number, and
+`CASE WHEN express THEN ship_date ELSE due_date END - order_date` and
+`GREATEST(ship_date, due_date) - order_date` numbers of days (`GREATEST` and `LEAST` compare dates
+and timestamps too: see [GREATEST](functions_conditional.md#greatest)).
+
+**The engines this follows:**
+- PostgreSQL, DuckDB, Oracle and Snowflake subtract two dates into a number of days; Oracle, whose
+  `DATE` carries a time of day, answers fractional days.
+- PostgreSQL, DuckDB, Oracle and BigQuery add a number of days to a date; Oracle turns the fraction
+  of `DATE + 1.5` into a time of day.
+- PostgreSQL, DuckDB, Oracle, Trino, Snowflake and SQL Server refuse the other combinations.
+
+**Examples:**
+```sql
+-- Days between two dates
+SELECT ship_date - order_date AS days_to_ship FROM orders;
+-- 2024-01-31 -> 2024-02-01 is 1; 2024-02-28 -> 2024-03-01 is 2 (2024 is a leap year)
+
+-- A date moved by days
+SELECT due_date + 30 AS reminder FROM invoices;          -- DATE
+SELECT due_date + 1.5 AS reminder_at FROM invoices;      -- TIMESTAMP, 12:00 on the next day
+
+-- Fractional days between two instants
+SELECT closed_at - opened_at AS days_open FROM tickets;  -- 1.25 is a day and six hours
+
+-- A filter relative to today
+SELECT * FROM orders WHERE order_date > CURRENT_DATE - 7;
+
+-- Per group, and in HAVING through the alias
+SELECT customer, MAX(order_date) - MIN(order_date) AS span
+FROM orders GROUP BY customer HAVING span > 30;
+
+-- A computed column
+CREATE TABLE tickets (
+  id KEYWORD, opened_at TIMESTAMP, closed_at TIMESTAMP,
+  days_open DOUBLE SCRIPT AS (closed_at - opened_at),
+  PRIMARY KEY (id)
+);
+```
+
+**Refused combinations** are refused by name, with the operator, the two operand types and the
+remedy:
+```sql
+SELECT order_date * 2 FROM orders;
+-- Type mismatch: operator * cannot be applied to DATE and BIGINT in expression: order_date * 2;
+-- subtract two dates for the days between them, or add or subtract a number of days
+```
+
+**Notes:**
+- A temporal operand is recognised by its **declared** type: Elasticsearch stores `DATE`,
+  `TIMESTAMP` and `DATETIME` alike as a `date`, and the declaration is what tells a date from a
+  timestamp. A `TIME` operand is not covered by these rules.
+- A `date` field elasticsql did not declare — an index created by a bulk load, Logstash or any other
+  client, or a field a bulk load added to a table elasticsql created — is a `TIMESTAMP`: `DESCRIBE
+  TABLE` reports it so, a `CREATE TABLE ... AS SELECT` declares it so, and it follows the
+  `TIMESTAMP` rules (`created_at + 1` keeps the time of day, `closed_at - opened_at` is
+  fractional). A column declared `DATE` through elasticsql stays a `DATE`.
+- A string literal is read by what it is combined or compared with, as PostgreSQL reads one:
+  `order_date - '2024-01-01'` is the days between two dates, `qty + '1'` adds the number 1, and in
+  a comparison — `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `CASE x WHEN v`, `NULLIF`, a
+  `CASE` condition — a literal beside a number is the number it spells, beside a `DATE` the date
+  it spells (the date of a date-time literal), beside a `TIMESTAMP` the instant it spells
+  (`'2024-01-31'` is its midnight), and beside a `BOOLEAN` the boolean it spells. A `DATE` and a
+  `TIMESTAMP` compare, the `DATE` being the instant its day starts at. Any other literal is text,
+  and comparing it with a number or a date is refused by name.
+- An index pattern or a comma list (`FROM logs-*`, `FROM orders_2024, orders_2025`) answers like a
+  single index: every field its indices map alike has its type, read once per pattern from the
+  merged mapping. ⚠️ A field two of them map differently (a `date` in one index, a `keyword` in
+  another) has no type: nothing is refused on it and Elasticsearch answers for it — per group,
+  `MAX(order_date) - MIN(order_date)` over such a field answers milliseconds rather than days. Every
+  other field of the pattern keeps its type.
+- Type errors are checked once the column types are known, when the statement runs and the mapping
+  is read, and before anything is sent to Elasticsearch: `WHERE due_date + 7 > CURRENT_DATE` runs,
+  `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map
+  differently, a mapping that cannot be read), nothing is refused on types.
+- In a per-group calculation, a date result comes back as the same number a date aggregate does
+  (`MAX(order_date)`): milliseconds since the epoch. `CURRENT_DATE` and `NOW()` there are the time
+  the statement runs (`CURRENT_DATE - MAX(order_date)`); a materialized view refuses them.
+- An explicit cast applies to the result, and a `NULL` stays `NULL`:
+  `(ship_date - order_date)::TIMESTAMP` converts the number of days as any number is converted to a
+  `TIMESTAMP` — as milliseconds since the epoch — and `(quantity + ratio)::BIGINT` truncates, as
+  `CAST(3.25 AS BIGINT)` does.
+- `INTERVAL` arithmetic (`order_date - INTERVAL 7 DAY`) and `DATEDIFF` / `TIMESTAMPDIFF` are
+  unchanged.
+- ⚠️ On Elasticsearch 6.8, a `date` column compared with another `date` column
+  (`WHERE ship_date > order_date`), or with a date function of one
+  (`WHERE ship_date > DATE_TRUNC(order_date, MONTH)`), fails with a 400 (`failed to parse date
+  field`); date arithmetic on one side runs: `WHERE ship_date > order_date + 0`. Elasticsearch 8
+  answers all three.
+
+**Before `0.24.0`:** `MAX(d) - MIN(d)` answered milliseconds and was typed `NUMERIC`; `+` and `-`
+with a date failed in Elasticsearch at row level — except a date plus a string, which concatenated
+the two — and per group `MAX(d) + 1` failed while `MAX(d) + 1.5` added 1.5 milliseconds;
+`CURRENT_DATE - 7` was refused when the statement was parsed; and a computed column over date
+arithmetic stored epoch-millisecond arithmetic or rejected the document at ingest.
+
+---
+
 ## Comparison Operators
 
 ### Operator: `=`
@@ -485,6 +623,14 @@ SELECT * FROM emp WHERE department = 'IT';
 -- Compare columns
 SELECT * FROM orders
 WHERE customer_id = shipping_customer_id;
+
+-- Columns of incompatible types (id KEYWORD, n INT) are refused by name once the column types
+-- are known, rather than answering no rows
+SELECT * FROM t WHERE id = n;
+-- Error: Type mismatch: 'KEYWORD' is not compatible with 'INT' in expression: id = n
+
+-- Cast one side to the other's type
+SELECT * FROM t WHERE id = CAST(n AS VARCHAR);
 ```
 
 **String Comparison:**

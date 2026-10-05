@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.bridge
 
-import app.softnetwork.elastic.sql.PainlessContextType
+import app.softnetwork.elastic.sql.{PainlessContextType, PainlessTarget}
 import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
@@ -51,7 +51,8 @@ case class ElasticBridge(filter: ElasticFilter) {
     currentQuery: Option[ElasticBoolQuery]
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
     filter match {
       case boolQuery: ElasticBoolQuery =>
