@@ -1854,6 +1854,24 @@ package object sql {
       case BooleanReading(value)      => Some(value.toString)
       case _                          => None
     }
+
+    /** The VALUE a temporal reading denotes, as Painless that parses nothing: a DATE is the
+      * `LocalDate` of its day, a TIMESTAMP the UTC `ZonedDateTime` of its instant (core's
+      * number-to-TIMESTAMP conversion, `SQLTypeUtils.coerce`) -- the java.time types a `CAST('…' AS
+      * DATE)` / `CAST('…' AS TIMESTAMP)` of the same text renders, built from the reading when the
+      * statement is rendered rather than parsed from the literal on every document.
+      */
+    def temporalPainless(reading: TemporalReading): String =
+      if (reading.sqlType == SQLTypes.Date)
+        s"LocalDate.ofEpochDay(${Math.floorDiv(reading.epochMillis, DayMillis)}L)"
+      else
+        SQLTypeUtils.coerce(
+          s"${reading.epochMillis}L",
+          SQLTypes.BigInt,
+          SQLTypes.Timestamp,
+          nullable = false,
+          None
+        )
   }
 
   /** The type a TYPE RULE reads for an operand once the column types are known: the one the operand

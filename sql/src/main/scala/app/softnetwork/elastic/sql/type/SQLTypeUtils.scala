@@ -445,18 +445,9 @@ object SQLTypeUtils {
           s"$expr.toInstant().toEpochMilli()"
 
         // ---- BOOLEAN -> NUMERIC ----
-        case (SQLTypes.Boolean, SQLTypes.Numeric | SQLTypes.Int) =>
-          s"($expr ? 1 : 0)"
-        case (SQLTypes.Boolean, SQLTypes.BigInt) =>
-          s"($expr ? 1L : 0L)"
-        case (SQLTypes.Boolean, SQLTypes.Double) =>
-          s"($expr ? 1.0 : 0.0)"
-        case (SQLTypes.Boolean, SQLTypes.Real) =>
-          s"($expr ? 1.0f : 0.0f)"
-        case (SQLTypes.Boolean, SQLTypes.SmallInt) =>
-          s"(short)($expr ? 1 : 0)"
-        case (SQLTypes.Boolean, SQLTypes.TinyInt) =>
-          s"(byte)($expr ? 1 : 0)"
+        case (SQLTypes.Boolean, numeric) if booleanNumerals(numeric).isDefined =>
+          val BooleanNumerals(one, zero, narrowing) = booleanNumerals(numeric).get
+          s"${narrowing.getOrElse("")}($expr ? $one : $zero)"
 
         // ---- -> BOOLEAN ----
         // 🔴 There were seven arms FROM boolean and NONE to it, so every `(_, Boolean)` pair fell
@@ -806,6 +797,37 @@ object SQLTypeUtils {
     (numericRankOf(from), numericRankOf(to)) match {
       case (Some(r1), Some(r2)) => r2 < r1
       case _                    => false
+    }
+
+  /** What a BOOLEAN is as a number of type `to`: TRUE's numeral, FALSE's, and the narrowing cast
+    * the type needs, if any.
+    */
+  private final case class BooleanNumerals(one: String, zero: String, narrowing: Option[String])
+
+  /** ONE table for both renderings of a BOOLEAN as a number: the one `coerce` renders, which tests
+    * the value on every document, and the one [[booleanConstant]] renders, which folds a constant.
+    * `None` for a type that is not a number.
+    */
+  private def booleanNumerals(to: SQLType): Option[BooleanNumerals] = to match {
+    case SQLTypes.Numeric | SQLTypes.Int => Some(BooleanNumerals("1", "0", None))
+    case SQLTypes.BigInt                 => Some(BooleanNumerals("1L", "0L", None))
+    case SQLTypes.Double                 => Some(BooleanNumerals("1.0", "0.0", None))
+    case SQLTypes.Real                   => Some(BooleanNumerals("1.0f", "0.0f", None))
+    case SQLTypes.SmallInt               => Some(BooleanNumerals("1", "0", Some("(short)")))
+    case SQLTypes.TinyInt                => Some(BooleanNumerals("1", "0", Some("(byte)")))
+    case _                               => None
+  }
+
+  /** A boolean CONSTANT as a number of type `to` -- `1L` / `0L` for a BIGINT -- or `None` for a
+    * type that is not a number.
+    *
+    * 🔴 Not `coerce`'s `(true ? 1L : 0L)`: Elasticsearch 6.8's Painless refuses a conditional whose
+    * condition is a constant ("Extraneous conditional statement"), so a simple `CASE b WHEN '1'`
+    * (or `WHEN TRUE`) failed to compile there.
+    */
+  private[sql] def booleanConstant(value: Boolean, to: SQLType): Option[String] =
+    booleanNumerals(to).map { case BooleanNumerals(one, zero, narrowing) =>
+      s"${narrowing.getOrElse("")}${if (value) one else zero}"
     }
 
   def canConvert(from: SQLType, to: SQLType): Boolean = {

@@ -362,4 +362,102 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
     criteriaPainless("SELECT id FROM t WHERE COALESCE(x, 0) = '1.5'") should include("== 1.5")
     criteriaPainless("SELECT id FROM t WHERE COALESCE(big, 0) = '1'") should include("== 1L")
   }
+
+  /** The Painless a statement's one script field renders in a query, its declarations included. */
+  private def fieldPainless(sql: String): String = {
+    val search = parsed(sql).update(Some(schema))
+    search.validateResolved() shouldBe Right(())
+    val field = search.scriptFields
+      .filterNot(_.isAggregation)
+      .headOption
+      .getOrElse(fail(s"[$sql] no script field"))
+    val ctx = PainlessContext(context = PainlessContextType.Query)
+    val body = field.painless(Some(ctx))
+    s"$ctx$body"
+  }
+
+  /** The ingest script of every computed column of a CREATE TABLE. */
+  private def ingestPainless(ddl: String): String = Parser(ddl) match {
+    case Right(create: CreateTable) =>
+      create.schema.columns.flatMap(_.script).map(_.source).mkString(" ;; ")
+    case other => fail(s"[$ddl] parsed as $other")
+  }
+
+  /** NULLIF reads a string literal beside a temporal as the date or the timestamp it spells, and
+    * renders it from that READING: the literal's text is never parsed on a document -- by the
+    * operand's own format it could not be, for a date-time beside a DATE or a date beside a
+    * TIMESTAMP -- and a literal that is the answer is the value its reading denotes.
+    */
+  "a NULLIF literal read as a date or a timestamp" should
+  "be rendered from its reading, never parsed on a document, in a query and a computed column" in {
+    forAll(
+      Table(
+        ("expression", "type", "value"),
+        ("NULLIF(d, '2024-01-31 10:00:00')", "DATE", None),
+        ("NULLIF(d, '2024-01-31T10:00:00Z')", "DATE", None),
+        ("NULLIF(ts, '2024-01-31')", "TIMESTAMP", None),
+        ("NULLIF(COALESCE(d, d2), '2024-01-31T10:00:00Z')", "DATE", None),
+        ("NULLIF('2024-01-31T10:00:00Z', d)", "DATE", Some("LocalDate.ofEpochDay(19753L)")),
+        (
+          "NULLIF('2024-01-31', ts)",
+          "TIMESTAMP",
+          Some("Instant.ofEpochMilli(1706659200000L).atZone(ZoneId.of('Z'))")
+        )
+      )
+    ) { (expression, sqlType, value) =>
+      Seq(
+        "query" -> fieldPainless(s"SELECT $expression AS v FROM t"),
+        "computed column" -> ingestPainless(
+          s"CREATE TABLE z (id INT, d DATE, d2 DATE, ts TIMESTAMP, " +
+          s"v $sqlType SCRIPT AS ($expression), PRIMARY KEY (id))"
+        )
+      ).foreach { case (venue, script) =>
+        withClue(s"[$venue] [$expression] $script ") {
+          script should not include "\"2024-01-31"
+          value.foreach(v => script should include(v))
+        }
+      }
+    }
+  }
+
+  /** `CASE b WHEN '1'` / `WHEN TRUE` compares with a boolean CONSTANT: rendered as the number it
+    * is, never as `(true ? 1L : 0L)`, a conditional over a constant, which Elasticsearch 6.8's
+    * Painless refuses to compile ("Extraneous conditional statement").
+    */
+  "a simple CASE over a BOOLEAN, compared with a boolean constant" should
+  "render the constant as a number, never as a conditional over a constant" in {
+    forAll(
+      Table(
+        ("value", "constant"),
+        ("'1'", "1L"),
+        ("'true'", "1L"),
+        ("TRUE", "1L"),
+        ("'0'", "0L"),
+        ("'false'", "0L"),
+        ("FALSE", "0L")
+      )
+    ) { (value, constant) =>
+      val script = fieldPainless(s"SELECT CASE b WHEN $value THEN 1 ELSE 0 END AS v FROM t")
+      withClue(s"[$value] $script ") {
+        script should not include "(true ?"
+        script should not include "(false ?"
+        script should include(s"= $constant;")
+      }
+    }
+  }
+
+  /** A BOOLEAN column as a CASE condition is NULL on a document that has no value, and a NULL
+    * condition is not true: rendered `== true`, never as the bare value, which threw on that
+    * document.
+    */
+  "a BOOLEAN column as a CASE condition" should
+  "render NULL as not true, in a query and in a computed column" in {
+    fieldPainless("SELECT CASE WHEN b THEN 1 ELSE 0 END AS v FROM t") should include(
+      "== true ? 1 : 0"
+    )
+    ingestPainless(
+      "CREATE TABLE z (id INT, flag BOOLEAN, c INT SCRIPT AS (CASE WHEN flag THEN 1 ELSE 0 END), " +
+      "PRIMARY KEY (id))"
+    ) should include("== true ? 1 : 0")
+  }
 }

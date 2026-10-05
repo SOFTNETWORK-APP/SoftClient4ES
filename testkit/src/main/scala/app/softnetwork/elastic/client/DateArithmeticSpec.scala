@@ -108,6 +108,15 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   private val refreshedA = "date_arithmetic_rf_a"
   private val refreshedB = "date_arithmetic_rf_b"
 
+  /** NULLIF with a date or a timestamp literal (`"NULLIF with a date or a timestamp literal"`). */
+  private val nullifTable = "date_arithmetic_nullif"
+
+  /** A simple CASE over a BOOLEAN (`"a simple CASE over a BOOLEAN"`). */
+  private val booleanTable = "date_arithmetic_bool"
+
+  /** A BOOLEAN column as a CASE condition (`"a CASE WHEN over a BOOLEAN column"`). */
+  private val flagTable = "date_arithmetic_flag"
+
   private val DayMillis: Long = 86400000L
 
   /** One document: `None` is a column the document does not carry.
@@ -304,7 +313,10 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       alteredRawIndex,
       grownTable,
       refreshedA,
-      refreshedB
+      refreshedB,
+      nullifTable,
+      booleanTable,
+      flagTable
     ).foreach(t => Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds)))
     super.afterAll()
   }
@@ -341,6 +353,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   private final case class At(value: Instant) extends Expected
   private final case class Bool(value: Boolean) extends Expected
   private case object Null extends Expected
+
+  /** An instant read from the clock while the statement ran: between `from` and `to`. */
+  private final case class Within(from: Instant, to: Instant) extends Expected
 
   private def start(d: LocalDate): Instant = d.atStartOfDay(ZoneOffset.UTC).toInstant
 
@@ -413,6 +428,11 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         asInstant(actual) match {
           case Some(got) if got == want => None
           case _                        => Some(s"$actual instead of $want")
+        }
+      case Within(from, to) =>
+        asInstant(actual) match {
+          case Some(got) if !got.isBefore(from) && !got.isAfter(to) => None
+          case _ => Some(s"$actual instead of an instant between $from and $to")
         }
       case Bool(want) =>
         scalar(actual) match {
@@ -1482,6 +1502,216 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         comparisonVerdict(
           "CASE WHEN DATE_TRUNC(ts, DAY) = '2024-01-31' THEN 1 ELSE 0 END",
           flags("r1")
+        )
+      )
+    )
+  }
+
+  /** The STORED value of each computed column of `from`, for each document. */
+  private def storedVerdict(
+    from: String,
+    expected: Seq[(String, Map[String, Expected])]
+  ): (String, Either[String, Seq[String]]) = {
+    val sql = s"SELECT id, ${expected.map(_._1).mkString(", ")} FROM $from"
+    val ids = expected.flatMap(_._2.keys).toSet
+    sql -> gatewayRows(sql).map { rs =>
+      val byId = rs.map(r => r.getOrElse("id", "?").toString -> r).toMap
+      (if (byId.keySet == ids) Nil else Seq(s"rows ${byId.keySet.toSeq.sorted.mkString(",")}")) ++
+      (for {
+        (column, values) <- expected
+        (id, want)       <- values.toSeq.sortBy(_._1)
+        diff             <- differs(want, byId.get(id).flatMap(_.get(column)).orNull)
+      } yield s"$column $id: $diff")
+    }
+  }
+
+  /** The documents of [[nullifTable]], PostgreSQL 16's fixture for the answers below: a DATE that
+    * is the literals' day and one that is not, TIMESTAMPs at that day's midnight, later that day
+    * and the next midnight, a document with no value at all and one with only `d2`.
+    */
+  private val nullifDocs = List(
+    """{"id":"n1","d":"2024-01-31","d2":"2024-02-01","ts":"2024-01-31T00:00:00Z"}""",
+    """{"id":"n2","d":"2024-02-01","d2":"2024-01-31","ts":"2024-01-31T10:00:00Z"}""",
+    """{"id":"n3","d":"2024-01-31","d2":"2024-01-30","ts":"2024-02-01T00:00:00Z"}""",
+    """{"id":"n4"}""",
+    """{"id":"n5","d2":"2024-01-31","ts":"2024-01-31T23:59:59.999Z"}"""
+  )
+
+  private def nullifAnswers(
+    n1: Expected,
+    n2: Expected,
+    n3: Expected,
+    n4: Expected,
+    n5: Expected
+  ): Map[String, Expected] =
+    Map("n1" -> n1, "n2" -> n2, "n3" -> n3, "n4" -> n4, "n5" -> n5)
+
+  /** A DATE beside a date-TIME literal, a TIMESTAMP beside a date-only one: PostgreSQL reads the
+    * literal as the operand's type -- the day it names, the midnight it starts at -- and so does
+    * the comparison rule. The literal used to be parsed AGAIN on every document, by the operand's
+    * own format, which failed for these two shapes: the query failed and a computed column stored
+    * NULL. Every expected value is PostgreSQL 16's answer over the same documents.
+    */
+  "NULLIF with a date or a timestamp literal of the other shape" should
+  "answer PostgreSQL's values in a query and STORE them in a computed column, in either argument order" in {
+    val columns = Seq(
+      ("c1", "DATE", "NULLIF(d, '2024-01-31 10:00:00')"),
+      ("c2", "TIMESTAMP", "NULLIF(ts, '2024-01-31')"),
+      ("c3", "DATE", "NULLIF('2024-01-31T10:00:00Z', d)"),
+      ("c4", "TIMESTAMP", "NULLIF('2024-01-31', ts)"),
+      ("c5", "DATE", "NULLIF(COALESCE(d, d2), '2024-01-31T10:00:00Z')")
+    )
+    run(
+      s"CREATE TABLE $nullifTable (id KEYWORD, d DATE, d2 DATE, ts TIMESTAMP, " +
+      columns.map { case (c, t, e) => s"$c $t SCRIPT AS ($e)" }.mkString(", ") +
+      ", PRIMARY KEY (id))"
+    )
+    bulk(nullifTable, nullifDocs)
+    val jan30 = At(start(on("2024-01-30")))
+    val jan31 = At(start(on("2024-01-31")))
+    val feb1 = At(start(on("2024-02-01")))
+    val feb2 = At(start(on("2024-02-02")))
+    val ts2 = At(at("2024-01-31T10:00:00Z"))
+    val ts3 = At(at("2024-02-01T00:00:00Z"))
+    val ts5 = At(at("2024-01-31T23:59:59.999Z"))
+    val day = At(start(today))
+    val answers: Seq[(String, Map[String, Expected])] = Seq(
+      // the operand first
+      "NULLIF(d, '2024-01-31 10:00:00')"  -> nullifAnswers(Null, feb1, Null, Null, Null),
+      "NULLIF(d, '2024-01-31T10:00:00Z')" -> nullifAnswers(Null, feb1, Null, Null, Null),
+      "NULLIF(ts, '2024-01-31')"          -> nullifAnswers(Null, ts2, ts3, Null, ts5),
+      // the literal first: the answer is the literal, read as the operand's type
+      "NULLIF('2024-01-31T10:00:00Z', d)" -> nullifAnswers(Null, jan31, Null, jan31, jan31),
+      "NULLIF('2024-01-31 10:00:00', d)"  -> nullifAnswers(Null, jan31, Null, jan31, jan31),
+      "NULLIF('2024-01-31', ts)"          -> nullifAnswers(Null, jan31, jan31, jan31, jan31),
+      "NULLIF('2024-01-31T10:00:00Z', COALESCE(d, d2))" ->
+      nullifAnswers(Null, jan31, Null, jan31, Null),
+      // operands that are not columns
+      "NULLIF(COALESCE(d, d2), '2024-01-31T10:00:00Z')" ->
+      nullifAnswers(Null, feb1, Null, Null, Null),
+      "NULLIF(CAST(ts AS DATE), '2024-01-31T10:00:00Z')" ->
+      nullifAnswers(Null, Null, feb1, Null, Null),
+      "NULLIF(CAST(d AS TIMESTAMP), '2024-01-31')" -> nullifAnswers(Null, feb1, Null, Null, Null),
+      // PostgreSQL: `d + interval '1 day'` and `d + 1` give the same answers here
+      "NULLIF(DATE_ADD(d, INTERVAL 1 DAY), '2024-02-01')" ->
+      nullifAnswers(Null, feb2, Null, Null, Null),
+      "NULLIF(DATE_TRUNC(ts, DAY), '2024-01-31')" -> nullifAnswers(Null, Null, feb1, Null, Null),
+      "NULLIF(LEAST(d, d2), '2024-01-31T10:00:00Z')" ->
+      nullifAnswers(Null, Null, jan30, Null, Null),
+      "NULLIF(CURRENT_DATE, '2024-01-31T10:00:00Z')" -> nullifAnswers(day, day, day, day, day)
+    )
+    // the clock: NOW() is never the literal's midnight, so the answer is the instant it was read
+    val clockSql = s"SELECT id, NULLIF(NOW(), '2024-01-31') AS x FROM $nullifTable"
+    val before = Instant.now().truncatedTo(ChronoUnit.MILLIS)
+    val clockRows = gatewayRows(clockSql)
+    val after = Instant.now()
+    val clock = clockSql -> clockRows.map { rs =>
+      val got = byKey(rs, "id")
+      Seq("n1", "n2", "n3", "n4", "n5").flatMap { id =>
+        differs(Within(before, after), got.getOrElse(id, null)).map(d => s"$id: $d")
+      }
+    }
+    verdict(
+      "NULLIF with a temporal literal",
+      answers.map { case (expression, values) =>
+        comparisonVerdict(expression, values, nullifTable)
+      } ++ Seq(
+        clock,
+        storedVerdict(
+          nullifTable,
+          columns.map { case (column, _, expression) =>
+            column -> answers.toMap.getOrElse(expression, fail(s"no answer for $expression"))
+          }
+        )
+      )
+    )
+  }
+
+  /** `CASE b WHEN '1'` compares the BOOLEAN with the boolean the literal spells, as PostgreSQL
+    * reads it (`'1'`, `'true'`, `'0'`, `'false'`), and `CASE b WHEN TRUE` with the constant. Each
+    * used to render the constant through the per-document conversion, `(true ? 1L : 0L)`, which
+    * Elasticsearch 6.8's Painless refuses to compile ("Extraneous conditional statement"): the
+    * query failed, and so did the CREATE TABLE of a computed column. A document with no `b` matches
+    * no `WHEN`. Every expected value is PostgreSQL 16's answer.
+    */
+  "a simple CASE over a BOOLEAN, compared with a boolean constant" should
+  "answer PostgreSQL's values on every major, in a query and in a computed column" in {
+    run(
+      s"CREATE TABLE $booleanTable (id KEYWORD, b BOOLEAN, " +
+      "w1 INT SCRIPT AS (CASE b WHEN '1' THEN 1 ELSE 0 END), " +
+      "w2 INT SCRIPT AS (CASE b WHEN TRUE THEN 1 ELSE 0 END), PRIMARY KEY (id))"
+    )
+    bulk(
+      booleanTable,
+      List("""{"id":"t1","b":true}""", """{"id":"t2","b":false}""", """{"id":"t3"}""")
+    )
+    def answers(t1: Expected, t2: Expected, t3: Expected): Map[String, Expected] =
+      Map("t1" -> t1, "t2" -> t2, "t3" -> t3)
+    val whenTrue = answers(Num(1), Num(0), Num(0))
+    val whenFalse = answers(Num(0), Num(1), Num(0))
+    verdict(
+      "simple CASE over a BOOLEAN",
+      Seq(
+        comparisonVerdict("CASE b WHEN '1' THEN 1 ELSE 0 END", whenTrue, booleanTable),
+        comparisonVerdict("CASE b WHEN 'true' THEN 1 ELSE 0 END", whenTrue, booleanTable),
+        comparisonVerdict("CASE b WHEN 'false' THEN 1 ELSE 0 END", whenFalse, booleanTable),
+        comparisonVerdict("CASE b WHEN '0' THEN 1 ELSE 0 END", whenFalse, booleanTable),
+        comparisonVerdict("CASE b WHEN TRUE THEN 1 ELSE 0 END", whenTrue, booleanTable),
+        comparisonVerdict("CASE b WHEN FALSE THEN 1 ELSE 0 END", whenFalse, booleanTable),
+        comparisonVerdict(
+          "CASE b WHEN '1' THEN 1.5 ELSE 0 END",
+          answers(Num(1.5), Num(0), Num(0)),
+          booleanTable
+        ),
+        storedVerdict(booleanTable, Seq("w1" -> whenTrue, "w2" -> whenTrue))
+      )
+    )
+  }
+
+  /** A BOOLEAN column as a CASE condition is NULL on a document that has no value, and a NULL
+    * condition is not true: the branch does not apply, and the ELSE does -- or NULL, with no ELSE.
+    * It used to throw on that document (`param1 ? 1 : 0` over a null): the query failed, and a
+    * computed column stored NULL where SQL gives the ELSE value. Every expected value is PostgreSQL
+    * 16's answer.
+    */
+  "a CASE WHEN over a BOOLEAN column" should
+  "take the ELSE branch on a document with no value, in a query, a WHERE and a computed column" in {
+    run(
+      s"CREATE TABLE $flagTable (id KEYWORD, flag BOOLEAN, n INT, " +
+      "c INT SCRIPT AS (CASE WHEN flag THEN 1 ELSE 0 END), " +
+      "c2 INT SCRIPT AS (CASE WHEN flag THEN n ELSE 0 END), PRIMARY KEY (id))"
+    )
+    bulk(
+      flagTable,
+      List(
+        """{"id":"f1","flag":true,"n":5}""",
+        """{"id":"f2","flag":false,"n":6}""",
+        """{"id":"f3","n":7}"""
+      )
+    )
+    def answers(f1: Expected, f2: Expected, f3: Expected): Map[String, Expected] =
+      Map("f1" -> f1, "f2" -> f2, "f3" -> f3)
+    verdict(
+      "CASE WHEN over a BOOLEAN column",
+      Seq(
+        comparisonVerdict(
+          "CASE WHEN flag THEN 1 ELSE 0 END",
+          answers(Num(1), Num(0), Num(0)),
+          flagTable
+        ),
+        comparisonVerdict(
+          "CASE WHEN flag THEN n ELSE 0 END",
+          answers(Num(5), Num(0), Num(0)),
+          flagTable
+        ),
+        comparisonVerdict("CASE WHEN flag THEN 1 END", answers(Num(1), Null, Null), flagTable),
+        kept(
+          s"SELECT id FROM $flagTable WHERE CASE WHEN flag THEN 1 ELSE 0 END = 0",
+          Set("f2", "f3")
+        ),
+        storedVerdict(
+          flagTable,
+          Seq("c" -> answers(Num(1), Num(0), Num(0)), "c2" -> answers(Num(5), Num(0), Num(0)))
         )
       )
     )

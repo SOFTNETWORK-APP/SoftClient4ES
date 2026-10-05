@@ -383,7 +383,8 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     // comparable wherever a comparison is made, judged on the declared types. BETWEEN brings each
     // bound to the operand's java.time type, as a single comparison does, and NULLIF compares the
     // instants the two denote -- neither calls `isBefore` / `isEqual` across a `LocalDate` and a
-    // `ZonedDateTime`, which is what failed the shard. RUN in `DateArithmeticSpec`.
+    // `ZonedDateTime`, which is what failed the shard. The NULLIF form is RUN in
+    // `DateArithmeticSpec`; the BETWEEN form is pinned here at RESOLVE only.
     resolvedVerdict(
       "SELECT name FROM t WHERE CAST(d AS DATE) BETWEEN CAST('2025-01-01' AS DATE) " +
       "AND CAST('2025-12-31T00:00:00Z' AS TIMESTAMP)"

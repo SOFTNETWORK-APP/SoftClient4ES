@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.function
 import app.softnetwork.elastic.sql.{
   query,
   renderedTypeOf,
+  BooleanValue,
   ComparisonRule,
   Expr,
   GenericIdentifier,
@@ -385,6 +386,23 @@ package object cond {
     private[this] var _secondReading: Option[ComparisonRule.Reading] = null
     private[this] var _firstReading: Option[ComparisonRule.Reading] = null
 
+    /** A string literal argument READ as a date or a timestamp is rendered from that reading
+      * (`ComparisonRule.temporalPainless`), never through the per-document `String -> temporal`
+      * coercion the generic rendering binds for a literal: that coercion parses the literal's OWN
+      * text by the operand's type, so a date-time literal beside a DATE and a date-only one beside
+      * a TIMESTAMP -- both of which the reading reads, as PostgreSQL does -- threw on every
+      * document, and a computed column stored NULL (`ignore_failure`).
+      */
+    override protected def ownArgumentPainless(
+      index: Int,
+      context: Option[PainlessContext]
+    ): Option[String] =
+      (index match {
+        case 0 => firstReading
+        case 1 => secondReading
+        case _ => None
+      }).collect { case t: ComparisonRule.TemporalReading => ComparisonRule.temporalPainless(t) }
+
     /** A literal argument counts as what it is read as: `NULLIF(n, '3')` compares two numbers. */
     override def argTypes: List[SQLType] =
       List(
@@ -670,7 +688,12 @@ package object cond {
           def scalar(reading: Option[ComparisonRule.Reading], rendered: String): String =
             reading.flatMap(ComparisonRule.scalarPainless).getOrElse(rendered)
           val arg0 = operand(scalar(firstReading, rendered0), context)
-          val arg1 = operand(scalar(secondReading, rendered1), context)
+          // A second argument READ as a temporal is compared as the instant it denotes
+          // (`comparedMillis`) and is never the answer, so its value is not bound: it would be
+          // evaluated on every document for nothing.
+          val arg1 =
+            if (secondReading.exists(_.isInstanceOf[ComparisonRule.TemporalReading])) rendered1
+            else operand(scalar(secondReading, rendered1), context)
           // 🔴 The SECOND argument is guarded too (issue #373, found by review) -- the same hole
           // `checkCase` had, one method up in this file. `NULLIF(CAST(d AS TIME), CAST(ts AS
           // TIME))` called the comparison with a null `arg1` for any document missing `ts`:
@@ -1038,6 +1061,28 @@ package object cond {
     ): (SQLType, List[Option[ComparisonRule.Reading]]) =
       if (expression.exists(_ eq expr)) expressionReadings else readingsBeside(expr)
 
+    /** The boolean CONSTANT a `WHEN` value is, if it is one: a string literal read as a boolean
+      * (`CASE b WHEN '1'`, `ComparisonRule.BooleanReading`), or the literal `TRUE` / `FALSE`.
+      */
+    private[this] def booleanConstantOf(
+      value: PainlessScript,
+      reading: Option[ComparisonRule.Reading]
+    ): Option[Boolean] =
+      reading match {
+        case Some(ComparisonRule.BooleanReading(b)) => Some(b)
+        case Some(_)                                => None
+        case None =>
+          value match {
+            case b: BooleanValue => Some(b.value)
+            case i: Identifier if i.name.trim.isEmpty =>
+              i.functions match {
+                case (b: BooleanValue) :: Nil => Some(b.value)
+                case _                        => None
+              }
+            case _ => None
+          }
+      }
+
     /** The JAVA type an operand renders (#384's `Identifier.renderedType`): a DATE column's doc
       * value is a `ZonedDateTime`, a cast to DATE a `LocalDate`.
       */
@@ -1135,17 +1180,26 @@ package object cond {
                     // the boolean it spells (`ComparisonRule.readingOf`), brought to the type the
                     // two are compared in like any other value. `CASE b WHEN 'true'` used to parse
                     // `"true"` as a long (`Long.parseLong`) and fail the shard.
+                    //
+                    // A boolean CONSTANT -- such a reading, or `TRUE` / `FALSE` -- is that number
+                    // itself (`1L` / `0L`): converted like a value, `(true ? 1L : 0L)` is a
+                    // conditional over a constant, which Elasticsearch 6.8's Painless refuses to
+                    // compile ("Extraneous conditional statement").
                     val c =
-                      whenReading
-                        .flatMap(reading =>
-                          ComparisonRule
-                            .scalarPainless(reading)
-                            .map(
-                              SQLTypeUtils
-                                .coerce(_, reading.sqlType, out, nullable = false, context)
+                      booleanConstantOf(cond, whenReading)
+                        .flatMap(SQLTypeUtils.booleanConstant(_, out))
+                        .getOrElse(
+                          whenReading
+                            .flatMap(reading =>
+                              ComparisonRule
+                                .scalarPainless(reading)
+                                .map(
+                                  SQLTypeUtils
+                                    .coerce(_, reading.sqlType, out, nullable = false, context)
+                                )
                             )
+                            .getOrElse(SQLTypeUtils.coerce(cond, out, context))
                         )
-                        .getOrElse(SQLTypeUtils.coerce(cond, out, context))
                     val r =
                       boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
@@ -1211,8 +1265,14 @@ package object cond {
                       })
                     if (!cond.isInstanceOf[CriteriaWithConditionalFunction[_]] && cond.nullable) {
                       ctx.addParam(LiteralParam(c)) match {
-                        case Some(c) => s"$c ? $r"
-                        case _       => s"$c ? $r"
+                        // A VALUE condition -- a boolean column, a function of one -- is NULL
+                        // where the document has no value, and a NULL condition is not true: the
+                        // branch does not apply (SQL), where `param1 ? 1 : 0` threw on that
+                        // document (a query failed; a computed column stored NULL). `==` is
+                        // null-safe in Painless. A predicate already renders NULL as false.
+                        case Some(c) if cond.isInstanceOf[Identifier] => s"$c == true ? $r"
+                        case Some(c)                                  => s"$c ? $r"
+                        case _                                        => s"$c ? $r"
                       }
                     } else {
                       s"$c ? $r"
