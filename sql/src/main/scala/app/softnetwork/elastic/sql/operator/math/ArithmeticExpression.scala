@@ -102,13 +102,66 @@ case class ArithmeticExpression(
 
   /** A string LITERAL beside a NUMBER is the number it spells -- the ONE comparison rule's reading
     * (`ComparisonRule.readingOf`), as PostgreSQL reads `n + '1'`: 4 for n = 3, where the
-    * concatenation `"31"` was answered. Beside anything else it stays what it is (a temporal beside
-    * it is date arithmetic, which reads it itself).
+    * concatenation `"31"` was answered. Beside a whole-number operand only a whole number is one:
+    * PostgreSQL refuses `n + '1.5'` over an integer `n` (`invalid input syntax for type integer`),
+    * and so does the operand match here, the literal staying text. Beside anything else it stays
+    * what it is (a temporal beside it is date arithmetic, which reads it itself).
+    *
+    * Each operand's reading is computed ONCE per expression and memoised (`ComparisonRule` says why
+    * with no lock): every `argTypes` (so every `out`) and every rendering asks it, and a reading is
+    * a parse.
     */
   private def literalNumber(operand: PainlessScript): Option[ComparisonRule.NumberReading] =
+    if (operand eq left) {
+      var number = _leftNumber
+      if (number eq null) {
+        number = numberBeside(left, right)
+        _leftNumber = number
+      }
+      number
+    } else if (operand eq right) {
+      var number = _rightNumber
+      if (number eq null) {
+        number = numberBeside(right, left)
+        _rightNumber = number
+      }
+      number
+    } else numberBeside(operand, left)
+
+  private[this] var _leftNumber: Option[ComparisonRule.NumberReading] = null
+  private[this] var _rightNumber: Option[ComparisonRule.NumberReading] = null
+
+  private def numberBeside(
+    operand: PainlessScript,
+    other: PainlessScript
+  ): Option[ComparisonRule.NumberReading] =
     ComparisonRule
-      .readingOf(operand, ComparisonRule.declaredTypeOf(if (operand eq left) right else left))
+      .readingOf(operand, ComparisonRule.declaredTypeOf(other))
       .collect { case number: ComparisonRule.NumberReading => number }
+
+  /** The temporal a string literal operand is read as beside the other one
+    * (`ArithmeticExpression.temporalString`: `d - '2024-01-31'`), computed ONCE per expression and
+    * memoised -- the date-arithmetic rendering asks it per operand and per guard.
+    */
+  private def literalTemporal(operand: PainlessScript): Option[ComparisonRule.TemporalReading] =
+    if (operand eq left) {
+      var temporal = _leftTemporal
+      if (temporal eq null) {
+        temporal = ArithmeticExpression.temporalString(left, right)
+        _leftTemporal = temporal
+      }
+      temporal
+    } else if (operand eq right) {
+      var temporal = _rightTemporal
+      if (temporal eq null) {
+        temporal = ArithmeticExpression.temporalString(right, left)
+        _rightTemporal = temporal
+      }
+      temporal
+    } else ArithmeticExpression.temporalString(operand, left)
+
+  private[this] var _leftTemporal: Option[ComparisonRule.TemporalReading] = null
+  private[this] var _rightTemporal: Option[ComparisonRule.TemporalReading] = null
 
   override def argTypes: List[SQLType] = args.map(argTypeOf)
 
@@ -666,11 +719,9 @@ case class ArithmeticExpression(
 
     // A string literal read as the temporal it spells beside the other operand (`d -
     // '2024-01-31'`): the instant it denotes, known here, so it is a constant -- never NULL, never
-    // parsed per document.
+    // parsed per document (and read once per expression, `literalTemporal`).
     def literalInstant(operand: PainlessScript): Option[Long] =
-      ArithmeticExpression
-        .temporalString(operand, if (operand eq left) right else left)
-        .map(_.epochMillis)
+      literalTemporal(operand).map(_.epochMillis)
 
     // a nullable operand the guard reads is evaluated once, under a name
     def named(operand: PainlessScript, fallback: String): String =
@@ -943,9 +994,12 @@ object ArithmeticExpression {
     * is fractional (the lead's ruling of 2026-10-05) -- the ONE reader the comparison rule uses too
     * (`ComparisonRule.numberOf`).
     *
-    * PostgreSQL reads an untyped literal by what it is added to: `d + '1'` is the next day and `d -
-    * '1.5'` a day and a half earlier. A whole number is a `long` literal (`'99999999999'` does not
-    * fit an `int`), a fractional one the `double` it denotes.
+    * Beside a DATE or a TIMESTAMP it is a number of days -- elasticsql's OWN rule, not
+    * PostgreSQL's: `d + '1'` is the next day and `d - '1.5'` a day and a half earlier, where
+    * PostgreSQL 16 refuses `d + '1'` (`operator is not unique: date + unknown`), reads the `'1'` of
+    * `d - '1'` as a date (`invalid input syntax for type date`) and reads `ts + '1'` as one second.
+    * A whole number is a `long` literal (`'99999999999'` does not fit an `int`), a fractional one
+    * the `double` it denotes.
     */
   private[math] def numericString(operand: PainlessScript): Option[(String, Boolean)] =
     ComparisonRule

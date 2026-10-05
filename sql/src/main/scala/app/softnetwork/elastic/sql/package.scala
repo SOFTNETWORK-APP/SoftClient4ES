@@ -1606,10 +1606,17 @@ package object sql {
     *     `renderedTypeOf` answers. A DATE and a TIMESTAMP are comparable
     *     (`SQLTypeUtils.comparableTemporals`): the DATE is the instant its UTC day starts at.
     *   - An untyped string LITERAL is read by what it is compared with, as PostgreSQL reads one
-    *     ([[ComparisonRule.readingOf]]): beside a number, the number it spells; beside a temporal,
-    *     the date or the timestamp it spells -- beside a DATE, a date-time literal is the date it
-    *     names, as PostgreSQL's date input reads it; beside a BOOLEAN, the boolean it spells. Any
-    *     other literal stays text, and the comparison is judged as such.
+    *     ([[ComparisonRule.readingOf]]): beside a number, the number it spells when that number is
+    *     a value of the other's type -- beside a whole-number type, a whole number only; beside a
+    *     temporal, the date or the timestamp it spells -- beside a DATE, a date-time literal is the
+    *     date it names, as PostgreSQL's date input reads it; beside a BOOLEAN, the boolean it
+    *     spells. Any other literal stays text, and the comparison is judged as such.
+    *
+    * A reading costs a parse, so each site computes a literal's reading ONCE per node, never per
+    * type question or per rendering: memoised in a field of the node, with no lock -- a reading is
+    * pure and immutable, so a race can only compute it twice, where a `lazy val`'s lock costs more
+    * than the reading on every fresh node. And a text that cannot spell a date never reaches a
+    * `java.time` parser and the exception it throws.
     */
   object ComparisonRule {
 
@@ -1674,6 +1681,9 @@ package object sql {
       .ofPattern("uuuu-MM-dd")
       .withResolverStyle(java.time.format.ResolverStyle.STRICT)
 
+    private val IsoDateTimeUtc =
+      java.time.format.DateTimeFormatter.ISO_DATE_TIME.withZone(java.time.ZoneOffset.UTC)
+
     private val DayMillis = 86400000L
 
     /** The number a text spells, if it spells one. */
@@ -1691,20 +1701,75 @@ package object sql {
         case _ => None
       }
 
+    /** The number a text spells beside an operand of the numeric type `against`, if it is a value
+      * of that type, as PostgreSQL's input for the type reads it (the lead's ruling of 2026-10-05):
+      *   - beside a whole-number type (TINYINT, SMALLINT, INT, BIGINT), a whole number BIGINT can
+      *     hold -- `'1.5'`, `'1.0'` and `'1e3'` are no integer (PostgreSQL: `invalid input syntax
+      *     for type integer`), and a whole number past BIGINT's range is a value of no integer type
+      *     (`out of range`);
+      *   - beside DOUBLE, REAL or NUMERIC, any number.
+      *
+      * A literal that is no value of the type stays text, and the comparison or the arithmetic that
+      * reads it is refused as text against that type -- as PostgreSQL refuses `n = '1.5'` and `n +
+      * '1.5'` over an integer `n`.
+      */
+    def numberOf(text: String, against: SQLNumeric): Option[NumberReading] =
+      numberOf(text) match {
+        case Some(number) if number.fractional && wholeNumberType(against) => None
+        case reading                                                       => reading
+      }
+
+    private def wholeNumberType(t: SQLType): Boolean = t match {
+      case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => true
+      case _                                                         => false
+    }
+
+    /** Can the trimmed `text` spell a `uuuu-MM-dd` date (a `/` for the `-`)? A NECESSARY condition
+      * of the parser below, never a sufficient one: that parser reads a year of at least four
+      * digits (strict parsing), a sign at most, `-`, two digits, `-`, two digits -- ten characters
+      * or more of digits, `-`, `/` and `+`, and nothing else. A text that fails it never reaches
+      * the parser, whose refusal is an EXCEPTION: `'1'` beside a date cost two of them, 2 µs.
+      */
+    private def maySpellDate(text: String): Boolean =
+      text.length >= 10 && {
+        var i = 0
+        var ok = true
+        while (ok && i < text.length) {
+          val c = text.charAt(i)
+          ok = (c >= '0' && c <= '9') || c == '-' || c == '/' || c == '+'
+          i += 1
+        }
+        ok
+      }
+
+    /** Can the trimmed `text` spell an ISO date-time (a space for the `T`)? A NECESSARY condition
+      * of the parser below: a year that starts with a digit or a sign, a date of ten characters or
+      * more, a `T` (any case, or the space read as one), and an `HH:mm` time at least -- sixteen
+      * characters, a `:`.
+      */
+    private def maySpellDateTime(text: String): Boolean =
+      text.length >= 16 && {
+        val c = text.charAt(0)
+        (c >= '0' && c <= '9') || c == '-' || c == '+'
+      } && text.indexOf(':') > 0 &&
+      (text.indexOf('T') > 0 || text.indexOf('t') > 0 || text.indexOf(' ') > 0)
+
     /** The date a text spells -- `yyyy-MM-dd`, a `/` accepted for the `-` -- if it spells one. */
-    private def dateOf(text: String): Option[java.time.LocalDate] =
-      Try(java.time.LocalDate.parse(text.trim.replace("/", "-"), IsoDate)).toOption
+    private def dateOf(text: String): Option[java.time.LocalDate] = {
+      val trimmed = text.trim
+      if (!maySpellDate(trimmed)) None
+      else Try(java.time.LocalDate.parse(trimmed.replace("/", "-"), IsoDate)).toOption
+    }
 
     /** The date-time an ISO text spells (a space accepted for the `T`), in UTC unless it names a
       * zone, if it spells one.
       */
-    private def dateTimeOf(text: String): Option[java.time.ZonedDateTime] =
-      Try(
-        java.time.ZonedDateTime.parse(
-          text.trim.replace(" ", "T"),
-          java.time.format.DateTimeFormatter.ISO_DATE_TIME.withZone(java.time.ZoneOffset.UTC)
-        )
-      ).toOption
+    private def dateTimeOf(text: String): Option[java.time.ZonedDateTime] = {
+      val trimmed = text.trim
+      if (!maySpellDateTime(trimmed)) None
+      else
+        Try(java.time.ZonedDateTime.parse(trimmed.replace(" ", "T"), IsoDateTimeUtc)).toOption
+    }
 
     private def dateReading(date: java.time.LocalDate): TemporalReading =
       TemporalReading(SQLTypes.Date, date.toString, date.toEpochDay * DayMillis)
@@ -1746,13 +1811,14 @@ package object sql {
       }
 
     /** What `literal` is read as beside an operand DECLARED `against`, if it is an untyped string
-      * literal that spells a value of that kind; `None` otherwise -- it stays text. An operand of
-      * UNKNOWN type (no schema attached) reads no literal: nothing decides what it should be.
+      * literal that spells a value of that type (`numberOf(text, against)` for a number); `None`
+      * otherwise -- it stays text. An operand of UNKNOWN type (no schema attached) reads no
+      * literal: nothing decides what it should be.
       */
     def readingOf(literal: Token, against: => SQLType): Option[Reading] =
       stringLiteral(literal).flatMap { text =>
         against match {
-          case _: SQLNumeric => numberOf(text)
+          case n: SQLNumeric => numberOf(text, n)
           case t: SQLTemporal if t != SQLTypes.Time && t != SQLTypes.Temporal =>
             temporalOf(text, t)
           case SQLTypes.Temporal => temporalOf(text, SQLTypes.Timestamp)
@@ -1761,24 +1827,26 @@ package object sql {
         }
       }
 
-    /** The type `operand` is compared AS beside `other`: what a literal reads as, the declared type
-      * of anything else.
-      */
-    def comparedType(operand: Token, other: Token): SQLType =
-      readingOf(operand, declaredTypeOf(other))
-        .map(_.sqlType)
-        .getOrElse(declaredTypeOf(operand))
-
     /** May two compared types be compared? */
     def comparable(left: SQLType, right: SQLType): Boolean =
       SQLTypeUtils.matches(left, right) || SQLTypeUtils.comparableTemporals(left, right)
 
-    /** The two compared types, when they cannot be compared. */
-    def mismatch(left: Token, right: Token): Option[(SQLType, SQLType)] = {
-      val l = comparedType(left, right)
-      val r = comparedType(right, left)
-      if (comparable(l, r)) None else Some((l, r))
-    }
+    /** The type an operand is compared AS: what it is read as beside the other operand
+      * ([[readingOf]], its `reading`), else the type it is declared with ([[declaredTypeOf]]),
+      * asked only then.
+      *
+      * A site passes the reading it holds -- computed ONCE per node, for its type rule and its
+      * rendering alike -- so a literal is never read a second time to be judged.
+      */
+    def comparedType(reading: Option[Reading], operand: Token): SQLType =
+      reading match {
+        case Some(r) => r.sqlType
+        case None    => declaredTypeOf(operand)
+      }
+
+    /** The two compared types ([[comparedType]]), when they cannot be compared. */
+    def mismatch(left: SQLType, right: SQLType): Option[(SQLType, SQLType)] =
+      if (comparable(left, right)) None else Some((left, right))
 
     /** The Painless a NUMBER or a BOOLEAN reading renders: the literal itself. */
     def scalarPainless(reading: Reading): Option[String] = reading match {

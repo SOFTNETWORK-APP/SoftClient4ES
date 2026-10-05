@@ -95,6 +95,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   /** The comparison rule's fixture (`"the ONE comparison rule"`). */
   private val comparisonTable = "date_arithmetic_cmp"
 
+  /** A quoted number beside an INT, a BIGINT and a DOUBLE (`"a quoted number"`). */
+  private val numberTable = "date_arithmetic_num"
+
   /** An index created by a bulk load, then altered through elasticsql. */
   private val alteredRawIndex = "date_arithmetic_raw_altered"
 
@@ -297,6 +300,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       disagreeB,
       dateTimeTable,
       comparisonTable,
+      numberTable,
       alteredRawIndex,
       grownTable,
       refreshedA,
@@ -1236,9 +1240,10 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     */
   private def comparisonVerdict(
     expression: String,
-    expected: Map[String, Expected]
+    expected: Map[String, Expected],
+    from: String = comparisonTable
   ): (String, Either[String, Seq[String]]) = {
-    val sql = s"SELECT id, $expression AS x FROM $comparisonTable"
+    val sql = s"SELECT id, $expression AS x FROM $from"
     sql -> gatewayRows(sql).map { rs =>
       val got = byKey(rs, "id")
       expected.toSeq.sortBy(_._1).flatMap { case (id, want) =>
@@ -1345,6 +1350,115 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
             Right(Nil)
           case other => Right(Seq(s"answered $other instead of the refusal by name"))
         })
+      )
+    )
+  }
+
+  /** The documents of [[numberTable]]: an INT, a BIGINT past INT's range, a DOUBLE with a fraction,
+    * and a row holding none of them.
+    */
+  private val numberDocs = List(
+    """{"id":"r1","n":1,"big":1,"x":1.5}""",
+    """{"id":"r2","n":2,"big":10000000000,"x":2.0}""",
+    """{"id":"r3","n":-3,"big":-3,"x":-1.25}""",
+    """{"id":"r4"}"""
+  )
+
+  "a quoted number" should
+  "be a value of the other operand's type, as PostgreSQL reads it: any number beside a DOUBLE, a whole one beside an integer" in {
+    run(s"CREATE TABLE $numberTable (id KEYWORD, n INT, big BIGINT, x DOUBLE, PRIMARY KEY (id))")
+    bulk(numberTable, numberDocs)
+    def values(r1: Expected, r2: Expected, r3: Expected, r4: Expected): Map[String, Expected] =
+      Map("r1" -> r1, "r2" -> r2, "r3" -> r3, "r4" -> r4)
+    def refused(sql: String, refusal: String): (String, Either[String, Seq[String]]) =
+      sql -> (Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+        case Right(ElasticFailure(error)) if error.message.contains(refusal) => Right(Nil)
+        case Right(ElasticFailure(error)) => Right(Seq(s"refused as [${error.message}]"))
+        case Right(other) => Right(Seq(s"answered $other instead of the refusal by name"))
+        case Left(t)      => Left(t.toString)
+      })
+    verdict(
+      "quoted numbers",
+      Seq(
+        // beside a DOUBLE, any number: x = 1.5, 2.0, -1.25 and NULL
+        comparisonVerdict(
+          "CASE WHEN COALESCE(x, 0) = '1.5' THEN 1 ELSE 0 END",
+          values(Num(1), Num(0), Num(0), Num(0)),
+          numberTable
+        ),
+        comparisonVerdict(
+          "CASE WHEN COALESCE(x, 0) = '2' THEN 1 ELSE 0 END",
+          values(Num(0), Num(1), Num(0), Num(0)),
+          numberTable
+        ),
+        comparisonVerdict(
+          "CASE x WHEN '1.5' THEN 1 ELSE 0 END",
+          values(Num(1), Num(0), Num(0), Num(0)),
+          numberTable
+        ),
+        comparisonVerdict(
+          "NULLIF(x, '1.5')",
+          values(Null, Num(2.0), Num(-1.25), Null),
+          numberTable
+        ),
+        comparisonVerdict("x + '1.5'", values(Num(3.0), Num(3.5), Num(0.25), Null), numberTable),
+        comparisonVerdict(
+          "x * '2.5'",
+          values(Num(3.75), Num(5.0), Num(-3.125), Null),
+          numberTable
+        ),
+        kept(s"SELECT id FROM $numberTable WHERE COALESCE(x, 0) IN ('1.5', '3')", Set("r1")),
+        kept(
+          s"SELECT id FROM $numberTable WHERE COALESCE(x, 0) BETWEEN '1.0' AND '1.5'",
+          Set("r1")
+        ),
+        kept(s"SELECT id FROM $numberTable WHERE COALESCE(x, 0) > '1.75'", Set("r2")),
+        // beside an integer, a whole number is one -- past INT's range too, beside a BIGINT
+        comparisonVerdict(
+          "CASE WHEN COALESCE(big, 0) = '10000000000' THEN 1 ELSE 0 END",
+          values(Num(0), Num(1), Num(0), Num(0)),
+          numberTable
+        ),
+        comparisonVerdict("n + '1'", values(Num(2), Num(3), Num(-2), Null), numberTable),
+        // beside an integer, '1.5' and '1.0' are no integer: refused by name, as PostgreSQL 16
+        // refuses them (`invalid input syntax for type integer`)
+        refused(
+          s"SELECT id, CASE WHEN COALESCE(n, 0) = '1.5' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id, CASE WHEN NULLIF(n, 0) = '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "'INT' is not compatible with 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id, CASE WHEN COALESCE(big, 0) = '1.5' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id, CASE WHEN COALESCE(big, 0) = '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id FROM $numberTable WHERE COALESCE(n, 0) IN ('1', '1.5')",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id FROM $numberTable WHERE COALESCE(big, 0) BETWEEN '1' AND '1.0'",
+          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+        ),
+        refused(s"SELECT id, NULLIF(n, '1.5') AS x FROM $numberTable", "compares INT with VARCHAR"),
+        refused(
+          s"SELECT id, CASE big WHEN '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "CASE WHEN conditions must be of the same type as the expression"
+        ),
+        refused(
+          s"SELECT id, n + '1.5' AS x FROM $numberTable",
+          "output 'INT' is not compatible with input 'VARCHAR'"
+        ),
+        refused(
+          s"SELECT id, big - '1.0' AS x FROM $numberTable",
+          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+        )
       )
     )
   }

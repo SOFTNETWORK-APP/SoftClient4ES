@@ -482,7 +482,7 @@ a `HAVING` over its alias, a computed column (`SCRIPT AS`) and a materialized vi
 | `DATE + n`, `DATE - n`, `n` a fractional number (`DOUBLE`, `REAL`, `DECIMAL`) | `n` days later / earlier, the fraction as a time of day | `TIMESTAMP` |
 | `TIMESTAMP + n`, `TIMESTAMP - n`, any number `n` | `n` days later / earlier | `TIMESTAMP` |
 | `n + temporal` | the same as `temporal + n` | as above |
-| a temporal and a string literal that is a number (`'30'`, `'1.5'`) | the same as with that number | as above |
+| a temporal and a string literal that is a number (`'30'`, `'1.5'`) | the same as with that number (elasticsql's own rule, not PostgreSQL's: see below) | as above |
 | a temporal and `NULL` | `NULL` | the type above, for a typed `NULL` (`CAST(NULL AS DATE) - d` is a `BIGINT`) |
 | two temporals added, a temporal under `*`, `/` or `%`, a number minus a temporal, a temporal combined with any other string or a boolean | a type error, refused before anything runs | — |
 
@@ -504,6 +504,10 @@ and timestamps too: see [GREATEST](functions_conditional.md#greatest)).
 - PostgreSQL, DuckDB, Oracle and BigQuery add a number of days to a date; Oracle turns the fraction
   of `DATE + 1.5` into a time of day.
 - PostgreSQL, DuckDB, Oracle, Trino, Snowflake and SQL Server refuse the other combinations.
+- A number written as a string beside a date or a timestamp (`order_date + '30'`) is elasticsql's
+  own rule, not PostgreSQL's: PostgreSQL refuses `order_date + '1'`
+  (`operator is not unique: date + unknown`), reads the `'1'` of `order_date - '1'` as a date and
+  refuses it (`invalid input syntax for type date`), and reads `created_at + '1'` as one second.
 
 **Examples:**
 ```sql
@@ -557,7 +561,10 @@ SELECT order_date * 2 FROM orders;
   it spells (the date of a date-time literal), beside a `TIMESTAMP` the instant it spells
   (`'2024-01-31'` is its midnight), and beside a `BOOLEAN` the boolean it spells. A `DATE` and a
   `TIMESTAMP` compare, the `DATE` being the instant its day starts at. Any other literal is text,
-  and comparing it with a number or a date is refused by name.
+  and comparing it with a number or a date is refused by name. A number written as a string beside
+  a date or a timestamp in `+` or `-` (`order_date + '30'`) is not read as PostgreSQL reads it:
+  elasticsql counts it as that number of days, which PostgreSQL does not (see "The engines this
+  follows" above).
 - An index pattern or a comma list (`FROM logs-*`, `FROM orders_2024, orders_2025`) answers like a
   single index: every field its indices map alike has its type, read once per pattern from the
   merged mapping. ⚠️ A field two of them map differently (a `date` in one index, a `keyword` in

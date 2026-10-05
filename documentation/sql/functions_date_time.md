@@ -110,7 +110,8 @@ SELECT CURTIME() AS current_time;
 > answers for its date with a time of day); `DATE + n` is the date `n` days later (`DATE`, as in
 > PostgreSQL, DuckDB, Oracle and BigQuery) — a fractional `n` gives a `TIMESTAMP` whose fraction is
 > a time of day, as in Oracle; `TIMESTAMP + n` is `n` days later; a number written as a string
-> (`'30'`) counts as that number, as PostgreSQL reads an untyped literal. `*`, `/` and `%` on a
+> (`'30'`) counts as that number, by elasticsql's own rule (PostgreSQL refuses `DATE + '1'` and
+> reads `TIMESTAMP + '1'` as one second). `*`, `/` and `%` on a
 > date, two dates added and a number minus a date are refused, as PostgreSQL, DuckDB, Oracle, Trino,
 > Snowflake and SQL Server refuse them. See
 > [Date arithmetic](operators.md#date-arithmetic--and---with-a-date-timestamp-or-datetime).

@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -45,7 +46,9 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
       Column("g", SQLTypes.Keyword),
       Column("s", SQLTypes.Keyword),
       Column("n", SQLTypes.Int),
+      Column("big", SQLTypes.BigInt),
       Column("x", SQLTypes.Double),
+      Column("r", SQLTypes.Real),
       Column("d", SQLTypes.Date),
       Column("d2", SQLTypes.Date),
       Column("ts", SQLTypes.Timestamp),
@@ -202,5 +205,161 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
     resolved("SELECT id FROM t WHERE d + 1 > 'tomorrow'").swap.getOrElse("") should include(
       "is not compatible with 'VARCHAR'"
     )
+  }
+
+  /** A quoted number is read as a VALUE of the other operand's type, as PostgreSQL's input for that
+    * type reads it (the lead's ruling of 2026-10-05). Beside a whole-number type, `'1.5'` and
+    * `'1.0'` are no integer -- PostgreSQL 16: `invalid input syntax for type integer`, for a
+    * comparison and for `n + '1.5'` alike -- so the literal stays text and is refused by name at
+    * every site that reads one; beside DOUBLE, REAL or DECIMAL (a DOUBLE here) any number is one.
+    */
+  "a quoted number beside a whole-number operand" should
+  "be a whole number, refused by name otherwise, and any number beside a fractional one" in {
+    forAll(
+      Table(
+        ("site", "sql", "refusal"),
+        (
+          "comparison (INT)",
+          "SELECT id FROM t WHERE NULLIF(n, 0) = '1.5'",
+          "'INT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "comparison (INT)",
+          "SELECT id FROM t WHERE NULLIF(n, 0) = '1.0'",
+          "'INT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "comparison (BIGINT)",
+          "SELECT id FROM t WHERE COALESCE(big, 0) = '1.5'",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "comparison (BIGINT)",
+          "SELECT id FROM t WHERE COALESCE(big, 0) = '1.0'",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "CASE condition",
+          "SELECT id, CASE WHEN COALESCE(n, 0) = '1.5' THEN 1 ELSE 0 END AS v FROM t",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "an exponent",
+          "SELECT id FROM t WHERE NULLIF(n, 0) = '1e3'",
+          "'INT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "past BIGINT",
+          "SELECT id FROM t WHERE COALESCE(big, 0) = '99999999999999999999'",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "IN",
+          "SELECT id FROM t WHERE NULLIF(n, 0) IN ('1', '1.5')",
+          "'INT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "IN (HAVING)",
+          "SELECT g FROM t GROUP BY g HAVING MAX(big) IN ('1', '1.0')",
+          "'BIGINT' is not compatible with 'VARCHAR'"
+        ),
+        (
+          "BETWEEN",
+          "SELECT id FROM t WHERE COALESCE(big, 0) BETWEEN '1' AND '1.0'",
+          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+        ),
+        ("NULLIF (INT)", "SELECT NULLIF(n, '1.5') AS v FROM t", "compares INT with VARCHAR"),
+        (
+          "NULLIF (BIGINT)",
+          "SELECT NULLIF(big, '1.0') AS v FROM t",
+          "compares BIGINT with VARCHAR"
+        ),
+        (
+          "CASE <expr> WHEN (INT)",
+          "SELECT CASE n WHEN '1.5' THEN 1 ELSE 0 END AS v FROM t",
+          "CASE WHEN conditions must be of the same type as the expression"
+        ),
+        (
+          "CASE <expr> WHEN (BIGINT)",
+          "SELECT CASE big WHEN '1.0' THEN 1 ELSE 0 END AS v FROM t",
+          "CASE WHEN conditions must be of the same type as the expression"
+        ),
+        // a group filter compares the metric, which is no text
+        (
+          "HAVING",
+          "SELECT g FROM t GROUP BY g HAVING MAX(n) > '4.5'",
+          "HAVING cannot be applied to MAX(n) > '4.5'"
+        ),
+        (
+          "arithmetic (INT)",
+          "SELECT n + '1.5' AS v FROM t",
+          "output 'INT' is not compatible with input 'VARCHAR'"
+        ),
+        (
+          "arithmetic (INT, literal first)",
+          "SELECT '1.0' * n AS v FROM t",
+          "output 'VARCHAR' is not compatible with input 'INT'"
+        ),
+        (
+          "arithmetic (BIGINT)",
+          "SELECT big - '1.0' AS v FROM t",
+          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+        ),
+        (
+          "arithmetic (per group)",
+          "SELECT g, SUM(n) + '1.5' AS v FROM t GROUP BY g",
+          "output 'INT' is not compatible with input 'VARCHAR'"
+        )
+      )
+    ) { (site, sql, refusal) =>
+      withClue(s"[$site] [$sql] ") {
+        parsed(sql)
+        resolved(sql).swap.getOrElse(fail("accepted once the types are known")) should include(
+          refusal
+        )
+      }
+    }
+    forAll(
+      Table(
+        "sql",
+        // a whole number is an integer, however it is written
+        "SELECT id FROM t WHERE NULLIF(n, 0) = '1'",
+        "SELECT id FROM t WHERE NULLIF(n, 0) = ' 1 '",
+        "SELECT id FROM t WHERE NULLIF(n, 0) = '+1'",
+        "SELECT id FROM t WHERE COALESCE(big, 0) = '10000000000'",
+        "SELECT CASE big WHEN '2' THEN 1 ELSE 0 END AS v FROM t",
+        "SELECT n + '1' AS v FROM t",
+        // beside DOUBLE, REAL or DECIMAL, any number
+        "SELECT id FROM t WHERE COALESCE(x, 0) = '1.5'",
+        "SELECT id FROM t WHERE COALESCE(x, 0) = '1e0'",
+        "SELECT id FROM t WHERE COALESCE(r, 0) = '1.0'",
+        "SELECT id FROM t WHERE CAST(s AS DECIMAL(10,2)) = '1.5'",
+        "SELECT id FROM t WHERE COALESCE(x, 0) IN ('1', '1.5')",
+        "SELECT id FROM t WHERE COALESCE(x, 0) BETWEEN '1.0' AND '1.5'",
+        "SELECT NULLIF(x, '1.5') AS v FROM t",
+        "SELECT CASE x WHEN '1.5' THEN 1 ELSE 0 END AS v FROM t",
+        "SELECT x + '1.5' AS v FROM t",
+        "SELECT g, AVG(n) + '1.5' AS v FROM t GROUP BY g",
+        "SELECT g FROM t GROUP BY g HAVING AVG(n) > '4.5'",
+        // beside a temporal a number is a number of days, whatever its fraction
+        "SELECT d + '1.5' AS v FROM t"
+      )
+    ) { sql => withClue(s"[$sql] ")(resolved(sql) shouldBe Right(())) }
+  }
+
+  /** The literal reading a comparison renders is the one its type rule judged: a DOUBLE operand
+    * compares the number a quoted `'1.5'` spells, and an integer one the whole number `'1'` spells.
+    */
+  "a quoted number read beside a number" should "render as that number" in {
+    def criteriaPainless(sql: String): String = {
+      val search = parsed(sql).update(Some(schema))
+      search.validateResolved() shouldBe Right(())
+      search.where
+        .flatMap(_.criteria)
+        .map(_.painless(Some(PainlessContext(context = PainlessContextType.Query))))
+        .getOrElse(fail(s"[$sql] no WHERE"))
+    }
+    criteriaPainless("SELECT id FROM t WHERE COALESCE(x, 0) = '1.5'") should include("== 1.5")
+    criteriaPainless("SELECT id FROM t WHERE COALESCE(big, 0) = '1'") should include("== 1L")
   }
 }

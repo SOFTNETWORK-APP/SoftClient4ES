@@ -990,15 +990,45 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * number or the instant it spells: nothing else can be compared with a metric. `HAVING MAX(n) >
     * '4'` therefore renders the same comparison before and after resolution; the type rule judges
     * it once the type is known.
+    *
+    * Computed ONCE per comparison and memoised (`ComparisonRule` says why with no lock): the type
+    * rule and every type question of the rendering ([[valueType]], [[comparisonTargetType]],
+    * `check`'s dispatch) ask it, and a reading is a parse. Attaching the schema COPIES the
+    * comparison (`update`), so the reading a resolved statement holds is read against the resolved
+    * types.
     */
-  protected def literalReading: Option[ComparisonRule.Reading] = maybeValue.flatMap(readingFor)
+  protected def literalReading: Option[ComparisonRule.Reading] = {
+    var reading = _literalReading
+    if (reading eq null) {
+      reading = maybeValue.flatMap(readingFor)
+      _literalReading = reading
+    }
+    reading
+  }
+
+  private[this] var _literalReading: Option[ComparisonRule.Reading] = null
+
+  /** The type the left operand is DECLARED with (`ComparisonRule.declaredTypeOf`), which every
+    * literal of this comparison is read against and the type rule judges: computed ONCE, and
+    * memoised like [[literalReading]].
+    */
+  protected def operandDeclaredType: SQLType = {
+    var declared = _operandDeclaredType
+    if (declared eq null) {
+      declared = ComparisonRule.declaredTypeOf(identifier)
+      _operandDeclaredType = declared
+    }
+    declared
+  }
+
+  private[this] var _operandDeclaredType: SQLType = null
 
   /** What `value` -- the right-hand side, a `BETWEEN` bound, an `IN` element -- is read as against
     * this comparison's left operand ([[literalReading]]).
     */
   protected def readingFor(value: Token): Option[ComparisonRule.Reading] =
     ComparisonRule.stringLiteral(value).flatMap { text =>
-      val declared = ComparisonRule.declaredTypeOf(identifier)
+      val declared = operandDeclaredType
       ComparisonRule.readingOf(value, declared).orElse {
         if (identifier.hasAggregation && declared.isUnknown)
           ComparisonRule.numberOf(text).orElse(ComparisonRule.temporalOf(text, SQLTypes.Timestamp))
@@ -1988,10 +2018,31 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     maybeValue.flatMap { value =>
       if (!scripted && Expression.literalAgainstBareColumn(identifier, value)) None
       else
-        ComparisonRule.mismatch(identifier, value).map { case (left, right) =>
+        mismatchWith(value, literalReading).map { case (left, right) =>
           s"Type mismatch: '${left.typeId}' is not compatible with '${right.typeId}' in expression: $this"
         }
     }
+
+  /** The ONE comparison rule (`ComparisonRule.mismatch`) between the left operand and `value` --
+    * the right-hand side, a `BETWEEN` bound, an `IN` element -- judged with what this comparison
+    * already holds: `value`'s reading (`reading`, computed once) and the left operand's declared
+    * type ([[operandDeclaredType]]), so a literal is never read a second time to be judged.
+    */
+  protected def mismatchWith(
+    value: Token,
+    reading: Option[ComparisonRule.Reading]
+  ): Option[(SQLType, SQLType)] = {
+    // the left operand is itself a string literal only in `'2024-01-01' < d`: then it is read
+    // beside `value`, as `value` is beside it
+    val left =
+      if (ComparisonRule.stringLiteral(identifier).isEmpty) operandDeclaredType
+      else
+        ComparisonRule
+          .readingOf(identifier, ComparisonRule.declaredTypeOf(value))
+          .map(_.sqlType)
+          .getOrElse(operandDeclaredType)
+    ComparisonRule.mismatch(left, ComparisonRule.comparedType(reading, value))
+  }
 }
 
 object Expression {
@@ -2309,21 +2360,44 @@ case class InExpr[R, +T <: Value[R]](
     if (!scripted && Expression.bareColumn(identifier)) None
     else
       values.values
-        .flatMap(element => ComparisonRule.mismatch(identifier, element))
+        .zip(readings)
+        .flatMap { case (element, reading) => mismatchWith(element, reading) }
         .headOption
         .map { case (left, right) =>
           s"Type mismatch: '${left.typeId}' is not compatible with '${right.typeId}' in expression: $this"
         }
 
+  /** What each element is READ as (`readingFor`), computed ONCE per IN and memoised (like
+    * `literalReading`): the type rule, the type questions, both renderings and the group filter all
+    * ask it.
+    */
+  private def readings: Seq[Option[ComparisonRule.Reading]] = {
+    var computed = _readings
+    if (computed eq null) {
+      computed = values.values.map(readingFor)
+      _readings = computed
+    }
+    computed
+  }
+
+  private[this] var _readings: Seq[Option[ComparisonRule.Reading]] = null
+
   /** What every element is READ as (`readingFor`), when each one is a string literal the operand
     * reads -- the list is then the numbers, the dates, the timestamps or the booleans they spell.
     */
-  private def elementReadings: Option[Seq[ComparisonRule.Reading]] =
-    if (values.values.isEmpty) None
-    else {
-      val readings = values.values.map(readingFor)
-      if (readings.forall(_.isDefined)) Some(readings.flatten) else None
+  private def elementReadings: Option[Seq[ComparisonRule.Reading]] = {
+    var computed = _elementReadings
+    if (computed eq null) {
+      computed =
+        if (values.values.isEmpty) None
+        else if (readings.forall(_.isDefined)) Some(readings.flatten)
+        else None
+      _elementReadings = computed
     }
+    computed
+  }
+
+  private[this] var _elementReadings: Option[Seq[ComparisonRule.Reading]] = null
 
   /** The type the list is compared IN when its elements are read ([[elementReadings]]), as the
     * right-hand side of a single comparison is; the list's own type otherwise, as it always was.
@@ -2406,8 +2480,9 @@ case class InExpr[R, +T <: Value[R]](
   // the epoch milliseconds, it is read as -- a metric is a number (`readingFor`).
   override protected def bucketPipelineCheck(param: String): String =
     values.values
-      .map { v =>
-        val element = readingFor(v) match {
+      .zip(readings)
+      .map { case (v, reading) =>
+        val element = reading match {
           case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
           case Some(scalar) =>
             ComparisonRule.scalarPainless(scalar).getOrElse(v.painless(None))
@@ -2816,17 +2891,39 @@ case class BetweenExpr(
     if (!scripted && Expression.bareColumn(identifier)) fromTo.typeError
     else
       Seq(fromTo.from, fromTo.to)
-        .flatMap(bound => ComparisonRule.mismatch(identifier, bound))
+        .flatMap(bound => mismatchWith(bound, boundReading(bound)))
         .headOption
         .map { case (left, right) =>
           s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
         }
 
+  /** What each bound is READ as (`readingFor`), computed ONCE per BETWEEN and memoised (like
+    * `literalReading`): the type rule, the type questions, both renderings and the group filter all
+    * ask it.
+    */
+  private def boundReadings: (Option[ComparisonRule.Reading], Option[ComparisonRule.Reading]) = {
+    var computed = _boundReadings
+    if (computed eq null) {
+      computed = (readingFor(fromTo.from), readingFor(fromTo.to))
+      _boundReadings = computed
+    }
+    computed
+  }
+
+  private[this] var _boundReadings
+    : (Option[ComparisonRule.Reading], Option[ComparisonRule.Reading]) =
+    null
+
+  private def boundReading(bound: Token): Option[ComparisonRule.Reading] =
+    if (bound eq fromTo.from) boundReadings._1
+    else if (bound eq fromTo.to) boundReadings._2
+    else readingFor(bound)
+
   /** The SQL type of a bound as it is compared: its reading, or its own type -- the question
     * `valueType` answers for the right-hand side of a single comparison.
     */
   private def boundType(bound: Token): SQLType =
-    readingFor(bound)
+    boundReading(bound)
       .map(_.sqlType)
       .getOrElse(bound match {
         case id: Identifier => id.chainType
@@ -2835,7 +2932,7 @@ case class BetweenExpr(
 
   /** The JAVA type a bound renders -- the question `valueRenderedType` answers for a single one. */
   private def boundRenderedType(bound: Token): SQLType =
-    readingFor(bound)
+    boundReading(bound)
       .map(_.sqlType)
       .getOrElse(bound match {
         case id: Identifier => id.renderedType
@@ -2879,7 +2976,7 @@ case class BetweenExpr(
     op: Operator
   ): String = {
     def bound(b: Token): String = {
-      val rendered = readingPainless(readingFor(b), b, context)
+      val rendered = readingPainless(boundReading(b), b, context)
       val from = boundRenderedType(b)
       val to = comparisonTargetType
       if (
@@ -2900,7 +2997,7 @@ case class BetweenExpr(
   // `bucketPipelinePainless` already wraps this call in it. A string bound is the number, or the
   // epoch milliseconds, it is read as -- a metric is a number (`readingFor`).
   override protected def bucketPipelineCheck(param: String): String = {
-    def bound(b: Token): String = readingFor(b) match {
+    def bound(b: Token): String = boundReading(b) match {
       case Some(t: ComparisonRule.TemporalReading) => s"${t.epochMillis}L"
       case Some(scalar) => ComparisonRule.scalarPainless(scalar).getOrElse(b.toString)
       case None         => b.toString

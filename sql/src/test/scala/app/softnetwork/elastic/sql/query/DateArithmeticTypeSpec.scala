@@ -51,10 +51,13 @@ import org.scalatest.matchers.should.Matchers
   *     or arguments, `NULLIF` its first argument -- `GREATEST` / `LEAST` over dates included, a
   *     DATE when every argument is one, a TIMESTAMP when they mix;
   *   - a typed NULL is its type (`CAST(NULL AS DATE)` is a DATE), a bare `NULL` has none;
-  *   - a string literal that is a number is that number (`'1'`, `'1.5'`); one that spells a date or
-  *     a timestamp is, beside a temporal, that temporal read as the other operand's type (`d -
-  *     '2024-01-31'` is DATE minus DATE, as PostgreSQL reads it) and a string beside anything else;
-  *     any other is a string;
+  *   - a string literal that is a number is that number (`'1'`, `'1.5'`), so a number of days
+  *     beside a temporal -- elasticsql's OWN rule, not PostgreSQL's: PostgreSQL 16 refuses `d +
+  *     '1'` (`operator is not unique: date + unknown`), reads the `'1'` of `d - '1'` as a date
+  *     (`invalid input syntax for type date`) and reads `ts + '1'` as one second; one that spells a
+  *     date or a timestamp is, beside a temporal, that temporal read as the other operand's type
+  *     (`d - '2024-01-31'` is DATE minus DATE, as PostgreSQL reads it) and a string beside anything
+  *     else; any other is a string;
   *   - a `date` field elasticsql never declared (`u`, an index created by a bulk load) holds
   *     instants: a TIMESTAMP, typed so at the declaration seam -- DESCRIBE shows it so too.
   */

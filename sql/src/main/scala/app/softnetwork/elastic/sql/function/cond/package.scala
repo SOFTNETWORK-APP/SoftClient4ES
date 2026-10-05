@@ -359,12 +359,31 @@ package object cond {
       * rule (`ComparisonRule.readingOf`, the lead's ruling of 2026-10-05): `NULLIF(n, '3')`
       * compares `n` with the number 3, `NULLIF(COALESCE(d, d2), '2024-01-31')` with a date. `None`
       * for anything else, and for a literal that spells no value of the other's kind.
+      *
+      * Computed ONCE per `NULLIF` and memoised (its type, its rendering and the comparison it sits
+      * in all ask it; `ComparisonRule` says why with no lock); attaching the schema copies the
+      * `NULLIF` (`update`), so a resolved statement's reading is read against the resolved types.
       */
-    private[cond] def secondReading: Option[ComparisonRule.Reading] =
-      ComparisonRule.readingOf(expr2, ComparisonRule.declaredTypeOf(expr1))
+    private[cond] def secondReading: Option[ComparisonRule.Reading] = {
+      var reading = _secondReading
+      if (reading eq null) {
+        reading = ComparisonRule.readingOf(expr2, ComparisonRule.declaredTypeOf(expr1))
+        _secondReading = reading
+      }
+      reading
+    }
 
-    private[cond] def firstReading: Option[ComparisonRule.Reading] =
-      ComparisonRule.readingOf(expr1, ComparisonRule.declaredTypeOf(expr2))
+    private[cond] def firstReading: Option[ComparisonRule.Reading] = {
+      var reading = _firstReading
+      if (reading eq null) {
+        reading = ComparisonRule.readingOf(expr1, ComparisonRule.declaredTypeOf(expr2))
+        _firstReading = reading
+      }
+      reading
+    }
+
+    private[this] var _secondReading: Option[ComparisonRule.Reading] = null
+    private[this] var _firstReading: Option[ComparisonRule.Reading] = null
 
     /** A literal argument counts as what it is read as: `NULLIF(n, '3')` compares two numbers. */
     override def argTypes: List[SQLType] =
@@ -763,9 +782,15 @@ package object cond {
       */
     override def typeError: Option[String] =
       typeMismatchError.orElse {
-        ComparisonRule.mismatch(expr1, expr2).map { case (left, right) =>
-          s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
-        }
+        // judged on the readings this NULLIF already holds (`firstReading`, `secondReading`)
+        ComparisonRule
+          .mismatch(
+            ComparisonRule.comparedType(firstReading, expr1),
+            ComparisonRule.comparedType(secondReading, expr2)
+          )
+          .map { case (left, right) =>
+            s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
+          }
       }
 
     override def update(request: query.SingleSearch): NullIf = {
@@ -840,9 +865,23 @@ package object cond {
           Some("CASE WHEN conditions must be of type BOOLEAN")
         // Each value is compared with the expression by the ONE comparison rule (`ComparisonRule`):
         // on their DECLARED types, a DATE comparable with a TIMESTAMP, a string literal read by
-        // what it is compared with -- `CASE n WHEN '3'`, `CASE d WHEN CAST('2024-01-31' AS DATE)`.
-        case Some(e) if conditions.exists { case (cond, _) =>
-              ComparisonRule.mismatch(e, cond).isDefined
+        // what it is compared with -- `CASE n WHEN '3'`, `CASE d WHEN CAST('2024-01-31' AS DATE)`
+        // -- judged on the readings this CASE already holds (`whenReadings`).
+        case Some(e) if {
+              val (declared, readings) = whenReadings(e)
+              val literalExpression = ComparisonRule.stringLiteral(e).isDefined
+              conditions.zip(readings).exists { case ((cond, _), reading) =>
+                val left =
+                  if (!literalExpression) declared
+                  else
+                    ComparisonRule
+                      .readingOf(e, ComparisonRule.declaredTypeOf(cond))
+                      .map(_.sqlType)
+                      .getOrElse(declared)
+                ComparisonRule
+                  .mismatch(left, ComparisonRule.comparedType(reading, cond))
+                  .isDefined
+              }
             } =>
           Some("CASE WHEN conditions must be of the same type as the expression")
         case _ => None
@@ -944,9 +983,7 @@ package object cond {
     ): WhenComparison = {
       def dateCarrying(t: SQLType): Boolean =
         t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp
-      val declared = ComparisonRule.declaredTypeOf(expr)
-      val readings =
-        conditions.map { case (cond, _) => ComparisonRule.readingOf(cond, declared) }
+      val (declared, readings) = whenReadings(expr)
       val processor = context.exists(_.isProcessor)
       if (receiverIsTime) WhenAsResult
       else if (dateCarrying(declared)) {
@@ -965,6 +1002,41 @@ package object cond {
         if (!processor || readings.exists(_.isDefined)) WhenNumbers else WhenAsResult
       } else WhenAsResult
     }
+
+    /** The CASE expression's DECLARED type and what each `WHEN` value is read as beside it
+      * (`ComparisonRule.readingOf`), computed ONCE per CASE and memoised (`ComparisonRule` says why
+      * with no lock): its type rule, the comparison it is rendered as and every `WHEN` arm ask it,
+      * and a reading is a parse. Attaching the schema copies the CASE (`update`), so a resolved
+      * statement's readings are read against the resolved types.
+      */
+    private[this] def expressionReadings: (SQLType, List[Option[ComparisonRule.Reading]]) = {
+      var readings = _expressionReadings
+      if (readings eq null) {
+        readings = expression match {
+          case Some(e) => readingsBeside(e)
+          case None    => (SQLTypes.Any, conditions.map(_ => None))
+        }
+        _expressionReadings = readings
+      }
+      readings
+    }
+
+    private[this] var _expressionReadings: (SQLType, List[Option[ComparisonRule.Reading]]) = null
+
+    private[this] def readingsBeside(
+      expr: PainlessScript
+    ): (SQLType, List[Option[ComparisonRule.Reading]]) = {
+      val declared = ComparisonRule.declaredTypeOf(expr)
+      (declared, conditions.map { case (cond, _) => ComparisonRule.readingOf(cond, declared) })
+    }
+
+    /** [[expressionReadings]] when `expr` IS the CASE expression -- the only one the renderings
+      * pass -- and computed for `expr` otherwise.
+      */
+    private[this] def whenReadings(
+      expr: PainlessScript
+    ): (SQLType, List[Option[ComparisonRule.Reading]]) =
+      if (expression.exists(_ eq expr)) expressionReadings else readingsBeside(expr)
 
     /** The JAVA type an operand renders (#384's `Identifier.renderedType`): a DATE column's doc
       * value is a `ZonedDateTime`, a cast to DATE a `LocalDate`.
@@ -1008,7 +1080,7 @@ package object cond {
       ctx: PainlessContext,
       context: Option[PainlessContext]
     ): String = {
-      val declared = ComparisonRule.declaredTypeOf(expr)
+      val (_, readings) = whenReadings(expr)
       def bind(rendered: String): String = ctx.addParam(LiteralParam(rendered)).getOrElse(rendered)
       def instant(operand: PainlessScript, ref: String): String =
         bind(
@@ -1017,9 +1089,10 @@ package object cond {
       val e = bind(expr.painless(context))
       val key = if (kind == WhenInstants) instant(expr, e) else e
       conditions
-        .map { case (cond, res) =>
+        .zip(readings)
+        .map { case ((cond, res), reading) =>
           val r = whenResult(cond, res, context)
-          val test = ComparisonRule.readingOf(cond, declared) match {
+          val test = reading match {
             case Some(t: ComparisonRule.TemporalReading) => s"$key == ${t.epochMillis}L"
             case Some(scalar) =>
               s"$key == ${ComparisonRule.scalarPainless(scalar).getOrElse(cond.painless(context))}"
@@ -1046,7 +1119,8 @@ package object cond {
                   LiteralParam(e)
                 )
                 conditions
-                  .map { case (cond, res) =>
+                  .zip(whenReadings(expr)._2)
+                  .map { case ((cond, res), whenReading) =>
                     val name =
                       cond match {
                         case e: Expression =>
@@ -1062,8 +1136,7 @@ package object cond {
                     // two are compared in like any other value. `CASE b WHEN 'true'` used to parse
                     // `"true"` as a long (`Long.parseLong`) and fail the shard.
                     val c =
-                      ComparisonRule
-                        .readingOf(cond, ComparisonRule.declaredTypeOf(expr))
+                      whenReading
                         .flatMap(reading =>
                           ComparisonRule
                             .scalarPainless(reading)
