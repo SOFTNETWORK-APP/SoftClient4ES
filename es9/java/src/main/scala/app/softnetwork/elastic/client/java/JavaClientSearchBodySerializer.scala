@@ -53,6 +53,11 @@ import com.sksamuel.elastic4s.requests.searches.{
   */
 object JavaClientSearchBodySerializer extends SearchBodySerializer {
 
+  /** The Elasticsearch major this module is built against, generated from the build's
+    * `elasticSearchVersion` (never written by hand).
+    */
+  val ElasticsearchMajor: Int = JavaClientBuildInfo.elasticMajor
+
   private val scriptedExtendedStats: PartialFunction[AbstractAggregation, XContentBuilder] = {
     case agg: ScriptedExtendedStatsAggregation => extendedStatsWithScript(agg)
   }

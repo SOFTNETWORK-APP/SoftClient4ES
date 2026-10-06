@@ -1039,7 +1039,9 @@ trait JavaClientSearchApi extends SearchApi with JavaClientHelpers {
     *
     * A `date` doc value is a `ZonedDateTime` here: scripts render as they always have.
     */
-  implicit def painlessTarget: PainlessTarget = PainlessTarget(9)
+  implicit def painlessTarget: PainlessTarget = PainlessTarget(
+    JavaClientSearchBodySerializer.ElasticsearchMajor
+  )
 
   override implicit def singleSearchToJsonQuery(singleSearch: SingleSearch)(implicit
     timestamp: Long,

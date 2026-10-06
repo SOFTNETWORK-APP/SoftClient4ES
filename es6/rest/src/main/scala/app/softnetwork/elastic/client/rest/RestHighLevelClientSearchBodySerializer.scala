@@ -33,7 +33,10 @@ import com.sksamuel.elastic4s.searches.SearchRequest
   */
 object RestHighLevelClientSearchBodySerializer extends SearchBodySerializer {
 
-  val ElasticsearchMajor: Int = 6
+  /** The Elasticsearch major this module is built against, generated from the build's
+    * `elasticSearchVersion` (never written by hand).
+    */
+  val ElasticsearchMajor: Int = RestClientBuildInfo.elasticMajor
 
   /** The named error a transform-bearing extended_stats is refused with on this module. */
   val TransformExtendedStatsUnsupported: String =
