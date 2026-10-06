@@ -1405,9 +1405,12 @@ LEAST(e1, e2, ...)
 `GREATEST` returns the largest non-null value among the given expressions; `LEAST`
 returns the smallest. The arguments are all numeric, or all dates and timestamps (a `DATE`
 compares as the start of its day, UTC; the result is a `DATE` over dates and a `TIMESTAMP` when
-they mix). NULL arguments are ignored (ANSI semantics); the result is NULL only
-when every argument is NULL. Both are emitted as Painless ternary chains over
-`Math.max` / `Math.min` — over dates, over the epoch milliseconds each one denotes. They are
+they mix). Over numbers the result is the common type of all the arguments on every row: the
+widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is fractional.
+NULL arguments are ignored (ANSI semantics); the result is NULL only
+when every argument is NULL. Both are emitted as Painless ternary chains — over whole numbers the
+winner is chosen by a comparison, over fractional numbers by `Math.max` / `Math.min`, over dates
+over the epoch milliseconds each one denotes. They are
 conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported — but over
 aggregates they are computed per group (`GREATEST(MAX(a), MAX(b))` beside a `GROUP BY`).
 

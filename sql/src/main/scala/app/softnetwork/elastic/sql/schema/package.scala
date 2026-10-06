@@ -24,6 +24,7 @@ import app.softnetwork.elastic.sql.function.{
   FunctionN,
   FunctionWithIdentifier
 }
+import app.softnetwork.elastic.sql.function.convert
 import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.parser.Parser
@@ -964,6 +965,26 @@ package object schema {
       column.multiFields.flatMap(arithmeticErrors)
 
     schema.columns.flatMap(arithmeticErrors).distinct match {
+      case Nil    =>
+      case errors => return Left(errors.mkString("; "))
+    }
+
+    // A number converted to a DATE -- `(d - d2)::DATE`, `CAST(n AS DATE)` -- refused by name for
+    // the same reasons, as a query refuses it (`Conversion.typeError`): the script would store the
+    // number itself in a DATE column.
+    def conversionErrors(column: Column): Seq[String] =
+      column.script
+        .filterNot(_.materialized)
+        .toSeq
+        .flatMap(_.validationExpr)
+        .flatMap {
+          case chain: FunctionChain => convert.typeErrorsOf(chain)
+          case _                    => Nil
+        }
+        .map(reason => s"Column '${column.path}': $reason") ++
+      column.multiFields.flatMap(conversionErrors)
+
+    schema.columns.flatMap(conversionErrors).distinct match {
       case Nil    =>
       case errors => return Left(errors.mkString("; "))
     }

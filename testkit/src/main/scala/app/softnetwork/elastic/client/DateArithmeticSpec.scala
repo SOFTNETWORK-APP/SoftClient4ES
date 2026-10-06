@@ -117,6 +117,31 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   /** A BOOLEAN column as a CASE condition (`"a CASE WHEN over a BOOLEAN column"`). */
   private val flagTable = "date_arithmetic_flag"
 
+  /** PostgreSQL's fixture for the operand tests (`"a CASE or a NULLIF used as an operand"` and the
+    * tests after it), and the computed-column tables and `CREATE TABLE … AS SELECT` targets they
+    * create.
+    */
+  private val operandName = "date_arithmetic_operand"
+  private val operandTables = Seq(
+    operandName,
+    "date_arithmetic_operand_cc",
+    "date_arithmetic_greatest_cc",
+    "date_arithmetic_greatest_type_cc",
+    "date_arithmetic_greatest_long_cc",
+    "date_arithmetic_greatest_double",
+    "date_arithmetic_greatest_cast",
+    "date_arithmetic_greatest_whole",
+    "date_arithmetic_tocast",
+    "date_arithmetic_tocast_ctas",
+    "date_arithmetic_abs_cc",
+    "date_arithmetic_abs_ctas",
+    "date_arithmetic_nullif_ts",
+    "date_arithmetic_nullif_d",
+    "date_arithmetic_nullif_n",
+    "date_arithmetic_case_cc",
+    "date_arithmetic_case_ctas"
+  )
+
   private val DayMillis: Long = 86400000L
 
   /** One document: `None` is a column the document does not carry.
@@ -299,7 +324,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   }
 
   override def afterAll(): Unit = {
-    Seq(
+    (Seq(
       table,
       computedTable,
       rawIndex,
@@ -317,7 +342,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       nullifTable,
       booleanTable,
       flagTable
-    ).foreach(t => Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds)))
+    ) ++ operandTables).foreach(t =>
+      Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds))
+    )
     super.afterAll()
   }
 
@@ -353,6 +380,29 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   private final case class At(value: Instant) extends Expected
   private final case class Bool(value: Boolean) extends Expected
   private case object Null extends Expected
+
+  /** A whole number, answered in an integer type (`Integer`, `Long`) -- as a SQL engine answers an
+    * integer expression -- never as a `Double` or a string.
+    */
+  private final case class Whole(value: Long) extends Expected
+
+  /** A number answered as a NUMBER, never as the string spelling it. */
+  private final case class Numeric(value: Double) extends Expected
+
+  /** A number answered in exactly this class, on every row -- what tells a `Double` from an
+    * `Integer`, which `Num` and `Numeric` accept alike: a `Double` for a fractional type; for a
+    * whole one the class Elasticsearch's JSON hands it back in, an `Integer` when it fits one and a
+    * `Long` past it (a BIGINT 3 is read as an `Integer` 3, as `CAST(n AS BIGINT)` itself is).
+    */
+  private final case class Classed(value: Double, cls: Class[_]) extends Expected
+
+  private def doubleOf(value: Double): Expected = Classed(value, classOf[java.lang.Double])
+
+  private def wholeOf(value: Long): Expected =
+    Classed(
+      value.toDouble,
+      if (value.isValidInt) classOf[java.lang.Integer] else classOf[java.lang.Long]
+    )
 
   /** An instant read from the clock while the statement ran: between `from` and `to`. */
   private final case class Within(from: Instant, to: Instant) extends Expected
@@ -440,7 +490,33 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
           case s: String if Try(s.toBoolean).toOption.contains(want) => None
           case other => Some(s"$other instead of $want")
         }
+      case Whole(want) =>
+        scalar(actual) match {
+          case n @ (_: java.lang.Integer | _: java.lang.Long | _: java.lang.Short |
+              _: java.lang.Byte) if n.asInstanceOf[Number].longValue() == want =>
+            None
+          case other => Some(s"${withClass(other)} instead of the whole number $want")
+        }
+      case Numeric(want) =>
+        scalar(actual) match {
+          case n: java.lang.Number
+              if Math.abs(n.doubleValue() - want) <= 1e-9 * Math.max(1.0, Math.abs(want)) =>
+            None
+          case other => Some(s"${withClass(other)} instead of the number $want")
+        }
+      case Classed(want, cls) =>
+        scalar(actual) match {
+          case n: java.lang.Number
+              if n.getClass == cls &&
+                Math.abs(n.doubleValue() - want) <= 1e-9 * Math.max(1.0, Math.abs(want)) =>
+            None
+          case other => Some(s"${withClass(other)} instead of $want (${cls.getSimpleName})")
+        }
     }
+
+  /** A value with its class: `3.0 (Double)`, `"1" (String)`. */
+  private def withClass(value: Any): String =
+    Option(value).fold("null")(v => s"$v (${v.getClass.getSimpleName})")
 
   /** A row-level expression and its value for each document. */
   private final case class RowForm(sql: String, value: Row => Expected)
@@ -1715,6 +1791,683 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         )
       )
     )
+  }
+
+  /** PostgreSQL 16's fixture for the operand tests below, over the same rows: an INT that is
+    * positive, negative and absent, a DOUBLE with a fraction, a KEYWORD holding digits, a BOOLEAN
+    * absent from one document, two DATEs and a TIMESTAMP. Created on first use.
+    */
+  private lazy val operandTable: String = {
+    run(
+      s"CREATE TABLE $operandName (id KEYWORD, g KEYWORD, s KEYWORD, n INT, x DOUBLE, d DATE, " +
+      "d2 DATE, ts TIMESTAMP, b BOOLEAN, PRIMARY KEY (id))"
+    )
+    bulk(operandName, operandDocs)
+    operandName
+  }
+
+  private val operandDocs = List(
+    """{"id":"r1","g":"g1","s":"1","n":3,"x":0.25,"d":"2024-01-31","d2":"2024-02-01","ts":"2024-01-31T10:30:00Z","b":true}""",
+    """{"id":"r2","g":"g1","s":"5","n":5,"x":1.5,"d":"2024-03-01","d2":"2024-02-28","ts":"2024-03-01T06:00:00Z","b":false}""",
+    """{"id":"r3","g":"g2","s":"12","n":-2,"d":"2023-12-25","ts":"2023-12-25T23:59:59Z"}""",
+    """{"id":"r4","g":"g3","x":2.0,"d2":"2024-01-31","b":true}""",
+    """{"id":"r5","g":"g3","s":"3","n":10,"x":-1.25,"d":"2024-02-29","d2":"2024-02-29","ts":"2024-02-29T00:00:00Z","b":false}"""
+  )
+
+  private def answers(
+    r1: Expected,
+    r2: Expected,
+    r3: Expected,
+    r4: Expected,
+    r5: Expected
+  ): Map[String, Expected] =
+    Map("r1" -> r1, "r2" -> r2, "r3" -> r3, "r4" -> r4, "r5" -> r5)
+
+  /** The statement is refused, by a message carrying every fragment, before anything runs. */
+  private def refusedBy(sql: String, fragments: String*): (String, Either[String, Seq[String]]) =
+    sql -> (Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+      case Right(ElasticFailure(error)) if fragments.forall(error.message.contains) => Right(Nil)
+      case Right(ElasticFailure(error)) => Right(Seq(s"refused as [${error.message}]"))
+      case Right(other)                 => Right(Seq(s"answered $other instead of the refusal"))
+      case Left(t)                      => Left(t.toString)
+    })
+
+  /** No table named `name` exists: DESCRIBE fails on it. */
+  private def absent(name: String): (String, Either[String, Seq[String]]) =
+    s"DESCRIBE TABLE $name" -> (Try(
+      Await.result(client.run(s"DESCRIBE TABLE $name"), 60.seconds)
+    ).toEither match {
+      case Right(ElasticFailure(_)) => Right(Nil)
+      case other                    => Right(Seq(s"the table exists: $other"))
+    })
+
+  /** The type DESCRIBE reports for `field` of `table`, as a verdict. */
+  private def declares(table: String, field: String, sqlType: String) =
+    s"DESCRIBE TABLE $table ($field)" -> described(table, field).map { t =>
+      if (t.contains(sqlType)) Nil else Seq(s"$field is declared $t instead of $sqlType")
+    }
+
+  /** `CREATE TABLE <table> AS <select>`, then the rows the target holds: their `v`, by id. */
+  private def created(table: String, select: String, expected: Map[String, Expected]) = {
+    val sql = s"CREATE TABLE $table AS $select"
+    sql -> (Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+      case Right(ElasticSuccess(_)) =>
+        client.refresh(table)
+        gatewayRows(s"SELECT id, v FROM $table").map { rs =>
+          val got = rs.map(r => r.getOrElse("id", "?").toString -> r.getOrElse("v", null)).toMap
+          expected.toSeq.sortBy(_._1).flatMap { case (id, want) =>
+            differs(want, got.getOrElse(id, null)).map(d => s"$id: $d")
+          }
+        }
+      case Right(ElasticFailure(error)) => Left(s"[$sql] failed: ${error.message}")
+      case Left(t)                      => Left(t.toString)
+    })
+  }
+
+  /** A `CASE` or a `NULLIF` used as an operand is ONE value, and the arithmetic applies to every
+    * branch (issue #380). Its rendering is a conditional, over which Painless's `+` binds tighter:
+    * `CASE WHEN n > 0 THEN n ELSE 0 END + 1` added the 1 to the ELSE branch alone (3, 5, 1, 1, 10
+    * where PostgreSQL answers 4, 6, 1, 1, 11), SQL parentheses or not; `NULLIF(n, 3) + 1` threw on
+    * the very row the NULLIF nulls; and a computed column over such an operand could not even be
+    * created. Every expected value is PostgreSQL 16's answer over the same rows.
+    */
+  "a CASE or a NULLIF used as an operand" should
+  "be ONE value: the arithmetic applies to every branch, in every venue, as PostgreSQL does" in {
+    val computedTable = "date_arithmetic_operand_cc"
+    run(
+      s"CREATE TABLE $computedTable (id KEYWORD, n INT, b BOOLEAN, " +
+      "c1 BIGINT SCRIPT AS (CASE WHEN n > 0 THEN n ELSE 0 END + 1), " +
+      "c2 BIGINT SCRIPT AS ((CASE WHEN n > 0 THEN 1 ELSE 0 END) + 1), " +
+      "c3 BIGINT SCRIPT AS (CASE WHEN n > 0 THEN n END + 1), " +
+      "c4 INT SCRIPT AS (NULLIF(n, 3) + 1), PRIMARY KEY (id))"
+    )
+    bulk(
+      computedTable,
+      List(
+        """{"id":"r1","n":3,"b":true}""",
+        """{"id":"r2","n":5,"b":false}""",
+        """{"id":"r3","n":-2}""",
+        """{"id":"r4","b":true}""",
+        """{"id":"r5","n":10,"b":false}"""
+      )
+    )
+    val plusOne = answers(Whole(4), Whole(6), Whole(1), Whole(1), Whole(11))
+    def cv(expression: String, expected: Map[String, Expected]) =
+      comparisonVerdict(expression, expected, operandTable)
+    verdict(
+      "a CASE or a NULLIF as an operand",
+      Seq(
+        cv("CASE WHEN n > 0 THEN n ELSE 0 END + 1", plusOne),
+        cv("CASE WHEN n > 0 THEN n ELSE 0 END + '1'", plusOne),
+        cv("(CASE WHEN n > 0 THEN n ELSE 0 END) + 1", plusOne),
+        cv("1 + CASE WHEN n > 0 THEN n ELSE 0 END", plusOne),
+        cv(
+          "(CASE WHEN n > 0 THEN 1 ELSE 0 END) + 1",
+          answers(Whole(2), Whole(2), Whole(1), Whole(1), Whole(2))
+        ),
+        cv(
+          "CASE WHEN n > 0 THEN n ELSE 0 END * 2",
+          answers(Whole(6), Whole(10), Whole(0), Whole(0), Whole(20))
+        ),
+        cv(
+          "CASE WHEN n > 0 THEN n END + 1",
+          answers(Whole(4), Whole(6), Null, Null, Whole(11))
+        ),
+        cv(
+          "CASE WHEN b THEN n ELSE 0 END + 1",
+          answers(Whole(4), Whole(1), Whole(1), Null, Whole(1))
+        ),
+        cv(
+          "CASE n WHEN 3 THEN 10 ELSE 0 END + 1",
+          answers(Whole(11), Whole(1), Whole(1), Whole(1), Whole(1))
+        ),
+        cv(
+          "CASE WHEN n > 0 THEN 1 ELSE 0 END - CASE WHEN n > 3 THEN 1 ELSE 0 END",
+          answers(Whole(1), Whole(0), Whole(0), Whole(0), Whole(0))
+        ),
+        cv(
+          "(CASE WHEN n > 0 THEN n ELSE 0 END + 1) * 2",
+          answers(Whole(8), Whole(12), Whole(2), Whole(2), Whole(22))
+        ),
+        cv(
+          "CASE WHEN x > 0 THEN x ELSE 0 END + 1",
+          answers(Num(1.25), Num(2.5), Num(1), Num(3), Num(1))
+        ),
+        // a NULLIF: NULL where it nulls, the operator applied everywhere else
+        cv("NULLIF(n, 3) + 1", answers(Null, Whole(6), Whole(-1), Null, Whole(11))),
+        cv("1 + NULLIF(n, 3)", answers(Null, Whole(6), Whole(-1), Null, Whole(11))),
+        cv("NULLIF(n, 3) * 2", answers(Null, Whole(10), Whole(-4), Null, Whole(20))),
+        cv("x / NULLIF(n, 5)", answers(Num(0.25 / 3), Null, Null, Null, Num(-0.125))),
+        // WHERE
+        kept(
+          s"SELECT id FROM $operandTable WHERE CASE WHEN n > 0 THEN n ELSE 0 END + 1 > 3",
+          Set("r1", "r2", "r5")
+        ),
+        kept(
+          s"SELECT id FROM $operandTable WHERE (CASE WHEN n > 0 THEN 1 ELSE 0 END) + 1 = 2",
+          Set("r1", "r2", "r5")
+        ),
+        kept(s"SELECT id FROM $operandTable WHERE NULLIF(n, 3) + 1 > 5", Set("r2", "r5")),
+        // per group: the operand of an aggregate, and the group filter over it
+        {
+          val sql =
+            s"SELECT g, MAX(CASE WHEN n > 0 THEN n ELSE 0 END + 1) AS x FROM $operandTable GROUP BY g"
+          sql -> gatewayRows(sql).map { rs =>
+            val got = byKey(rs, "g")
+            Seq("g1" -> Num(6), "g2" -> Num(1), "g3" -> Num(11)).flatMap { case (g, want) =>
+              differs(want, got.getOrElse(g, null)).map(d => s"$g: $d")
+            }
+          }
+        },
+        kept(
+          s"SELECT g FROM $operandTable GROUP BY g " +
+          "HAVING MAX(CASE WHEN n > 0 THEN n ELSE 0 END + 1) > 5",
+          Set("g1", "g3")
+        ),
+        // a computed column STORES PostgreSQL's value
+        storedVerdict(
+          computedTable,
+          Seq(
+            "c1" -> plusOne,
+            "c2" -> answers(Whole(2), Whole(2), Whole(1), Whole(1), Whole(2)),
+            "c3" -> answers(Whole(4), Whole(6), Null, Null, Whole(11)),
+            "c4" -> answers(Null, Whole(6), Whole(-1), Null, Whole(11))
+          )
+        )
+      )
+    )
+  }
+
+  /** `GREATEST` / `LEAST` over whole numbers answer a whole number, as their type says and as
+    * PostgreSQL answers (issue #380): Painless's `Math.max` / `Math.min` take `double`s only, and
+    * answered `3.0` for `GREATEST(n, 2)` over an INT `n`. Over a DOUBLE they still answer doubles.
+    */
+  "GREATEST / LEAST over whole numbers" should
+  "answer whole numbers, in a query, a WHERE and a computed column" in {
+    val computedTable = "date_arithmetic_greatest_cc"
+    run(
+      s"CREATE TABLE $computedTable (id KEYWORD, n INT, " +
+      "c BIGINT SCRIPT AS (GREATEST(n, 2)), PRIMARY KEY (id))"
+    )
+    bulk(
+      computedTable,
+      List(
+        """{"id":"r1","n":3}""",
+        """{"id":"r2","n":5}""",
+        """{"id":"r3","n":-2}""",
+        """{"id":"r4"}""",
+        """{"id":"r5","n":10}"""
+      )
+    )
+    val greatest = answers(Whole(3), Whole(5), Whole(2), Whole(2), Whole(10))
+    verdict(
+      "GREATEST / LEAST over whole numbers",
+      Seq(
+        comparisonVerdict("GREATEST(n, 2)", greatest, operandTable),
+        comparisonVerdict(
+          "LEAST(n, 4)",
+          answers(Whole(3), Whole(4), Whole(-2), Whole(4), Whole(4)),
+          operandTable
+        ),
+        comparisonVerdict(
+          "GREATEST(n, 2, 4)",
+          answers(Whole(4), Whole(5), Whole(4), Whole(4), Whole(10)),
+          operandTable
+        ),
+        comparisonVerdict(
+          "LEAST(n, 4) + 1",
+          answers(Whole(4), Whole(5), Whole(-1), Whole(5), Whole(5)),
+          operandTable
+        ),
+        comparisonVerdict(
+          "GREATEST(x, 2)",
+          answers(Numeric(2), Numeric(2), Numeric(2), Numeric(2), Numeric(2)),
+          operandTable
+        ),
+        kept(s"SELECT id FROM $operandTable WHERE GREATEST(n, 2) = 2", Set("r3", "r4")),
+        storedVerdict(computedTable, Seq("c" -> greatest))
+      )
+    )
+  }
+
+  /** `GREATEST` / `LEAST` answer ONE type on every row: the common type of all their arguments, as
+    * PostgreSQL types them -- a `DOUBLE` as soon as one argument is fractional, else the widest
+    * whole type -- in a query, a `WHERE`, a computed column and a `CREATE TABLE … AS SELECT`, which
+    * declares that type.
+    *
+    * The argument that survives a NULL was answered as it was: `GREATEST(n, x)` gave the `Integer`
+    * -2 where `x` is NULL beside `Double` values, `GREATEST(GREATEST(n, 0), x)` the `Integer` 0,
+    * and `GREATEST(CAST(n AS DOUBLE), 1)` -- read as whole, the cast typed by its INT column -- the
+    * `Integer` 1; `GREATEST(CAST(s AS INT), n)`, the cast typed by its KEYWORD column, answered
+    * doubles. A computed column reads its document's raw value: `x` written `2` (row r6) is an
+    * integer there. Every value is PostgreSQL 16's over the same rows (r6 answers as r4, its `x`
+    * written `2.0`), and its class is checked on every row.
+    */
+  "GREATEST / LEAST" should
+  "answer the common type of their arguments on every row, in every venue, as PostgreSQL does" in {
+    val computedTable = "date_arithmetic_greatest_type_cc"
+    val (ctasDouble, ctasCast, ctasWhole) = (
+      "date_arithmetic_greatest_double",
+      "date_arithmetic_greatest_cast",
+      "date_arithmetic_greatest_whole"
+    )
+    val longTable = "date_arithmetic_greatest_long_cc"
+    // each computed table is one of the verdicts: a table that cannot be created is reported with
+    // the rest, and only its stored values are then not read
+    def createdWith(table: String, columns: String): (String, Either[String, Seq[String]]) = {
+      val sql = s"CREATE TABLE $table (id KEYWORD, n INT, x DOUBLE, $columns, PRIMARY KEY (id))"
+      sql -> (Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+        case Right(ElasticSuccess(_)) =>
+          bulk(
+            table,
+            List(
+              """{"id":"r1","n":3,"x":0.25}""",
+              """{"id":"r2","n":5,"x":1.5}""",
+              """{"id":"r3","n":-2}""",
+              """{"id":"r4","x":2.0}""",
+              """{"id":"r5","n":10,"x":-1.25}""",
+              """{"id":"r6","x":2}"""
+            )
+          )
+          Right(Nil)
+        case Right(ElasticFailure(error)) => Left(error.message)
+        case Left(t)                      => Left(t.toString)
+      })
+    }
+    val computedCreated = createdWith(
+      computedTable,
+      "c1 DOUBLE SCRIPT AS (GREATEST(n, x)), c2 DOUBLE SCRIPT AS (LEAST(n, x)), " +
+      "c3 DOUBLE SCRIPT AS (GREATEST(CAST(n AS DOUBLE), 1)), " +
+      "c4 DOUBLE SCRIPT AS (GREATEST(GREATEST(n, 0), x)), c5 BIGINT SCRIPT AS (GREATEST(n, 2)), " +
+      "c7 BIGINT SCRIPT AS (GREATEST(n, CAST(n AS BIGINT))), " +
+      "c8 DOUBLE SCRIPT AS (LEAST(CAST(n AS DOUBLE), 1))"
+    )
+    val longCreated = createdWith(longTable, "c6 BIGINT SCRIPT AS (GREATEST(n, 3000000000))")
+    def doubles(r1: Double, r2: Double, r3: Double, r4: Double, r5: Double) =
+      answers(doubleOf(r1), doubleOf(r2), doubleOf(r3), doubleOf(r4), doubleOf(r5))
+    def wholes(r1: Long, r2: Long, r3: Long, r4: Long, r5: Long) =
+      answers(wholeOf(r1), wholeOf(r2), wholeOf(r3), wholeOf(r4), wholeOf(r5))
+    def cv(expression: String, expected: Map[String, Expected]) =
+      comparisonVerdict(expression, expected, operandTable)
+    // r6 answers as r4 -- no `n`, `x` = 2 -- whatever the class `x` was written in
+    def withR6(expected: Map[String, Expected]): Map[String, Expected] =
+      expected + ("r6" -> expected("r4"))
+    val greatestNx = doubles(3, 5, -2, 2, 10)
+    val greatestCast = doubles(3, 5, 1, 1, 10)
+    val nested = doubles(3, 5, 0, 2, 10)
+    val greatestN2 = wholes(3, 5, 2, 2, 10)
+    val bigint = wholes(3000000000L, 3000000000L, 3000000000L, 3000000000L, 3000000000L)
+    // the values each computed table STORES, read only where the table could be created
+    val stored =
+      Seq(
+        computedCreated -> (() =>
+          storedVerdict(
+            computedTable,
+            Seq(
+              "c1" -> withR6(greatestNx),
+              "c2" -> withR6(doubles(0.25, 1.5, -2, 2, -1.25)),
+              "c3" -> withR6(greatestCast),
+              "c4" -> withR6(nested),
+              "c5" -> withR6(greatestN2),
+              "c7" -> withR6(answers(wholeOf(3), wholeOf(5), wholeOf(-2), Null, wholeOf(10))),
+              "c8" -> withR6(doubles(1, 1, -2, 1, 1))
+            )
+          )
+        ),
+        longCreated -> (() => storedVerdict(longTable, Seq("c6" -> withR6(bigint))))
+      ).collect { case ((_, Right(_)), read) => read() }
+    try {
+      verdict(
+        "GREATEST / LEAST answer one type",
+        Seq(
+          // a fractional argument: a DOUBLE on every row, the NULL-skipping branches included
+          cv("GREATEST(CAST(n AS DOUBLE), 1)", greatestCast),
+          cv("LEAST(CAST(n AS DOUBLE), 1)", doubles(1, 1, -2, 1, 1)),
+          cv("GREATEST(GREATEST(n, 0), x)", nested),
+          cv("LEAST(LEAST(n, 0), x)", doubles(0, 0, -2, 0, -1.25)),
+          cv("GREATEST(n, x)", greatestNx),
+          cv("LEAST(n, x)", doubles(0.25, 1.5, -2, 2, -1.25)),
+          cv("GREATEST(x, n)", greatestNx),
+          cv("LEAST(x, n)", doubles(0.25, 1.5, -2, 2, -1.25)),
+          cv("GREATEST(COALESCE(n, 0), x)", greatestNx),
+          cv("LEAST(COALESCE(n, 0), x)", doubles(0.25, 1.5, -2, 0, -1.25)),
+          cv("GREATEST(CAST(s AS INT), x)", doubles(1, 5, 12, 2, 3)),
+          cv("LEAST(CAST(s AS INT), x)", doubles(0.25, 1.5, 12, 2, -1.25)),
+          cv("GREATEST(YEAR(d), x)", doubles(2024, 2024, 2023, 2, 2024)),
+          cv("LEAST(YEAR(d), x)", doubles(0.25, 1.5, 2023, 2, -1.25)),
+          cv("GREATEST(n, 1.5)", doubles(3, 5, 1.5, 1.5, 10)),
+          cv("LEAST(n, 1.5)", doubles(1.5, 1.5, -2, 1.5, 1.5)),
+          cv("GREATEST(0, n, x)", nested),
+          cv("GREATEST(n, x, 0)", nested),
+          cv("LEAST(n, 0, x)", doubles(0, 0, -2, 0, -1.25)),
+          cv("GREATEST(GREATEST(n, x), 0)", nested),
+          cv("GREATEST(n, GREATEST(x, 0))", nested),
+          cv("LEAST(GREATEST(n, 0), x)", doubles(0.25, 1.5, 0, 0, -1.25)),
+          cv("GREATEST(n, x) + 1", doubles(4, 6, -1, 3, 11)),
+          cv("GREATEST(CAST(n AS DOUBLE), 1) + 1", doubles(4, 6, 2, 2, 11)),
+          // whole numbers only: the widest whole type, an INT beside a BIGINT a BIGINT
+          cv("GREATEST(n, 2)", greatestN2),
+          cv("LEAST(n, 4)", wholes(3, 4, -2, 4, 4)),
+          cv("LEAST(n, 4) + 1", wholes(4, 5, -1, 5, 5)),
+          // a cast over a KEYWORD is the type it casts to, never its column's: whole numbers
+          cv(
+            "GREATEST(CAST(s AS INT), n)",
+            answers(wholeOf(3), wholeOf(5), wholeOf(12), Null, wholeOf(10))
+          ),
+          cv("GREATEST(n, 3000000000)", bigint),
+          cv(
+            "LEAST(n, -3000000000)",
+            wholes(-3000000000L, -3000000000L, -3000000000L, -3000000000L, -3000000000L)
+          ),
+          cv(
+            "GREATEST(n, CAST(n AS BIGINT))",
+            answers(wholeOf(3), wholeOf(5), wholeOf(-2), Null, wholeOf(10))
+          ),
+          cv(
+            "LEAST(n, CAST(n AS BIGINT))",
+            answers(wholeOf(3), wholeOf(5), wholeOf(-2), Null, wholeOf(10))
+          ),
+          // WHERE
+          kept(s"SELECT id FROM $operandTable WHERE GREATEST(n, x) > 2", Set("r1", "r2", "r5")),
+          kept(
+            s"SELECT id FROM $operandTable WHERE GREATEST(CAST(n AS DOUBLE), 1) = 1",
+            Set("r3", "r4")
+          ),
+          kept(s"SELECT id FROM $operandTable WHERE LEAST(n, x) < 0", Set("r3", "r5")),
+          // a computed column STORES that type, whatever class its document's value was written in
+          computedCreated,
+          longCreated
+        ) ++ stored ++ Seq(
+          // a CREATE TABLE … AS SELECT declares it and stores it
+          created(ctasDouble, s"SELECT id, GREATEST(n, x) AS v FROM $operandTable", greatestNx),
+          declares(ctasDouble, "v", "DOUBLE"),
+          created(
+            ctasCast,
+            s"SELECT id, GREATEST(CAST(n AS DOUBLE), 1) AS v FROM $operandTable",
+            greatestCast
+          ),
+          declares(ctasCast, "v", "DOUBLE"),
+          created(ctasWhole, s"SELECT id, GREATEST(n, 2) AS v FROM $operandTable", greatestN2),
+          declares(ctasWhole, "v", "BIGINT")
+        )
+      )
+    } finally Seq(ctasDouble, ctasCast, ctasWhole).foreach(t =>
+      Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds))
+    )
+  }
+
+  /** A NUMBER converted to a DATE -- `(d - d2)::DATE`, `CAST(n AS DATE)` -- is refused by name, as
+    * PostgreSQL refuses it (`cannot cast type integer to date`), in a query, a computed column and
+    * a `CREATE TABLE … AS SELECT`, which leaves no table behind. It answered the number itself
+    * under a DATE label. A number converted to a TIMESTAMP keeps core's epoch-millisecond
+    * conversion.
+    */
+  "a number converted to a DATE" should
+  "be refused by name in every venue, and leave no table behind" in {
+    val castTable = "date_arithmetic_tocast"
+    val castCtas = "date_arithmetic_tocast_ctas"
+    def millis(ms: Long): Expected = At(Instant.ofEpochMilli(ms))
+    verdict(
+      "a number converted to a DATE",
+      Seq(
+        refusedBy(
+          s"SELECT id, (d - d2)::DATE AS x FROM $operandTable",
+          "cannot cast BIGINT to DATE"
+        ),
+        refusedBy(s"SELECT id, CAST(n AS DATE) AS x FROM $operandTable", "cannot cast INT to DATE"),
+        refusedBy(s"SELECT id, n::DATE AS x FROM $operandTable", "cannot cast INT to DATE"),
+        refusedBy(
+          s"SELECT id, CAST(x AS DATE) AS x FROM $operandTable",
+          "cannot cast DOUBLE to DATE"
+        ),
+        refusedBy(
+          s"SELECT id, CAST(1 AS DATE) AS x FROM $operandTable",
+          "cannot cast BIGINT to DATE"
+        ),
+        refusedBy(
+          s"SELECT id, CAST(YEAR(d) AS DATE) AS x FROM $operandTable",
+          "to DATE in expression: CAST(YEAR(d) AS DATE)"
+        ),
+        refusedBy(
+          s"SELECT id, TRY_CAST(n AS DATE) AS x FROM $operandTable",
+          "cannot cast INT to DATE"
+        ),
+        refusedBy(
+          s"SELECT id FROM $operandTable WHERE (d - d2)::DATE = d",
+          "cannot cast BIGINT to DATE"
+        ),
+        refusedBy(
+          s"SELECT g, (MAX(d) - MIN(d))::DATE AS x FROM $operandTable GROUP BY g",
+          "cannot cast BIGINT to DATE"
+        ),
+        refusedBy(
+          s"CREATE TABLE $castTable (id KEYWORD, n INT, c DATE SCRIPT AS (CAST(n AS DATE)), " +
+          "PRIMARY KEY (id))",
+          "Column 'c'",
+          "cannot cast INT to DATE"
+        ),
+        absent(castTable),
+        refusedBy(
+          s"CREATE TABLE $castCtas AS SELECT id, (d - d2)::DATE AS v FROM $operandTable",
+          "cannot cast BIGINT to DATE"
+        ),
+        absent(castCtas),
+        // a number to a TIMESTAMP: core's epoch-millisecond conversion, unchanged
+        comparisonVerdict(
+          "(d - d2)::TIMESTAMP",
+          answers(millis(-1), millis(2), Null, Null, millis(0)),
+          operandTable
+        ),
+        comparisonVerdict(
+          "CAST(n AS TIMESTAMP)",
+          answers(millis(3), millis(5), millis(-2), Null, millis(10)),
+          operandTable
+        ),
+        comparisonVerdict(
+          "(d - d2)::BIGINT",
+          answers(Whole(-1), Whole(2), Null, Null, Whole(0)),
+          operandTable
+        )
+      )
+    )
+  }
+
+  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer`. Beside `ABS` of an
+    * INT, a quoted fraction is no integer and is refused by name, as PostgreSQL refuses it
+    * (`invalid input syntax for type integer`), where NUMERIC read it as a number; a whole number
+    * is read. Its value is that integer, and a `CREATE TABLE … AS SELECT` declares it -- it failed
+    * to create the index (`scaling_factor` is required by a NUMERIC column).
+    */
+  "ABS" should "be typed by its argument, refusing a quoted fraction beside ABS of an integer" in {
+    val computedTable = "date_arithmetic_abs_cc"
+    val ctas = "date_arithmetic_abs_ctas"
+    run(
+      s"CREATE TABLE $computedTable (id KEYWORD, n INT, c INT SCRIPT AS (ABS(n)), PRIMARY KEY (id))"
+    )
+    bulk(
+      computedTable,
+      List(
+        """{"id":"r1","n":3}""",
+        """{"id":"r2","n":5}""",
+        """{"id":"r3","n":-2}""",
+        """{"id":"r4"}""",
+        """{"id":"r5","n":10}"""
+      )
+    )
+    val abs = answers(Whole(3), Whole(5), Whole(2), Null, Whole(10))
+    val notInteger = "'INT' is not compatible with 'VARCHAR'"
+    try {
+      verdict(
+        "ABS typed by its argument",
+        Seq(
+          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.5'", notInteger),
+          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.0'", notInteger),
+          refusedBy(
+            s"SELECT id FROM $operandTable WHERE ABS(n) + '1.5' > 0",
+            "Type mismatch",
+            "ABS(n) + '1.5'"
+          ),
+          refusedBy(
+            s"SELECT id, ABS(n) + '1.5' AS x FROM $operandTable",
+            "is not compatible with input 'VARCHAR'"
+          ),
+          refusedBy(
+            s"SELECT id, CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END AS x FROM $operandTable",
+            notInteger
+          ),
+          refusedBy(
+            s"SELECT id, NULLIF(ABS(n), '1.5') AS x FROM $operandTable",
+            "with VARCHAR: NULLIF requires two arguments of comparable types"
+          ),
+          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) IN ('1', '1.5')", notInteger),
+          refusedBy(
+            s"SELECT id FROM $operandTable WHERE ABS(n) BETWEEN '1' AND '1.5'",
+            "output 'INT' is not compatible with input 'VARCHAR'"
+          ),
+          // a whole number beside ABS of an integer, any number beside ABS of a DOUBLE
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) = '2'", Set("r3")),
+          kept(s"SELECT id FROM $operandTable WHERE ABS(x) = '1.5'", Set("r2")),
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) > 2", Set("r1", "r2", "r5")),
+          comparisonVerdict("ABS(n)", abs, operandTable),
+          comparisonVerdict(
+            "ABS(x)",
+            answers(Numeric(0.25), Numeric(1.5), Null, Numeric(2.0), Numeric(1.25)),
+            operandTable
+          ),
+          storedVerdict(computedTable, Seq("c" -> abs)),
+          created(ctas, s"SELECT id, ABS(n) AS v FROM $operandTable", abs),
+          declares(ctas, "v", "INT")
+        )
+      )
+    } finally Try(Await.result(client.run(s"DROP TABLE IF EXISTS $ctas"), 60.seconds))
+  }
+
+  /** `NULLIF(<quoted literal>, x)` answers the literal READ as `x`'s type -- the midnight a date
+    * names beside a TIMESTAMP, the date beside a DATE, the number beside a number -- and is typed
+    * so, as PostgreSQL types it; a `CREATE TABLE … AS SELECT` declares that type, where it declared
+    * the literal's VARCHAR and stored text.
+    */
+  "NULLIF with a quoted literal first" should
+  "be typed by the literal's reading, which a CREATE TABLE AS SELECT declares" in {
+    val jan31 = At(start(on("2024-01-31")))
+    val timestamps = answers(jan31, jan31, jan31, jan31, jan31)
+    val dates = answers(Null, jan31, jan31, jan31, jan31)
+    val numbers = answers(Null, Whole(3), Whole(3), Whole(3), Whole(3))
+    val tables = Seq(
+      "date_arithmetic_nullif_ts",
+      "date_arithmetic_nullif_d",
+      "date_arithmetic_nullif_n"
+    )
+    try {
+      verdict(
+        "NULLIF with a quoted literal first",
+        Seq(
+          comparisonVerdict("NULLIF('2024-01-31', ts)", timestamps, operandTable),
+          comparisonVerdict("NULLIF('2024-01-31T10:00:00Z', d)", dates, operandTable),
+          comparisonVerdict("NULLIF('3', n)", numbers, operandTable),
+          comparisonVerdict(
+            "NULLIF('1.5', x)",
+            answers(Numeric(1.5), Null, Numeric(1.5), Numeric(1.5), Numeric(1.5)),
+            operandTable
+          ),
+          comparisonVerdict(
+            "NULLIF('true', b)",
+            answers(Null, Bool(true), Bool(true), Null, Bool(true)),
+            operandTable
+          ),
+          created(
+            tables(0),
+            s"SELECT id, NULLIF('2024-01-31', ts) AS v FROM $operandTable",
+            timestamps
+          ),
+          declares(tables(0), "v", "TIMESTAMP"),
+          created(
+            tables(1),
+            s"SELECT id, NULLIF('2024-01-31T10:00:00Z', d) AS v FROM $operandTable",
+            dates
+          ),
+          declares(tables(1), "v", "DATE"),
+          created(tables(2), s"SELECT id, NULLIF('3', n) AS v FROM $operandTable", numbers),
+          declares(tables(2), "v", "BIGINT")
+        )
+      )
+    } finally tables.foreach(t =>
+      Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds))
+    )
+  }
+
+  /** A simple `CASE` answers its `THEN` / `ELSE` values in their own type -- `CASE s WHEN 'a' THEN
+    * 1 ELSE 0 END` answers the integers 1 and 0, as PostgreSQL does. It converted them to its
+    * OPERAND's type: the strings "1" / "0" beside a KEYWORD (which a WHERE then compared with 1 and
+    * found nothing, and an arithmetic refused), the doubles 1.0 / 0.0 beside a DOUBLE, stored so by
+    * a computed column and a `CREATE TABLE … AS SELECT`.
+    */
+  "a simple CASE" should
+  "answer its THEN / ELSE values in their own type, in every venue, as PostgreSQL does" in {
+    val computedTable = "date_arithmetic_case_cc"
+    val ctas = "date_arithmetic_case_ctas"
+    run(
+      s"CREATE TABLE $computedTable (id KEYWORD, s KEYWORD, x DOUBLE, " +
+      "c1 BIGINT SCRIPT AS (CASE s WHEN '1' THEN 1 ELSE 0 END), " +
+      "c2 BIGINT SCRIPT AS (CASE x WHEN 1.5 THEN 1 ELSE 0 END), PRIMARY KEY (id))"
+    )
+    bulk(
+      computedTable,
+      List(
+        """{"id":"r1","s":"1","x":0.25}""",
+        """{"id":"r2","s":"5","x":1.5}""",
+        """{"id":"r3","s":"12"}""",
+        """{"id":"r4","x":2.0}""",
+        """{"id":"r5","s":"3","x":-1.25}"""
+      )
+    )
+    val zero = answers(Whole(0), Whole(0), Whole(0), Whole(0), Whole(0))
+    val first = answers(Whole(1), Whole(0), Whole(0), Whole(0), Whole(0))
+    val second = answers(Whole(0), Whole(1), Whole(0), Whole(0), Whole(0))
+    try {
+      verdict(
+        "a simple CASE",
+        Seq(
+          comparisonVerdict("CASE s WHEN 'a' THEN 1 ELSE 0 END", zero, operandTable),
+          comparisonVerdict("CASE s WHEN '1' THEN 1 ELSE 0 END", first, operandTable),
+          comparisonVerdict("CASE x WHEN 1.5 THEN 1 ELSE 0 END", second, operandTable),
+          comparisonVerdict("CASE id WHEN 'r1' THEN 1 ELSE 0 END", first, operandTable),
+          comparisonVerdict("CASE s WHEN 'a' THEN n ELSE 0 END", zero, operandTable),
+          comparisonVerdict(
+            "CASE s WHEN '1' THEN 1.5 ELSE 0 END",
+            answers(Numeric(1.5), Numeric(0), Numeric(0), Numeric(0), Numeric(0)),
+            operandTable
+          ),
+          comparisonVerdict(
+            "CASE s WHEN '1' THEN d ELSE d2 END",
+            answers(
+              At(start(on("2024-01-31"))),
+              At(start(on("2024-02-28"))),
+              Null,
+              At(start(on("2024-01-31"))),
+              At(start(on("2024-02-29")))
+            ),
+            operandTable
+          ),
+          comparisonVerdict(
+            "CASE s WHEN '1' THEN 1 ELSE 0 END + 1",
+            answers(Whole(2), Whole(1), Whole(1), Whole(1), Whole(1)),
+            operandTable
+          ),
+          kept(
+            s"SELECT id FROM $operandTable WHERE CASE s WHEN '1' THEN 1 ELSE 0 END = 1",
+            Set("r1")
+          ),
+          storedVerdict(computedTable, Seq("c1" -> first, "c2" -> second)),
+          created(
+            ctas,
+            s"SELECT id, CASE s WHEN 'a' THEN 1 ELSE 0 END AS v FROM $operandTable",
+            zero
+          ),
+          declares(ctas, "v", "BIGINT")
+        )
+      )
+    } finally Try(Await.result(client.run(s"DROP TABLE IF EXISTS $ctas"), 60.seconds))
   }
 
   "a pattern's cached schema" should "be refreshed by an elasticsql DDL statement on an index it matches" in {

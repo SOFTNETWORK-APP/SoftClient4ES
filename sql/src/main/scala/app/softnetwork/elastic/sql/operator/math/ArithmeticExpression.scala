@@ -20,7 +20,7 @@ import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
 import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, TransformFunction}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
-import app.softnetwork.elastic.sql.function.cond.{functionsOf, NumericReducer}
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NullIf, NumericReducer}
 import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.query.NestedElement
@@ -415,7 +415,45 @@ case class ArithmeticExpression(
     * the operand is known non-null.
     */
   private def coercionSkipped(operand: PainlessScript, target: SQLType): Boolean =
-    operand.nullable && renderedType(operand).isNumber && target.isNumber
+    mayBeNull(operand) && renderedType(operand).isNumber && target.isNumber
+
+  /** A `CASE` or a `NULLIF` written as an operand -- the nameless identifier the parser wraps it in
+    * -- is ONE value, and its rendering is a CONDITIONAL (`c ? a : b`, `x == 1 ? null : x`) over
+    * which `+`, `-`, `*`, `/` and `%` bind tighter: spliced as it stands, `CASE WHEN n > 0 THEN n
+    * ELSE 0 END + 1` was `param2 ? n : 0 + 1`, the ELSE branch plus one -- 3, 5, 1, 1, 10 where
+    * PostgreSQL answers 4, 6, 1, 1, 11 (issue #380), SQL parentheses or not.
+    */
+  private def conditionalOperand(operand: PainlessScript): Boolean = operand match {
+    case i: Identifier if i.name.trim.isEmpty && !i.isAggregation =>
+      i.functions.headOption.exists {
+        case _: Case | _: NullIf => true
+        case _                   => false
+      }
+    case _ => false
+  }
+
+  /** Can this operand be NULL when it runs? Its own nullability, or -- for a `CASE` or a `NULLIF`
+    * operand, whose nameless identifier answers `false` whatever it holds -- the function's: a
+    * `NULLIF` exists to produce NULL, and a `CASE` is NULL when a branch can be or it has no
+    * `ELSE`. Unguarded, `NULLIF(n, 1) + 1` threw on the very row it nulls (issue #380).
+    */
+  private def mayBeNull(operand: PainlessScript): Boolean =
+    operand.nullable || (operand match {
+      case i: Identifier if conditionalOperand(i) =>
+        i.functions.head match {
+          case c: Case => c.nullable
+          case _       => true
+        }
+      case _ => false
+    })
+
+  /** A conditional operand's rendering, parenthesised to be the ONE value it is wherever an
+    * operator or a conversion is applied to it; anything else, and a bare name, as it stands.
+    */
+  private def asOneValue(operand: PainlessScript, rendered: String): String =
+    if (conditionalOperand(operand) && !ArithmeticExpression.isBareName(rendered.trim))
+      s"($rendered)"
+    else rendered
 
   private def isFloating(t: SQLType): Boolean = t == SQLTypes.Double || t == SQLTypes.Real
 
@@ -491,7 +529,7 @@ case class ArithmeticExpression(
   /** A NULL literal beside a temporal makes the expression NULL on every row, whatever the other
     * operand holds, so a consumer must guard it.
     */
-  override def nullable: Boolean = left.nullable || right.nullable || nullValued
+  override def nullable: Boolean = mayBeNull(left) || mayBeNull(right) || nullValued
 
   override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
     context match {
@@ -523,7 +561,7 @@ case class ArithmeticExpression(
           SQLTypeUtils.coerce(rendered, renderedType(operand), target, nullable = false, context)
 
       def render(operand: PainlessScript): String =
-        coerced(operandPainless(operand, idx, context), operand)
+        coerced(asOneValue(operand, operandPainless(operand, idx, context)), operand)
 
       /** A rendering that IS a Painless name needs no local of its own. */
       def isBareName(e: String): Boolean =
@@ -586,7 +624,7 @@ case class ArithmeticExpression(
         }
 
       val leftParam =
-        if (left.nullable && !isBareName(l)) bind(l, s"lv$idx") else l
+        if (mayBeNull(left) && !isBareName(l)) bind(l, s"lv$idx") else l
 
       /** 🔴 The divisor is bound when it is not a bare NAME, even if it is not nullable -- because
         * the zero guard reads it a SECOND time. `$rightParam` appears in `($rightParam == 0)` and
@@ -599,7 +637,7 @@ case class ArithmeticExpression(
         * A non-nullable, non-name LEFT operand needs no such binding: it is read once.
         */
       val rightParam =
-        if (!isBareName(r) && (right.nullable || (floatingDivision(out) && divisorMayBeZero)))
+        if (!isBareName(r) && (mayBeNull(right) || (floatingDivision(out) && divisorMayBeZero)))
           bind(r, s"rv$idx")
         else r
 
@@ -616,8 +654,8 @@ case class ArithmeticExpression(
         */
       val lhs = if (needsDoubleCast(target)) s"((double) $leftParam)" else leftParam
       val guards =
-        (if (left.nullable) List(s"$leftParam == null") else Nil) :::
-        (if (right.nullable) List(s"$rightParam == null") else Nil) :::
+        (if (mayBeNull(left)) List(s"$leftParam == null") else Nil) :::
+        (if (mayBeNull(right)) List(s"$rightParam == null") else Nil) :::
         (if (floatingDivision(target) && divisorMayBeZero && !divisorIsLiteralZero)
            List(s"$rightParam == 0")
          else Nil)
@@ -800,6 +838,14 @@ case class ArithmeticExpression(
       case literal if literalNumber(literal).isDefined =>
         val number = literalNumber(literal).get
         SQLTypeUtils.coerce(number.painless, number.sqlType, target, nullable = false, context)
+      case conditional if conditionalOperand(conditional) =>
+        SQLTypeUtils.coerce(
+          asOneValue(conditional, conditional.painless(context)),
+          conditional.baseType,
+          target,
+          nullable = false,
+          context
+        )
       case _ => SQLTypeUtils.coerce(operand, target, context)
     }
     val l = coerced(left)
@@ -984,7 +1030,7 @@ object ArithmeticExpression {
     * DATE, `CAST(NULL AS INT)` a whole number -- and a typed NULL is then judged by its type,
     * whatever its value.
     */
-  private def bareNull(operand: PainlessScript): Boolean = operand match {
+  private[sql] def bareNull(operand: PainlessScript): Boolean = operand match {
     case Null          => true
     case i: Identifier => i.name.trim.isEmpty && i.functions == List(Null)
     case _             => false

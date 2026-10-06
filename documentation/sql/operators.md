@@ -290,25 +290,21 @@ SELECT CAST(10 AS DOUBLE) / 3 AS result;   -- 3.333...
 > `CREATE TABLE u (n INTEGER, m INTEGER, c DOUBLE SCRIPT AS (n / m))` stored `3.0` for 7/2 before
 > `0.24.0`; it stores `3.5`.
 >
-> ⚠️ **There is no truncating-division operator, and no single expression that produces one.**
-> Other engines spell truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither — and the
-> obvious rewrites are **parse errors**, because an arithmetic expression is not accepted as the
-> operand of a function, of a `CAST` or of a `CASE` branch:
+> ⚠️ **There is no truncating-division operator: write `(a / b)::INTEGER`.** Other engines spell
+> truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither. Since `0.24.0` a `::` cast
+> applies to arithmetic and truncates toward zero: `(n / m)::INTEGER` is `3` for 7 / 2 and `-3` for
+> -7 / 2, and NULL for a zero divisor, in a search and in a computed column. The other obvious
+> rewrites are **parse errors**, because an arithmetic expression is not accepted as the operand of
+> a function, of a `CAST` or of a `CASE` branch:
 >
 > ```sql
 > CAST(a / b AS INTEGER)     CAST(a + b AS INTEGER)     CAST((a / b) AS INTEGER)   -- ✗ rejected
 > FLOOR(a / b)               ABS(a / b)                 COALESCE(a / b, 0)         -- ✗ rejected
-> FLOOR(x)                   a / NULLIF(b, 0)                                      -- ✓ accepted
+> (a / b)::INTEGER           FLOOR(x)                   a / NULLIF(b, 0)           -- ✓ accepted
 > ```
 >
 > The rule is **directional**: `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is fine. It is
 > not specific to division — any arithmetic operand is refused — and parenthesising does not help.
-> To get an integral quotient today, compute it into a column and cast **that** column:
->
-> ```sql
-> CREATE TABLE t (n INTEGER, m INTEGER, q DOUBLE SCRIPT AS (n / m));
-> SELECT CAST(q AS INTEGER) AS whole FROM t;   -- 3 for 7 / 2, truncated toward zero
-> ```
 >
 > `%` (MOD) is unaffected by this rule and keeps deriving its type from its operands — see the `%`
 > section below, including what it does with a zero divisor.
@@ -333,18 +329,16 @@ division **threw** (a search answered HTTP 400 `arithmetic_exception: / by zero`
 pipeline silently left the computed column out of the document), while floating division produced
 `Infinity` — which Elasticsearch refuses to index, so **the whole document was rejected**.
 
-> ⚠️ **Two limitations to know about, both of them older than this rule and neither of them fixed
-> by it:**
+> ⚠️ **One limitation to know about, older than this rule and not fixed by it: `ORDER BY
+> <arithmetic>` over nullable columns fails.** A script sort is typed `number`, and Elasticsearch
+> rejects a sort script that can return null — which any arithmetic over a nullable column can,
+> whether from a missing value or from a zero divisor. Measured identically before and after
+> `0.24.0`. Sort by a plain column, or by a computed column.
 >
-> - **`ORDER BY <arithmetic>` over nullable columns fails.** A script sort is typed `number`, and
->   Elasticsearch rejects a sort script that can return null — which any arithmetic over a nullable
->   column can, whether from a missing value or from a zero divisor. Measured identically before and
->   after `0.24.0`. Sort by a plain column, or by a computed column.
-> - **`NULLIF` inside a division fails on exactly the rows it protects.**
->   `total / NULLIF(order_count, 0)` throws a `null_pointer_exception` in a search on any row where
->   `order_count = 0`, and silently drops the computed column in an ingest pipeline. Measured
->   identically before and after `0.24.0`. **Since `0.24.0` you do not need it for division: write
->   `total / order_count`.**
+> **You do not need `NULLIF` for a division: write `total / order_count`.** It works too:
+> `total / NULLIF(order_count, 0)` answers NULL on the rows where `order_count` is `0` or missing,
+> in a search and in a computed column. Before `0.24.0` it threw a `null_pointer_exception` in a
+> search on exactly those rows, and silently dropped the computed column in an ingest pipeline.
 
 ⚠️ **Corrected in `0.24.0`: the other guards this page used to recommend do not parse.** As above,
 an arithmetic expression is not accepted as the operand of a function, of a `CAST` or of a `CASE`
@@ -391,26 +385,23 @@ expr1 % expr2
 **Output:**
 - Integer (remainder of division)
 
-> ⚠️ **A zero divisor is NOT guarded for `%`.** The `0.24.0` rule that turns `a / 0` into NULL
-> covers `/` only, and `%` has two distinct failures:
+> ⚠️ **A zero divisor is NOT guarded for `%` by itself.** The `0.24.0` rule that turns `a / 0` into
+> NULL covers `/` only, and a bare `%` has two distinct failures:
 >
 > - **integer operands** — `a % 0` throws. A search fails with HTTP 400
 >   `arithmetic_exception: / by zero`; in a computed column the ingest processor's
 >   `ignore_failure` swallows it and the column is simply **absent** from the indexed document.
 > - **floating operands** — `a % 0` is `NaN`, and Elasticsearch refuses to index a non-finite
 >   number, so **the whole document is rejected** (`document_parsing_exception: [double] supports
->   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix, and
->   it is still open for `%`.
+>   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix.
 >
-> ⚠️ **There is no in-expression way to guard it.** `CASE WHEN b != 0 THEN a % b END`,
-> `COALESCE(a % b, 0)` and `FLOOR(a % b)` are all **parse errors** — an arithmetic expression is
-> not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see the note under
-> `/` above; the restriction is not specific to division). And `a % NULLIF(b, 0)` parses but then
-> throws `null_pointer_exception` on exactly the rows the guard is for, exactly as it does for
-> division.
->
-> Until `%` is covered, keep a zero divisor out of the data — filter it in `WHERE`
-> (`WHERE b <> 0`), or compute the remainder into its own column from an already-filtered index.
+> **Guard it with `NULLIF`: write `a % NULLIF(b, 0)`.** It answers NULL on the rows where `b` is
+> `0` or missing and the remainder everywhere else, for integer and floating operands alike, in a
+> search and in a computed column. Before `0.24.0` it threw a `null_pointer_exception` on exactly
+> the rows the guard is for. The other guards one might write are **parse errors**:
+> `CASE WHEN b != 0 THEN a % b END`, `COALESCE(a % b, 0)` and `FLOOR(a % b)` — an arithmetic
+> expression is not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see
+> the note under `/` above; the restriction is not specific to division).
 
 **Examples:**
 

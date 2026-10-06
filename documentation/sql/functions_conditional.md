@@ -241,7 +241,8 @@ NULLIF(expr1, expr2)
 - `expr2` - second expression
 
 **Output:**
-- Type of `expr1`, or NULL if equal
+- Type of `expr1` — a quoted literal first is the value it is read as beside `expr2`, and has its
+  type: `NULLIF('2024-01-31', ts)` is a `TIMESTAMP`, `NULLIF('3', n)` a number — or NULL if equal
 
 **Examples:**
 
@@ -264,20 +265,27 @@ FROM products
 -- Converts 0 prices to NULL
 ```
 
-**3. Avoid division by zero — no longer needed, and measured not to work:**
+**3. Guard a zero divisor — needed for `%`, not for `/`:**
 ```sql
--- ⚠️ Since 0.24.0 the engine returns NULL for a zero divisor by itself, so write this:
+-- Since 0.24.0 the engine returns NULL for a zero divisor of `/` by itself, so write this:
 SELECT 
   total_sales / total_orders AS avg_order_value
 FROM sales_summary
 -- NULL on the rows where total_orders = 0
+
+-- `%` is not guarded by itself: NULLIF is the guard
+SELECT 
+  total_sales % NULLIF(total_orders, 0) AS remainder
+FROM sales_summary
+-- NULL on the rows where total_orders = 0 or is missing
 ```
 
-> ⚠️ `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — throws a
-> `null_pointer_exception` in a search on exactly the rows where `total_orders = 0`, and silently
-> drops the computed column in an ingest pipeline. Measured on real Elasticsearch, identically
-> before and after `0.24.0`. `NULLIF` remains correct everywhere else; see the
-> [`/` operator](operators.md) for the division rule.
+> `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — answers
+> `NULL` on the rows where `total_orders` is `0` or missing, in a search and in a computed column,
+> and so does `total_sales % NULLIF(total_orders, 0)`. Before `0.24.0` both threw a
+> `null_pointer_exception` in a search on exactly those rows, and silently dropped the computed
+> column in an ingest pipeline. See the [`/` and `%` operators](operators.md) for the zero-divisor
+> rules.
 
 **4. Clean data:**
 ```sql
@@ -463,8 +471,10 @@ GREATEST(expression1, expression2, ...)
 - One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Numeric (widest input type) over numbers; over dates, a `DATE` when every argument is a `DATE`
-  and a `TIMESTAMP` when they mix; NULL if every argument is NULL
+- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
+  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+  fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
+  argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
 **Examples:**
 
@@ -522,8 +532,10 @@ LEAST(expression1, expression2, ...)
 - One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Numeric (widest input type) over numbers; over dates, a `DATE` when every argument is a `DATE`
-  and a `TIMESTAMP` when they mix; NULL if every argument is NULL
+- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
+  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+  fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
+  argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
 **Examples:**
 

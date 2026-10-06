@@ -460,4 +460,248 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
       "PRIMARY KEY (id))"
     ) should include("== true ? 1 : 0")
   }
+
+  /** The type every SELECT item REPORTS -- what a `CREATE TABLE … AS SELECT` declares -- by alias.
+    */
+  private def reported(sql: String): Map[String, String] = {
+    val search = parsed(sql).update(Some(schema))
+    search.validateResolved() shouldBe Right(())
+    search.select.fields.map { f =>
+      f.fieldAlias.map(_.alias).getOrElse(f.identifier.sql) -> f.identifier.reportedType.typeId
+    }.toMap
+  }
+
+  /** A NUMBER converted to a DATE is refused by name, as PostgreSQL refuses it (`cannot cast type
+    * integer to date`) -- in a query, per group and in a computed column; a number converted to a
+    * TIMESTAMP keeps core's epoch-millisecond conversion.
+    */
+  "a number converted to a DATE" should "be refused by name, in a query and a computed column" in {
+    forAll(
+      Table(
+        ("sql", "refusal"),
+        ("SELECT (d - d2)::DATE AS v FROM t", "cannot cast BIGINT to DATE"),
+        ("SELECT CAST(n AS DATE) AS v FROM t", "cannot cast INT to DATE"),
+        ("SELECT n::DATE AS v FROM t", "cannot cast INT to DATE"),
+        ("SELECT CAST(x AS DATE) AS v FROM t", "cannot cast DOUBLE to DATE"),
+        ("SELECT CAST(1 AS DATE) AS v FROM t", "cannot cast BIGINT to DATE"),
+        (
+          "SELECT CAST(YEAR(d) AS DATE) AS v FROM t",
+          "to DATE in expression: CAST(YEAR(d) AS DATE)"
+        ),
+        ("SELECT TRY_CAST(n AS DATE) AS v FROM t", "cannot cast INT to DATE"),
+        ("SELECT CONVERT(n, DATE) AS v FROM t", "cannot cast INT to DATE"),
+        ("SELECT id FROM t WHERE (d - d2)::DATE = d", "cannot cast BIGINT to DATE"),
+        ("SELECT g, (MAX(d) - MIN(d))::DATE AS v FROM t GROUP BY g", "cannot cast BIGINT to DATE")
+      )
+    ) { (sql, refusal) =>
+      withClue(s"[$sql] ") {
+        parsed(sql)
+        resolved(sql).swap.getOrElse(fail("accepted once the types are known")) should include(
+          refusal
+        )
+      }
+    }
+    Parser(
+      "CREATE TABLE z (id INT, n INT, c DATE SCRIPT AS (CAST(n AS DATE)), PRIMARY KEY (id))"
+    ) match {
+      case Left(error) =>
+        error.msg should include("Column 'c': Type mismatch: cannot cast INT to DATE")
+      case other => fail(s"a computed column CAST(n AS DATE) was accepted: $other")
+    }
+    forAll(
+      Table(
+        "sql",
+        "SELECT (d - d2)::TIMESTAMP AS v FROM t",
+        "SELECT CAST(n AS TIMESTAMP) AS v FROM t",
+        "SELECT (d - d2)::BIGINT AS v FROM t",
+        "SELECT CAST(ts AS DATE) AS v FROM t",
+        "SELECT CAST('2024-01-31' AS DATE) AS v FROM t"
+      )
+    ) { sql => withClue(s"[$sql] ")(resolved(sql) shouldBe Right(())) }
+  }
+
+  /** A `CASE` or a `NULLIF` used as an operand is ONE value (issue #380): the operator applies to
+    * every branch -- never `c ? n : 0 + 1`, the ELSE branch plus one -- and a NULL it produces
+    * makes the result NULL rather than failing the script.
+    */
+  "a CASE or a NULLIF used as an operand" should
+  "be rendered as one value, in a query and in a computed column" in {
+    val notNull = fieldPainless("SELECT (CASE WHEN n > 0 THEN 1 ELSE 0 END) + 1 AS v FROM t")
+    withClue(notNull) {
+      notNull should not include ": 0 + 1"
+      notNull should include("? 1 : 0) + 1")
+    }
+    Seq(
+      "SELECT CASE WHEN n > 0 THEN n ELSE 0 END + 1 AS v FROM t",
+      "SELECT (CASE WHEN n > 0 THEN n ELSE 0 END) + 1 AS v FROM t",
+      "SELECT CASE WHEN n > 0 THEN n END + 1 AS v FROM t"
+    ).foreach { sql =>
+      val script = fieldPainless(sql)
+      withClue(s"[$sql] $script ") {
+        script should not include ": 0 + 1"
+        script should fullyMatch regex
+        """.*def (lv\d+) = \(.*\); \(\1 == null\) \? null : \(\1 \+ 1\)"""
+      }
+    }
+    val nullIf = fieldPainless("SELECT NULLIF(n, 3) + 1 AS v FROM t")
+    withClue(nullIf) {
+      nullIf should fullyMatch regex """.*\((param\d+) == null\) \? null : \(\1 \+ 1\)"""
+    }
+    val stored = ingestPainless(
+      "CREATE TABLE z (id INT, n INT, c BIGINT SCRIPT AS (CASE WHEN n > 0 THEN n ELSE 0 END + 1), " +
+      "c2 INT SCRIPT AS (NULLIF(n, 3) + 1), PRIMARY KEY (id))"
+    )
+    withClue(stored) {
+      stored should not include ": 0 + 1"
+      stored should include("== null) ? null : (")
+    }
+  }
+
+  /** `GREATEST` / `LEAST` over whole numbers keep the winner's whole type (issue #380): Painless's
+    * `Math.max` / `Math.min` take `double`s only.
+    */
+  "GREATEST / LEAST over whole numbers" should "choose the winner by a comparison" in {
+    val greatest = fieldPainless("SELECT GREATEST(n, 2) AS v FROM t")
+    withClue(greatest) {
+      greatest should not include "Math.max"
+      greatest should include(">= 2 ?")
+    }
+    val least = fieldPainless("SELECT LEAST(n, big) AS v FROM t")
+    withClue(least) {
+      least should not include "Math.min"
+      least should include(" <= ")
+    }
+    fieldPainless("SELECT GREATEST(x, 2) AS v FROM t") should include("Math.max")
+    // two literals: the winner is the literal itself, converted to the BIGINT both are -- never a
+    // conditional over constants, which Elasticsearch 6.8 refuses as a whole script
+    val literals = fieldPainless("SELECT GREATEST(2, 4) AS v FROM t")
+    literals should endWith("((long) 4)")
+    literals should not include "?"
+  }
+
+  /** `GREATEST` / `LEAST` answer the common type of ALL their arguments on every row, as PostgreSQL
+    * types them, and report it: each argument is read by the type it is declared with -- a `CAST`
+    * by the type it casts to, never by its column's -- and per document the value is converted to
+    * that type on every path, the argument that survives a NULL included.
+    */
+  "GREATEST / LEAST" should "answer and report the common type of their arguments" in {
+    reported(
+      "SELECT GREATEST(CAST(n AS DOUBLE), 1) AS a, GREATEST(n, x) AS b, GREATEST(n, 2) AS c, " +
+      "GREATEST(n, CAST(n AS BIGINT)) AS d, LEAST(n, r) AS e, GREATEST(ABS(x), 1) AS f FROM t"
+    ) shouldBe Map(
+      "a" -> "DOUBLE",
+      "b" -> "DOUBLE",
+      "c" -> "BIGINT",
+      "d" -> "BIGINT",
+      "e" -> "REAL",
+      "f" -> "DOUBLE"
+    )
+    // a CAST to DOUBLE is a DOUBLE: compared by Math.max, never as a whole number
+    val cast = fieldPainless("SELECT GREATEST(CAST(n AS DOUBLE), 1) AS v FROM t")
+    withClue(cast) {
+      cast should include("Math.max(")
+      cast should not include ">= 1 ?"
+      cast should include("((double) (")
+    }
+    // the argument that survives a NULL is converted with the winner: the value is read once
+    val survivor = fieldPainless("SELECT GREATEST(n, x) AS v FROM t")
+    withClue(survivor) {
+      survivor should fullyMatch regex
+      """.*def (lv\d+) = \(.*\); \(\1 == null \? \1 : \(def\) \(\(double\) \1\)\)"""
+    }
+    // a whole literal past the range of an int is a long literal beside a BIGINT
+    fieldPainless("SELECT GREATEST(n, 3000000000) AS v FROM t") should include(
+      ">= 3000000000L ? param1 : 3000000000L)"
+    )
+  }
+
+  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer`: a quoted fraction
+    * beside `ABS` of an integer is refused by name, a whole number read; its value is that integer.
+    */
+  "ABS" should "be typed by its argument" in {
+    reported("SELECT ABS(n) AS a, ABS(big) AS b, ABS(x) AS c FROM t") shouldBe Map(
+      "a" -> "INT",
+      "b" -> "BIGINT",
+      "c" -> "DOUBLE"
+    )
+    forAll(
+      Table(
+        ("sql", "refusal"),
+        ("SELECT id FROM t WHERE ABS(n) = '1.5'", "'INT' is not compatible with 'VARCHAR'"),
+        ("SELECT id FROM t WHERE ABS(n) = '1.0'", "'INT' is not compatible with 'VARCHAR'"),
+        ("SELECT id FROM t WHERE ABS(big) = '1.5'", "'BIGINT' is not compatible with 'VARCHAR'"),
+        ("SELECT id FROM t WHERE ABS(n) IN ('1', '1.5')", "'INT' is not compatible with 'VARCHAR'"),
+        (
+          "SELECT id FROM t WHERE ABS(n) BETWEEN '1' AND '1.5'",
+          "output 'INT' is not compatible with input 'VARCHAR'"
+        ),
+        ("SELECT ABS(n) + '1.5' AS v FROM t", "is not compatible with input 'VARCHAR'"),
+        ("SELECT id FROM t WHERE ABS(n) + '1.5' > 0", "ABS(n) + '1.5'"),
+        (
+          "SELECT NULLIF(ABS(n), '1.5') AS v FROM t",
+          "with VARCHAR: NULLIF requires two arguments of comparable types"
+        ),
+        (
+          "SELECT CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END AS v FROM t",
+          "'INT' is not compatible with 'VARCHAR'"
+        )
+      )
+    ) { (sql, refusal) =>
+      withClue(s"[$sql] ") {
+        parsed(sql)
+        resolved(sql).swap.getOrElse(fail("accepted once the types are known")) should include(
+          refusal
+        )
+      }
+    }
+    forAll(
+      Table(
+        "sql",
+        "SELECT id FROM t WHERE ABS(n) = '2'",
+        "SELECT id FROM t WHERE ABS(x) = '1.5'",
+        "SELECT id FROM t WHERE ABS(n) > 2"
+      )
+    ) { sql => withClue(s"[$sql] ")(resolved(sql) shouldBe Right(())) }
+    fieldPainless("SELECT ABS(n) AS v FROM t") should not include "Math.abs"
+    fieldPainless("SELECT ABS(x) AS v FROM t") should include("Double.valueOf(Math.abs(")
+  }
+
+  /** `NULLIF(<quoted literal>, x)` is typed by the literal's READING beside `x` -- what it answers
+    * and what PostgreSQL types it -- never by the VARCHAR the literal is written as.
+    */
+  "NULLIF with a quoted literal first" should "be typed by the literal's reading" in {
+    reported(
+      "SELECT NULLIF('2024-01-31', ts) AS a, NULLIF('2024-01-31T10:00:00Z', d) AS b, " +
+      "NULLIF('3', n) AS c, NULLIF('1.5', x) AS e, NULLIF('true', b) AS f, " +
+      "NULLIF(ts, '2024-01-31') AS h FROM t"
+    ) shouldBe Map(
+      "a" -> "TIMESTAMP",
+      "b" -> "DATE",
+      "c" -> "BIGINT",
+      "e" -> "DOUBLE",
+      "f" -> "BOOLEAN",
+      "h" -> "TIMESTAMP"
+    )
+  }
+
+  /** A simple `CASE` answers its `THEN` / `ELSE` values in their own type: the operand is only
+    * compared, in the type it is compared in, and never converts the results.
+    */
+  "a simple CASE" should "answer its THEN / ELSE values in their own type" in {
+    reported(
+      "SELECT CASE s WHEN 'a' THEN 1 ELSE 0 END AS a, CASE x WHEN 1.5 THEN 1 ELSE 0 END AS b FROM t"
+    ) shouldBe Map("a" -> "BIGINT", "b" -> "BIGINT")
+    val overText = fieldPainless("SELECT CASE s WHEN 'a' THEN 1 ELSE 0 END AS v FROM t")
+    withClue(overText) {
+      overText should include(".compareTo(")
+      overText should endWith("? 1 : 0")
+    }
+    val overDouble = fieldPainless("SELECT CASE x WHEN 1.5 THEN 1 ELSE 0 END AS v FROM t")
+    withClue(overDouble)(overDouble should endWith("? 1 : 0"))
+    val stored = ingestPainless(
+      "CREATE TABLE z (id INT, s KEYWORD, c BIGINT SCRIPT AS (CASE s WHEN '1' THEN 1 ELSE 0 END), " +
+      "PRIMARY KEY (id))"
+    )
+    withClue(stored)(stored should include("? 1 : 0"))
+  }
 }

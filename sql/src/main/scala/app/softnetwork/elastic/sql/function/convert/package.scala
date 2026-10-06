@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   query,
+  renderedTypeOf,
   Alias,
   DateMathRounding,
   Expr,
@@ -28,6 +29,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.function.cond.functionsOf
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 
 package object convert {
@@ -195,7 +197,46 @@ package object convert {
     override def roundingScript: Option[String] = DateMathRounding(targetType)
 
     override def dateMathScript: Boolean = isTemporal
+
+    /** A NUMBER converted to a DATE is refused by name, as PostgreSQL refuses it (`cannot cast type
+      * integer to date`) -- `(d - d2)::DATE`, `CAST(n AS DATE)`, `CAST(YEAR(d) AS DATE)`. A number
+      * is no date, and no conversion makes it one: the number used to pass through unconverted
+      * under a DATE label (`(d - d2)::DATE` answered -1, 2 and 0).
+      *
+      * Decided on what the operand RENDERS ([[convertedType]]): `YEAR(d)` is a number although its
+      * column is a date. Asked once the column types are known, like every type rule; an operand
+      * whose type is still unknown is accepted. A number cast to a TIMESTAMP keeps core's
+      * epoch-millisecond conversion.
+      */
+    override def typeError: Option[String] =
+      if (targetType != SQLTypes.Date) None
+      else {
+        val source = convertedType
+        if (!source.isNumber) None
+        else
+          Some(
+            s"Type mismatch: cannot cast ${source.typeId} to DATE in expression: $sql; a number " +
+            "is not a date: add a number of days to a date instead"
+          )
+      }
+
+    /** The type of the value converted, as it renders: its outermost function's own type -- never
+      * that function's `out`, which this conversion's constructor sets to the TARGET type
+      * (`value.cast(targetType)`), so that `CAST(1 AS DATE)` and `CAST(YEAR(d) AS DATE)` would read
+      * as dates -- an aggregate's metric, or the column's type.
+      */
+    private def convertedType: SQLType = value match {
+      case i: Identifier if !i.isAggregation && i.functions.nonEmpty => i.functions.head.baseType
+      case other                                                     => renderedTypeOf(other)
+    }
   }
+
+  /** Every conversion type error in an expression ([[Conversion.typeError]]), wherever a conversion
+    * sits in it -- the walk a computed column's resolved table asks, as it asks the date-arithmetic
+    * rules (`ArithmeticExpression.typeErrorsOf`).
+    */
+  def typeErrorsOf(chain: FunctionChain): Seq[String] =
+    functionsOf(chain).collect { case c: Conversion => c }.flatMap(_.typeError).distinct
 
   case object Cast extends Expr("CAST") with TokenRegex
 
