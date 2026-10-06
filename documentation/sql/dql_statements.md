@@ -645,7 +645,9 @@ The SQL Gateway executes `UNION ALL` using **Elasticsearch Multi‑Search (`_mse
 - `UNION ALL` does **not** sort or deduplicate results.
 - Column names in the final output are taken from the **first SELECT**.
 - All subsequent SELECTs must produce columns with the **same names**.
-- Type mismatches should result in a validation error before execution. (⚠️ not implemented yet)
+- A type mismatch between branches is refused before execution, once each branch's mapping is read
+  (`SELECT id FROM a UNION ALL SELECT amount FROM b`, a `keyword` against a number); with no
+  mapping to read, nothing is refused on types and Elasticsearch answers.
 
 ---
 
@@ -1400,11 +1402,17 @@ GREATEST(e1, e2, ...)
 LEAST(e1, e2, ...)
 ```
 
-`GREATEST` returns the largest non-null numeric value among the given expressions; `LEAST`
-returns the smallest. NULL arguments are ignored (ANSI semantics); the result is NULL only
-when every argument is NULL. Both are emitted as Painless ternary chains over
-`Math.max` / `Math.min`. They are row-level conditional functions, not aggregates —
-`GREATEST(...) OVER (...)` is not supported.
+`GREATEST` returns the largest non-null value among the given expressions; `LEAST`
+returns the smallest. The arguments are all numeric, or all dates and timestamps (a `DATE`
+compares as the start of its day, UTC; the result is a `DATE` over dates and a `TIMESTAMP` when
+they mix). Over numbers the result is the common type of all the arguments on every row: the
+widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is fractional.
+NULL arguments are ignored (ANSI semantics); the result is NULL only
+when every argument is NULL. Both are emitted as Painless ternary chains — over whole numbers the
+winner is chosen by a comparison, over fractional numbers by `Math.max` / `Math.min`, over dates
+over the epoch milliseconds each one denotes. They are
+conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported — but over
+aggregates they are computed per group (`GREATEST(MAX(a), MAX(b))` beside a `GROUP BY`).
 
 ```sql
 SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;

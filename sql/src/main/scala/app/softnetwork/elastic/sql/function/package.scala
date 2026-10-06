@@ -324,6 +324,20 @@ package object function {
     def checkIfNullable: Boolean =
       args.exists(_.nullable) || args.exists(argRendersNullOnFailure)
 
+    /** The Painless of the argument at `index` when this function renders it ITSELF, in place of
+      * the conversion [[painless]] gives an argument with no parameter of its own (a literal) --
+      * which, with a context, BINDS that conversion to `argTypes(index)` as a parameter of the
+      * script, evaluated on every document. `None`, the default, leaves the argument to it.
+      *
+      * `NULLIF` renders this way a string literal it reads as a date or a timestamp: from its
+      * READING, never through a per-document parse of the literal's text (see `NullIf`).
+      */
+    protected def ownArgumentPainless(
+      index: Int,
+      context: Option[PainlessContext]
+    ): Option[String] =
+      None
+
     override def painless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
@@ -412,8 +426,10 @@ package object function {
           }).getOrElse {
             if (a.nullable) s"arg$i"
             else
-              SQLTypeUtils
-                .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)
+              ownArgumentPainless(i, context).getOrElse(
+                SQLTypeUtils
+                  .coerce(a.painless(context), a.baseType, argTypes(i), nullable = false, context)
+              )
           }
         }
 

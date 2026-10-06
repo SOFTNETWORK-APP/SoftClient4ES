@@ -23,7 +23,7 @@ import app.softnetwork.elastic.client._
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{ElasticFailure, ElasticResult, ElasticSuccess}
 import app.softnetwork.elastic.client.scroll._
-import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, Value}
+import app.softnetwork.elastic.sql.{ObjectValue, PainlessContextType, PainlessTarget, Value}
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
 import app.softnetwork.elastic.sql.bridge._
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyTask}
@@ -1051,6 +1051,16 @@ trait RestHighLevelClientSearchApi extends SearchApi with RestHighLevelClientHel
     * [[RestHighLevelClientSearchBodySerializer]].
     */
   implicit def searchBodySerializer: SearchBodySerializer = RestHighLevelClientSearchBodySerializer
+
+  /** The Elasticsearch major every script made from this trait is rendered for (implicit scope of
+    * the bridge's conversions, as [[searchBodySerializer]] is): see `PainlessTarget`.
+    *
+    * Elasticsearch 6.8 hands a query script a `date` doc value as a `JodaCompatibleZonedDateTime`,
+    * so a comparison of one with any other date is normalised to UTC first.
+    */
+  implicit def painlessTarget: PainlessTarget = PainlessTarget(
+    RestHighLevelClientSearchBodySerializer.ElasticsearchMajor
+  )
 
   override implicit def singleSearchToJsonQuery(sqlSearch: SingleSearch)(implicit
     timestamp: Long,

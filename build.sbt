@@ -167,6 +167,19 @@ lazy val log4jClosureSettings: Seq[Setting[_]] = Seq(
   }
 )
 
+/** The Elasticsearch major a CLIENT module is built against, generated from its own
+  * `elasticSearchVersion` so that no client source writes it by hand: the module's search-body
+  * serializer and the `PainlessTarget` its scripts are rendered for both read it.
+  */
+def clientBuildInfoSettings(pkg: String, obj: String): Seq[Setting[_]] = Seq(
+  buildInfoKeys := Seq[BuildInfoKey](
+    BuildInfoKey("elasticVersion" -> elasticSearchVersion.value),
+    BuildInfoKey("elasticMajor" -> elasticSearchMajorVersion(elasticSearchVersion.value))
+  ),
+  buildInfoPackage := pkg,
+  buildInfoObject := obj
+)
+
 lazy val licensing = project
   .in(file("licensing"))
   .configs(IntegrationTest)
@@ -454,11 +467,13 @@ lazy val es6testkit = testkitProject(Versions.es6)
 
 lazy val es6rest = project
   .in(file("es6/rest"))
+  .enablePlugins(BuildInfoPlugin)
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     moduleSettings,
     log4jClosureSettings,
+    clientBuildInfoSettings("app.softnetwork.elastic.client.rest", "RestClientBuildInfo"),
     elasticSearchVersion := Versions.es6
   )
   .dependsOn(
@@ -479,11 +494,13 @@ lazy val es6cli =
 
 lazy val es6jest = project
   .in(file("es6/jest"))
+  .enablePlugins(BuildInfoPlugin)
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     moduleSettings,
     log4jClosureSettings,
+    clientBuildInfoSettings("app.softnetwork.elastic.client.jest", "JestClientBuildInfo"),
     elasticSearchVersion := Versions.es6
   )
   .dependsOn(
@@ -519,11 +536,13 @@ lazy val es7testkit = testkitProject(Versions.es7)
 
 lazy val es7rest = project
   .in(file("es7/rest"))
+  .enablePlugins(BuildInfoPlugin)
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     moduleSettings,
     log4jClosureSettings,
+    clientBuildInfoSettings("app.softnetwork.elastic.client.rest", "RestClientBuildInfo"),
     elasticSearchVersion := Versions.es7
   )
   .dependsOn(
@@ -564,11 +583,13 @@ lazy val es8testkit = testkitProject(Versions.es8)
 
 lazy val es8java = project
   .in(file("es8/java"))
+  .enablePlugins(BuildInfoPlugin)
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     moduleSettings,
     log4jClosureSettings,
+    clientBuildInfoSettings("app.softnetwork.elastic.client.java", "JavaClientBuildInfo"),
     elasticSearchVersion := Versions.es8
   )
   .dependsOn(
@@ -619,11 +640,13 @@ lazy val es9testkit = testkitProject(
 
 lazy val es9java = project
   .in(file("es9/java"))
+  .enablePlugins(BuildInfoPlugin)
   .configs(IntegrationTest)
   .settings(
     Defaults.itSettings,
     moduleSettings,
     log4jClosureSettings,
+    clientBuildInfoSettings("app.softnetwork.elastic.client.java", "JavaClientBuildInfo"),
     scalaVersion := scala213,
     crossScalaVersions := Seq(scala213),
     elasticSearchVersion := Versions.es9,

@@ -1267,15 +1267,16 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
 
     // 🔴 The temporal-literal edge. `NULLIF(created, '2024-01-15')` and
-    // `NULLIF(created, 'yesterday')` are BOTH a TIMESTAMP against a VARCHAR, and BOTH are refused
-    // -- but by DIFFERENT judges, which is the whole point of the row.
+    // `NULLIF(created, 'yesterday')` are both a date against a string literal, and they are judged
+    // apart: the well-formed literal IS the date it spells -- the ONE comparison rule (the lead's
+    // ruling of 2026-10-05), read once as the instant it denotes, so the ingest script compares two
+    // instants and needs no per-document `String -> temporal` coercion -- while the malformed one
+    // is refused by the resolver, which names the literal and the field.
     //
-    // AMENDED by the #382 review. The well-formed literal used to be ACCEPTED here, and the script
-    // it produced compared a `ZonedDateTime` with a `String` using Painless `==`: always `false`,
-    // never failing, so the NULLIF returned `created` for every document and the CREATE answered
-    // 200. Making that comparison WORK needs a `String -> temporal` coercion the engine does not
-    // have (and Elasticsearch date math has no Painless equivalent at all), so it is refused until
-    // its own story lands, and it says so rather than blaming the SQL.
+    // (The #382 review had refused the well-formed one too: the script it produced compared a
+    // `ZonedDateTime` with a `String` using Painless `==`, always `false`, so the NULLIF returned
+    // `created` for every document. It is the comparison that now works, and the STORED values
+    // below are what says so.)
     val wellFormed = client
       .run("""CREATE TABLE IF NOT EXISTS nullif_date (
              |  id INT,
@@ -1284,16 +1285,26 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
              |);""".stripMargin)
       .futureValue
     withClue(s"$wellFormed ") {
-      wellFormed.isFailure shouldBe true
-      val message = String.valueOf(wellFormed)
-      // the ENGINE's message: it names the two types and says what is missing
-      message should include("not supported yet")
-      message should include("TIMESTAMP")
-      message should include("VARCHAR")
-      // ...and NOT the resolver's, which would mean the literal was judged malformed
-      message should not include "as a date/time value for date field"
+      wellFormed.isSuccess shouldBe true
     }
-    client.indexExists("nullif_date", pattern = false) shouldBe ElasticSuccess(false)
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO nullif_date (id, created) VALUES (1, '2024-01-15'), (2, '2024-01-16');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    val stored = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, c FROM nullif_date ORDER BY id").futureValue
+    )
+    withClue(s"$stored ") {
+      stored.map(_.get("c").map(String.valueOf).filter(_ != "null").map(_.take(10))) shouldBe Seq(
+        None,
+        Some("2024-01-16")
+      )
+    }
+    client.run("DROP TABLE IF EXISTS nullif_date").futureValue
 
     val bad = client
       .run("""CREATE TABLE IF NOT EXISTS nullif_date_bad (

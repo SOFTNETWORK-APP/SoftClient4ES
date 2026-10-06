@@ -21,7 +21,8 @@ ABS(x)
 - `x` - `NUMERIC`
 
 **Output:**
-- `NUMERIC`
+- The type of `x`, as PostgreSQL's `abs`: `ABS` of an `INT` is an `INT` (a whole number), of a
+  `DOUBLE` a `DOUBLE`
 
 **Examples:**
 ```sql

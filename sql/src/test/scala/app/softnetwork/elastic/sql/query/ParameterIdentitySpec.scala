@@ -291,7 +291,8 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
     // `CAST(lastUpdated AS date) - INTERVAL 3 DAY` must key apart from the bare `lastUpdated` in
     // THEN, else THEN returns `lastUpdated - 3 days`. The interval lands on the CAST's parameter.
     // Executed on ES 8.18 (NOW = 2025-01-08): a -> createdAt 2025-01-01, d -> lastSeen + 2 =
-    // 2025-01-03, e -> lastUpdated = 2025-01-04 (the old pin answered 2025-01-01 for e).
+    // 2025-01-03, e -> lastUpdated = 2025-01-04 (the old pin answered 2025-01-01 for e) -- with
+    // the THEN values then converted to the operand's DATE; they are now the values themselves.
     // ⚠️ That is the NO-schema rendering, the one the bridge fixtures pin. The SCHEMA rendering of
     // this same statement fails the shard on `main` AND here (`Class.cast` at
     // `param2.isEqual(param5)`: `CURRENT_DATE - 7` is coerced to a `ZonedDateTime` against a
@@ -301,20 +302,25 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
       "SELECT CASE CURRENT_DATE - INTERVAL 7 DAY WHEN CAST(lastUpdated AS date) - INTERVAL 3 DAY THEN lastUpdated " +
       "WHEN lastSeen THEN lastSeen + INTERVAL 2 DAY ELSE createdAt END AS c, identifier FROM Table"
     )
+    // The THEN value is the bare column, as it is: a simple CASE's value is typed by its THEN /
+    // ELSE values, never converted to its operand's DATE.
     emitted should include(
       "def param2 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate().minus(3, ChronoUnit.DAYS)); " +
-      "def param3 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value.toLocalDate()); "
+      "def param3 = (doc['lastUpdated'].size() == 0 ? null : doc['lastUpdated'].value); "
     )
     // The candidate is guarded too (issue #373): `lastSeen` is a column and a document may not
     // have it, which was an NPE before.
     emitted should endWith(
       "? param3 : param1 != null && param4 != null && param1.isEqual(param4) ? param5 : param6"
     )
-    // Rule 2, normalisation FIRST: the branch's DATE narrowing was appended to this object before
-    // the chain rendered; the UTC normalisation must still come first (`LocalDate` has no
-    // `toInstant()`).
+    // Rule 2, normalisation FIRST: the UTC normalisation comes before the interval on the
+    // branch's own object (`LocalDate` has no `toInstant()`), and the WHEN candidate's DATE
+    // narrowing stays on a parameter of its own.
     emitted should include(
-      "doc['lastSeen'].value.toInstant().atZone(ZoneId.of('Z')).toLocalDate().plus(2, ChronoUnit.DAYS)"
+      "doc['lastSeen'].value.toInstant().atZone(ZoneId.of('Z')).plus(2, ChronoUnit.DAYS)"
+    )
+    emitted should include(
+      "def param4 = (doc['lastSeen'].size() == 0 ? null : doc['lastSeen'].value.toLocalDate()); "
     )
   }
 

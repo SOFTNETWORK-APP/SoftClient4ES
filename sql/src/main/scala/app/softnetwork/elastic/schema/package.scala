@@ -75,8 +75,29 @@ package object schema {
   }
 
   object IndexField {
+
+    /** The type of a field elasticsql never DECLARED -- no `_meta` `data_type` -- read off its
+      * Elasticsearch mapping type: an index created by a bulk load or Logstash, or a field a bulk
+      * load added later to a table elasticsql created (dynamic mapping).
+      *
+      * 🔴 THE declaration seam (the lead's ruling of 2026-10-05): such a `date` field holds
+      * INSTANTS
+      * -- Elasticsearch stores every temporal as one, and nobody said it was a calendar date -- so
+      * it is a TIMESTAMP, everywhere: DESCRIBE, the type a CTAS declares, comparisons, functions
+      * and date arithmetic all read it from here, and an `ALTER TABLE` that writes the table's
+      * `_meta` declares it TIMESTAMP, keeping its time. A field elasticsql DECLARED keeps its
+      * declaration, a DATE included.
+      *
+      * ⚠️ Deliberately NOT in `SQLTypes.apply`: that maps a TYPE NAME, the declared `DATE` as well
+      * as the mapping's `date`, and story 21.5 learned there that conflating the two rewrites the
+      * declaration of every DATE column (`ColumnMetaDiffSpec`). Only this seam knows that no
+      * declaration exists.
+      */
+    private[schema] def undeclaredType(mappingType: String): String =
+      if (mappingType == "date") "timestamp" else mappingType
+
     def apply(name: String, node: JsonNode, _meta: Option[ObjectValue]): IndexField = {
-      val tpe = _meta
+      val declaredType = _meta
         .flatMap {
           case m: ObjectValue =>
             m.value.get("data_type") match {
@@ -85,7 +106,10 @@ package object schema {
             }
           case _ => None
         }
-        .getOrElse(Option(node.get("type")).map(_.asText()).getOrElse("object"))
+      val tpe =
+        declaredType.getOrElse(
+          undeclaredType(Option(node.get("type")).map(_.asText()).getOrElse("object"))
+        )
 
       val nullValue =
         Option(node.get("null_value"))

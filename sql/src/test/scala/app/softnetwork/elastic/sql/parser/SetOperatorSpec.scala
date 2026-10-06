@@ -236,15 +236,22 @@ class SetOperatorSpec extends AnyFlatSpec with Matchers {
   }
 
   "Branch types" should "be validated where both sides are typeable" in {
-    rejects("SELECT 1 AS n FROM t UNION SELECT 'a' AS n FROM u", "compatible types at column 1")
-    rejects(
-      "SELECT CAST(x AS BIGINT) AS v FROM t UNION ALL SELECT CAST(y AS VARCHAR) AS v FROM u",
-      "compatible types at column 1"
-    )
+    // A TYPE rule, asked once each branch's schema is attached (`SearchApi.resolveWithSchema`),
+    // never when the statement is parsed (the lead's ruling of 2026-10-05).
+    def branchTypes(sql: String): Either[String, Unit] =
+      MultiSearch.branchTypes(parse(sql).requests)
+    Seq(
+      "SELECT 1 AS n FROM t UNION SELECT 'a' AS n FROM u",
+      "SELECT CAST(x AS BIGINT) AS v FROM t UNION ALL SELECT CAST(y AS VARCHAR) AS v FROM u"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        branchTypes(sql).swap.getOrElse("") should include("compatible types at column 1")
+      }
+    }
     // numeric family
-    Parser("SELECT 1 AS n FROM t UNION SELECT 2.5 AS n FROM u").isRight shouldBe true
-    // a bare column is `Any` at parse time — the core seam re-checks with schemas attached
-    Parser("SELECT a FROM t UNION SELECT 'x' FROM u").isRight shouldBe true
+    branchTypes("SELECT 1 AS n FROM t UNION SELECT 2.5 AS n FROM u") shouldBe Right(())
+    // a bare column is `Any` until its schema is attached — the core seam checks with schemas
+    branchTypes("SELECT a FROM t UNION SELECT 'x' FROM u") shouldBe Right(())
   }
 
   it should "validate a set operation INSIDE a derived table one level down" in {

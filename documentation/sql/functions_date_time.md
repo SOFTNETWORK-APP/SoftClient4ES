@@ -103,6 +103,25 @@ SELECT CURTIME() AS current_time;
 
 ### Date/Time Arithmetic Functions
 
+> **`+` and `-` on dates.** Since `0.24.0` a date or a timestamp can also be moved and subtracted
+> with the plain operators, by the rules of the SQL engines: `DATE - DATE` is the calendar days
+> between the two dates (`BIGINT`, as in PostgreSQL, DuckDB, Oracle and Snowflake); a difference with
+> a `TIMESTAMP` on either side is the time between them in fractional days (`DOUBLE`, as Oracle
+> answers for its date with a time of day); `DATE + n` is the date `n` days later (`DATE`, as in
+> PostgreSQL, DuckDB, Oracle and BigQuery) — a fractional `n` gives a `TIMESTAMP` whose fraction is
+> a time of day, as in Oracle; `TIMESTAMP + n` is `n` days later; a number written as a string
+> (`'30'`) counts as that number, by elasticsql's own rule (PostgreSQL refuses `DATE + '1'` and
+> reads `TIMESTAMP + '1'` as one second). `*`, `/` and `%` on a
+> date, two dates added and a number minus a date are refused, as PostgreSQL, DuckDB, Oracle, Trino,
+> Snowflake and SQL Server refuse them. See
+> [Date arithmetic](operators.md#date-arithmetic--and---with-a-date-timestamp-or-datetime).
+>
+> ```sql
+> SELECT ship_date - order_date AS days_to_ship FROM orders;    -- BIGINT
+> SELECT due_date + 30 AS reminder FROM invoices;               -- DATE
+> SELECT * FROM orders WHERE order_date > CURRENT_DATE - 7;
+> ```
+
 #### INTERVAL
 
 Literal syntax for time intervals.
@@ -346,6 +365,8 @@ TIMESTAMPDIFF(unit, date1, date2)   -- MySQL
 **Direction, by layout:** every one of these databases computes *end − start*; the layout decides where the end sits.
 - The dates first: `date1 - date2`. `DATEDIFF('2025-01-10', '2025-01-01')` is `9`, as in MySQL; `DATE_DIFF('2010-07-07', '2008-12-25', DAY)` is `559`, as in BigQuery.
 - The unit first: `date2 - date1`. `DATEDIFF(DAY, '2025-01-01', '2025-01-10')` is `9`.
+- Between two `DATE`s, `DATEDIFF(date1, date2)` is the same number as the operator `date1 - date2`
+  (see [Date arithmetic](operators.md#date-arithmetic--and---with-a-date-timestamp-or-datetime)).
 
 **Counting, by name:**
 - `DATEDIFF` and `DATE_DIFF` count the calendar **boundaries crossed**, as SQL Server, Snowflake, Redshift, BigQuery and DuckDB do: one second across a year end is 1 `YEAR`, `1992-09-15` to `1992-11-14` is 2 `MONTH`s, `10:59` to `11:00` is 1 `HOUR`. `DAY` counts calendar days: `2025-01-10T23:30:00Z` and `2025-01-11T00:30:00Z` are 1 day apart.

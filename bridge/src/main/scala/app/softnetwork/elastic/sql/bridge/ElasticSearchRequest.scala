@@ -49,5 +49,10 @@ case class ElasticSearchRequest(
   def hasTransformExtendedStats: Boolean = SearchBodySerializer.hasTransformExtendedStats(search)
 
   def query: String =
-    serializer.serialize(search).replace("\"version\":true,", "") /*FIXME*/
+    // the params of a per-group calculation's script, which the body builder drops: the request
+    // clock `CURRENT_DATE - MAX(d)` reads (`BucketScriptParams`)
+    BucketScriptParams.bind(
+      serializer.serialize(search).replace("\"version\":true,", ""), /*FIXME*/
+      search
+    )
 }

@@ -316,8 +316,11 @@ class PainlessResidualsSpec extends AnyFlatSpec with Matchers with TableDrivenPr
     // The single-chain processor emission must not move: one column, one chain, one parameter.
     processorOf("CREATE TABLE t (d DATE, c INTEGER SCRIPT AS (YEAR(d)))") shouldBe
     "def param1 = (ctx.d instanceof String ? " +
+    "(ctx.d.length() > 10 ? ZonedDateTime.parse((ctx.d).replace(\" \", \"T\"), " +
+    "DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z'))).withZoneSameInstant(ZoneId.of('Z'))" +
+    ".truncatedTo(ChronoUnit.DAYS) : " +
     "LocalDate.parse((ctx.d).replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\"))" +
-    ".atStartOfDay(ZoneId.of('Z')) : Instant.ofEpochMilli(ctx.d).atZone(ZoneId.of('Z')))" +
+    ".atStartOfDay(ZoneId.of('Z'))) : Instant.ofEpochMilli(ctx.d).atZone(ZoneId.of('Z')))" +
     ".get(ChronoField.YEAR); ctx.c = param1"
   }
 

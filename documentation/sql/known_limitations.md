@@ -222,37 +222,32 @@ branch. The restriction is not specific to division, and parenthesising does not
 | `CAST(a / b AS INTEGER)`, `CAST(a + b AS INTEGER)`, `CAST((a / b) AS INTEGER)` | Parse error |
 | `FLOOR(a / b)`, `ABS(a / b)`, `COALESCE(a / b, 0)` | Parse error |
 | `CASE WHEN b != 0 THEN a / b ELSE 0 END` | Parse error |
-| `a / NULLIF(b, 0)`, `FLOOR(x)`, `CAST(x AS INTEGER)` | Accepted |
+| `(a / b)::INTEGER`, `a / NULLIF(b, 0)`, `FLOOR(x)`, `CAST(x AS INTEGER)` | Accepted |
 
 The rule is **directional**: arithmetic *over* a function call is fine, a function call *over*
 arithmetic is not.
 
-⚠️ **One spelling parses and then ignores the cast.** `(a / b)::INTEGER` is accepted, but the
-conversion is discarded: it emits exactly what `a / b` emits, so the result is a DOUBLE even though
-the expression reports INTEGER. Do not use it as a workaround for the rejections above — it is the
-one shape in this family that fails *silently* rather than loudly. It is pre-existing and applies to
-any operator (`(a + b)::DOUBLE`, `(d + 1)::INTEGER`).
-
-The practical consequences are that there is no single-expression way to write a truncated quotient,
-and no in-expression guard for `%`:
+**The `::` spelling works.** Since `0.24.0`, `(a / b)::INTEGER` applies the cast, truncated toward
+zero: `(n / m)::INTEGER` is `3` for 7 / 2 and `-3` for -7 / 2, and NULL for a zero divisor, in a
+search and in a computed column. Before `0.24.0` the conversion was discarded and the result stayed
+a DOUBLE. This holds for any operator (`(a + b)::BIGINT`), so a truncated quotient is one
+expression:
 
 ```sql
--- instead of CAST(n / m AS INTEGER), compute the quotient into a column and cast THAT column
-CREATE TABLE t (n INTEGER, m INTEGER, q DOUBLE SCRIPT AS (n / m));
-SELECT CAST(q AS INTEGER) AS whole FROM t;
+-- instead of CAST(n / m AS INTEGER)
+SELECT (n / m)::INTEGER AS whole FROM t;
 ```
 
-## `%` by zero is not guarded
+## `%` by zero is not guarded by itself
 
 The `0.24.0` rule that makes `a / 0` yield NULL covers `/` only. With integer operands `a % 0`
 throws — HTTP 400 in a search, and in a computed column the ingest processor's `ignore_failure`
 swallows it so the column is simply absent. With **floating** operands it produces `NaN`, which
 Elasticsearch refuses to index, so **the whole document is rejected**.
 
-Because of the restriction above there is no in-expression guard, and `a % NULLIF(b, 0)` throws a
-`null_pointer_exception` on exactly the rows the guard is for. Keep a zero divisor out of the data
-instead — filter it in `WHERE`, or compute the remainder from an already-filtered index. See
-[operators](operators.md#-mod).
+Guard it with `NULLIF`: `a % NULLIF(b, 0)` answers NULL on the rows where `b` is `0` or missing, in
+a search and in a computed column (before `0.24.0` it threw a `null_pointer_exception` on exactly
+those rows). See [operators](operators.md#-mod).
 
 ## `ORDER BY` over arithmetic on a nullable column
 

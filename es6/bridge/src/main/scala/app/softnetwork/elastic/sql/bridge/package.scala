@@ -75,7 +75,8 @@ package object bridge {
     innerHitsName: String
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Option[FilterAggregation] = {
     val having: Option[Query] =
       request.having.flatMap(_.criteria) match {
@@ -154,7 +155,8 @@ package object bridge {
     request: SingleSearch
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Option[FilterAggregation] =
     request.having.flatMap(_.criteria) match {
       case Some(f) =>
@@ -182,7 +184,8 @@ package object bridge {
     references: Seq[ElasticAggregation]
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Seq[AbstractAggregation] = {
     val notNestedAggregations = aggregations.filterNot(_.nested)
 
@@ -255,7 +258,8 @@ package object bridge {
     references: Seq[ElasticAggregation]
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Seq[NestedAggregation] = {
     // Group nested aggregations by their nested path
     val nestedAggregations: Map[String, Seq[ElasticAggregation]] = aggregations
@@ -468,10 +472,16 @@ package object bridge {
   // SearchBodySerializer in implicit scope of this conversion; with none in scope the default
   // argument applies (the one-argument elastic4s builder, refusing a transform-bearing
   // extended_stats). Same defaulted-implicit pattern as `contextType`.
+  //
+  // `target` is the same seam for SCRIPTS: the Elasticsearch major the client module talks to
+  // (`PainlessTarget`), which every conversion below hands to the `PainlessContext`s it creates.
+  // With none in scope a script renders as for the majors from 7 on; the ES 6 client modules
+  // give 6, whose query scripts compare a `date` doc value differently.
   implicit def requestToElasticSearchRequest(request: SingleSearch)(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
-    serializer: SearchBodySerializer = SearchBodySerializer.Default
+    serializer: SearchBodySerializer = SearchBodySerializer.Default,
+    target: PainlessTarget = PainlessTarget.Default
   ): ElasticSearchRequest =
     ElasticSearchRequest(
       request.sql,
@@ -530,7 +540,8 @@ package object bridge {
     request: SingleSearch
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): SearchRequest = {
     import request._
 
@@ -593,7 +604,7 @@ package object bridge {
       case Nil => _search
       case _ =>
         _search scriptfields scriptFields.map { field =>
-          val context = PainlessContext(context = contextType)
+          val context = PainlessContext(context = contextType, target = target)
           val script = field.painless(Some(context))
           scriptField(
             field.scriptName,
@@ -614,7 +625,7 @@ package object bridge {
       case Some(o) if aggregates.isEmpty && buckets.isEmpty =>
         _search sortBy o.sorts.map { sort =>
           if (sort.isScriptSort) {
-            val context = PainlessContext(context = contextType)
+            val context = PainlessContext(context = contextType, target = target)
             val painless = sort.field.painless(Some(context))
             val painlessScript = s"$context$painless"
             val script =
@@ -680,7 +691,8 @@ package object bridge {
     request: MultiSearch
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): MultiSearchRequest = {
     // Story 22.6 — a NAMED backstop, never a silent `UNION ALL`. Only `UNION ALL` is an
     // Elasticsearch `_msearch`; every other set operator needs the relational engine and is
@@ -717,9 +729,10 @@ package object bridge {
 
   private[bridge] def scriptQueryOf(criteria: Criteria)(implicit
     timestamp: Long,
-    contextType: PainlessContextType
+    contextType: PainlessContextType,
+    target: PainlessTarget
   ): Query = {
-    val context = PainlessContext(context = contextType)
+    val context = PainlessContext(context = contextType, target = target)
     val script = criteria.painless(Some(context))
     scriptQuery(
       now(Script(script = s"$context$script").lang("painless").scriptType("source"))
@@ -733,7 +746,8 @@ package object bridge {
 
   implicit def expressionToQuery(expression: GenericExpression)(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
     import expression._
     if (isAggregation)
@@ -958,7 +972,7 @@ package object bridge {
                   case _         => scriptQueryOf(expression)
                 }
               case _ =>
-                val context = PainlessContext(context = contextType)
+                val context = PainlessContext(context = contextType, target = target)
                 val script = painless(Some(context))
                 scriptQuery(
                   now(
@@ -969,7 +983,7 @@ package object bridge {
                 )
             }
           case _ =>
-            val context = PainlessContext(context = contextType)
+            val context = PainlessContext(context = contextType, target = target)
             val script = painless(Some(context))
             scriptQuery(
               now(
@@ -1013,7 +1027,8 @@ package object bridge {
 
   implicit def inToQuery[R, T <: Value[R]](in: InExpr[R, T])(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
     if (requiresScript(in.identifier)) return scriptQueryOf(in)
     import in._
@@ -1038,7 +1053,8 @@ package object bridge {
     between: BetweenExpr
   )(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
     import between._
     if (requiresScript(identifier)) return scriptQueryOf(between)
@@ -1191,14 +1207,16 @@ package object bridge {
 
   implicit def criteriaToQuery(criteria: Criteria)(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
     ElasticCriteria(criteria).asQuery()
   }
 
   implicit def criteriaToNode(criteria: Criteria)(implicit
     timestamp: Long,
-    contextType: PainlessContextType = PainlessContextType.Query
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): JsonNode = {
     queryToJson(criteriaToQuery(criteria))
   }
@@ -1217,7 +1235,8 @@ package object bridge {
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
-    serializer: SearchBodySerializer = SearchBodySerializer.Default
+    serializer: SearchBodySerializer = SearchBodySerializer.Default,
+    target: PainlessTarget = PainlessTarget.Default
   ): Seq[ElasticAggregation] = {
     import query._
     statement
@@ -1257,7 +1276,10 @@ package object bridge {
               aggregation.copy(
                 sources = l.sources,
                 query = Some(
-                  serializer.serialize(body).replace("\"version\":true,", "") /*FIXME*/
+                  BucketScriptParams.bind(
+                    serializer.serialize(body).replace("\"version\":true,", ""), /*FIXME*/
+                    body
+                  )
                 )
               )
             })

@@ -99,14 +99,18 @@ class DdlScriptSchemaSpec extends AnyFlatSpec with Matchers {
     // answered that question one way, hard-coded and untested, and was wrong for every documented
     // example. Verified as an ingest pipeline on ES 6.8.23, 7.17.29, 8.18.3 and 9.0.3 against
     // {"created":"2025-01-10"}, {"created":"2025/01/10"} and {"created":1736467200000}: all three
-    // store `y: 2025`.
+    // store `y: 2025`. A string longer than a date is a date-time (Elasticsearch accepts one into a
+    // DATE column): its UTC day, where the strict date parse threw and stored nothing.
     createSource(
       "CREATE TABLE t (created DATE, y INTEGER SCRIPT AS (YEAR(created)))",
       "y"
     ) shouldBe
     "def param1 = (ctx.created instanceof String ? " +
+    """(ctx.created.length() > 10 ? ZonedDateTime.parse((ctx.created).replace(" ", "T"), """ +
+    "DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z'))).withZoneSameInstant(ZoneId.of('Z'))" +
+    ".truncatedTo(ChronoUnit.DAYS) : " +
     """LocalDate.parse((ctx.created).replace("/", "-"), """ +
-    """DateTimeFormatter.ofPattern("yyyy-MM-dd")).atStartOfDay(ZoneId.of('Z')) """ +
+    """DateTimeFormatter.ofPattern("yyyy-MM-dd")).atStartOfDay(ZoneId.of('Z'))) """ +
     ": Instant.ofEpochMilli(ctx.created).atZone(ZoneId.of('Z'))).get(ChronoField.YEAR); " +
     "ctx.y = param1"
   }

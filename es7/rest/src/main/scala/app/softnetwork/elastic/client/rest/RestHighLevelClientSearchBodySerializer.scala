@@ -49,7 +49,10 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{AbstractAggregation, Aggre
   */
 object RestHighLevelClientSearchBodySerializer extends SearchBodySerializer {
 
-  val ElasticsearchMajor: Int = 7
+  /** The Elasticsearch major this module is built against, generated from the build's
+    * `elasticSearchVersion` (never written by hand).
+    */
+  val ElasticsearchMajor: Int = RestClientBuildInfo.elasticMajor
 
   /** The request with every [[ScriptedExtendedStatsAggregation]] replaced by the
     * `ExtendedStatsAggregation` it wraps — at the root and at every depth (the windowed bind sits

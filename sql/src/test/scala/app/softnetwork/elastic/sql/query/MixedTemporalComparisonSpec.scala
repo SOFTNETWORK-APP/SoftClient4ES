@@ -373,17 +373,43 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * operation to types [ZonedDateTime] and [ZonedDateTime]`). This project's standing rule: a
     * parse fix must not upgrade a loud failure into a silent corruption — or, as here, into a shard
     * error naming neither the column nor the SQL.
+    *
+    * ⚠️ The arithmetic caller is no longer one of them: a DATE minus a TIMESTAMP is date
+    * arithmetic, which reconciles its operands by its own rules (`ArithmeticExpression`, the lead's
+    * ruling of 2026-10-04) and answers the fractional days between them -- the row below.
     */
-  "the date-carrying allowance" should "not leak to callers that cannot reconcile" in {
-    forAll(
-      Table(
-        "sql",
-        "SELECT name FROM t WHERE CAST(d AS DATE) BETWEEN CAST('2025-01-01' AS DATE) " +
-        "AND CAST('2025-12-31T00:00:00Z' AS TIMESTAMP)",
-        "SELECT NULLIF(CAST(d AS DATE), CAST(ts AS TIMESTAMP)) AS x FROM t",
-        "SELECT CAST(d AS DATE) - CAST(ts AS TIMESTAMP) AS x FROM t"
-      )
-    ) { sql => withClue(s"[$sql] ")(Parser(sql).isLeft shouldBe true) }
+  "the date-carrying allowance" should "reach BETWEEN and NULLIF, which now reconcile the pair" in {
+    // The ONE comparison rule (the lead's ruling of 2026-10-05): a DATE and a TIMESTAMP are
+    // comparable wherever a comparison is made, judged on the declared types. BETWEEN brings each
+    // bound to the operand's java.time type, as a single comparison does, and NULLIF compares the
+    // instants the two denote -- neither calls `isBefore` / `isEqual` across a `LocalDate` and a
+    // `ZonedDateTime`, which is what failed the shard. The NULLIF form is RUN in
+    // `DateArithmeticSpec`; the BETWEEN form is pinned here at RESOLVE only.
+    resolvedVerdict(
+      "SELECT name FROM t WHERE CAST(d AS DATE) BETWEEN CAST('2025-01-01' AS DATE) " +
+      "AND CAST('2025-12-31T00:00:00Z' AS TIMESTAMP)"
+    ) shouldBe Right(())
+    resolvedVerdict("SELECT NULLIF(CAST(d AS DATE), CAST(ts AS TIMESTAMP)) AS x FROM t") shouldBe
+    Right(())
+    // a TIME is no date-carrying temporal: still refused once the types are known, never at parse
+    val time = "SELECT NULLIF(CAST(d AS DATE), CAST(ts AS TIME)) AS x FROM t"
+    Parser(time).isRight shouldBe true
+    resolvedVerdict(time).isLeft shouldBe true
+  }
+
+  /** The post-resolution verdict of a statement: parsed, its schema attached, `validateResolved`.
+    */
+  private def resolvedVerdict(sql: String): Either[String, Unit] = Parser(sql) match {
+    case Right(ss: SingleSearch) => ss.update(Some(schema)).validateResolved()
+    case other                   => fail(s"[$sql] expected a SingleSearch, got $other")
+  }
+
+  "a DATE minus a TIMESTAMP" should "be date arithmetic, the fractional days between them" in {
+    Parser("SELECT CAST(d AS DATE) - CAST(ts AS TIMESTAMP) AS x FROM t") match {
+      case Right(ss: SingleSearch) =>
+        ss.select.fields.head.identifier.reportedType shouldBe SQLTypes.Double
+      case other => fail(s"$other")
+    }
   }
 
   "two operands cast to different date-carrying types" should "be comparable" in {
@@ -403,11 +429,12 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     withClue(s"->\n$emitted\n")(emitted should include("atStartOfDay"))
   }
 
-  /** The other half of the same line: a TIME cast against a date-carrying cast is refused at PARSE,
-    * where both types are known without a schema. (A TIME against a bare COLUMN is only knowable
-    * after resolution — that is what `validateResolved` below is for.)
+  /** The other half of the same line: a TIME cast against a date-carrying cast is refused -- once
+    * the column types are known, like every TYPE rule (the lead's ruling of 2026-10-05); it used to
+    * be refused at PARSE, where both types are known without a schema. (A TIME against a bare
+    * COLUMN is only knowable after resolution — that is what `validateResolved` below is for.)
     */
-  "a TIME cast against a date-carrying cast" should "be refused at parse" in {
+  "a TIME cast against a date-carrying cast" should "be refused once the types are known" in {
     forAll(
       Table(
         "sql",
@@ -416,12 +443,15 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
         "SELECT name FROM t WHERE CAST(ts AS TIMESTAMP) > CAST(ts AS TIME)"
       )
     ) { sql =>
-      withClue(s"[$sql] ")(Parser(sql).isLeft shouldBe true)
+      withClue(s"[$sql] ") {
+        Parser(sql).isRight shouldBe true
+        resolvedVerdict(sql).isLeft shouldBe true
+      }
     }
     // and TIME against TIME stays legal
-    Parser(
+    resolvedVerdict(
       "SELECT name FROM t WHERE CAST(ts AS TIME) > CAST('07:00:00' AS TIME)"
-    ).isRight shouldBe true
+    ) shouldBe Right(())
   }
 
   /** 🔴 `Expression.validate()` compares the types the two operands END UP with, not the ones their
@@ -436,7 +466,9 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     * It is observable ONLY against a schema-resolved statement, which is what this asserts and why
     * the corpus could not falsify it.
     */
-  "validate() on a schema-resolved statement" should "read the chain's types, not the column's" in {
+  "the comparison TYPE rule on a schema-resolved statement" should "read the chain's types, not the column's" in {
+    // `typeErrors`, not `validate()`: the TYPE rule moved off `validate()` (which checks syntax and
+    // structure only) to the post-resolution seam -- the lead's ruling of 2026-10-05.
     def criteriaOf(sql: String): Criteria = Parser(sql) match {
       case Right(ss: SingleSearch) =>
         ss.update(Some(schema)).where.flatMap(_.criteria).getOrElse(fail(s"[$sql] no criteria"))
@@ -446,11 +478,11 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     withClue("TIME = TIME ") {
       criteriaOf(
         "SELECT name FROM t WHERE CAST(ts AS TIME) = CAST('07:00:00' AS TIME)"
-      ).validate() shouldBe Right(())
+      ).typeErrors shouldBe empty
     }
     // a TIME against a date-carrying column -- this was ACCEPTED (TIMESTAMP vs TIMESTAMP)
     withClue("TIME > TIMESTAMP ") {
-      criteriaOf("SELECT name FROM t WHERE CAST(ts AS TIME) > ts").validate().isLeft shouldBe true
+      criteriaOf("SELECT name FROM t WHERE CAST(ts AS TIME) > ts").typeErrors should not be empty
     }
     // and the date family stays comparable, resolved or not
     forAll(
@@ -462,7 +494,12 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
         "SELECT name FROM t WHERE YEAR(d) = 2025",
         "SELECT name FROM t WHERE UPPER(name) = 'A'"
       )
-    ) { sql => withClue(s"[$sql] ")(criteriaOf(sql).validate() shouldBe Right(())) }
+    ) { sql =>
+      withClue(s"[$sql] ") {
+        criteriaOf(sql).validate() shouldBe Right(())
+        criteriaOf(sql).typeErrors shouldBe empty
+      }
+    }
   }
 
   "a TIME operand" should "be refused against a date-carrying one, and accepted against a TIME" in {

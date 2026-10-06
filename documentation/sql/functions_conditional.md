@@ -241,7 +241,8 @@ NULLIF(expr1, expr2)
 - `expr2` - second expression
 
 **Output:**
-- Type of `expr1`, or NULL if equal
+- Type of `expr1` — a quoted literal first is the value it is read as beside `expr2`, and has its
+  type: `NULLIF('2024-01-31', ts)` is a `TIMESTAMP`, `NULLIF('3', n)` a number — or NULL if equal
 
 **Examples:**
 
@@ -264,20 +265,27 @@ FROM products
 -- Converts 0 prices to NULL
 ```
 
-**3. Avoid division by zero — no longer needed, and measured not to work:**
+**3. Guard a zero divisor — needed for `%`, not for `/`:**
 ```sql
--- ⚠️ Since 0.24.0 the engine returns NULL for a zero divisor by itself, so write this:
+-- Since 0.24.0 the engine returns NULL for a zero divisor of `/` by itself, so write this:
 SELECT 
   total_sales / total_orders AS avg_order_value
 FROM sales_summary
 -- NULL on the rows where total_orders = 0
+
+-- `%` is not guarded by itself: NULLIF is the guard
+SELECT 
+  total_sales % NULLIF(total_orders, 0) AS remainder
+FROM sales_summary
+-- NULL on the rows where total_orders = 0 or is missing
 ```
 
-> ⚠️ `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — throws a
-> `null_pointer_exception` in a search on exactly the rows where `total_orders = 0`, and silently
-> drops the computed column in an ingest pipeline. Measured on real Elasticsearch, identically
-> before and after `0.24.0`. `NULLIF` remains correct everywhere else; see the
-> [`/` operator](operators.md) for the division rule.
+> `total_sales / NULLIF(total_orders, 0)` — the idiom this section used to recommend — answers
+> `NULL` on the rows where `total_orders` is `0` or missing, in a search and in a computed column,
+> and so does `total_sales % NULLIF(total_orders, 0)`. Before `0.24.0` both threw a
+> `null_pointer_exception` in a search on exactly those rows, and silently dropped the computed
+> column in an ingest pipeline. See the [`/` and `%` operators](operators.md) for the zero-divisor
+> rules.
 
 **4. Clean data:**
 ```sql
@@ -323,14 +331,15 @@ FROM products
   failing — so the `NULLIF` returned its first argument for every row and the query answered `200`
   with the wrong values. If you relied on one of these, write the comparison in the type you mean.
 
-- A **string literal against a `date` column** is refused, and the message depends on the literal.
-  A malformed one is named as such — `NULLIF(created_at, 'yesterday')` reports that `'yesterday'`
-  is not a date for that field's format, checked against the column's mapping exactly as a `WHERE`
-  comparison is. A **well-formed** one — `NULLIF(created_at, '2024-01-15')` — is refused too, with
-  a message saying the comparison is not supported yet: the engine cannot turn a string into a
-  temporal value inside a script, so accepting it would mean comparing a date with a string, which
-  silently never matches. Cast the literal instead:
-  `NULLIF(created_at, CAST('2024-01-15' AS DATE))`.
+- A **string literal against a `date` column** is read by what it is compared with, as in every
+  comparison: `NULLIF(created_at, '2024-01-15')` compares `created_at` with the date 2024-01-15,
+  and `NULLIF(qty, '3')` compares `qty` with the number 3 — in a query and in a computed column
+  alike (before **0.24.0** the first was refused, and a computed column compared a date with a
+  string, which never matched). A literal that spells no date is refused, and the message depends
+  on the literal: a malformed one is named as such — `NULLIF(created_at, 'yesterday')` reports
+  that `'yesterday'` is not a date for that field's format, checked against the column's mapping
+  exactly as a `WHERE` comparison is — and Elasticsearch date math (`'now-1d'`), which no script
+  can evaluate, is refused as not supported.
 - `expr2` being NULL is not a match: SQL says the comparison is then UNKNOWN, so the answer is
   `expr1`, not NULL.
 
@@ -451,7 +460,7 @@ FROM products
 
 ### GREATEST
 
-Returns the largest value among the given numeric expressions. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
+Returns the largest value among the given expressions — numbers, or dates and timestamps. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
 
 **Syntax:**
 ```sql
@@ -459,10 +468,13 @@ GREATEST(expression1, expression2, ...)
 ```
 
 **Inputs:**
-- One or more numeric expressions to compare
+- One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Numeric (widest input type), or NULL if every argument is NULL
+- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
+  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+  fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
+  argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
 **Examples:**
 
@@ -479,16 +491,37 @@ FROM orders
 -- Never lets the net go below zero
 ```
 
+**3. The latest of two dates, and the days since the first:**
+```sql
+SELECT GREATEST(ordered_on, shipped_on) AS last_step,
+       GREATEST(ordered_on, shipped_on) - ordered_on AS days_to_last_step
+FROM orders
+```
+
+**4. Per group, over aggregates:**
+```sql
+SELECT region, GREATEST(MAX(ordered_on), MAX(shipped_on)) AS last_activity
+FROM orders
+GROUP BY region
+```
+
 **Notes:**
 - Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
-- All arguments should be numeric and have comparable types.
+- The arguments are all numeric, or all dates and timestamps, as in every SQL engine; any other
+  argument, or numbers mixed with dates, is refused by name once the column types are known.
+- Dates compare as instants, a `DATE` as the start of its day (UTC); the result is a date like any
+  other: `GREATEST(d, d2) - d` is a number of days (see [Date arithmetic](operators.md)).
+- Over aggregates it is computed per group. In a SELECT, a group missing one of the aggregates'
+  values answers NULL: Elasticsearch does not run a per-group calculation there (its
+  `bucket_script` skips a group with a missing metric), as for any per-group calculation. Written
+  inline in `HAVING`, the group filter reads every aggregate and skips a NULL one.
 - See also: `LEAST`, `COALESCE`.
 
 ---
 
 ### LEAST
 
-Returns the smallest value among the given numeric expressions. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
+Returns the smallest value among the given expressions — numbers, or dates and timestamps. NULL arguments are ignored (PostgreSQL-style NULL handling); the result is NULL only if every argument is NULL.
 
 **Syntax:**
 ```sql
@@ -496,10 +529,13 @@ LEAST(expression1, expression2, ...)
 ```
 
 **Inputs:**
-- One or more numeric expressions to compare
+- One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Numeric (widest input type), or NULL if every argument is NULL
+- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
+  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+  fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
+  argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
 **Examples:**
 
@@ -516,9 +552,17 @@ FROM orders
 -- Never lets the rebate exceed the base price
 ```
 
+**3. The earlier of a date and a timestamp:**
+```sql
+SELECT LEAST(due_on, delivered_at) AS first_event
+FROM orders
+-- a TIMESTAMP: the arguments mix a DATE and a TIMESTAMP
+```
+
 **Notes:**
 - Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
-- All arguments should be numeric and have comparable types.
+- The arguments are all numeric, or all dates and timestamps; see `GREATEST` for dates, and for
+  `LEAST` over aggregates per group.
 - See also: `GREATEST`, `COALESCE`.
 
 [Back to index](README.md)

@@ -34,6 +34,7 @@ import app.softnetwork.elastic.sql.query.{
   Update
 }
 import app.softnetwork.elastic.sql.schema.{
+  mergedSchema,
   GenericProcessor,
   IngestPipeline,
   Schema,
@@ -250,6 +251,8 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         // #238 — a shard count cached for an expression this index is the stem of (a name probed
         // before it existed, `orders*` before the load) must not survive the creation
         invalidateShardCounts(Some(index))
+        // ...nor a pattern's merged schema that did not read this index yet
+        invalidatePatternsOf(index)
         logger.info(s"✅ Index '$index' created successfully")
         success
       case success @ ElasticSuccess(_) =>
@@ -303,6 +306,91 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     )
     if (fetched && schemaCache.size() > schemaCachePurgeThreshold) purgeExpiredSchemas(now)
     result
+  }
+
+  /** The schema an index PATTERN or a comma list answers with (`FROM logs-*`, `FROM a,b`): the
+    * columns of every index it matches, merged field by field (`schema.mergedSchema`), so a
+    * statement over a pattern is typed as one over a single index is. A field the indices map
+    * differently is left untyped: nothing is refused on it, and Elasticsearch answers for it.
+    *
+    * ONE mapping read per pattern -- `GET <pattern>` answers every matched index at once -- through
+    * the SAME cache as [[loadSchema]], keyed by the pattern, so a hit costs no round trip. A
+    * pattern that matches no index answers a `404` failure: no schema is attached, and `SearchApi`
+    * remembers the miss for its TTL as it does an unknown index's.
+    *
+    * ⚠️ A merged schema carries the columns and nothing else -- no settings, no pipeline, no
+    * primary key: it types a QUERY, never a DDL statement. An elasticsql DDL statement that
+    * creates, alters or drops an index the pattern matches drops the entry, as it refreshes the
+    * single index's ([[invalidatePatternsOf]]): the next statement reads the members again.
+    */
+  private[client] def loadPatternSchema(pattern: String): ElasticResult[Schema] = {
+    val now = System.currentTimeMillis()
+    var result: ElasticResult[Schema] = null
+    var fetched = false
+    schemaCache.compute(
+      pattern,
+      (_, existing) =>
+        existing match {
+          case entry: CachedSchema if !entry.isExpired(now) =>
+            logger.debug(s"📦 Schema cache hit for '$pattern'")
+            result = ElasticSuccess(entry.schema)
+            entry
+          case _ =>
+            fetched = true
+            fetchPatternSchema(pattern) match {
+              case success @ ElasticSuccess(schema) =>
+                result = success
+                CachedSchema(schema, now, schemaCacheTtlMs)
+              case failure =>
+                result = failure
+                existing
+            }
+        }
+    )
+    if (fetched && schemaCache.size() > schemaCachePurgeThreshold) purgeExpiredSchemas(now)
+    result
+  }
+
+  private def fetchPatternSchema(pattern: String): ElasticResult[Schema] = {
+    def notFound(message: String): ElasticResult[Schema] =
+      ElasticFailure(
+        ElasticError(
+          message = message,
+          statusCode = Some(404),
+          index = Some(pattern),
+          operation = Some("loadSchema")
+        )
+      )
+    pattern
+      .split(",")
+      .map(_.trim)
+      .find(part => validateIndexName(part, pattern = true).isDefined) match {
+      case Some(part) => return notFound(s"Invalid index pattern '$part' in '$pattern'")
+      case None       =>
+    }
+    executeGetIndex(pattern) match {
+      case ElasticSuccess(Some(json)) =>
+        val root = mapper.readTree(json)
+        val members: Seq[(String, JsonNode)] =
+          if (root.has(pattern)) Seq(pattern -> root.get(pattern)) else Index.indexDocuments(root)
+        if (members.isEmpty) notFound(s"No index matches '$pattern'")
+        else {
+          val (schema, disagreements) = mergedSchema(
+            pattern,
+            members.map { case (name, document) => name -> Index(name, document).schema }
+          )
+          if (disagreements.nonEmpty)
+            logger.info(
+              s"⚠️ The indices of '$pattern' disagree on ${disagreements.mkString(", ")}: " +
+              "statements are typed by Elasticsearch on those fields"
+            )
+          ElasticSuccess(schema)
+        }
+      case ElasticSuccess(None) => notFound(s"No index matches '$pattern'")
+      case ElasticFailure(error) if error.statusCode.contains(404) =>
+        notFound(s"No index matches '$pattern'")
+      case ElasticFailure(error) => ElasticFailure(error)
+    }
   }
 
   /** Drop every expired entry — each on ITS own clock, through the single `isExpired` rule — plus
@@ -362,10 +450,31 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         logger.debug(s"📦 Schema cache invalidated for alias '$alias' (target '$index')")
       }
 
+  /** Drop every cached PATTERN schema ([[loadPatternSchema]]) whose pattern matches `index`: its
+    * merged columns read `index`'s mapping, so an elasticsql DDL statement that creates, alters or
+    * drops `index` changes the pattern's answer exactly as it changes the single index's -- and,
+    * like the single index's, it is read again on the next statement rather than served stale for
+    * its TTL. A pattern this one does not match keeps its entry.
+    */
+  private def invalidatePatternsOf(index: String): Unit =
+    // (a pattern is never the subject of a DDL statement: its own entry, written through
+    // `updateSchema(<pattern>, …)`, is not one of the entries an index's change invalidates)
+    if (!IndicesApi.isPattern(index))
+      schemaCache
+        .keySet()
+        .asScala
+        .filter(key => IndicesApi.isPattern(key) && IndicesApi.patternMatches(key, index))
+        .toList
+        .foreach { pattern =>
+          schemaCache.remove(pattern)
+          logger.debug(s"📦 Schema cache invalidated for pattern '$pattern' (index '$index')")
+        }
+
   def updateSchema(index: String, schema: Schema): Unit = {
     val now = System.currentTimeMillis()
     schemaCache.put(index, CachedSchema(schema, now, resolveTtlMs(index, schema)))
     invalidateAliasesOf(index)
+    invalidatePatternsOf(index)
     // #238 — ALTER TABLE may have reindexed into a different shard count
     invalidateShardCounts(Some(index))
     logger.debug(s"📦 Schema cache updated for '$index'")
@@ -375,6 +484,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     schemaCache.remove(index)
     val _ = schemaAliasTargets.remove(index)
     invalidateAliasesOf(index)
+    invalidatePatternsOf(index)
     invalidateShardCounts(Some(index)) // #238 — the sliced-paging shard counts follow the schema
     logger.info(s"🗑️ Schema cache invalidated for '$index'")
   }
@@ -2157,4 +2267,29 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     pipelineId: Option[String],
     refresh: Boolean
   ): ElasticResult[Long]
+}
+
+object IndicesApi {
+
+  /** A FROM expression that names several indices: a `*` wildcard or a comma list. */
+  private[client] def isPattern(source: String): Boolean =
+    source.contains("*") || source.contains(",")
+
+  /** Does the index `pattern` -- a comma list of names and `*` wildcards, as Elasticsearch reads
+    * one -- match `index`? An EXCLUSION (`-logs-old`) is not read: a pattern that matches `index`
+    * through another part is matched, and one matched only through a part an exclusion would remove
+    * is matched too -- reading a mapping again costs one request, serving it stale a wrong type.
+    */
+  private[client] def patternMatches(pattern: String, index: String): Boolean =
+    pattern.split(",").iterator.map(_.trim).filter(p => p.nonEmpty && !p.startsWith("-")).exists {
+      part =>
+        part
+          .split("\\*", -1)
+          .map(java.util.regex.Pattern.quote)
+          .mkString(".*")
+          .r
+          .pattern
+          .matcher(index)
+          .matches()
+    }
 }

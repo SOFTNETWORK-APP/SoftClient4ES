@@ -657,27 +657,34 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
     * `TemporalLiterals` -- the SAME machinery a WHERE clause asks, against the column's own mapping
     * `format` -- so the engine has ONE date-literal grammar, not two.
     */
-  it should "ask the temporal-literal resolver about a string literal over a date column" in {
+  it should "read a well-formed date literal as that date, and ask the resolver about the rest" in {
+    // The ONE comparison rule (the lead's ruling of 2026-10-05): a string literal that spells a
+    // date or a timestamp, compared with a temporal, IS that temporal -- read here, as the instant
+    // it denotes, so no per-document `String -> temporal` coercion is needed in any venue. That is
+    // the half #382 recorded as its own story, and it is accepted now in every venue.
     forAll(
       Table(
-        // 🔴 AMENDED by the #382 review: EVERY row is refused now, and the column records which
-        // JUDGE refused it, because that is what the wording has to come from.
-        //
-        // A temporal operand against a text one cannot be EMITTED -- the pair folds to VARCHAR,
-        // misses both typed arms and lands on `==`, which is silently `false` for every document.
-        // So a well-formed literal is refused too, with a message that says the engine cannot do
-        // it yet rather than pretending the SQL is wrong. A MALFORMED literal is still refused by
-        // the resolver, which names the literal and the field -- a strictly better message, and
-        // the reason the resolver stays reachable and goes first.
-        //
-        // Making the well-formed half WORK is its own story (a `String -> temporal` coercion per
-        // subtype, three venues, four ES majors; and `now-1d` is Elasticsearch date math, which
-        // has no Painless equivalent at all and must stay refused by name).
+        "expr",
+        "NULLIF(d, '2025-01-01')",
+        "NULLIF(d, '2025-01-01 10:00:00')",
+        "NULLIF(ts, '2025-01-01T10:00:00Z')",
+        "NULLIF('2025-01-01', d)"
+      )
+    ) { expr =>
+      everyVenueVerdict(expr, "DATE").foreach { case (venue, verdict) =>
+        withClue(s"[$venue] [$expr] -> $verdict ") {
+          verdict shouldBe Right(())
+        }
+      }
+    }
+    forAll(
+      Table(
+        // Every other literal beside a date is REFUSED, and the column records which JUDGE
+        // refused it, because that is what the wording has to come from. Elasticsearch date math
+        // (`now-1d`) and an epoch number spell no date: the engine refuses them by name. A
+        // MALFORMED literal is refused by the resolver, which names the literal and the field --
+        // a strictly better message, and the reason the resolver stays reachable and goes first.
         ("expr", "judge"),
-        ("NULLIF(d, '2025-01-01')", "engine"),
-        ("NULLIF(d, '2025-01-01 10:00:00')", "engine"),
-        ("NULLIF(ts, '2025-01-01T10:00:00Z')", "engine"),
-        ("NULLIF('2025-01-01', d)", "engine"),
         ("NULLIF(d, 'now-1d')", "engine"),
         ("NULLIF(d, '1735689600000')", "engine"),
         ("NULLIF(d, 'x')", "resolver"),

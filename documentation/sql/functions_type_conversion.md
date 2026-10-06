@@ -147,6 +147,10 @@ SELECT CAST(CURRENT_TIMESTAMP AS DATE) AS d;
 -- a seconds-precision epoch lands in 1970. Multiply by 1000, or use a millisecond epoch.
 SELECT CAST(1704902400000 AS TIMESTAMP) AS ts;
 -- Result: 2024-01-10 12:00:00
+
+-- The same over an integer or decimal column (created_ms), in a SELECT, in WHERE and in a
+-- computed column; a fraction of a millisecond is dropped, toward zero
+SELECT CAST(created_ms AS TIMESTAMP) AS created_at FROM events;
 ```
 
 **Boolean Conversions:**
@@ -656,6 +660,7 @@ WHERE denominator != 0;
 | INT        | BOOLEAN   | `CAST(1 AS BOOLEAN)`          | 0=false, non-zero=true          |
 | DOUBLE     | INT       | `CAST(123.99 AS INT)`         | Truncates decimal               |
 | DOUBLE     | VARCHAR   | `CAST(123.45 AS VARCHAR)`     | Always succeeds                 |
+| BIGINT     | TIMESTAMP | `CAST(epoch_ms AS TIMESTAMP)` | Epoch milliseconds, UTC         |
 | DATE       | VARCHAR   | `CAST(date_col AS VARCHAR)`   | Format: 'YYYY-MM-DD'            |
 | DATE       | TIMESTAMP | `CAST(date_col AS TIMESTAMP)` | Time set to 00:00:00            |
 | TIMESTAMP  | DATE      | `CAST(ts_col AS DATE)`        | Drops time component            |

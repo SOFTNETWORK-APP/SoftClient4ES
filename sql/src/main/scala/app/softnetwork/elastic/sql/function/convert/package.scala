@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   query,
+  renderedTypeOf,
   Alias,
   DateMathRounding,
   Expr,
@@ -28,6 +29,8 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.function.cond.functionsOf
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 
 package object convert {
 
@@ -112,7 +115,7 @@ package object convert {
           }
         case _ => // do nothing
       }
-      val ret = SQLTypeUtils.coerce(base, value.baseType, targetType, value.nullable, context)
+      val ret = SQLTypeUtils.coerce(base, sourceType, targetType, sourceNullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
       val retWithBrackets = if (bloc) ret else s"{ $ret }"
       if (!safe) ret
@@ -151,10 +154,89 @@ package object convert {
         }
     }
 
+    /** The arithmetic this conversion converts, when its operand IS one: `(n + x)::BIGINT`, whose
+      * operand is the nameless identifier carrying that one arithmetic.
+      */
+    private def arithmetic: Option[ArithmeticExpression] = value match {
+      case a: ArithmeticExpression => Some(a)
+      case i: Identifier if i.name.trim.isEmpty =>
+        i.functions match {
+          case (a: ArithmeticExpression) :: Nil => Some(a)
+          case _                                => None
+        }
+      case _ => None
+    }
+
+    /** The type the conversion converts FROM: what an arithmetic operand COMPUTES (its own type,
+      * which a cast no longer overwrites -- `ArithmeticExpression.cast`), or the operand's type.
+      *
+      * 🔴 The nameless identifier around an arithmetic folds its chain from the arithmetic's INPUT
+      * type, so it answered NUMERIC for `(n + x)`, and `NUMERIC -> BIGINT` has no conversion arm:
+      * the cast was silently ignored (`(n + x)::BIGINT` answered 3.25 on main).
+      */
+    private def sourceType: SQLType = arithmetic.map(_.out).getOrElse(value.baseType)
+
+    /** Can the value converted be NULL? Asked of the chain's innermost PRODUCER: the nameless
+      * identifier around an arithmetic answers `false` whatever its operands hold, so the
+      * conversion was emitted unguarded -- `((long) <null>)` failed with `Cannot cast null to a
+      * primitive type`, `String.valueOf(<null>)` answered the text "null", and `<null> != 0`
+      * answered TRUE. Guarded, the value is bound once and the conversion applies to it when it is
+      * not NULL (`SQLTypeUtils.coerce`'s nullable form): `(v == null ? null : conversion)`.
+      */
+    private def sourceNullable: Boolean =
+      value.nullable || (value match {
+        case i: Identifier if i.name.trim.isEmpty =>
+          i.functions.lastOption.exists {
+            case a: ArithmeticExpression => a.nullable
+            case _                       => false
+          }
+        case a: ArithmeticExpression => a.nullable
+        case _                       => false
+      })
+
     override def roundingScript: Option[String] = DateMathRounding(targetType)
 
     override def dateMathScript: Boolean = isTemporal
+
+    /** A NUMBER converted to a DATE is refused by name, as PostgreSQL refuses it (`cannot cast type
+      * integer to date`) -- `(d - d2)::DATE`, `CAST(n AS DATE)`, `CAST(YEAR(d) AS DATE)`. A number
+      * is no date, and no conversion makes it one: the number used to pass through unconverted
+      * under a DATE label (`(d - d2)::DATE` answered -1, 2 and 0).
+      *
+      * Decided on what the operand RENDERS ([[convertedType]]): `YEAR(d)` is a number although its
+      * column is a date. Asked once the column types are known, like every type rule; an operand
+      * whose type is still unknown is accepted. A number cast to a TIMESTAMP keeps core's
+      * epoch-millisecond conversion.
+      */
+    override def typeError: Option[String] =
+      if (targetType != SQLTypes.Date) None
+      else {
+        val source = convertedType
+        if (!source.isNumber) None
+        else
+          Some(
+            s"Type mismatch: cannot cast ${source.typeId} to DATE in expression: $sql; a number " +
+            "is not a date: add a number of days to a date instead"
+          )
+      }
+
+    /** The type of the value converted, as it renders: its outermost function's own type -- never
+      * that function's `out`, which this conversion's constructor sets to the TARGET type
+      * (`value.cast(targetType)`), so that `CAST(1 AS DATE)` and `CAST(YEAR(d) AS DATE)` would read
+      * as dates -- an aggregate's metric, or the column's type.
+      */
+    private def convertedType: SQLType = value match {
+      case i: Identifier if !i.isAggregation && i.functions.nonEmpty => i.functions.head.baseType
+      case other                                                     => renderedTypeOf(other)
+    }
   }
+
+  /** Every conversion type error in an expression ([[Conversion.typeError]]), wherever a conversion
+    * sits in it -- the walk a computed column's resolved table asks, as it asks the date-arithmetic
+    * rules (`ArithmeticExpression.typeErrorsOf`).
+    */
+  def typeErrorsOf(chain: FunctionChain): Seq[String] =
+    functionsOf(chain).collect { case c: Conversion => c }.flatMap(_.typeError).distinct
 
   case object Cast extends Expr("CAST") with TokenRegex
 

@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.operator.{AND, OR, SetOperator, UNION}
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
   validateScriptReferences,
@@ -34,8 +35,8 @@ import app.softnetwork.elastic.sql.schema.{
   Table => Schema,
   TableType
 }
-import app.softnetwork.elastic.sql.function.{FunctionChain, FunctionUtils}
-import app.softnetwork.elastic.sql.function.cond.{Case, NullIf}
+import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, FunctionUtils}
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
 import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
@@ -62,6 +63,26 @@ import scala.collection.immutable.ListMap
 import scala.util.Try
 
 package object query {
+
+  /** Every TYPE refusal of the functions reachable from `chain` (`functionsOf`), each one's own
+    * `Validation.typeError`, an arithmetic nested directly in another included -- it is an operand,
+    * not a chain, so `functionsOf` does not reach it.
+    *
+    * 🔴 Asked of a SCHEMA-RESOLVED expression only: the lead's ruling of 2026-10-05, no refusal
+    * before the column types are known. ONE walk for every function rule moved off `validate()`
+    * (`ArithmeticExpression`, `NULLIF`, `CASE`, `GREATEST` / `LEAST`, the `INTERVAL` family).
+    */
+  private[elastic] def chainTypeErrors(chain: FunctionChain): Seq[String] = {
+    def arithmetic(a: ArithmeticExpression): Seq[String] =
+      a.typeError.toSeq ++ a.args.flatMap {
+        case nested: ArithmeticExpression => arithmetic(nested)
+        case _                            => Nil
+      }
+    functionsOf(chain).flatMap {
+      case a: ArithmeticExpression => arithmetic(a)
+      case f                       => f.typeError.toSeq
+    }.distinct
+  }
 
   /** The `SingleSearch`es a statement EMBEDS — the ONE place these arms are spelled.
     *
@@ -1025,7 +1046,7 @@ package object query {
         case relation: ElasticRelation => walk(relation.criteria)
         case leaf =>
           leaf.referencedIdentifiers
-            .filter(id => !id.isAggregation && id.hasAggregation)
+            .filter(SingleSearch.readsPerGroupCalculation)
             .map(leaf -> _)
       }
       having.flatMap(_.criteria).toSeq.flatMap(walk)
@@ -1763,12 +1784,11 @@ package object query {
       * (`SearchApi.resolveWithSchema`), which is the same seam #306 uses to attach the schema in
       * the first place.
       *
-      * ⚠️ It is NOT a second `validate()`. Running the whole of `validate()` against resolved types
-      * would surface every pre-existing disagreement between a column's DECLARED type and its
-      * chain's — including `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)`, which works today and
-      * which `Expression.validate`'s `identifier.out` (the COLUMN's type, not the chain's) already
-      * rejects when it is asked after resolution. This method carries exactly the rules that were
-      * measured, and each one names the shape it refuses.
+      * ⚠️ It is NOT a second `validate()`: `validate()` checks syntax and structure only, and this
+      * method asks the TYPE rules ([[typeErrors]]). Each of them reads the type an operand RENDERS
+      * (`renderedTypeOf`: the chain's, or an aggregate's own output type), never a column's
+      * declared type alone -- `CAST(ts AS TIME) = CAST('07:00:00' AS TIME)` compares a TIME with a
+      * TIME -- and each one names the shape it refuses.
       */
     def validateResolved(): Either[String, Unit] =
       // 🔴 Issue #389 / F4 -- the representability gate runs AGAIN here, on the RESOLVED statement.
@@ -1783,15 +1803,33 @@ package object query {
       // which is issue #250's family. That throw stays as the last-resort invariant; this is what
       // makes it unreachable in practice.
       having.map(_.unrepresentable).getOrElse(Nil).headOption.map(u => Left(u.message)).getOrElse {
-        ((where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq ++
-        select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
+        typeErrors.headOption.map(Left(_)).getOrElse(Right(()))
+      }
+
+    /** Every TYPE refusal of this RESOLVED statement, by name, in clause order.
+      *
+      * 🔴 The lead's ruling of 2026-10-05: no refusal before the column types are known. Every TYPE
+      * rule that `validate()` used to apply when the statement was parsed -- where every column is
+      * `Any` -- is asked here instead, on the real types, alongside the rules that always needed
+      * them: a comparison's ([[Criteria.typeErrors]]: TIME against a date, the operand match, `IN`,
+      * `BETWEEN`), and every function's ([[chainTypeErrors]]: date arithmetic and the operand
+      * match, `NULLIF`, `CASE`, `GREATEST` / `LEAST`, `INTERVAL`).
+      *
+      * With NO schema attached nothing calls this, and nothing is refused on types: Elasticsearch
+      * answers. `SearchApi.resolveWithSchema` calls it through [[validateResolved]]; so does a
+      * `CREATE TABLE ... AS SELECT` before it creates -- or, with `OR REPLACE`, deletes -- its
+      * target.
+      */
+    def typeErrors: Seq[String] =
+      // A WHERE / HAVING clause's own comparison may be a QUERY on a column's mapping; a CASE
+      // condition is always a script (`Criteria.typeErrors`).
+      ((where.flatMap(_.criteria).toSeq ++ having.flatMap(_.criteria).toSeq)
+        .flatMap(_.typeErrors(scripted = false)) ++
+        (select.fields.flatMap(f => Case.conditionsOf(f.identifier)) ++
         orderBy.toSeq.flatMap(_.sorts.flatMap(s => Case.conditionsOf(s.field))) ++
         groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
-          .flatMap(_.temporalComparisonErrors) ++
-        scriptedExpressions.flatMap(NullIf.mismatchesOf)).headOption
-          .map(Left(_))
-          .getOrElse(Right(()))
-      }
+          .flatMap(_.typeErrors(scripted = true)) ++
+        scriptedExpressions.flatMap(chainTypeErrors)).distinct
 
     /** Every expression of this statement that can be emitted as Painless, as the chain it is.
       *
@@ -1849,11 +1887,12 @@ package object query {
           // Arithmetic over aggregates written INLINE in HAVING (`HAVING MAX(x) - MIN(x) > 3`) has no
           // aggregation to read from and was silently dropped. Alias it in SELECT and reference the
           // alias (`... AS d ... HAVING d > 3`), which IS supported (Having.resolveAggregateAliases).
+          // `GREATEST` / `LEAST` inline are no arithmetic (`SingleSearch.readsPerGroupCalculation`).
           having
             .flatMap(_.criteria)
             .map(_.referencedIdentifiers)
             .getOrElse(Nil)
-            .find(id => !id.isAggregation && id.hasAggregation && id.fieldAlias.isEmpty) match {
+            .find(id => id.fieldAlias.isEmpty && SingleSearch.readsPerGroupCalculation(id)) match {
             case Some(id) =>
               Left(
                 s"HAVING cannot combine aggregates arithmetically inline (${id.sql}); alias the expression in SELECT and reference the alias"
@@ -2330,6 +2369,32 @@ package object query {
 
   object SingleSearch {
 
+    /** Does a HAVING reference read a per-group calculation the way an arithmetic over aggregates
+      * is read? The ONE predicate the inline-arithmetic refusal (`validate()`) and a materialized
+      * view's rule 4 (`havingBucketScriptRefs`) share (#292).
+      *
+      *   - ALIASED (`SELECT GREATEST(MAX(a), MAX(b)) AS m ... HAVING m > 1`, once
+      *     `Having.resolveAggregateAliases` has put the item in place), it reads the SELECT item's
+      *     `bucket_script` by name: any expression over aggregates, `GREATEST` / `LEAST` over them
+      *     included.
+      *   - INLINE, it is an ARITHMETIC over aggregates, the shape the group filter cannot read.
+      *     `GREATEST` / `LEAST` report the aggregates of their arguments
+      *     (`NumericReducer.hasAggregation`, so that a SELECT computes them per group), but inline
+      *     they are a function over aggregates, which the group filter reads through its operands
+      *     (issue #389) -- alone or under an arithmetic, exactly as before they reported any.
+      */
+    private[query] def readsPerGroupCalculation(id: Identifier): Boolean = {
+      def carriesAggregate(token: Token): Boolean = token match {
+        case _: NumericReducer => false
+        case binary: BinaryFunction[_, _, _] =>
+          carriesAggregate(binary.left) || carriesAggregate(binary.right)
+        case i: Identifier => i.isAggregation || i.functions.exists(carriesAggregate)
+        case other         => other.hasAggregation
+      }
+      !id.isAggregation &&
+      (if (id.fieldAlias.isDefined) id.hasAggregation else id.functions.exists(carriesAggregate))
+    }
+
     /** Name of the synthetic single-bucket aggregation the bridge emits for a `HAVING` with no
       * `GROUP BY` (see [[SingleSearch.wholeTableHaving]]). It exists only so that the
       * `bucket_selector` has a multi-bucket parent to hang from -- Elasticsearch rejects one inside
@@ -2516,7 +2581,9 @@ package object query {
           case None => Right(())
         }
         _ <- MultiSearch.branchArity(requests)
-        _ <- MultiSearch.branchTypes(requests)
+        // ⚠️ No `branchTypes` here: it is a TYPE rule, asked once each branch's schema is attached
+        // (`SearchApi.resolveWithSchema(MultiSearch)`), never when the statement is parsed (the
+        // lead's ruling of 2026-10-05).
       } yield ()
     }
 

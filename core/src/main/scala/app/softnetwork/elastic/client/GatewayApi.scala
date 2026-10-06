@@ -1065,6 +1065,21 @@ class TableExecutor(
             case Some(from) =>
               api.loadSchema(from) match {
                 case ElasticSuccess(fromSchema) =>
+                  // 🔴 A TYPE refusal (`MAX(d) / 1000`, `d + d2`, `n + 'x'`) is asked HERE, once
+                  // the source's column types are known, before the target is created or -- `OR
+                  // REPLACE` -- the existing one deleted. Its SELECT is refused anyway when it runs
+                  // (`validateResolved`), but that runs after the destructive step, and since no
+                  // type is refused when a statement is parsed (the lead's ruling of 2026-10-05),
+                  // a type error would otherwise lose the user's index and put nothing back.
+                  single.update(Some(fromSchema)).validateResolved().left.foreach { reason =>
+                    val error = ElasticError(
+                      message = reason,
+                      statusCode = Some(400),
+                      operation = Some("schema")
+                    )
+                    logger.error(s"❌ ${error.message}")
+                    return Left(error)
+                  }
                   // we update the schema based on the DQL select clause
                   fromSchema
                     .mergeWithSearch(single)

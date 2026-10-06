@@ -30,10 +30,11 @@ expr1 + expr2
 ```
 
 **Inputs:**
-- `expr1`, `expr2` - Numeric expressions (`INT`, `DOUBLE`, `DECIMAL`, etc.)
+- `expr1`, `expr2` - Numeric expressions (`INT`, `DOUBLE`, `DECIMAL`, etc.), or a `DATE`,
+  `TIMESTAMP` or `DATETIME` and a number of days (see [Date arithmetic](#date-arithmetic--and---with-a-date-timestamp-or-datetime))
 
 **Output:**
-- Numeric type (result type depends on operand types)
+- Numeric type (result type depends on operand types); a date or a timestamp for date arithmetic
 
 **Examples:**
 
@@ -65,6 +66,15 @@ SELECT 10.5 + 20.3 AS total;
 -- Mixed types (INT + DOUBLE)
 SELECT 10 + 20.5 AS total;
 -- Result: 30.5 (promoted to DOUBLE)
+
+-- A number and a string column (n INT, s KEYWORD) are a type error, refused by name once the
+-- column types are known
+SELECT n + s AS x FROM t;
+-- Error: Type mismatch: output 'INT' is not compatible with input 'KEYWORD'
+
+-- To join them as text, convert the number
+SELECT CONCAT(CAST(n AS VARCHAR), s) AS x FROM t;
+-- Result: '3a' for n = 3, s = 'a'
 ```
 
 **NULL Handling:**
@@ -129,10 +139,14 @@ SELECT 100 + (-50) AS result;
 -- Result: 50
 ```
 
-**Date Arithmetic:**
+**Date Arithmetic** (see [Date arithmetic](#date-arithmetic--and---with-a-date-timestamp-or-datetime)):
 ```sql
--- Date subtraction (days between)
-SELECT order_date - ship_date AS days_to_ship
+-- Date subtraction: the days between the two dates (BIGINT)
+SELECT ship_date - order_date AS days_to_ship
+FROM orders;
+
+-- A date moved back by days (DATE)
+SELECT order_date - 7 AS week_before
 FROM orders;
 
 -- With INTERVAL
@@ -276,25 +290,21 @@ SELECT CAST(10 AS DOUBLE) / 3 AS result;   -- 3.333...
 > `CREATE TABLE u (n INTEGER, m INTEGER, c DOUBLE SCRIPT AS (n / m))` stored `3.0` for 7/2 before
 > `0.24.0`; it stores `3.5`.
 >
-> ⚠️ **There is no truncating-division operator, and no single expression that produces one.**
-> Other engines spell truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither — and the
-> obvious rewrites are **parse errors**, because an arithmetic expression is not accepted as the
-> operand of a function, of a `CAST` or of a `CASE` branch:
+> ⚠️ **There is no truncating-division operator: write `(a / b)::INTEGER`.** Other engines spell
+> truncation `DIV` (MySQL) or `//` (DuckDB); this engine has neither. Since `0.24.0` a `::` cast
+> applies to arithmetic and truncates toward zero: `(n / m)::INTEGER` is `3` for 7 / 2 and `-3` for
+> -7 / 2, and NULL for a zero divisor, in a search and in a computed column. The other obvious
+> rewrites are **parse errors**, because an arithmetic expression is not accepted as the operand of
+> a function, of a `CAST` or of a `CASE` branch:
 >
 > ```sql
 > CAST(a / b AS INTEGER)     CAST(a + b AS INTEGER)     CAST((a / b) AS INTEGER)   -- ✗ rejected
 > FLOOR(a / b)               ABS(a / b)                 COALESCE(a / b, 0)         -- ✗ rejected
-> FLOOR(x)                   a / NULLIF(b, 0)                                      -- ✓ accepted
+> (a / b)::INTEGER           FLOOR(x)                   a / NULLIF(b, 0)           -- ✓ accepted
 > ```
 >
 > The rule is **directional**: `f(<arithmetic>)` is rejected, `<arithmetic> f(…)` is fine. It is
 > not specific to division — any arithmetic operand is refused — and parenthesising does not help.
-> To get an integral quotient today, compute it into a column and cast **that** column:
->
-> ```sql
-> CREATE TABLE t (n INTEGER, m INTEGER, q DOUBLE SCRIPT AS (n / m));
-> SELECT CAST(q AS INTEGER) AS whole FROM t;   -- 3 for 7 / 2, truncated toward zero
-> ```
 >
 > `%` (MOD) is unaffected by this rule and keeps deriving its type from its operands — see the `%`
 > section below, including what it does with a zero divisor.
@@ -319,18 +329,16 @@ division **threw** (a search answered HTTP 400 `arithmetic_exception: / by zero`
 pipeline silently left the computed column out of the document), while floating division produced
 `Infinity` — which Elasticsearch refuses to index, so **the whole document was rejected**.
 
-> ⚠️ **Two limitations to know about, both of them older than this rule and neither of them fixed
-> by it:**
+> ⚠️ **One limitation to know about, older than this rule and not fixed by it: `ORDER BY
+> <arithmetic>` over nullable columns fails.** A script sort is typed `number`, and Elasticsearch
+> rejects a sort script that can return null — which any arithmetic over a nullable column can,
+> whether from a missing value or from a zero divisor. Measured identically before and after
+> `0.24.0`. Sort by a plain column, or by a computed column.
 >
-> - **`ORDER BY <arithmetic>` over nullable columns fails.** A script sort is typed `number`, and
->   Elasticsearch rejects a sort script that can return null — which any arithmetic over a nullable
->   column can, whether from a missing value or from a zero divisor. Measured identically before and
->   after `0.24.0`. Sort by a plain column, or by a computed column.
-> - **`NULLIF` inside a division fails on exactly the rows it protects.**
->   `total / NULLIF(order_count, 0)` throws a `null_pointer_exception` in a search on any row where
->   `order_count = 0`, and silently drops the computed column in an ingest pipeline. Measured
->   identically before and after `0.24.0`. **Since `0.24.0` you do not need it for division: write
->   `total / order_count`.**
+> **You do not need `NULLIF` for a division: write `total / order_count`.** It works too:
+> `total / NULLIF(order_count, 0)` answers NULL on the rows where `order_count` is `0` or missing,
+> in a search and in a computed column. Before `0.24.0` it threw a `null_pointer_exception` in a
+> search on exactly those rows, and silently dropped the computed column in an ingest pipeline.
 
 ⚠️ **Corrected in `0.24.0`: the other guards this page used to recommend do not parse.** As above,
 an arithmetic expression is not accepted as the operand of a function, of a `CAST` or of a `CASE`
@@ -377,26 +385,23 @@ expr1 % expr2
 **Output:**
 - Integer (remainder of division)
 
-> ⚠️ **A zero divisor is NOT guarded for `%`.** The `0.24.0` rule that turns `a / 0` into NULL
-> covers `/` only, and `%` has two distinct failures:
+> ⚠️ **A zero divisor is NOT guarded for `%` by itself.** The `0.24.0` rule that turns `a / 0` into
+> NULL covers `/` only, and a bare `%` has two distinct failures:
 >
 > - **integer operands** — `a % 0` throws. A search fails with HTTP 400
 >   `arithmetic_exception: / by zero`; in a computed column the ingest processor's
 >   `ignore_failure` swallows it and the column is simply **absent** from the indexed document.
 > - **floating operands** — `a % 0` is `NaN`, and Elasticsearch refuses to index a non-finite
 >   number, so **the whole document is rejected** (`document_parsing_exception: [double] supports
->   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix, and
->   it is still open for `%`.
+>   only finite values`). This is the same data-loss failure the `/` guard was shipped to fix.
 >
-> ⚠️ **There is no in-expression way to guard it.** `CASE WHEN b != 0 THEN a % b END`,
-> `COALESCE(a % b, 0)` and `FLOOR(a % b)` are all **parse errors** — an arithmetic expression is
-> not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see the note under
-> `/` above; the restriction is not specific to division). And `a % NULLIF(b, 0)` parses but then
-> throws `null_pointer_exception` on exactly the rows the guard is for, exactly as it does for
-> division.
->
-> Until `%` is covered, keep a zero divisor out of the data — filter it in `WHERE`
-> (`WHERE b <> 0`), or compute the remainder into its own column from an already-filtered index.
+> **Guard it with `NULLIF`: write `a % NULLIF(b, 0)`.** It answers NULL on the rows where `b` is
+> `0` or missing and the remainder everywhere else, for integer and floating operands alike, in a
+> search and in a computed column. Before `0.24.0` it threw a `null_pointer_exception` on exactly
+> the rows the guard is for. The other guards one might write are **parse errors**:
+> `CASE WHEN b != 0 THEN a % b END`, `COALESCE(a % b, 0)` and `FLOOR(a % b)` — an arithmetic
+> expression is not accepted as the operand of a function, of a `CAST` or of a `CASE` branch (see
+> the note under `/` above; the restriction is not specific to division).
 
 **Examples:**
 
@@ -453,6 +458,142 @@ SELECT 10 % -3 AS result;
 
 ---
 
+### Date arithmetic: `+` and `-` with a `DATE`, `TIMESTAMP` or `DATETIME`
+
+**Description:**  
+Since `0.24.0`, `+` and `-` follow the rules SQL engines apply to dates, in every place a script
+runs: a row `SELECT`, a `WHERE`, a per-group calculation over aggregates (`MAX(d) - MIN(d) AS x`),
+a `HAVING` over its alias, a computed column (`SCRIPT AS`) and a materialized view.
+
+| Expression | Result | Type |
+|---|---|---|
+| `DATE - DATE` | the calendar days between the two dates | `BIGINT` |
+| `TIMESTAMP - TIMESTAMP`, or a `DATE` and a `TIMESTAMP` | the milliseconds between the two, in days (`1.5` is a day and a half) | `DOUBLE` |
+| `DATE + n`, `DATE - n`, `n` a whole number (`INT`, `BIGINT`, ...) | the date `n` days later / earlier | `DATE` |
+| `DATE + n`, `DATE - n`, `n` a fractional number (`DOUBLE`, `REAL`, `DECIMAL`) | `n` days later / earlier, the fraction as a time of day | `TIMESTAMP` |
+| `TIMESTAMP + n`, `TIMESTAMP - n`, any number `n` | `n` days later / earlier | `TIMESTAMP` |
+| `n + temporal` | the same as `temporal + n` | as above |
+| a temporal and a string literal that is a number (`'30'`, `'1.5'`) | the same as with that number (elasticsql's own rule, not PostgreSQL's: see below) | as above |
+| a temporal and `NULL` | `NULL` | the type above, for a typed `NULL` (`CAST(NULL AS DATE) - d` is a `BIGINT`) |
+| two temporals added, a temporal under `*`, `/` or `%`, a number minus a temporal, a temporal combined with any other string or a boolean | a type error, refused before anything runs | — |
+
+`DATETIME` behaves as `TIMESTAMP`. Days are UTC calendar days: a `DATE` operand is the UTC day it
+falls in, so `DATE - DATE` is the same number as `DATEDIFF(date1, date2)`.
+
+An operand's type is the type it produces: a column's declared type; an aggregate's own type
+(`COUNT` is a `BIGINT`, `AVG` a `DOUBLE`, `SUM` the column's numeric type, `MIN`, `MAX`,
+`FIRST_VALUE` and `LAST_VALUE` the column's type); `CASE`, `COALESCE`, `NULLIF`, `GREATEST` and
+`LEAST` the common type of their branches or arguments. So `MAX(order_date) - AVG(delay)` is a
+`TIMESTAMP`, `COUNT(order_date) - 1` a number, and
+`CASE WHEN express THEN ship_date ELSE due_date END - order_date` and
+`GREATEST(ship_date, due_date) - order_date` numbers of days (`GREATEST` and `LEAST` compare dates
+and timestamps too: see [GREATEST](functions_conditional.md#greatest)).
+
+**The engines this follows:**
+- PostgreSQL, DuckDB, Oracle and Snowflake subtract two dates into a number of days; Oracle, whose
+  `DATE` carries a time of day, answers fractional days.
+- PostgreSQL, DuckDB, Oracle and BigQuery add a number of days to a date; Oracle turns the fraction
+  of `DATE + 1.5` into a time of day.
+- PostgreSQL, DuckDB, Oracle, Trino, Snowflake and SQL Server refuse the other combinations.
+- A number written as a string beside a date or a timestamp (`order_date + '30'`) is elasticsql's
+  own rule, not PostgreSQL's: PostgreSQL refuses `order_date + '1'`
+  (`operator is not unique: date + unknown`), reads the `'1'` of `order_date - '1'` as a date and
+  refuses it (`invalid input syntax for type date`), and reads `created_at + '1'` as one second.
+
+**Examples:**
+```sql
+-- Days between two dates
+SELECT ship_date - order_date AS days_to_ship FROM orders;
+-- 2024-01-31 -> 2024-02-01 is 1; 2024-02-28 -> 2024-03-01 is 2 (2024 is a leap year)
+
+-- A date moved by days
+SELECT due_date + 30 AS reminder FROM invoices;          -- DATE
+SELECT due_date + 1.5 AS reminder_at FROM invoices;      -- TIMESTAMP, 12:00 on the next day
+
+-- Fractional days between two instants
+SELECT closed_at - opened_at AS days_open FROM tickets;  -- 1.25 is a day and six hours
+
+-- A filter relative to today
+SELECT * FROM orders WHERE order_date > CURRENT_DATE - 7;
+
+-- Per group, and in HAVING through the alias
+SELECT customer, MAX(order_date) - MIN(order_date) AS span
+FROM orders GROUP BY customer HAVING span > 30;
+
+-- A computed column
+CREATE TABLE tickets (
+  id KEYWORD, opened_at TIMESTAMP, closed_at TIMESTAMP,
+  days_open DOUBLE SCRIPT AS (closed_at - opened_at),
+  PRIMARY KEY (id)
+);
+```
+
+**Refused combinations** are refused by name, with the operator, the two operand types and the
+remedy:
+```sql
+SELECT order_date * 2 FROM orders;
+-- Type mismatch: operator * cannot be applied to DATE and BIGINT in expression: order_date * 2;
+-- subtract two dates for the days between them, or add or subtract a number of days
+```
+
+**Notes:**
+- A temporal operand is recognised by its **declared** type: Elasticsearch stores `DATE`,
+  `TIMESTAMP` and `DATETIME` alike as a `date`, and the declaration is what tells a date from a
+  timestamp. A `TIME` operand is not covered by these rules.
+- A `date` field elasticsql did not declare — an index created by a bulk load, Logstash or any other
+  client, or a field a bulk load added to a table elasticsql created — is a `TIMESTAMP`: `DESCRIBE
+  TABLE` reports it so, a `CREATE TABLE ... AS SELECT` declares it so, and it follows the
+  `TIMESTAMP` rules (`created_at + 1` keeps the time of day, `closed_at - opened_at` is
+  fractional). A column declared `DATE` through elasticsql stays a `DATE`.
+- A string literal is read by what it is combined or compared with, as PostgreSQL reads one:
+  `order_date - '2024-01-01'` is the days between two dates, `qty + '1'` adds the number 1, and in
+  a comparison — `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `CASE x WHEN v`, `NULLIF`, a
+  `CASE` condition — a literal beside a number is the number it spells, beside a `DATE` the date
+  it spells (the date of a date-time literal), beside a `TIMESTAMP` the instant it spells
+  (`'2024-01-31'` is its midnight), and beside a `BOOLEAN` the boolean it spells. Beside a
+  whole-number type (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`) only a whole number is read: `'1.5'`
+  and `'1.0'` are no integer, so `COALESCE(qty, 0) = '1.5'` or `qty + '1.0'` over an integer `qty`
+  is refused by name, as PostgreSQL refuses it (`invalid input syntax for type integer`); beside
+  `DOUBLE`, `REAL` or `DECIMAL`, any number is read. (A `WHERE` comparison with a bare integer
+  column, `WHERE qty = '1.5'`, is the exception: it runs as a query on the column's mapping, and
+  Elasticsearch reads the literal.) A `DATE` and a `TIMESTAMP` compare, the `DATE` being the
+  instant its day starts at. Any other literal is text, and comparing it with a number or a date
+  is refused by name. A number written as a string beside a date or a timestamp in `+` or `-`
+  (`order_date + '30'`) is not read as PostgreSQL reads it: elasticsql counts it as that number of
+  days, whatever its fraction, which PostgreSQL does not (see "The engines this follows" above).
+- An index pattern or a comma list (`FROM logs-*`, `FROM orders_2024, orders_2025`) answers like a
+  single index: every field its indices map alike has its type, read once per pattern from the
+  merged mapping. ⚠️ A field two of them map differently (a `date` in one index, a `keyword` in
+  another) has no type: nothing is refused on it and Elasticsearch answers for it — per group,
+  `MAX(order_date) - MIN(order_date)` over such a field answers milliseconds rather than days. Every
+  other field of the pattern keeps its type.
+- Type errors are checked once the column types are known, when the statement runs and the mapping
+  is read, and before anything is sent to Elasticsearch: `WHERE due_date + 7 > CURRENT_DATE` runs,
+  `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map
+  differently, a mapping that cannot be read), nothing is refused on types.
+- In a per-group calculation, a date result comes back as the same number a date aggregate does
+  (`MAX(order_date)`): milliseconds since the epoch. `CURRENT_DATE` and `NOW()` there are the time
+  the statement runs (`CURRENT_DATE - MAX(order_date)`); a materialized view refuses them.
+- An explicit cast applies to the result, and a `NULL` stays `NULL`:
+  `(ship_date - order_date)::TIMESTAMP` converts the number of days as any number is converted to a
+  `TIMESTAMP` — as milliseconds since the epoch — and `(quantity + ratio)::BIGINT` truncates, as
+  `CAST(3.25 AS BIGINT)` does.
+- `INTERVAL` arithmetic (`order_date - INTERVAL 7 DAY`) and `DATEDIFF` / `TIMESTAMPDIFF` are
+  unchanged.
+- ⚠️ On Elasticsearch 6.8, a `date` column compared with another `date` column
+  (`WHERE ship_date > order_date`), or with a date function of one
+  (`WHERE ship_date > DATE_TRUNC(order_date, MONTH)`), fails with a 400 (`failed to parse date
+  field`); date arithmetic on one side runs: `WHERE ship_date > order_date + 0`. Elasticsearch 8
+  answers all three.
+
+**Before `0.24.0`:** `MAX(d) - MIN(d)` answered milliseconds and was typed `NUMERIC`; `+` and `-`
+with a date failed in Elasticsearch at row level — except a date plus a string, which concatenated
+the two — and per group `MAX(d) + 1` failed while `MAX(d) + 1.5` added 1.5 milliseconds;
+`CURRENT_DATE - 7` was refused when the statement was parsed; and a computed column over date
+arithmetic stored epoch-millisecond arithmetic or rejected the document at ingest.
+
+---
+
 ## Comparison Operators
 
 ### Operator: `=`
@@ -485,6 +626,14 @@ SELECT * FROM emp WHERE department = 'IT';
 -- Compare columns
 SELECT * FROM orders
 WHERE customer_id = shipping_customer_id;
+
+-- Columns of incompatible types (id KEYWORD, n INT) are refused by name once the column types
+-- are known, rather than answering no rows
+SELECT * FROM t WHERE id = n;
+-- Error: Type mismatch: 'KEYWORD' is not compatible with 'INT' in expression: id = n
+
+-- Cast one side to the other's type
+SELECT * FROM t WHERE id = CAST(n AS VARCHAR);
 ```
 
 **String Comparison:**

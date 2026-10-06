@@ -95,15 +95,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * without a temporal candidate — `baseType` is needed for every statement, and skipping would
     * have left the attach dead for nearly every query. Cost: one lookup per index per cache TTL.
     *
-    * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when the FROM does not
-    * name exactly ONE concrete index (several sources, a `*` wildcard or a `,` list), when this
-    * client is not an [[IndicesApi]], and when the schema cannot be loaded (alias without a
-    * template, unknown index, cluster error or a thrown lookup)
-    * -- the literal is then forwarded exactly as before. The schema comes from
-    * [[IndicesApi.loadSchema]] 's 5-minute cache, so a miss costs one `GET <index>` per index per
-    * TTL. A literal that cannot be a date under a fully-understood mapping format is a `400` that
-    * names the literal and the field, instead of Elasticsearch's
-    * `search_phase_execution_exception`.
+    * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when this client is not
+    * an [[IndicesApi]]; no schema is attached when it cannot be loaded (alias without a template,
+    * unknown index, cluster error or a thrown lookup) -- the literal is then forwarded exactly as
+    * before, and no TYPE is refused: Elasticsearch answers. A field the indices of a `*` pattern or
+    * a list of sources disagree on is attached untyped, with the same effect for that field alone.
+    * The schema comes from [[IndicesApi.loadSchema]] 's 5-minute cache (a pattern's, merged, from
+    * [[IndicesApi.loadPatternSchema]] 's, under the same key rules), so a miss costs one `GET
+    * <index>` per index -- or per pattern -- per TTL. A literal that cannot be a date under a
+    * fully-understood mapping format is a `400` that names the literal and the field, instead of
+    * Elasticsearch's `search_phase_execution_exception`.
     *
     * `loadSchema` caches successes only, so a source it cannot resolve -- an ALIAS on the es8/es9
     * clients (`executeGetIndex` looks the alias up as a key and finds nothing), an unknown index
@@ -177,11 +178,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     // That was correct while the only job was rewriting those literals, and is WRONG now that the
     // schema is also attached to the AST: almost no statement carries a temporal WHERE literal,
     // so the lookup would be skipped for almost every query and `baseType` would stay `Any`.
+    // An index PATTERN or a comma list -- `FROM logs-*`, `FROM a, b` (several sources searched as
+    // one) -- answers like the single index: the schema of the indices it matches, merged field by
+    // field (`IndicesApi.loadPatternSchema`), one mapping read per list, cached. Before, it attached
+    // NO schema, so `FROM zwild_*` typed every column `Any` and answered `MAX(d) - MIN(d)` in
+    // milliseconds where the single index answered days.
     phaseOne.sources.distinct match {
-      case Seq(source) if !source.contains("*") && !source.contains(",") =>
-        this match {
-          case indices: IndicesApi if !schemaMissed(source) =>
-            Try(indices.loadSchema(source)) match {
+      case sources if sources.nonEmpty =>
+        val source = sources.mkString(",")
+        lookupSchema(sources) match {
+          case Some(lookup) =>
+            lookup match {
               case Success(ElasticSuccess(schema)) =>
                 schemaMisses.remove(source)
                 TemporalLiterals(phaseOne, schema) match {
@@ -254,20 +261,41 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 )
                 ElasticResult.success(phaseOne)
             }
-          case _ => ElasticResult.success(phaseOne)
+          case None => ElasticResult.success(phaseOne)
         }
       case _ => ElasticResult.success(phaseOne)
+    }
+  }
+
+  /** THE schema lookup for a statement's sources, for every consumer -- the attach
+    * ([[resolveWithSchema]]) and the scope of a subquery ([[resolvedSchema]]) alike (#292): ONE
+    * concrete index reads its own mapping ([[IndicesApi.loadSchema]]); an index PATTERN, a comma
+    * list or several sources read the mapping of every index they match, merged field by field
+    * ([[IndicesApi.loadPatternSchema]]), under the key the miss is remembered by -- the sources
+    * joined with commas.
+    *
+    * `None` when no lookup is made: a client that is not an [[IndicesApi]], or a remembered miss.
+    */
+  private def lookupSchema(sources: Seq[String]): Option[Try[ElasticResult[Schema]]] = {
+    val source = sources.mkString(",")
+    this match {
+      case indices: IndicesApi if !schemaMissed(source) =>
+        val pattern = sources.size > 1 || source.contains("*") || source.contains(",")
+        Some(Try(if (pattern) indices.loadPatternSchema(source) else indices.loadSchema(source)))
+      case _ => None
     }
   }
 
   /** The mapped type of a column PROJECTED BY AN INNER STATEMENT, when it can be known for free
     * (story 22.2).
     *
-    * `None` under every #306 skip condition — several sources, a wildcard, a client that is not an
-    * `IndicesApi`, a remembered miss, a failed or absent schema. The caller (`SubqueryResolver`)
-    * reads it for ONE decision: a `text` column cannot carry a terms aggregation, so mode P is
-    * declined for it. An unknown mapping therefore keeps the cheap default, and an Elasticsearch
-    * refusal propagates loudly with the inner statement's own message.
+    * `None` for a client that is not an `IndicesApi`, a remembered miss, a failed or absent schema;
+    * an index pattern or a list of sources answers from its merged schema, the one
+    * [[resolveWithSchema]] attaches (a field its indices disagree on is `Any`, which declines
+    * nothing). The caller (`SubqueryResolver`) reads it for ONE decision: a `text` column cannot
+    * carry a terms aggregation, so mode P is declined for it. An unknown mapping therefore keeps
+    * the cheap default, and an Elasticsearch refusal propagates loudly with the inner statement's
+    * own message.
     */
   private[client] def innerColumnType(inner: SingleSearch, name: String): Option[SQLType] =
     resolvedSchema(inner).flatMap(_.find(name).map(_.dataType))
@@ -366,16 +394,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       outerMapping.name
     )
 
+  /** The schema of a statement's sources, when it can be read: [[lookupSchema]], the one the attach
+    * reads -- an index pattern or a list of sources included (their merged schema), so a subquery
+    * over `logs-*` is scoped as one over a single index is.
+    */
   private def resolvedSchema(s: SingleSearch): Option[Schema] =
     s.sources.distinct match {
-      case Seq(source) if !source.contains("*") && !source.contains(",") =>
-        this match {
-          case indices: IndicesApi if !schemaMissed(source) =>
-            Try(indices.loadSchema(source)) match {
-              case Success(ElasticSuccess(schema)) => Some(schema)
-              case _                               => None
-            }
-          case _ => None
+      case sources if sources.nonEmpty =>
+        lookupSchema(sources).flatMap {
+          case Success(ElasticSuccess(schema)) => Some(schema)
+          case _                               => None
         }
       case _ => None
     }
@@ -452,11 +480,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       case (failure, _) => failure
     } match {
       case ElasticSuccess(resolved) =>
-        // Story 22.6 — with each branch's schema attached, bare columns are TYPED: re-run the
-        // pairwise compatibility check that passed vacuously at parse time (where a bare column is
-        // `Any`). This is the only type guard the family has — DuckDB casts implicitly across
-        // branches, so the relational engine is never a backstop either.
-        MultiSearch.branchTypes(resolved) match {
+        // Story 22.6 — with each branch's schema attached, bare columns are TYPED: this is where
+        // the pairwise compatibility check is asked. This is the only type guard the family has —
+        // DuckDB casts implicitly across branches, so the relational engine is never a backstop
+        // either.
+        //
+        // 🔴 The lead's ruling of 2026-10-05: no TYPE refusal before the column types are known.
+        // Parsing no longer asks it at all, and with NO schema attached to any branch (a client
+        // that is not an `IndicesApi`, mappings that cannot be read or that disagree) nothing is
+        // refused on types: Elasticsearch answers, exactly as for a single statement. A branch
+        // without a schema keeps its bare columns `Any`, which pass.
+        (if (resolved.exists(_.schema.isDefined)) MultiSearch.branchTypes(resolved)
+         else Right(())) match {
           case Left(reason) =>
             ElasticResult.failure(
               ElasticError(

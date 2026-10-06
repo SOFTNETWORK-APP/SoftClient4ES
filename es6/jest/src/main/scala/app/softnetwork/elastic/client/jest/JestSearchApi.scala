@@ -25,7 +25,7 @@ import app.softnetwork.elastic.client.{
 }
 import com.fasterxml.jackson.databind.JsonNode
 import app.softnetwork.elastic.client.result.ElasticResult
-import app.softnetwork.elastic.sql.PainlessContextType
+import app.softnetwork.elastic.sql.{PainlessContextType, PainlessTarget}
 import app.softnetwork.elastic.sql.bridge.{ElasticSearchRequest, SearchBodySerializer}
 import app.softnetwork.elastic.sql.query.SingleSearch
 import io.searchbox.core.{MultiSearch, Search, SearchResult}
@@ -70,6 +70,16 @@ trait JestSearchApi extends SearchApi with JestClientHelpers {
     * JSON exists -- never executed against the raw field. See [[JestSearchBodySerializer]].
     */
   implicit def searchBodySerializer: SearchBodySerializer = JestSearchBodySerializer
+
+  /** The Elasticsearch major every script made from this trait is rendered for (implicit scope of
+    * the bridge's conversions, as [[searchBodySerializer]] is): see `PainlessTarget`.
+    *
+    * Elasticsearch 6.8 hands a query script a `date` doc value as a `JodaCompatibleZonedDateTime`,
+    * so a comparison of one with any other date is normalised to UTC first.
+    */
+  implicit def painlessTarget: PainlessTarget = PainlessTarget(
+    JestSearchBodySerializer.ElasticsearchMajor
+  )
 
   private[client] implicit def singleSearchToJsonQuery(
     sqlSearch: SingleSearch

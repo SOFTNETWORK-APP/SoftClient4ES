@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql.function
 
 import app.softnetwork.elastic.sql.{
   query,
+  renderedTypeOf,
   Expr,
   IntValue,
   PainlessContext,
@@ -26,7 +27,15 @@ import app.softnetwork.elastic.sql.{
   TokenRegex,
   Updateable
 }
-import app.softnetwork.elastic.sql.`type`.{SQLNumeric, SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{
+  SQLBigInt,
+  SQLInt,
+  SQLNumeric,
+  SQLSmallInt,
+  SQLTinyInt,
+  SQLType,
+  SQLTypes
+}
 
 package object math {
 
@@ -99,6 +108,43 @@ package object math {
     arg: PainlessScript
   ) extends MathematicalFunction {
     override def args: List[PainlessScript] = List(arg)
+
+    /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer`: `ABS(n)` over an
+      * INT column is an INT, so a literal beside it is read as that type's value -- `ABS(n) =
+      * '1.5'` is refused by name like `n = '1.5'`, where NUMERIC read `'1.5'` as a number -- and a
+      * `CREATE TABLE … AS SELECT` declares an INT, where NUMERIC could not create the index. An
+      * argument whose type is not a known number keeps NUMERIC.
+      *
+      * The type REPORTED, not the one Painless is handed (`out`, still NUMERIC): what a consumer
+      * converts this value to is unchanged.
+      */
+    override def reportedType: SQLType = mathOp match {
+      case Abs =>
+        arg.reportedType match {
+          case n: SQLNumeric => n
+          case _             => super.reportedType
+        }
+      case _ => super.reportedType
+    }
+
+    /** `ABS` of a whole number answers a whole number of its argument's type per document, as its
+      * type says -- Painless's `Math.abs` takes a `double` only, so it answered `3.0` for an INT
+      * `-3`. The argument is a parameter or a literal, read at most twice. Per group -- no context,
+      * or a view's per-group calculation -- every metric is the double Elasticsearch computed, and
+      * the rendering is the one it always was.
+      */
+    override def toPainlessCall(
+      callArgs: List[String],
+      context: Option[PainlessContext]
+    ): String =
+      (mathOp, renderedTypeOf(arg), callArgs) match {
+        case (Abs, _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt, List(a))
+            if context.exists(!_.isTransform) =>
+          val x = s"(${a.trim})"
+          s"($x < 0 ? -$x : $x)"
+        case _ => super.toPainlessCall(callArgs, context)
+      }
+
     override def update(request: query.SingleSearch): MathematicalFunctionWithOp = {
       arg match {
         case updatable: Updateable =>

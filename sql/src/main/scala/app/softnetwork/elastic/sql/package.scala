@@ -491,6 +491,37 @@ package object sql {
     case object Transform extends PainlessContextType
   }
 
+  /** The Elasticsearch major a Painless script is rendered for.
+    *
+    * This module is version-agnostic, and a script renders the same on every major -- except where
+    * a major hands a script something the others do not. The major then reaches the rendering the
+    * way issue #222 hands the search-body serializer to the bridge: the CLIENT module of each major
+    * puts its own `PainlessTarget` in implicit scope of the bridge's conversions, and they give it
+    * to every [[PainlessContext]] they create. With none in scope ([[PainlessTarget.Default]] -- a
+    * bridge's own tests, a script rendered outside a client), a script renders as it does for the
+    * majors from 7 on.
+    *
+    * @param elasticsearchMajor
+    *   the major the client module talks to, `None` when no client module gave one
+    */
+  final case class PainlessTarget(elasticsearchMajor: Option[Int]) {
+
+    /** Does this major hand a QUERY script a `date` doc value as a `JodaCompatibleZonedDateTime`?
+      * Elasticsearch 6.8 does, and a comparison between one and a genuine `ZonedDateTime` fails
+      * there with `Class.cast` (`query.Expression.painless`); 7 and up hand a `ZonedDateTime`.
+      */
+    def jodaCompatibleDates: Boolean = elasticsearchMajor.exists(_ < 7)
+  }
+
+  object PainlessTarget {
+
+    /** No client module gave a major: the rendering of the majors from 7 on. */
+    val Default: PainlessTarget = PainlessTarget(None)
+
+    /** The target of a client module talking to `elasticsearchMajor`. */
+    def apply(elasticsearchMajor: Int): PainlessTarget = PainlessTarget(Some(elasticsearchMajor))
+  }
+
   /** Is a rendered Painless fragment a single EXPRESSION, i.e. may it be placed where an operand
     * goes? [[PainlessOperandForm.placeable]] is the one owner of that rule.
     *
@@ -722,8 +753,13 @@ package object sql {
   /** Context for painless scripts
     * @param context
     *   the context type
+    * @param target
+    *   the Elasticsearch major the script is rendered for ([[PainlessTarget]])
     */
-  case class PainlessContext(context: PainlessContextType = PainlessContextType.Query) {
+  case class PainlessContext(
+    context: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
+  ) {
     // List of parameter keys
     private[this] var _keys: collection.mutable.Seq[PainlessParam] = collection.mutable.Seq.empty
 
@@ -1213,6 +1249,14 @@ package object sql {
     override def painless(context: Option[PainlessContext]): String = "null"
     override def nullable: Boolean = true
     override def baseType: SQLType = SQLTypes.Null
+
+    /** `NULL` is ONE object, shared by every statement this JVM parses, so a cast must not write
+      * its type into it: `CAST(NULL AS INT)` -- a conversion's constructor casts its operand --
+      * retyped EVERY later `NULL` as an INT, and `NULLIF(s, NULL)` was then refused as "KEYWORD
+      * with INT" (MEASURED in one test JVM). A typed NULL takes its type from its conversion, which
+      * already carries it; the bare `NULL` keeps none.
+      */
+    override def cast(targetType: SQLType): SQLType = out
   }
 
   case object ParamValue extends Value[String](null) with TokenRegex {
@@ -1334,9 +1378,14 @@ package object sql {
       for {
         _ <- from.validate()
         _ <- to.validate()
-        _ <- Validator.validateTypesMatching(from.out, to.out)
       } yield ()
     }
+
+    /** The two bounds must match -- asked once the column types are known, like every TYPE rule
+      * (the lead's ruling of 2026-10-05), never when the statement is parsed.
+      */
+    override def typeError: Option[String] =
+      Validator.validateTypesMatching(from.out, to.out).left.toOption
   }
 
   case class LiteralFromTo(override val from: StringValue, override val to: StringValue)
@@ -1545,6 +1594,303 @@ package object sql {
   trait Source extends Updateable {
     def name: String
     def update(request: SingleSearch): Source
+  }
+
+  /** The ONE comparison rule (the lead's ruling of 2026-10-05): what a comparison compares, and
+    * whether it may. Every comparison asks it -- `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`,
+    * a simple `CASE x WHEN v`, `NULLIF` and a CASE condition, in every clause -- and so does the
+    * arithmetic that meets a string literal.
+    *
+    *   - An operand is judged by the type it is DECLARED with ([[ComparisonRule.declaredTypeOf]]):
+    *     what the user wrote, never the runtime collapse of every temporal to TIMESTAMP that
+    *     `renderedTypeOf` answers. A DATE and a TIMESTAMP are comparable
+    *     (`SQLTypeUtils.comparableTemporals`): the DATE is the instant its UTC day starts at.
+    *   - An untyped string LITERAL is read by what it is compared with, as PostgreSQL reads one
+    *     ([[ComparisonRule.readingOf]]): beside a number, the number it spells when that number is
+    *     a value of the other's type -- beside a whole-number type, a whole number only; beside a
+    *     temporal, the date or the timestamp it spells -- beside a DATE, a date-time literal is the
+    *     date it names, as PostgreSQL's date input reads it; beside a BOOLEAN, the boolean it
+    *     spells. Any other literal stays text, and the comparison is judged as such.
+    *
+    * A reading costs a parse, so each site computes a literal's reading ONCE per node, never per
+    * type question or per rendering: memoised in a field of the node, with no lock -- a reading is
+    * pure and immutable, so a race can only compute it twice, where a `lazy val`'s lock costs more
+    * than the reading on every fresh node. And a text that cannot spell a date never reaches a
+    * `java.time` parser and the exception it throws.
+    */
+  object ComparisonRule {
+
+    /** What a string literal is READ as. */
+    sealed trait Reading {
+      def sqlType: SQLType
+    }
+
+    /** The number a literal spells, as a Painless literal: a `long` for a whole number that fits
+      * one, the `double` it denotes otherwise.
+      */
+    final case class NumberReading(painless: String, fractional: Boolean) extends Reading {
+      def sqlType: SQLType = if (fractional) SQLTypes.Double else SQLTypes.BigInt
+    }
+
+    /** The date (`sqlType` DATE, `text` as `yyyy-MM-dd`) or the timestamp (`sqlType` TIMESTAMP,
+      * `text` an ISO date-time) a literal spells, and the instant it denotes in epoch milliseconds,
+      * UTC unless the literal names a zone; a date is the instant its day starts at.
+      */
+    final case class TemporalReading(sqlType: SQLType, text: String, epochMillis: Long)
+        extends Reading
+
+    /** The boolean a literal spells. */
+    final case class BooleanReading(value: Boolean) extends Reading {
+      def sqlType: SQLType = SQLTypes.Boolean
+    }
+
+    /** The text of an untyped STRING literal, bare or as the one function of a nameless identifier
+      * -- the parser wraps every operand in an identifier.
+      */
+    def stringLiteral(token: Token): Option[String] = token match {
+      case s: StringValue => Some(s.value)
+      case i: Identifier if i.name.trim.isEmpty =>
+        i.functions match {
+          case (s: StringValue) :: Nil => Some(s.value)
+          case _                       => None
+        }
+      case _ => None
+    }
+
+    /** The type an operand is DECLARED with: an aggregate is the metric it produces
+      * (`AggregateFunction.outputTypeOf`), anything else the type it reports (`reportedType`: a
+      * DATE column, a COALESCE of DATE columns, `d + 1` are DATEs).
+      */
+    def declaredTypeOf(operand: Token): SQLType = operand match {
+      case i: Identifier if i.isAggregation =>
+        AggregateFunction.outputTypeOf(i).getOrElse(i.reportedType)
+      case p: PainlessScript => p.reportedType
+      case other             => other.out
+    }
+
+    /** A whole number, as PostgreSQL's integer input reads one. */
+    private val WholeNumber = "[+-]?\\d+".r
+
+    /** A decimal number, with an optional exponent; `NaN` and `Infinity` are not numbers here. */
+    private val DecimalNumber = "[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?".r
+
+    /** STRICT: `2026-02-30` is no date (PostgreSQL refuses it), where the default resolver would
+      * read it as February 28.
+      */
+    private val IsoDate = java.time.format.DateTimeFormatter
+      .ofPattern("uuuu-MM-dd")
+      .withResolverStyle(java.time.format.ResolverStyle.STRICT)
+
+    private val IsoDateTimeUtc =
+      java.time.format.DateTimeFormatter.ISO_DATE_TIME.withZone(java.time.ZoneOffset.UTC)
+
+    private val DayMillis = 86400000L
+
+    /** The number a text spells, if it spells one. */
+    def numberOf(text: String): Option[NumberReading] =
+      text.trim match {
+        case s @ WholeNumber() =>
+          Try(BigInt(s)).toOption.map { n =>
+            if (n.isValidLong) NumberReading(s"${n}L", fractional = false)
+            else NumberReading(n.toDouble.toString, fractional = true)
+          }
+        case s @ DecimalNumber() =>
+          Try(BigDecimal(s).toDouble).toOption
+            .filter(d => !d.isNaN && !d.isInfinite)
+            .map(d => NumberReading(d.toString, fractional = true))
+        case _ => None
+      }
+
+    /** The number a text spells beside an operand of the numeric type `against`, if it is a value
+      * of that type, as PostgreSQL's input for the type reads it (the lead's ruling of 2026-10-05):
+      *   - beside a whole-number type (TINYINT, SMALLINT, INT, BIGINT), a whole number BIGINT can
+      *     hold -- `'1.5'`, `'1.0'` and `'1e3'` are no integer (PostgreSQL: `invalid input syntax
+      *     for type integer`), and a whole number past BIGINT's range is a value of no integer type
+      *     (`out of range`);
+      *   - beside DOUBLE, REAL or NUMERIC, any number.
+      *
+      * A literal that is no value of the type stays text, and the comparison or the arithmetic that
+      * reads it is refused as text against that type -- as PostgreSQL refuses `n = '1.5'` and `n +
+      * '1.5'` over an integer `n`.
+      */
+    def numberOf(text: String, against: SQLNumeric): Option[NumberReading] =
+      numberOf(text) match {
+        case Some(number) if number.fractional && wholeNumberType(against) => None
+        case reading                                                       => reading
+      }
+
+    private def wholeNumberType(t: SQLType): Boolean = t match {
+      case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => true
+      case _                                                         => false
+    }
+
+    /** Can the trimmed `text` spell a `uuuu-MM-dd` date (a `/` for the `-`)? A NECESSARY condition
+      * of the parser below, never a sufficient one: that parser reads a year of at least four
+      * digits (strict parsing), a sign at most, `-`, two digits, `-`, two digits -- ten characters
+      * or more of digits, `-`, `/` and `+`, and nothing else. A text that fails it never reaches
+      * the parser, whose refusal is an EXCEPTION: `'1'` beside a date cost two of them, 2 µs.
+      */
+    private def maySpellDate(text: String): Boolean =
+      text.length >= 10 && {
+        var i = 0
+        var ok = true
+        while (ok && i < text.length) {
+          val c = text.charAt(i)
+          ok = (c >= '0' && c <= '9') || c == '-' || c == '/' || c == '+'
+          i += 1
+        }
+        ok
+      }
+
+    /** Can the trimmed `text` spell an ISO date-time (a space for the `T`)? A NECESSARY condition
+      * of the parser below: a year that starts with a digit or a sign, a date of ten characters or
+      * more, a `T` (any case, or the space read as one), and an `HH:mm` time at least -- sixteen
+      * characters, a `:`.
+      */
+    private def maySpellDateTime(text: String): Boolean =
+      text.length >= 16 && {
+        val c = text.charAt(0)
+        (c >= '0' && c <= '9') || c == '-' || c == '+'
+      } && text.indexOf(':') > 0 &&
+      (text.indexOf('T') > 0 || text.indexOf('t') > 0 || text.indexOf(' ') > 0)
+
+    /** The date a text spells -- `yyyy-MM-dd`, a `/` accepted for the `-` -- if it spells one. */
+    private def dateOf(text: String): Option[java.time.LocalDate] = {
+      val trimmed = text.trim
+      if (!maySpellDate(trimmed)) None
+      else Try(java.time.LocalDate.parse(trimmed.replace("/", "-"), IsoDate)).toOption
+    }
+
+    /** The date-time an ISO text spells (a space accepted for the `T`), in UTC unless it names a
+      * zone, if it spells one.
+      */
+    private def dateTimeOf(text: String): Option[java.time.ZonedDateTime] = {
+      val trimmed = text.trim
+      if (!maySpellDateTime(trimmed)) None
+      else
+        Try(java.time.ZonedDateTime.parse(trimmed.replace(" ", "T"), IsoDateTimeUtc)).toOption
+    }
+
+    private def dateReading(date: java.time.LocalDate): TemporalReading =
+      TemporalReading(SQLTypes.Date, date.toString, date.toEpochDay * DayMillis)
+
+    /** The temporal a text spells beside an operand of type `against`, read AS that operand's type,
+      * as PostgreSQL reads an untyped literal:
+      *   - beside a DATE, the date it names -- a date-time text's date, as PostgreSQL's date input
+      *     reads `'2024-01-31T10:00:00Z'` as 2024-01-31;
+      *   - beside any other temporal, the TIMESTAMP it denotes -- a date-only text is the instant
+      *     its UTC day starts at, so `ts = '2024-01-31'` holds at midnight only. Its `text` is then
+      *     always a full ISO date-time, which is what the `CAST(… AS TIMESTAMP)` conversion parses.
+      */
+    def temporalOf(text: String, against: SQLType): Option[TemporalReading] = {
+      val date = dateOf(text)
+      if (against == SQLTypes.Date)
+        date.orElse(dateTimeOf(text).map(_.toLocalDate)).map(dateReading)
+      else
+        date
+          .map { d =>
+            TemporalReading(SQLTypes.Timestamp, s"${d}T00:00:00Z", d.toEpochDay * DayMillis)
+          }
+          .orElse {
+            dateTimeOf(text).map { zoned =>
+              TemporalReading(
+                SQLTypes.Timestamp,
+                text.trim.replace(" ", "T"),
+                zoned.toInstant.toEpochMilli
+              )
+            }
+          }
+    }
+
+    /** The boolean a text spells, as PostgreSQL's boolean input reads one. */
+    private def booleanOf(text: String): Option[BooleanReading] =
+      text.trim.toLowerCase match {
+        case "t" | "true" | "y" | "yes" | "on" | "1"  => Some(BooleanReading(value = true))
+        case "f" | "false" | "n" | "no" | "off" | "0" => Some(BooleanReading(value = false))
+        case _                                        => None
+      }
+
+    /** What `literal` is read as beside an operand DECLARED `against`, if it is an untyped string
+      * literal that spells a value of that type (`numberOf(text, against)` for a number); `None`
+      * otherwise -- it stays text. An operand of UNKNOWN type (no schema attached) reads no
+      * literal: nothing decides what it should be.
+      */
+    def readingOf(literal: Token, against: => SQLType): Option[Reading] =
+      stringLiteral(literal).flatMap { text =>
+        against match {
+          case n: SQLNumeric => numberOf(text, n)
+          case t: SQLTemporal if t != SQLTypes.Time && t != SQLTypes.Temporal =>
+            temporalOf(text, t)
+          case SQLTypes.Temporal => temporalOf(text, SQLTypes.Timestamp)
+          case _: SQLBool        => booleanOf(text)
+          case _                 => None
+        }
+      }
+
+    /** May two compared types be compared? */
+    def comparable(left: SQLType, right: SQLType): Boolean =
+      SQLTypeUtils.matches(left, right) || SQLTypeUtils.comparableTemporals(left, right)
+
+    /** The type an operand is compared AS: what it is read as beside the other operand
+      * ([[readingOf]], its `reading`), else the type it is declared with ([[declaredTypeOf]]),
+      * asked only then.
+      *
+      * A site passes the reading it holds -- computed ONCE per node, for its type rule and its
+      * rendering alike -- so a literal is never read a second time to be judged.
+      */
+    def comparedType(reading: Option[Reading], operand: Token): SQLType =
+      reading match {
+        case Some(r) => r.sqlType
+        case None    => declaredTypeOf(operand)
+      }
+
+    /** The two compared types ([[comparedType]]), when they cannot be compared. */
+    def mismatch(left: SQLType, right: SQLType): Option[(SQLType, SQLType)] =
+      if (comparable(left, right)) None else Some((left, right))
+
+    /** The Painless a NUMBER or a BOOLEAN reading renders: the literal itself. */
+    def scalarPainless(reading: Reading): Option[String] = reading match {
+      case NumberReading(painless, _) => Some(painless)
+      case BooleanReading(value)      => Some(value.toString)
+      case _                          => None
+    }
+
+    /** The VALUE a temporal reading denotes, as Painless that parses nothing: a DATE is the
+      * `LocalDate` of its day, a TIMESTAMP the UTC `ZonedDateTime` of its instant (core's
+      * number-to-TIMESTAMP conversion, `SQLTypeUtils.coerce`) -- the java.time types a `CAST('…' AS
+      * DATE)` / `CAST('…' AS TIMESTAMP)` of the same text renders, built from the reading when the
+      * statement is rendered rather than parsed from the literal on every document.
+      */
+    def temporalPainless(reading: TemporalReading): String =
+      if (reading.sqlType == SQLTypes.Date)
+        s"LocalDate.ofEpochDay(${Math.floorDiv(reading.epochMillis, DayMillis)}L)"
+      else
+        SQLTypeUtils.coerce(
+          s"${reading.epochMillis}L",
+          SQLTypes.BigInt,
+          SQLTypes.Timestamp,
+          nullable = false,
+          None
+        )
+  }
+
+  /** The type a TYPE RULE reads for an operand once the column types are known: the one the operand
+    * RENDERS, never the one a resolved column reports through `out`.
+    *
+    * 🔴 ONE derivation for every rule the lead's ruling of 2026-10-05 moved to the post-resolution
+    * seam, and for the arithmetic that types itself from its operands (#292). After the schema is
+    * attached `out` answers the COLUMN's type whatever function the operand wears -- `CAST(n AS
+    * INT)` over a KEYWORD column says KEYWORD, `COUNT(d)` says TIMESTAMP -- so a rule reading it
+    * would refuse `CAST(s AS INT) IN (1, 2)` and `HAVING COUNT(d) > 1`. So:
+    *   - an AGGREGATE is the metric it produces (`AggregateFunction.outputTypeOf`);
+    *   - any other identifier is what its chain renders (#382's `chainType`);
+    *   - anything else -- a literal, a function, a nested arithmetic -- its own `out`.
+    */
+  def renderedTypeOf(operand: Token): SQLType = operand match {
+    case i: Identifier if i.isAggregation =>
+      AggregateFunction.outputTypeOf(i).getOrElse(i.chainType)
+    case i: Identifier => i.chainType
+    case other         => other.out
   }
 
   sealed trait Identifier
@@ -2236,7 +2582,8 @@ package object sql {
       * `runtimeType(declaration)`. A bare `DATE` column is reported as `DATE`, which is what the
       * user wrote and what DuckDB answers for the same column.
       */
-    override def reportedLeafType: SQLType = col.map(_.dataType).getOrElse(super.reportedLeafType)
+    override def reportedLeafType: SQLType =
+      col.map(_.dataType).getOrElse(super.reportedLeafType)
 
     def update(request: SingleSearch): Identifier =
       query.Having.aliasedAggregate(this) match {
