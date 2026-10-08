@@ -409,19 +409,21 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     * At parse time a bare column is `SQLTypes.Any` and every pair passes vacuously, so a parse-only
     * assertion pins the parse-time half TWICE and the seam not at all — which is exactly what the
     * first version of this story shipped: replacing the seam's `MultiSearch.branchTypes(resolved)`
-    * with `Right(())` left the whole core suite green. This stub seeds `events` with `id: KEYWORD`
-    * and `amount: INT`, so the two bare columns ARE typed here and disagree.
+    * with `Right(())` left the whole core suite green. This stub seeds `events` with `event_ts:
+    * DATE` and `amount: INT`, so the two bare columns ARE typed here and disagree -- a pair DuckDB
+    * 1.5.5 refuses too (`id: KEYWORD` beside `amount` is a VARCHAR column there, answered since the
+    * lead's rule of 2026-10-06).
     */
   it should "reject a branch TYPE mismatch at the seam, once schemas are attached" in {
     val client = seeded()
     client.search(
-      SelectStatement("SELECT id FROM events UNION ALL SELECT amount FROM events")
+      SelectStatement("SELECT event_ts FROM events UNION ALL SELECT amount FROM events")
     ) match {
       case ElasticFailure(error) =>
         error.statusCode shouldBe Some(400)
         error.operation shouldBe Some("search")
         error.message should include("compatible types at column 1")
-        error.message should include("KEYWORD")
+        error.message should include("DATE")
         error.message should include("INT")
       case ElasticSuccess(other) => fail(s"expected a rejection, got $other")
     }

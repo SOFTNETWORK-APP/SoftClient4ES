@@ -261,4 +261,53 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
     val row = ListMap[String, Any]("whatever" -> 1)
     project(row, Seq.empty, Seq("a"))(NativeContext) should be theSameInstanceAs row
   }
+
+  // ── rowProjector with converters: a UNION ALL column brought to the result's type ──────────
+
+  private val toDouble: Any => Any = {
+    case n: java.lang.Number => java.lang.Double.valueOf(n.doubleValue())
+    case other               => other
+  }
+
+  private def convert(
+    row: ListMap[String, Any],
+    source: Seq[String],
+    target: Seq[String],
+    converters: Array[Any => Any]
+  )(implicit ctx: ConversionContext): ListMap[String, Any] =
+    rowProjector(source, target, converters)(ctx)(row)
+
+  "rowProjector with converters" should "be the projection without them when none converts" in {
+    val row = ListMap[String, Any]("a" -> 1, "b" -> 2, "c" -> 3)
+    convert(row, fields, fields, null)(NativeContext) should be theSameInstanceAs row
+    convert(row, fields, fields, Array[Any => Any](null, null, null))(NativeContext) should
+    be theSameInstanceAs row
+  }
+
+  it should "convert the columns it is given, in the one rebuild, keeping the row's extras" in {
+    // 🔴 an in-order row is NOT returned as is: a value changes
+    val row = ListMap[String, Any]("a" -> 1, "b" -> 2, "c" -> 3, "extra" -> "e")
+    val converted =
+      convert(row, fields, fields, Array[Any => Any](null, toDouble, null))(NativeContext)
+    converted.toList shouldBe List("a" -> 1, "b" -> 2.0, "c" -> 3, "extra" -> "e")
+    converted("b").getClass shouldBe classOf[java.lang.Double]
+    converted("a").getClass shouldBe classOf[java.lang.Integer]
+  }
+
+  it should "convert out of order, null-fill without converting, and rename" in {
+    val row = ListMap[String, Any]("c" -> 3, "a" -> 1)
+    convert(row, fields, Seq("x", "y", "z"), Array[Any => Any](toDouble, toDouble, toDouble))(
+      NativeContext
+    ).toList shouldBe List("x" -> 1.0, "y" -> null, "z" -> 3.0)
+  }
+
+  it should "convert under a duplicate projection too" in {
+    val row = ListMap[String, Any]("a" -> 7, "extra" -> true)
+    convert(row, Seq("a", "a"), Seq("x", "y"), Array[Any => Any](toDouble, null))(
+      NativeContext
+    ).toList shouldBe List("x" -> 7.0, "y" -> 7, "extra" -> true)
+    convert(row, Seq("a", "a"), Seq("a", "a"), Array[Any => Any](toDouble, null))(
+      NativeContext
+    ).toList shouldBe List("a" -> 7.0, "extra" -> true)
+  }
 }

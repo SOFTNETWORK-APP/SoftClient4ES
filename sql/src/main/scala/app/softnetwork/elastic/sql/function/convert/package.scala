@@ -49,7 +49,8 @@ package object convert {
     //override def nullable: Boolean = value.nullable
 
     override def painless(context: Option[PainlessContext] = None): String =
-      SQLTypeUtils.coerce(value, targetType, context)
+      if (perGroupTemporal(context)) perGroupTemporalOf(value.painless(context))
+      else SQLTypeUtils.coerce(value, targetType, context)
 
     /** A conversion renders as an expression -- EXCEPT the one case `toPainless` below folds: an
       * un-typed (no schema) identifier narrowed to DATE or TIME gets `.toLocalDate()` /
@@ -115,6 +116,7 @@ package object convert {
           }
         case _ => // do nothing
       }
+      if (perGroupTemporal(context)) return perGroupTemporalOf(base)
       val ret = SQLTypeUtils.coerce(base, sourceType, targetType, sourceNullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
       val retWithBrackets = if (bloc) ret else s"{ $ret }"
@@ -175,6 +177,29 @@ package object convert {
       * the cast was silently ignored (`(n + x)::BIGINT` answered 3.25 on main).
       */
     private def sourceType: SQLType = arithmetic.map(_.out).getOrElse(value.baseType)
+
+    /** A temporal converted PER GROUP to a `DATE` or a `TIMESTAMP`, as in `(MAX(d) + 1)::DATE` or
+      * `GREATEST(MAX(d), MAX(d2))::TIMESTAMP`.
+      *
+      * Per group (no context: a `bucket_script`, a `bucket_selector`, and the per-group calculation
+      * a view's pivot runs, `SingleSearch.transformBucketScripts`, which is the same rendering)
+      * there is no document, and a temporal is the number of milliseconds Elasticsearch stores a
+      * `date` in: the metric it computed (`MAX(d)`) or a date calculation over it, handed back in
+      * milliseconds (`ArithmeticExpression.dateArithmeticPainless`), which is also what a
+      * `bucket_script` must return. The document-level conversion renders a `java.time` value
+      * instead (`.toInstant()…toLocalDate()`), and Elasticsearch failed the search on the number:
+      * `member method [double, toInstant/0] not found`. Converted in milliseconds, a `DATE` is the
+      * start of its UTC day (DuckDB's `CAST(TIMESTAMP AS DATE)` keeps the date part) and a
+      * `TIMESTAMP` the instant itself (a `DATE` is already its day's start).
+      */
+    private def perGroupTemporal(context: Option[PainlessContext]): Boolean =
+      context.isEmpty && value.hasAggregation && sourceType.isTemporal &&
+      (targetType == SQLTypes.Date || targetType == SQLTypes.Timestamp ||
+      targetType == SQLTypes.DateTime)
+
+    /** [[perGroupTemporal]]'s conversion of the per-group value `base`, in milliseconds. */
+    private def perGroupTemporalOf(base: String): String =
+      if (targetType == SQLTypes.Date) s"(Math.floor($base / 86400000.0) * 86400000.0)" else base
 
     /** Can the value converted be NULL? Asked of the chain's innermost PRODUCER: the nameless
       * identifier around an arithmetic answers `false` whatever its operands hold, so the

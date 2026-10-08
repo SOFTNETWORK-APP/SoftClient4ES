@@ -453,11 +453,13 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   // ---------------------------------------------------------------------------------------------
 
   "a whole-table HAVING over a function of an aggregate" should "hang the selector off the synthetic bucket" in {
+    // `COUNT(*)` is read as the bucket's own `_count` there (issue #413): over no document every
+    // other path is a gap, and `HAVING COUNT(*) = 0` dropped its one row
     queryOf("SELECT COUNT(*) AS c FROM t HAVING GREATEST(COUNT(*), 0) > 1") shouldBe Seq(
       """{"query":{"match_all":{}},"size":0,"_source":false,""",
       """"aggs":{"__whole_table_having__":{"filters":{"filters":{"_all":{"match_all":{}}}},""",
       """"aggs":{"c":{"value_count":{"field":"_index"}},""",
-      """"having_filter":{"bucket_selector":{"buckets_path":{"c":"c"},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"c":"_count"},""",
       """"script":{"source":"(params.c == null ? 0 : Math.max(params.c, 0)) > 1"}}}}}}}"""
     ).mkString
   }

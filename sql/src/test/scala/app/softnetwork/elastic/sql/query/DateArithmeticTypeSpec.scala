@@ -432,4 +432,34 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
       "and INT for n"
     )
   }
+
+  /** Per group a date calculation is the number of milliseconds Elasticsearch computed, so a `DATE`
+    * or `TIMESTAMP` conversion over it is arithmetic on that number -- the start of its UTC day, or
+    * the number itself -- never a `java.time` call (`(MAX(d) + 1)::DATE` rendered
+    * `….toInstant()…toLocalDate()` on a double, and Elasticsearch failed the search). The view's
+    * pivot computes the same rendering (`SingleSearch.transformBucketScripts`).
+    */
+  "a DATE or TIMESTAMP conversion over a per-group date calculation" should
+  "be computed on the milliseconds the group answers" in {
+    def rendered(expression: String): String = {
+      val (resolved, item) = resolvedItem(s"SELECT g, $expression AS x FROM ev GROUP BY g")
+      resolved.validateResolved() shouldBe Right(())
+      val script = item.identifier.painless(None)
+      // the view's pivot computes the same rendering
+      resolved.transformBucketScripts.get("x").map(_.script) shouldBe Some(script)
+      script
+    }
+    Seq("(MAX(d) + 1)", "(MAX(ts) - 0.5)", "GREATEST(MAX(d), MAX(d2))").foreach { calc =>
+      val timestamp = rendered(s"$calc::TIMESTAMP")
+      val date = rendered(s"$calc::DATE")
+      withClue(s"[$calc] TIMESTAMP $timestamp DATE $date ") {
+        Seq(timestamp, date).foreach { script =>
+          script should not include "toInstant"
+          script should not include "toLocalDate"
+        }
+        // the TIMESTAMP is the milliseconds themselves; the DATE, their UTC day's start
+        date shouldBe s"(Math.floor($timestamp / 86400000.0) * 86400000.0)"
+      }
+    }
+  }
 }

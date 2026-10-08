@@ -1,0 +1,63 @@
+THIRD-PARTY NOTICES
+
+This project includes portions of the third-party software listed below, each distributed under
+its own license, reproduced here.
+
+================================================================================
+{fmt} 6.1.2
+https://github.com/fmtlib/fmt/tree/6.1.2
+
+Used in: core/src/main/scala/app/softnetwork/elastic/client/FloatingPointText.scala
+A Scala port of {fmt}'s floating-point formatting (include/fmt/format-inl.h: `fp`, `multiply`,
+`get_cached_power` and its tables, `bigint`, `grisu_gen_digits`, `grisu_shortest_handler`,
+`fallback_format`, the shortest branch of `format_float`; include/fmt/format.h: the `float_writer`
+layout of the `{}` specifier and `write_exponent`).
+
+License (https://raw.githubusercontent.com/fmtlib/fmt/6.1.2/LICENSE.rst):
+
+Copyright (c) 2012 - present, Victor Zverovich
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--- Optional exception to the license ---
+
+As an exception, if, as a result of your compiling your source code, portions
+of this Software are embedded into a machine-executable object form of such
+source code, you may redistribute such embedded portions in such object form
+without including the above copyright and permission notices.
+
+================================================================================
+DuckDB 1.5.5
+https://github.com/duckdb/duckdb/tree/v1.5.5
+
+Used in: core/src/main/scala/app/softnetwork/elastic/client/TemporalText.scala
+The text layout of a DATE, a TIME and a TIMESTAMP cast to VARCHAR, translated from
+`DateToStringCast` and `TimeToStringCast` (src/include/duckdb/common/types/cast_helpers.hpp) and
+`StringFromTimestamp` / `StringAsTime` (src/common/operator/string_cast.cpp).
+
+License (https://raw.githubusercontent.com/duckdb/duckdb/v1.5.5/LICENSE):
+
+Copyright 2018-2025 Stichting DuckDB Foundation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

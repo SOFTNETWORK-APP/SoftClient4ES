@@ -229,7 +229,9 @@ trait ElasticConversion {
               explodeNested,
               retainDocumentId,
               rowInvariants.lift(leg).getOrElse(ListMap.empty),
-              outputFields = leg0.map(_ => fields).getOrElse(Seq.empty)
+              outputFields = leg0.map(_ => fields).getOrElse(Seq.empty),
+              // ...and in the type the result gives each column (`SetOperationValues`)
+              converters = leg0.flatMap(_.converters).orNull
             )
           } else {
             Seq.empty
@@ -332,7 +334,8 @@ trait ElasticConversion {
     explodeNested: Boolean = true,
     retainDocumentId: Boolean = false,
     rowInvariants: ListMap[String, Any] = ListMap.empty,
-    outputFields: Seq[String] = Seq.empty
+    outputFields: Seq[String] = Seq.empty,
+    converters: Array[Any => Any] = null
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     val hitsNode = Option(json.path("hits").path("hits"))
       .filter(_.isArray)
@@ -390,8 +393,13 @@ trait ElasticConversion {
       if (outputFields.size == fields.size) fields.zip(outputFields)
       else fields.map(f => (f, f))
     val effective = pairs.filterNot(_._1 == "*")
+    // `converters` (a `UNION ALL` leg's, aligned with `fields`) follow the same "*" filter
+    val convs: Array[Any => Any] =
+      if ((converters ne null) && converters.length == fields.size)
+        fields.indices.filterNot(i => fields(i) == "*").map(i => converters(i)).toArray
+      else null
     if (effective.isEmpty) rows
-    else rows.map(rowProjector(effective.map(_._1), effective.map(_._2)))
+    else rows.map(rowProjector(effective.map(_._1), effective.map(_._2), convs))
   }
 
   def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
@@ -523,11 +531,31 @@ trait ElasticConversion {
   protected def rowProjector(
     sourceFields: Seq[String],
     targetFields: Seq[String]
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
+    rowProjector(sourceFields, targetFields, null)
+
+  /** [[rowProjector]] that also CONVERTS the value of some columns as it places them -- a `UNION
+    * ALL` leg whose column has another type than the result's (`SetOperationValues`).
+    *
+    * `converters` is aligned with `sourceFields`: the function for the column at that position, or
+    * `null` for none; `null` itself when nothing converts, which is the projection above,
+    * unchanged. A converting projection always rebuilds the row -- a value changes -- and does it
+    * in the one rebuild the projection performs, never as a second pass over the rows.
+    */
+  protected def rowProjector(
+    sourceFields: Seq[String],
+    targetFields: Seq[String],
+    converters: Array[Any => Any]
   )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] = {
     if (sourceFields.isEmpty) identity
     else {
       val fieldArr: Array[String] = sourceFields.toArray
       val len = fieldArr.length
+      // decided once per stream: `null` unless at least one column of THIS projection converts
+      val convs: Array[Any => Any] =
+        if ((converters ne null) && converters.length == len && converters.exists(_ ne null))
+          converters
+        else null
       // A target list of a different length cannot be matched positionally against this one, so
       // the projection degrades to a plain normalization rather than guessing an alignment.
       val outArr: Array[String] =
@@ -577,6 +605,8 @@ trait ElasticConversion {
         case EntityContext => false
         case _             => true
       }
+      // a converted value changes the row, so a converting projection never hands a row back as is
+      val rebuilds = renames || (convs ne null)
       if (fieldIndex.size() != len) {
         // Duplicate SOURCE names cannot hold distinct positions in a row map.
         //   * without a rename this is the historical degenerate shape — keep the exact legacy
@@ -588,7 +618,22 @@ trait ElasticConversion {
         //     hand-written duplicate projection reaches.
         if (!renames) {
           val requestedSet = sourceFields.toSet
-          row => normalizeRowOrdered(row, sourceFields, requestedSet)
+          if (convs eq null) row => normalizeRowOrdered(row, sourceFields, requestedSet)
+          else {
+            // the column a repeated name keeps is its FIRST position, and so is its conversion
+            val convertByName = new java.util.HashMap[String, Any => Any](len * 2)
+            var j = 0
+            while (j < len) {
+              if (!convertByName.containsKey(fieldArr(j)) && (convs(j) ne null))
+                convertByName.put(fieldArr(j), convs(j))
+              j += 1
+            }
+            row =>
+              normalizeRowOrdered(row, sourceFields, requestedSet).map { entry =>
+                val convert = convertByName.get(entry._1)
+                if (convert eq null) entry else entry._1 -> convert(entry._2)
+              }
+          }
         } else {
           val sourceSet = sourceFields.toSet
           row => {
@@ -597,8 +642,10 @@ trait ElasticConversion {
             while (j < len) {
               if (outFirst(j)) {
                 row.get(fieldArr(j)) match {
-                  case Some(v) => builder += outArr(j) -> v
-                  case None    => if (nullFillMissing) builder += outArr(j) -> null
+                  case Some(v) =>
+                    builder += outArr(j) -> (if ((convs eq null) || (convs(j) eq null)) v
+                                             else convs(j)(v))
+                  case None => if (nullFillMissing) builder += outArr(j) -> null
                 }
               }
               j += 1
@@ -648,30 +695,42 @@ trait ElasticConversion {
               }
             }
           }
-          // Under a rename the loop may have stopped on `passthrough` with entries still to come;
-          // none of them can be a source name (a row map's keys are unique and all `len` of them
-          // were just consumed), so they are extras — subject to the same `targetNames` rule.
-          if (renames) {
+          // Under a rename -- or a conversion -- the loop may have stopped on `passthrough` with
+          // entries still to come; none of them can be a source name (a row map's keys are unique
+          // and all `len` of them were just consumed), so they are extras -- subject, under a
+          // rename, to the same `targetNames` rule.
+          if (rebuilds) {
             while (it.hasNext) {
               val entry = it.next()
-              if (!targetNames.contains(entry._1)) {
+              if (!renames || !targetNames.contains(entry._1)) {
                 if (extras eq null) extras = new ListBuffer[(String, Any)]
                 extras += entry
               }
             }
           }
           // An in-order strict prefix needs no rebuild either when missing fields are skipped
-          if (!renames && (passthrough || (inOrder && !nullFillMissing))) row
+          if (!rebuilds && (passthrough || (inOrder && !nullFillMissing))) row
           else {
             val builder = ListMap.newBuilder[String, Any]
             var j = 0
-            while (j < len) {
-              if (outFirst(j)) {
-                if (seen(j)) builder += outArr(j) -> values(j)
-                else if (nullFillMissing) builder += outArr(j) -> null
+            if (convs eq null)
+              while (j < len) {
+                if (outFirst(j)) {
+                  if (seen(j)) builder += outArr(j) -> values(j)
+                  else if (nullFillMissing) builder += outArr(j) -> null
+                }
+                j += 1
               }
-              j += 1
-            }
+            else
+              while (j < len) {
+                if (outFirst(j)) {
+                  if (seen(j)) {
+                    val convert = convs(j)
+                    builder += outArr(j) -> (if (convert eq null) values(j) else convert(values(j)))
+                  } else if (nullFillMissing) builder += outArr(j) -> null
+                }
+                j += 1
+              }
             if (extras ne null) extras.foreach(builder += _)
             builder.result()
           }
@@ -1126,8 +1185,15 @@ trait ElasticConversion {
           // genuine `MAX` of `0.0` needs at least one document, where this rule cannot fire. On the
           // majors that were already correct the value is `null` anyway, so this is a no-op for
           // them beyond making the NULL explicit rather than an absent key.
+          //
+          // A calculation (`bucket_script`) is not forced: over no document Elasticsearch skips one
+          // that reads any other value than a count or a sum -- it is absent, NULL -- and evaluates
+          // one over counts and sums only (`_count`, and `keep_values` from 7.17), whose answer is
+          // the calculation's (`COUNT(*) * 2` is 0), issue #413.
           val emptyInput =
-            docCount.contains(0L) && aggregations.get(name).exists(_.nullOverEmptyInput)
+            docCount.contains(0L) && aggregations
+              .get(name)
+              .exists(agg => agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript)
           Option(value.get("value"))
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
