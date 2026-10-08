@@ -16,13 +16,14 @@
 
 package app.softnetwork.elastic.client
 
+import app.softnetwork.elastic.sql.operator.SetOperator
 import app.softnetwork.elastic.sql.query.MultiSearch
 import app.softnetwork.elastic.sql.query.MultiSearch.{
   SetOperationColumn,
   SetOperationType,
   StructField
 }
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{SingleSearch, TemporalLiterals}
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 
 import java.nio.charset.StandardCharsets
@@ -49,34 +50,167 @@ import scala.jdk.CollectionConverters._
   * a mix, which is what JDBC and Arrow, typing a column from its first value, would otherwise
   * report wrongly.
   *
+  * The same converter, in its other mode, reads each leg of a set operation AS ITS BRANCH DECLARES
+  * IT, at every depth ([[legReaders]]): the reader the relational engine (arrow) types its legs
+  * with, and core's `UNION ALL` reads a date column of a mapping format of its own with.
+  *
   * 🔴 PER-ROW work on the extraction path, so it is decided ONCE per statement: [[converters]] is
   * `None` for every leg of a statement whose columns all agree -- no function, no rebuild -- and,
-  * for a leg that does convert, holds a function only at the positions whose column converts. The
-  * functions are applied as `rowProjector` rebuilds the row it builds anyway, never by a second
-  * pass.
+  * for a leg that does convert, holds a function only at the positions whose column converts or
+  * reads a mapping format. The functions are applied as `rowProjector` rebuilds the row it builds
+  * anyway, never by a second pass.
   */
-private[client] object SetOperationValues {
+private[elastic] object SetOperationValues {
 
   /** The per-position conversions of each leg of `multiple`, in leg order -- `None` for a leg with
     * nothing to convert. `multiple` carries its branches' schemas (`resolveWithSchema`).
+    *
+    *   - A column whose branches disagree ([[SetOperationColumn.converts]]): every branch's value
+    *     converted to the column's type ([[positionConverter]]).
+    *   - A column whose branches agree, holding -- at the column or in a field or an element at any
+    *     depth -- a date field with a mapping format of its own ([[readsMappedDates]]): the dates
+    *     there read as their branches declare them ([[mappedDates]]) -- the date Elasticsearch
+    *     indexed, never the JSON spelling -- every other value as read; a date core cannot read,
+    *     and a multi-valued value, as stored.
+    *   - Any other column: its values as read.
     *
     * `version` is the Elasticsearch version the statement runs on (`VersionApi.version`): a date
     * field's values are read as THAT major reads its mapping format ([[MappedDateFormat]]). It is
     * asked at most ONCE per statement, and only when a converting position reads a date field.
     */
-  def converters(
+  private[client] def converters(
     multiple: MultiSearch,
     version: => Option[String]
   ): Seq[Option[Array[Any => Any]]] =
     MultiSearch.columnTypes(multiple.requests) match {
-      case Right(columns) if columns.exists(_.converts) =>
-        val names = columnNames(multiple, columns.size)
+      case Right(columns) if columns.exists(c => c.converts || readsMappedDates(c)) =>
+        val names = columnNames(multiple.requests, columns.size)
         val dates = DateReading(version)
         multiple.requests.indices.map(leg =>
           legConverters(multiple.requests(leg), leg, columns, names, dates)
         )
       case _ => multiple.requests.map(_ => None)
     }
+
+  /** THE READER of each leg of a set operation, column by column -- in leg order, `None` for a leg
+    * with nothing to read -- or, `Left`, the statement's refusal (`MultiSearch.branchTypes`'
+    * message word for word).
+    *
+    * THE CONTRACT read by the relational engine (arrow, `app.softnetwork.elastic.arrow`), which
+    * types each leg of a set operation by its branch's declared type, as core's `UNION ALL` reads
+    * it -- which is why it is `private[elastic]`:
+    *
+    *   - INPUT: `MultiSearch.columnTypes`' -- the branches in text order, each with its schema
+    *     attached, and `MultiSearch.resolvedOperators` (`Nil` is `UNION ALL` everywhere) -- and the
+    *     Elasticsearch version the statement runs on (`VersionApi.version`, cached per client),
+    *     asked at most ONCE, and only when a reader reads a date field.
+    *   - Each function reads ONE raw value of its leg's column, as the response parser gives it
+    *     (`ElasticConversion.jsonNodeToAny`), AS ITS BRANCH DECLARES IT
+    *     (`SetOperationColumn.branches`), with its mapping format, as Elasticsearch indexed it --
+    *     at every depth, where the branches agree too. One class per type: an `INT` is an
+    *     `Integer`, a `BIGINT` a `Long`, a `SMALLINT` a `Short`, a `TINYINT` a `Byte`, a `DOUBLE` a
+    *     `Double`, a `REAL` a `Float`, a `BOOLEAN` a `Boolean`, a `DATE` a `LocalDate`, a
+    *     `TIMESTAMP` a `ZonedDateTime` in UTC, a `TIME` a `LocalTime`, a `VARCHAR` a `String`, a
+    *     `VARBINARY` the UTF-8 bytes of its base64 text, a `STRUCT` a `ListMap` of its fields in
+    *     the branch's order, a `GEO_POINT` a `ListMap` of `lat` and `lon` (`Double`s), an `ARRAY` a
+    *     `List` of its element's class.
+    *   - Elasticsearch's one-element array (`script_fields`) is ONE value, its empty array NULL.
+    *   - A value core cannot read fails the statement, in the words core's `UNION ALL` uses: a date
+    *     its format does not read, or does not read without guessing (a zone name), a point that is
+    *     not one, a multi-valued value at a scalar position -- where the branches agree too, in the
+    *     words of a converting position ([[nonScalarFailure]]).
+    *   - `unreadable` ([[Unreadable]]) says what a DATE core cannot read answers at a position
+    *     whose branches AGREE: [[Unreadable.Fail]], the default, fails the statement as above;
+    *     [[Unreadable.KeepAsStored]] answers the value exactly as the response parser gives it --
+    *     not of the position's class, which the caller must then type as it was stored -- as core's
+    *     own `UNION ALL` answers it there. Where the branches disagree such a date always fails, as
+    *     core's `UNION ALL` fails it.
+    *   - `null` -- or `None` for the whole leg -- where nothing is read: a column whose type is not
+    *     known (`ANY`), a branch that declares nothing (`SELECT *`), a `NULL` literal.
+    *
+    * Built ONCE per leg; no decision is made per row.
+    */
+  private[elastic] def legReaders(
+    requests: Seq[SingleSearch],
+    operators: Seq[SetOperator],
+    version: => Option[String],
+    unreadable: Unreadable = Unreadable.Fail
+  ): Either[String, Seq[Option[Array[Any => Any]]]] =
+    MultiSearch.columnTypes(requests, operators).map { columns =>
+      val names = columnNames(requests, columns.size)
+      val dates = DateReading(version)
+      requests.indices.map { leg =>
+        val search = requests(leg)
+        // a leg's rows are built from its declared projection, position by position; a
+        // projection of another width -- an opaque `SELECT *` -- has no position to read at
+        if (search.select.fieldsWithComputedAliases.size != columns.size) None
+        else {
+          val readers: Array[Any => Any] = columns.indices.map { position =>
+            legReader(
+              columns(position),
+              leg,
+              names(position),
+              fieldOf(search, position),
+              dates,
+              unreadable
+            )
+          }.toArray
+          if (readers.forall(_ == null)) None else Some(readers)
+        }
+      }
+    }
+
+  /** What a leg's reader ([[legReaders]]) answers for a DATE it cannot read -- one its mapping
+    * format does not read, or does not read without guessing (a zone name, a pattern letter no
+    * measurement covers), or any date of a format when the Elasticsearch version is not known -- at
+    * a position whose branches AGREE. Where the branches disagree, the value converts, and such a
+    * date FAILS the statement whatever this says, as core's `UNION ALL` fails it.
+    */
+  private[elastic] sealed trait Unreadable
+
+  private[elastic] object Unreadable {
+
+    /** The statement fails, naming the value, the field and the format. */
+    case object Fail extends Unreadable
+
+    /** The value is answered AS STORED, exactly as the response parser gives it (a text, a number,
+      * Elasticsearch's array) -- as core's own `UNION ALL` answers it where the branches agree.
+      */
+    case object KeepAsStored extends Unreadable
+  }
+
+  /** How [[positionConverter]] treats a value. */
+  private[client] sealed trait Reading
+
+  private[client] object Reading {
+
+    /** Converted to the position's type: core's `UNION ALL` where the branches disagree. */
+    case object Converted extends Reading
+
+    /** Read as the branch declares it, at every depth ([[legReaders]]); `unreadable` where the
+      * branches agree.
+      */
+    final case class Declared(unreadable: Unreadable) extends Reading
+  }
+
+  /** Whether core's `UNION ALL` reads the dates of a column whose branches AGREE ([[mappedDates]]):
+    * the column, or a field or an element at any depth inside it, is a date field with a mapping
+    * format of its own, not Elasticsearch's default (`epoch_second`, `yyyy/MM/dd`, ...), whose
+    * values the response parser gives as their JSON spells them (`1706697000`, `"2024/01/31"`),
+    * never as the date Elasticsearch indexed. Only a date field carries a format; a column of the
+    * default format keeps its values as read, at no cost; beside a `SELECT *` branch, whose values
+    * are not typed here, nothing is read. Decided once per statement.
+    */
+  private def readsMappedDates(column: SetOperationColumn): Boolean =
+    !column.converts && column.branches.forall(_.isDefined) &&
+    column.branches.exists(_.exists(mappedInside))
+
+  /** A date field's mapping format of its own, not Elasticsearch's default. */
+  private def mapped(t: SetOperationType): Boolean =
+    t.format.exists(_ != TemporalLiterals.DefaultDateFormat)
+
+  private def mappedInside(t: SetOperationType): Boolean =
+    mapped(t) || t.fields.exists(f => mappedInside(f.valueType)) || t.element.exists(mappedInside)
 
   /** How a statement reads its date fields: as the Elasticsearch major it runs on reads their
     * mapping format ([[MappedDateFormat.Dialect]]). The version is asked once, the first time a
@@ -99,11 +233,17 @@ private[client] object SetOperationValues {
   }
 
   /** The name each column takes: the first declaring branch's, as SQL and DuckDB name it. */
-  private def columnNames(multiple: MultiSearch, width: Int): Seq[String] =
-    multiple.requests
+  private def columnNames(requests: Seq[SingleSearch], width: Int): Seq[String] =
+    requests
       .map(_.select.fieldsWithComputedAliases)
       .collectFirst { case fields if fields.size == width => fields.map(_.outputName) }
       .getOrElse(Seq.fill(width)(""))
+
+  /** The field a leg's item reads at `position` -- a failure names it -- or its output name. */
+  private def fieldOf(leg: SingleSearch, position: Int): String = {
+    val item = leg.select.fieldsWithComputedAliases(position)
+    Option(item.identifier.name).filter(_.nonEmpty).getOrElse(item.outputName)
+  }
 
   private def legConverters(
     leg: SingleSearch,
@@ -118,14 +258,196 @@ private[client] object SetOperationValues {
     else {
       val functions: Array[Any => Any] = columns.zipWithIndex.map { case (column, position) =>
         // a NULL literal's branch too: its value is Elasticsearch's `[null]`, read as NULL
-        if (!column.converts || column.branches.lift(index).flatten.isEmpty) null
-        else {
-          val item = leg.select.fieldsWithComputedAliases(position)
-          val field = Option(item.identifier.name).filter(_.nonEmpty).getOrElse(item.outputName)
-          positionConverter(column.result, column.branches, index, names(position), field, dates)
-        }
+        if (column.branches.lift(index).flatten.isEmpty) null
+        else if (column.converts)
+          positionConverter(
+            column.result,
+            column.branches,
+            index,
+            names(position),
+            fieldOf(leg, position),
+            dates
+          )
+        else if (readsMappedDates(column))
+          mappedDates(
+            column.result,
+            column.branches,
+            index,
+            names(position),
+            fieldOf(leg, position),
+            dates
+          ).orNull
+        else null
       }.toArray
       if (functions.forall(_ == null)) None else Some(functions)
+    }
+
+  /** Core's own `UNION ALL` at a position whose branches AGREE ([[readsMappedDates]]): the reading
+    * of the dates of a mapping format of their own at it, at every depth -- `None` where it holds
+    * none, its values then as read, at no cost.
+    *
+    *   - A date position one of whose branches has a format of its own: each branch's date read as
+    *     its branch declares it ([[legReaders]]' reader), the one of the default format too, so the
+    *     position holds one class; a date core cannot read ([[Unreadable.KeepAsStored]]) and a
+    *     multi-valued value ([[severalAsRead]]) as stored.
+    *   - An object holding such a position: the same object, every other entry as read, in its
+    *     order ([[objectPatch]]); a list of them, or of such dates: each element so
+    *     ([[listPatch]]).
+    *   - Any other position: as read.
+    *
+    * Decided ONCE per leg: only an object that holds such a date is rebuilt.
+    */
+  private def mappedDates(
+    target: SetOperationType,
+    branches: Seq[Option[SetOperationType]],
+    index: Int,
+    name: String,
+    field: String,
+    dates: DateReading
+  ): Option[Any => Any] =
+    branches.lift(index).flatten.flatMap { own =>
+      val path = if (field.isEmpty) name else field
+      own.sqlType match {
+        case SQLTypes.Struct =>
+          val patches = own.fields.flatMap { f =>
+            target.fields.find(_.name.equalsIgnoreCase(f.name)).flatMap { t =>
+              mappedDates(
+                t.valueType,
+                SetOperationColumn.fieldTypes(branches, f.name),
+                index,
+                name,
+                s"$path.${f.name}",
+                dates
+              ).map(f.name -> _)
+            }
+          }
+          if (patches.isEmpty) None else Some(objectPatch(patches))
+        case SQLTypes.Array(_) =>
+          mappedDates(
+            target.element.getOrElse(SetOperationType(SQLTypes.Any)),
+            SetOperationColumn.elementTypes(branches),
+            index,
+            name,
+            path,
+            dates
+          ).map(listPatch)
+        case _
+            if own.format.isDefined && target.sqlType.isTemporal && branches
+              .exists(_.exists(mapped)) =>
+          Some(
+            severalAsRead(
+              positionConverter(
+                target,
+                branches,
+                index,
+                name,
+                path,
+                dates,
+                Reading.Declared(Unreadable.KeepAsStored),
+                agrees = Some(true)
+              )
+            )
+          )
+        case _ => None
+      }
+    }
+
+  /** An object whose fields `patches` name are read by their function, whatever their case -- every
+    * other entry as read, in its order. An object wrapped in Elasticsearch's array is read in it;
+    * an array of several objects -- a multi-valued field -- and any other value are answered as
+    * read.
+    */
+  private def objectPatch(patches: Seq[(String, Any => Any)]): Any => Any = {
+    val names = patches.map(_._1).toArray
+    val reads = patches.map(_._2).toArray
+    def readOf(key: String): Any => Any = {
+      var i = 0
+      while (i < names.length) {
+        if (names(i).equalsIgnoreCase(key)) return reads(i)
+        i += 1
+      }
+      null
+    }
+    def patched(map: scala.collection.Map[_, _]): ListMap[String, Any] = {
+      val builder = ListMap.newBuilder[String, Any]
+      map.foreach { case (k, v) =>
+        val key = String.valueOf(k)
+        val read = readOf(key)
+        builder += key -> (if (read eq null) v else read(v))
+      }
+      builder.result()
+    }
+    def one(value: Any): Any =
+      value match {
+        case m: scala.collection.Map[_, _] => patched(m)
+        case m: java.util.Map[_, _]        => patched(m.asScala)
+        case other                         => other
+      }
+    {
+      case s: Seq[_] if s.lengthCompare(1) == 0  => List(one(s.head))
+      case l: java.util.List[_] if l.size() == 1 => List(one(l.get(0)))
+      case value                                 => one(value)
+    }
+  }
+
+  /** A list each element of which is read by `element`; a single value -- Elasticsearch stores a
+    * list of one as the value itself -- is read as it is.
+    */
+  private def listPatch(element: Any => Any): Any => Any = {
+    case null                 => null
+    case s: Seq[_]            => s.toList.map(element)
+    case l: java.util.List[_] => l.asScala.toList.map(element)
+    case one                  => element(one)
+  }
+
+  /** A reader as core's own `UNION ALL` applies it where the branches agree ([[mappedDates]]): a
+    * value of several values -- a multi-valued field, an array of them in Elasticsearch's array
+    * (`[[1706697000, 1706697001]]`), an object -- is answered as stored there, as it always was,
+    * where the reader would fail it (the lead's ruling of 2026-10-08); every other value is read.
+    * The value is judged as the reader sees it: Elasticsearch's one-element arrays unwrapped.
+    */
+  private def severalAsRead(read: Any => Any): Any => Any = {
+    @scala.annotation.tailrec
+    def several(value: Any): Boolean =
+      value match {
+        case s: Seq[_] =>
+          if (s.lengthCompare(1) == 0) several(s.head) else s.lengthCompare(1) > 0
+        case l: java.util.List[_] =>
+          if (l.size() == 1) several(l.get(0)) else l.size() > 1
+        case _: scala.collection.Map[_, _] | _: java.util.Map[_, _] => true
+        case _                                                      => false
+      }
+    value => if (several(value)) value else read(value)
+  }
+
+  /** The reader of branch `index`'s values at ONE column ([[legReaders]]): [[positionConverter]]
+    * reading each value as the branch declares it, at every depth -- `null` where nothing is read:
+    * a column whose type is not known (`ANY`), a branch that declares nothing there (`SELECT *`), a
+    * `NULL` literal.
+    */
+  private def legReader(
+    column: SetOperationColumn,
+    index: Int,
+    name: String,
+    field: String,
+    dates: DateReading,
+    unreadable: Unreadable
+  ): Any => Any =
+    column.branches.lift(index).flatten match {
+      case Some(branch) if branch.sqlType != SQLTypes.Null && column.resultType != SQLTypes.Any =>
+        positionConverter(
+          column.result,
+          column.branches,
+          index,
+          name,
+          field,
+          dates,
+          Reading.Declared(unreadable),
+          // the column's branches agree as core's `UNION ALL` reads them: a `SELECT *` branch
+          // beside them converts nothing
+          agrees = Some(!column.converts)
+        )
+      case _ => null
     }
 
   /** The conversion of branch `index`'s value at ONE converting position -- a column, a field of a
@@ -146,6 +468,12 @@ private[client] object SetOperationValues {
     * Inside a converting struct or list, a position whose branches all agree keeps its values as
     * read ([[SetOperationColumn.converts]]); a point is always read as a point. Decided ONCE per
     * leg, never per row.
+    *
+    * [[Reading.Declared]], the leg's READER ([[legReaders]]): the value is read AS ITS BRANCH
+    * DECLARES IT -- a scalar as the branch's type, a struct as the branch's fields in the branch's
+    * order, a point as a point -- at EVERY depth, where the branches agree too; `target`, the
+    * position's type, then names the position's type in a failure, and says whether the branches
+    * agree there -- `agrees`, where given, says it instead -- for a date core cannot read.
     */
   private[client] def positionConverter(
     target: SetOperationType,
@@ -153,29 +481,74 @@ private[client] object SetOperationValues {
     index: Int,
     name: String,
     field: String = "",
-    dates: DateReading = DateReading.unknown
-  ): Any => Any =
-    target.sqlType match {
-      case SQLTypes.GeoPoint                        => value => geoPoint(value, name)
-      case SQLTypes.Struct if target.fields.isEmpty => identity
-      case SQLTypes.Struct   => structConverter(target, branches, index, name, field, dates)
-      case SQLTypes.Array(_) => listConverter(target, branches, index, name, field, dates)
-      case result =>
-        val branch = branches.lift(index).flatten
+    dates: DateReading = DateReading.unknown,
+    reading: Reading = Reading.Converted,
+    agrees: Option[Boolean] = None
+  ): Any => Any = {
+    val branch = branches.lift(index).flatten
+    val read = reading != Reading.Converted
+    // the type the value is read as: the position's, or, for a leg's reader, the branch's own
+    val as = if (read) branch.getOrElse(target) else target
+    as.sqlType match {
+      case SQLTypes.GeoPoint => value => geoPoint(value, name)
+      // a STRUCT whose fields are not known: its values as read
+      case SQLTypes.Struct if as.fields.isEmpty || target.fields.isEmpty => identity
+      case SQLTypes.Struct =>
+        structConverter(target, branches, index, name, field, dates, reading)
+      case SQLTypes.Array(_) =>
+        listConverter(target, branches, index, name, field, dates, reading)
+      case scalar =>
         val source = branch.fold[SQLType](SQLTypes.Null)(_.sqlType)
-        converter(
+        // a date core cannot read is answered as stored where the reader is told so and the
+        // branches agree -- never where they disagree (the lead's ruling of 2026-10-08)
+        val keep = reading match {
+          case Reading.Declared(Unreadable.KeepAsStored) =>
+            agrees.getOrElse(!SetOperationColumn.converts(target, branches.flatten))
+          case _ => false
+        }
+        // a value of several values fails, in the words of a converting position -- read as
+        // declared where the branches agree too: a leg typed by its branch's scalar type cannot
+        // carry a list, which core's own `UNION ALL` answers as read there (the lead's ruling of
+        // 2026-10-08)
+        val convert = converter(
           source,
-          result,
-          nonScalarFailure(result, branches.map(_.map(_.sqlType)), index, source, name),
+          scalar,
+          nonScalarFailure(target.sqlType, branches.map(_.map(_.sqlType)), index, source, name),
           branch.flatMap(_.format),
           if (field.isEmpty) name else field,
           name,
-          dates
+          dates,
+          keepUnreadable = keep
         )
+        val canonical =
+          if (read && scalar == SQLTypes.Timestamp) convert.andThen(utc) else convert
+        if (keep) asStored(canonical) else canonical
     }
+  }
+
+  /** A date core cannot read, answered by its reader as [[Unread]]: the value AS STORED, exactly as
+    * the reader received it -- Elasticsearch's array and all.
+    */
+  private def asStored(read: Any => Any): Any => Any =
+    value =>
+      read(value) match {
+        case Unread => value
+        case other  => other
+      }
+
+  /** What a date reader answers for a date it cannot read, where it keeps the value as stored. */
+  private case object Unread
+
+  /** A `TIMESTAMP` a leg's reader reads: in UTC, whatever offset its text carried. */
+  private val utc: Any => Any = {
+    case z: ZonedDateTime if z.getZone != ZoneOffset.UTC => z.withZoneSameInstant(ZoneOffset.UTC)
+    case other                                           => other
+  }
 
   /** The conversion at a position INSIDE a converting one: [[positionConverter]] where its branches
-    * disagree, and for a point; its values as read where they agree.
+    * disagree, and for a point; where they agree, its values as read, its dates of a mapping format
+    * of their own read ([[mappedDates]]) -- read as the branch declares them, with
+    * [[Reading.Declared]], wherever they agree or not.
     */
   private def innerConverter(
     target: SetOperationType,
@@ -183,13 +556,14 @@ private[client] object SetOperationValues {
     index: Int,
     name: String,
     field: String,
-    dates: DateReading
+    dates: DateReading,
+    reading: Reading
   ): Any => Any =
     if (
-      target.sqlType == SQLTypes.GeoPoint ||
+      reading != Reading.Converted || target.sqlType == SQLTypes.GeoPoint ||
       SetOperationColumn.converts(target, branches.flatten)
-    ) positionConverter(target, branches, index, name, field, dates)
-    else identity
+    ) positionConverter(target, branches, index, name, field, dates, reading)
+    else mappedDates(target, branches, index, name, field, dates).getOrElse(identity)
 
   /** The failure of a converting position that a NON-SCALAR value -- a multi-valued field, an
     * object -- reaches: the position holds ONE value of its type per row, and such a value has no
@@ -256,6 +630,9 @@ private[client] object SetOperationValues {
     * DuckDB's words, as a multi-valued value does in every converting position; so does a value
     * that is not an object. Decided ONCE per leg: the source field each field reads, and its
     * conversion.
+    *
+    * With [[Reading.Declared]] (a leg's reader, [[positionConverter]]), the map holds the BRANCH's
+    * fields, in its order and under its names, each read as the branch declares it.
     */
   private[client] def structConverter(
     target: SetOperationType,
@@ -263,29 +640,41 @@ private[client] object SetOperationValues {
     index: Int,
     name: String,
     field: String = "",
-    dates: DateReading = DateReading.unknown
+    dates: DateReading = DateReading.unknown,
+    reading: Reading = Reading.Converted
   ): Any => Any = {
     val source = branches.lift(index).flatten
     val sourceFields = source.fold[Seq[StructField]](Nil)(_.fields)
-    val read: Any => scala.collection.Map[String, Any] =
+    val mapOf: Any => scala.collection.Map[String, Any] =
       if (source.exists(_.sqlType == SQLTypes.GeoPoint))
         value => geoPoint(value, name, target.fields)
       else value => objectOf(value, name, sourceFields, target.fields)
     val path = if (field.isEmpty) name else field
-    val plan: Seq[(String, Option[(String, Any => Any)])] = target.fields.map { t =>
-      t.name -> sourceFields.find(_.name.equalsIgnoreCase(t.name)).map { f =>
-        f.name -> innerConverter(
-          t.valueType,
-          SetOperationColumn.fieldTypes(branches, t.name),
-          index,
-          name,
-          s"$path.${f.name}",
-          dates
-        )
-      }
-    }
+    def inner(t: SetOperationType, f: StructField): Any => Any =
+      innerConverter(
+        t,
+        SetOperationColumn.fieldTypes(branches, f.name),
+        index,
+        name,
+        s"$path.${f.name}",
+        dates,
+        reading
+      )
+    val plan: Seq[(String, Option[(String, Any => Any)])] =
+      if (reading != Reading.Converted)
+        // the branch's fields, each typed at the position by the field of the column it is
+        sourceFields.map { f =>
+          val t = target.fields.find(_.name.equalsIgnoreCase(f.name)).fold(f.valueType)(_.valueType)
+          f.name -> Some(f.name -> inner(t, f))
+        }
+      else
+        target.fields.map { t =>
+          t.name -> sourceFields.find(_.name.equalsIgnoreCase(t.name)).map { f =>
+            f.name -> inner(t.valueType, f)
+          }
+        }
     value =>
-      read(value) match {
+      mapOf(value) match {
         case null => null
         case map =>
           ListMap(plan.map { case (field, from) =>
@@ -305,7 +694,8 @@ private[client] object SetOperationValues {
     index: Int,
     name: String,
     field: String = "",
-    dates: DateReading = DateReading.unknown
+    dates: DateReading = DateReading.unknown,
+    reading: Reading = Reading.Converted
   ): Any => Any =
     if (branches.lift(index).flatten.forall(_.sqlType == SQLTypes.Null)) _ => null
     else {
@@ -315,7 +705,8 @@ private[client] object SetOperationValues {
         index,
         name,
         if (field.isEmpty) name else field,
-        dates
+        dates,
+        reading
       )
       val list: Any => Any = {
         case null                 => null
@@ -480,7 +871,7 @@ private[client] object SetOperationValues {
     * value to convert, and FAILS the statement ([[nonScalarFailure]]). A scalar of a class the
     * conversion does not expect is returned as it is.
     */
-  def converter(source: SQLType, target: SQLType): Any => Any =
+  private[client] def converter(source: SQLType, target: SQLType): Any => Any =
     converter(
       source,
       target,
@@ -494,6 +885,7 @@ private[client] object SetOperationValues {
   /** [[converter]] for a branch that reads a date FIELD, whose mapping `format` -- its own, or
     * Elasticsearch's default -- reads its values as the major `dates` names reads them
     * ([[readAs]]); `field` is its path and `column` the column it reaches, which a failure names.
+    * With `keepUnreadable`, a date the format does not read is [[Unread]] instead of a failure.
     */
   private[client] def converter(
     source: SQLType,
@@ -502,7 +894,8 @@ private[client] object SetOperationValues {
     format: Option[String],
     field: String,
     column: String,
-    dates: DateReading
+    dates: DateReading,
+    keepUnreadable: Boolean = false
   ): Any => Any = {
     val convert: Any => Any = target match {
       case SQLTypes.Varchar   => text(source)
@@ -516,7 +909,7 @@ private[client] object SetOperationValues {
       case SQLTypes.VarBinary => bytes(source)
       case _                  => identity
     }
-    readAs(source, format, field, column, dates) match {
+    readAs(source, format, field, column, dates, keepUnreadable) match {
       case None       => scalarOf(convert, nonScalar)
       case Some(read) => scalarOf(read.andThen(convert), nonScalar)
     }
@@ -548,11 +941,12 @@ private[client] object SetOperationValues {
     format: Option[String],
     field: String,
     column: String,
-    dates: DateReading
+    dates: DateReading,
+    keepUnreadable: Boolean
   ): Option[Any => Any] =
     source match {
       case SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.Time if format.isDefined =>
-        Some(dateByFormat(source, format.get, field, column, dates))
+        Some(dateByFormat(source, format.get, field, column, dates, keepUnreadable))
       case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt => Some(integral)
       case SQLTypes.Double                                                       => Some(double)
       case SQLTypes.Real                                                         => Some(real)
@@ -567,14 +961,16 @@ private[client] object SetOperationValues {
     * `TIMESTAMP` is the instant that major indexed, a `DATE` its day and a `TIME` its time of day,
     * in UTC. A value the format does not read -- or one core cannot read without guessing, or any
     * value when the major is not known -- FAILS the statement, naming the value, the field and the
-    * format: never a wrong date, never a value passed on unread.
+    * format: never a wrong date, never a value passed on unread -- or, with `keepUnreadable`, is
+    * [[Unread]], which its reader answers as stored ([[asStored]]).
     */
   private def dateByFormat(
     source: SQLType,
     spec: String,
     field: String,
     column: String,
-    dates: DateReading
+    dates: DateReading,
+    keepUnreadable: Boolean
   ): Any => Any = {
     val typeName = source match {
       case SQLTypes.Date => "DATE"
@@ -586,11 +982,13 @@ private[client] object SetOperationValues {
       case SQLTypes.Time => _.atZone(ZoneOffset.UTC).toLocalTime
       case _             => _.atZone(ZoneOffset.UTC)
     }
-    def failure(value: Any, detail: String): Nothing =
-      throw new IllegalArgumentException(
-        s"Conversion Error: Could not read '$value' as a $typeName when casting from source " +
-        s"column $column: $detail"
-      )
+    def failure(value: Any, detail: => String): Any =
+      if (keepUnreadable) Unread
+      else
+        throw new IllegalArgumentException(
+          s"Conversion Error: Could not read '$value' as a $typeName when casting from source " +
+          s"column $column: $detail"
+        )
     dates.dialect match {
       case None =>
         val detail =

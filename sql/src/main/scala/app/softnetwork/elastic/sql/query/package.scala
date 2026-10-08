@@ -2823,6 +2823,36 @@ package object query {
         branches.map(_.flatMap(_.element))
     }
 
+    /** One NODE of a set operation as DuckDB types it ([[columnTree]]): a run of one union kind, or
+      * the two sides of an `INTERSECT [ALL]` or an `EXCEPT [ALL]`, with the type it gives each
+      * column. The contract read by the relational engine (arrow), which types each node of its own
+      * statement the same way:
+      *
+      * @param operator
+      *   the node's operator: the run's union kind (`UNION` is `UNION ALL`, `UNION_DISTINCT`
+      *   `UNION`), or `INTERSECT [ALL]` / `EXCEPT [ALL]`
+      * @param operands
+      *   the node's operands in text order: `Left(i)` the branch of index `i`, `Right(node)` a
+      *   subtree -- a run holds every one of its operands, an `INTERSECT` or an `EXCEPT` its two
+      *   sides
+      * @param columns
+      *   the type the node gives each column, at every depth and with no date format, as
+      *   [[SetOperationColumn.result]] holds it: a `STRUCT`'s merged fields in DuckDB's order;
+      *   `ANY` where it is not known, and for a column no branch under the node declares
+      * @param untyped
+      *   per column: whether DuckDB 1.5.5 gives the node NO type there, at the column or at any
+      *   field or element inside it -- a `VARBINARY` beside a number, a temporal or a `BOOLEAN`,
+      *   with a text or not, a `TIME` beside a date or a number -- which the rules answer as
+      *   `VARCHAR` ([[typeNode]]): the relational engine then casts each operand of the node to
+      *   [[columns]] itself, since DuckDB would fail on it
+      */
+    final case class SetOperationNode(
+      operator: SetOperator,
+      operands: Seq[Either[Int, SetOperationNode]],
+      columns: Seq[SetOperationType],
+      untyped: Seq[Boolean]
+    )
+
     /** DuckDB's numeric lattice over core's types: a `BOOLEAN` reads as 1 / 0 beside any number,
       * and the wider type wins (`INTEGER` with `BIGINT` is `BIGINT`, with `REAL` is `REAL`, with
       * `DOUBLE` is `DOUBLE`). MEASURED on DuckDB 1.5.5, every pair.
@@ -2976,6 +3006,14 @@ package object query {
     private def conflict(a: Operand, b: Operand, path: Seq[String]): Conflict =
       if (a.branch <= b.branch) Conflict(a, b, path) else Conflict(b, a, path)
 
+    /** The type of one node at one position ([[typeNode]]): the operand that decides it, and
+      * whether DuckDB 1.5.5 gives the node NO type there -- at the position or at any field or
+      * element inside it -- which the rules answer as `VARCHAR`.
+      */
+    private final case class NodeType(operand: Operand, untyped: Boolean)
+
+    private def typed(operand: Operand): NodeType = NodeType(operand, untyped = false)
+
     /** Nested operands -- lists, structs, points -- typed together, every operand of a node at
       * once, by the SAME rule as a column ([[typeNode]]): lists by their elements; structs and
       * points by their fields, merged as DuckDB 1.5.5 merges them (MEASURED): every field of every
@@ -2985,16 +3023,23 @@ package object query {
       * beside a struct is refused, as a list's element or a field the rule refuses is -- an element
       * named by its lists.
       */
-    private def nestedNode(operands: Seq[Operand], path: Seq[String]): Either[Conflict, Operand] = {
+    private def nestedNode(
+      operands: Seq[Operand],
+      path: Seq[String]
+    ): Either[Conflict, NodeType] = {
       val (lists, structs) = operands.partition(o => !structLike(o.folded))
       if (lists.nonEmpty && structs.nonEmpty) Left(conflict(lists.head, structs.head, path))
       else if (structs.isEmpty) {
         val elements =
           lists.map(o => o.at(o.valueType.element.getOrElse(SetOperationType(SQLTypes.Any))))
         typeNode(elements, path) match {
-          case Right(e) =>
+          case Right(NodeType(e, untyped)) =>
             Right(
-              lists.head.at(SetOperationType(SQLTypes.Array(e.folded), element = Some(e.valueType)))
+              NodeType(
+                lists.head
+                  .at(SetOperationType(SQLTypes.Array(e.folded), element = Some(e.valueType))),
+                untyped
+              )
             )
           case Left(Conflict(a, b, at)) if at == path =>
             // a list's elements refused: the lists are named, with their types
@@ -3002,25 +3047,31 @@ package object query {
             Left(conflict(list(a), list(b), path))
           case Left(refused) => Left(refused)
         }
-      } else if (structs.forall(_.folded == SQLTypes.GeoPoint)) Right(structs.head)
+      } else if (structs.forall(_.folded == SQLTypes.GeoPoint)) Right(typed(structs.head))
       // a STRUCT whose fields are not known has nothing to merge: the position's fields are not
       // known either
       else if (structs.exists(_.valueType.fields.isEmpty))
-        Right(structs.head.at(SetOperationType(SQLTypes.Struct)))
+        Right(typed(structs.head.at(SetOperationType(SQLTypes.Struct))))
       else {
         val names = structs.flatMap(_.valueType.fields.map(_.name)).foldLeft(Vector.empty[String]) {
           (seen, name) => if (seen.exists(_.equalsIgnoreCase(name))) seen else seen :+ name
         }
         names
-          .foldLeft[Either[Conflict, Vector[StructField]]](Right(Vector.empty)) {
-            case (Right(merged), name) =>
+          .foldLeft[Either[Conflict, (Vector[StructField], Boolean)]](
+            Right((Vector.empty, false))
+          ) {
+            case (Right((merged, untyped)), name) =>
               val having = structs.flatMap { o =>
                 o.valueType.fields.find(_.name.equalsIgnoreCase(name)).map(f => o.at(f.valueType))
               }
-              typeNode(having, path :+ name).map(t => merged :+ StructField(name, t.valueType))
+              typeNode(having, path :+ name).map(t =>
+                (merged :+ StructField(name, t.operand.valueType), untyped || t.untyped)
+              )
             case (refused, _) => refused
           }
-          .map(fields => structs.head.at(SetOperationType(SQLTypes.Struct, fields)))
+          .map { case (fields, untyped) =>
+            NodeType(structs.head.at(SetOperationType(SQLTypes.Struct, fields)), untyped)
+          }
       }
     }
 
@@ -3049,15 +3100,19 @@ package object query {
       *     `BOOLEAN`, a `TIME` beside a date or a number -- every value then spelled as text.
       *
       * The type does not depend on the operands' order. A node whose type is not known (`ANY`)
-      * refuses nothing; a `NULL` literal takes the others' type.
+      * refuses nothing; a `NULL` literal takes the others' type. The answer says, beside the type,
+      * whether DuckDB gives the node none there, at the position or at any field or element inside
+      * ([[NodeType.untyped]]): every `VARCHAR` of the last rule where DuckDB gives none -- also a
+      * text beside a `VARBINARY` and another type, which DuckDB makes a `BLOB` it then cannot cast
+      * the other type to.
       */
-    private def typeNode(operands: Seq[Operand], path: Seq[String]): Either[Conflict, Operand] =
+    private def typeNode(operands: Seq[Operand], path: Seq[String]): Either[Conflict, NodeType] =
       operands.find(_.folded == SQLTypes.Any) match {
-        case Some(unknown) => Right(unknown)
+        case Some(unknown) => Right(typed(unknown))
         case None =>
           val valued = operands.filterNot(_.folded == SQLTypes.Null)
           valued.headOption match {
-            case None => Right(operands.head)
+            case None => Right(typed(operands.head))
             case Some(first) =>
               valued.find(o => nested(o.folded)) match {
                 case Some(list) =>
@@ -3073,8 +3128,16 @@ package object query {
                       // beside any other mix is VARCHAR
                       val others = valued.filterNot(_.folded == SQLTypes.Varchar)
                       if (others.nonEmpty && others.forall(_.folded == SQLTypes.VarBinary))
-                        Right(others.head)
-                      else Right(text)
+                        Right(typed(others.head))
+                      else
+                        // a BLOB beside another type besides the text: DuckDB gives the node no
+                        // type (MEASURED), VARCHAR untyped
+                        Right(
+                          NodeType(
+                            text,
+                            untyped = others.exists(_.folded == SQLTypes.VarBinary)
+                          )
+                        )
                     case None =>
                       val binary = valued.exists(_.folded == SQLTypes.VarBinary)
                       (
@@ -3094,7 +3157,12 @@ package object query {
                                 )
                             ) commonType(valued)
                             else None
-                          Right(joined.getOrElse(first.at(SetOperationType(SQLTypes.Varchar))))
+                          // DuckDB gives the node no type: VARCHAR, the node UNTYPED
+                          Right(
+                            joined.fold(
+                              NodeType(first.at(SetOperationType(SQLTypes.Varchar)), untyped = true)
+                            )(typed)
+                          )
                       }
                   }
               }
@@ -3156,7 +3224,8 @@ package object query {
       */
     private sealed trait TypingNode
     private final case class TypingLeaf(branch: Int) extends TypingNode
-    private final case class TypingRun(children: Seq[TypingNode]) extends TypingNode
+    private final case class TypingRun(operator: SetOperator, children: Seq[TypingNode])
+        extends TypingNode
 
     private def typingTree(node: SetOpNode): TypingNode =
       node match {
@@ -3169,25 +3238,42 @@ package object query {
                 flattened(l) ++ flattened(r)
               case other => Seq(typingTree(other))
             }
-          TypingRun(flattened(left) ++ flattened(right))
+          TypingRun(operator, flattened(left) ++ flattened(right))
       }
 
-    /** The operand a node of the tree folds to at one column -- `None` when no branch under it
-      * declares one (`SELECT *`) -- or the two operands refused under it.
+    /** A node of the operator tree typed at one column: the operand it folds to -- `None` when no
+      * branch under it declares one (`SELECT *`) -- whether DuckDB gives it no type there
+      * ([[NodeType.untyped]]), and, for a run, each child typed the same way, in text order.
+      */
+    private final case class TypedNode(
+      result: Option[Operand],
+      untyped: Boolean,
+      children: Seq[TypedNode]
+    )
+
+    /** A node of the tree typed at one column ([[TypedNode]]), or the two operands refused under
+      * it.
       */
     private def typeOf(
       node: TypingNode,
       operand: Int => Option[Operand]
-    ): Either[Conflict, Option[Operand]] =
+    ): Either[Conflict, TypedNode] =
       node match {
-        case TypingLeaf(branch) => Right(operand(branch))
-        case TypingRun(children) =>
+        case TypingLeaf(branch) => Right(TypedNode(operand(branch), untyped = false, Nil))
+        case TypingRun(_, children) =>
           children
-            .foldLeft[Either[Conflict, Vector[Operand]]](Right(Vector.empty)) {
-              case (Right(typed), child) => typeOf(child, operand).map(typed ++ _)
+            .foldLeft[Either[Conflict, Vector[TypedNode]]](Right(Vector.empty)) {
+              case (Right(typed), child) => typeOf(child, operand).map(typed :+ _)
               case (conflict, _)         => conflict
             }
-            .flatMap(typed => if (typed.isEmpty) Right(None) else typeNode(typed, Nil).map(Some(_)))
+            .flatMap { typedChildren =>
+              val operands = typedChildren.flatMap(_.result)
+              if (operands.isEmpty) Right(TypedNode(None, untyped = false, typedChildren))
+              else
+                typeNode(operands, Nil).map(t =>
+                  TypedNode(Some(t.operand), t.untyped, typedChildren)
+                )
+            }
       }
 
     /** The type of each column of a set operation whose branches are joined by `operators`, or the
@@ -3205,32 +3291,50 @@ package object query {
     private[elastic] def columnTypes(
       requests: Seq[SingleSearch],
       operators: Seq[SetOperator]
-    ): Either[String, Seq[SetOperationColumn]] = {
-      val joins =
-        if (operators.isEmpty) Seq.fill(math.max(requests.size - 1, 0))(UNION) else operators
+    ): Either[String, Seq[SetOperationColumn]] =
+      typedColumns(requests, operators).map(_.map(_._1))
+
+    /** The operators between the branches: `Nil` is `UNION ALL` everywhere. */
+    private def joinsOf(
+      requests: Seq[SingleSearch],
+      operators: Seq[SetOperator]
+    ): Seq[SetOperator] =
+      if (operators.isEmpty) Seq.fill(math.max(requests.size - 1, 0))(UNION) else operators
+
+    private def operatorCount(requests: Seq[SingleSearch], joins: Seq[SetOperator]): String =
+      s"A set operation over ${requests.size} branches needs ${requests.size - 1} operators, " +
+      s"got ${joins.size}"
+
+    /** Each column of a set operation ([[SetOperationColumn]]) with the operator tree typed at it
+      * ([[TypedNode]]), or the column refused and why -- what [[columnTypes]] and [[columnTree]]
+      * both read, so the two cannot type a statement differently.
+      */
+    private def typedColumns(
+      requests: Seq[SingleSearch],
+      operators: Seq[SetOperator]
+    ): Either[String, Seq[(SetOperationColumn, TypedNode)]] = {
+      val joins = joinsOf(requests, operators)
       val known = requests.map(declared).zipWithIndex.collect { case (Some(f), i) => (i, f) }
       if (known.isEmpty) Right(Nil)
-      else if (joins.size != requests.size - 1)
-        Left(
-          s"A set operation over ${requests.size} branches needs ${requests.size - 1} operators, " +
-          s"got ${joins.size}"
-        )
+      else if (joins.size != requests.size - 1) Left(operatorCount(requests, joins))
       else {
         val tree = typingTree(precedenceTree(requests.indices.toList, joins.toList))
         val byBranch = known.toMap
         val width = known.map(_._2.size).min
-        (0 until width).foldLeft[Either[String, Vector[SetOperationColumn]]](Right(Vector.empty)) {
+        (0 until width).foldLeft[Either[String, Vector[(SetOperationColumn, TypedNode)]]](
+          Right(Vector.empty)
+        ) {
           case (Right(columns), pos) =>
             val leaves = requests.indices.map(branch =>
               byBranch.get(branch).map(f => operandOf(branch, f(pos)))
             )
             typeOf(tree, leaves) match {
-              case Right(result) =>
+              case Right(typed) =>
                 Right(
-                  columns :+ SetOperationColumn(
-                    result.fold(SetOperationType(SQLTypes.Any))(r => resultOf(r.valueType)),
+                  columns :+ (SetOperationColumn(
+                    typed.result.fold(SetOperationType(SQLTypes.Any))(r => resultOf(r.valueType)),
                     leaves.map(_.map(_.valueType))
-                  )
+                  ) -> typed)
                 )
               case Left(refused) => Left(refusal(pos, refused))
             }
@@ -3238,6 +3342,70 @@ package object query {
         }
       }
     }
+
+    /** The NODES of a set operation whose branches are joined by `operators`, as DuckDB 1.5.5 types
+      * them -- the tree [[columnTypes]] types the statement over, its root the statement's -- or,
+      * `Left`, the refusal, the message of [[branchTypes]] word for word: `Left` exactly where
+      * [[branchTypes]] refuses.
+      *
+      * THE CONTRACT read by the relational engine (arrow, `app.softnetwork.elastic.arrow`), which
+      * types each node of the statement it runs and must give it the SAME type as core
+      * ([[SetOperationNode]]): the same inputs as [[branchTypes]] -- the branches in text order,
+      * each with its schema attached, and `MultiSearch.resolvedOperators` (`Nil` is `UNION ALL`
+      * everywhere); a run of one union kind is one node, every other operator a node over its two
+      * sides, `INTERSECT [ALL]` binding first. Each node gives each column the type the rules give
+      * it ([[typeNode]]), and says where DuckDB gives it none ([[SetOperationNode.untyped]]). The
+      * root's [[SetOperationNode.columns]] are the results of [[columnTypes]]. A set operation has
+      * two branches at least.
+      *
+      * Where no branch declares a column (every one a `SELECT *`), there is nothing to type, and
+      * [[branchTypes]] checks nothing, not even the number of operators: the nodes have no column,
+      * and an operator list of another length -- which `MultiSearch.validate()` refuses -- is read
+      * as `UNION ALL` past its end, an operator past the last branch ignored.
+      */
+    private[elastic] def columnTree(
+      requests: Seq[SingleSearch],
+      operators: Seq[SetOperator]
+    ): Either[String, SetOperationNode] = {
+      val tooFew = s"A set operation needs two branches at least, got ${requests.size}"
+      if (requests.size < 2) Left(tooFew)
+      else
+        // `typedColumns` refuses what `branchTypes` refuses, the operator count included where a
+        // branch declares a column; elsewhere the tree has no column to type
+        typedColumns(requests, operators).flatMap { columns =>
+          val joins =
+            joinsOf(requests, operators).padTo(requests.size - 1, UNION).take(requests.size - 1)
+          treeOperand(
+            typingTree(precedenceTree(requests.indices.toList, joins.toList)),
+            columns.map(_._2)
+          ) match {
+            case Right(root) => Right(root)
+            case Left(_)     => Left(tooFew)
+          }
+        }
+    }
+
+    /** A node of the tree as an operand of its parent: a branch's index, or the run as a
+      * [[SetOperationNode]], from the run typed at each column.
+      */
+    private def treeOperand(
+      node: TypingNode,
+      typed: Seq[TypedNode]
+    ): Either[Int, SetOperationNode] =
+      node match {
+        case TypingLeaf(branch) => Left(branch)
+        case TypingRun(operator, children) =>
+          Right(
+            SetOperationNode(
+              operator,
+              children.zipWithIndex.map { case (child, i) =>
+                treeOperand(child, typed.map(_.children(i)))
+              },
+              typed.map(_.result.fold(SetOperationType(SQLTypes.Any))(r => resultOf(r.valueType))),
+              typed.map(_.untyped)
+            )
+          )
+      }
 
     /** Whether the branches of a set operation, joined by `operators`, may run, column by column,
       * once each branch's schema is attached -- `Right(())` -- or the refusal, by name.

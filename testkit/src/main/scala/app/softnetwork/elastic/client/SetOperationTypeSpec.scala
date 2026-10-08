@@ -608,6 +608,18 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
     */
   private val formatDocs: Seq[String] = Seq("f1", "f2", "f3", "f4", "p1")
 
+  /** A date field core cannot read without guessing -- a region id, whose offset comes from zone
+    * data -- as a column `z` and an object's field `fz.a`, beside default-format partners: the
+    * pattern each major reads it with (MEASURED, core's date-format corpora: Joda's `ZZZ` on
+    * Elasticsearch 6, `VV` on 7 and 8). And an `epoch_second` field holding an array of arrays,
+    * which Elasticsearch accepts and flattens, as a column `v` and an object's field `fv.a`.
+    */
+  private val zoneTable = "set_operation_zones"
+
+  private val zoned = "2024-01-31 Europe/Paris"
+
+  private def zoneFormat: String = if (esMajor == 6) "yyyy-MM-dd ZZZ" else "yyyy-MM-dd VV"
+
   private def formatJson(id: String): String =
     (Seq("id" -> ("\"" + id + "\"")) ++
       formatted.flatMap(f =>
@@ -673,6 +685,22 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
       ", PRIMARY KEY (id))"
     )
     load(formatTable, formatDocs.map(formatJson).toList)
+    Try(Await.result(client.run(s"DROP TABLE IF EXISTS $zoneTable"), 60.seconds))
+    run(
+      s"CREATE TABLE $zoneTable (id KEYWORD, z TIMESTAMP OPTIONS (format = '$zoneFormat'), " +
+      s"fz STRUCT FIELDS(a TIMESTAMP OPTIONS (format = '$zoneFormat')), ts TIMESTAMP, " +
+      "fts STRUCT FIELDS(a TIMESTAMP), d DATE, v TIMESTAMP OPTIONS (format = 'epoch_second'), " +
+      "fv STRUCT FIELDS(a TIMESTAMP OPTIONS (format = 'epoch_second')), PRIMARY KEY (id))"
+    )
+    load(
+      zoneTable,
+      List(
+        s"""{"id":"z1","z":"$zoned","fz":{"a":"$zoned"},""" +
+        """"v":[[1706697000,1706697001]],"fv":{"a":[[1706697000,1706697001]]}}""",
+        """{"id":"p1","ts":"2024-02-01T00:00:00Z","fts":{"a":"2024-02-01T00:00:00Z"},""" +
+        """"d":"2024-02-01"}"""
+      )
+    )
     ()
   }
 
@@ -680,6 +708,7 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
     Try(Await.result(client.run(s"DROP TABLE IF EXISTS $table"), 60.seconds))
     Try(Await.result(client.run(s"DROP TABLE IF EXISTS $textTable"), 60.seconds))
     Try(Await.result(client.run(s"DROP TABLE IF EXISTS $formatTable"), 60.seconds))
+    Try(Await.result(client.run(s"DROP TABLE IF EXISTS $zoneTable"), 60.seconds))
     super.afterAll()
   }
 
@@ -1627,6 +1656,145 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
       }
     } yield error
     wrong shouldBe empty
+  }
+
+  /** A date whose branches AGREE is read as the date Elasticsearch indexed when one of its branches
+    * is a field with a mapping format of its own -- seconds, custom patterns, a DATE's day -- in
+    * every leg, the default-format one too, at the column and at an object's field (every other
+    * entry of the object as stored): every value a date of its class, on every route. A date of the
+    * default format keeps its value as read.
+    */
+  it should "read an agreeing date of a mapping format of its own, at every depth, on every route" in {
+    // the date at `depth` of a row's value: the column's, or the object's field `a`
+    def at(depth: String, k: Any): Any =
+      (depth, k) match {
+        case (_, null)     => null
+        case ("column", v) => v
+        case ("field", m: scala.collection.Map[_, _]) =>
+          m.asInstanceOf[scala.collection.Map[String, Any]].getOrElse("a", null)
+        case (_, other) => ("unexpected", other)
+      }
+    val wrong = for {
+      f <- formatted.filter(_.format.isDefined)
+      (depth, item, partner) <- Seq(
+        ("column", s"c_${f.key}", if (f.declared == "DATE") "pd" else "pts"),
+        ("field", s"f_${f.key}", if (f.declared == "DATE") "fd" else "fts")
+      )
+      (route, limited) <- routes
+      sql = Seq(item, partner)
+        .map(i => s"SELECT $i AS k FROM $formatTable" + (if (limited) " LIMIT 100" else ""))
+        .mkString(" UNION ALL ")
+      error <- rowsOf(sql, route) match {
+        case Left(e) => Some(s"[$route] [$sql] failed: $e")
+        case Right(rows) =>
+          def read(instant: Instant): Any =
+            if (f.declared == "DATE") instant.atZone(ZoneOffset.UTC).toLocalDate
+            else instant.atZone(ZoneOffset.UTC)
+          val partnerValue: Any =
+            if (f.declared == "DATE") LocalDate.parse("2024-02-01")
+            else ZonedDateTime.parse("2024-02-01T00:00:00Z")
+          val want = formatDocs.map(id =>
+            f.values.get(id).fold[Any](null) { case (_, instant, byMajor) =>
+              read(byMajor.getOrElse(esMajor, instant))
+            }
+          ) ++ formatDocs.map(id => if (id == "p1") partnerValue else null)
+          val got = rows.map(r => at(depth, r.getOrElse("k", null)))
+          var unmatched = got.map(shown)
+          val missing = want.map(shown).filterNot { w =>
+            unmatched.indexOf(w) match {
+              case -1 => false
+              case i  => unmatched = unmatched.patch(i, Nil, 1); true
+            }
+          }
+          if (missing.isEmpty && unmatched.isEmpty) None
+          else
+            Some(
+              s"[$route] [$sql] missing ${missing.mkString(", ")} / unexpected " +
+              unmatched.mkString(", ")
+            )
+      }
+    } yield error
+    // the control: dates of the default format keep their values as read -- the year 2024 written
+    // as a text and as a number -- at the column and at an object's field
+    val control = for {
+      (depth, item, partner) <- Seq(("column", "c_def", "pts"), ("field", "f_def", "fts"))
+      (route, limited)       <- routes
+      sql = Seq(item, partner)
+        .map(i => s"SELECT $i AS k FROM $formatTable" + (if (limited) " LIMIT 100" else ""))
+        .mkString(" UNION ALL ")
+      error <- rowsOf(sql, route) match {
+        case Left(e) => Some(s"[$route] [$sql] failed: $e")
+        case Right(rows) =>
+          val got = rows.map(r => shown(at(depth, r.getOrElse("k", null))))
+          if (got.contains(("2024", "String")) && got.contains((2024, "Integer"))) None
+          else Some(s"[$route] [$sql] read ${got.mkString(", ")}")
+      }
+    } yield error
+    (wrong ++ control) shouldBe empty
+  }
+
+  /** A date core cannot read without guessing -- a region id, whose offset comes from zone data --
+    * and a value of several values -- an array of arrays -- where its branches AGREE are answered
+    * as stored, at the column and at an object's field, on every route, as they always were: no
+    * statement core answered fails. Where its branches disagree the date converts, and fails the
+    * statement, naming the value, the field and the format.
+    */
+  it should "keep an agreeing date it cannot read as stored, and fail it where it converts" in {
+    def sql(left: String, right: String, limited: Boolean): String =
+      Seq(left, right)
+        .map(i => s"SELECT $i AS k FROM $zoneTable" + (if (limited) " LIMIT 100" else ""))
+        .mkString(" UNION ALL ")
+    val kept = for {
+      (left, right, stored, partner) <- Seq(
+        ("z", "ts", zoned: Any, ZonedDateTime.parse("2024-02-01T00:00:00Z"): Any),
+        (
+          "fz",
+          "fts",
+          ListMap("a" -> zoned): Any,
+          ListMap("a" -> ZonedDateTime.parse("2024-02-01T00:00:00Z")): Any
+        ),
+        // an array of arrays: several values, as stored
+        (
+          "v",
+          "ts",
+          List(List(1706697000, 1706697001)): Any,
+          ZonedDateTime.parse("2024-02-01T00:00:00Z"): Any
+        ),
+        (
+          "fv",
+          "fts",
+          ListMap("a" -> List(List(1706697000, 1706697001))): Any,
+          ListMap("a" -> ZonedDateTime.parse("2024-02-01T00:00:00Z")): Any
+        )
+      )
+      (route, limited) <- routes
+      statement = sql(left, right, limited)
+      error <- rowsOf(statement, route) match {
+        case Left(e) => Some(s"[$route] [$statement] failed: $e")
+        case Right(rows) =>
+          def norm(v: Any): Any = v match {
+            case z: ZonedDateTime => z.toInstant
+            case m: scala.collection.Map[_, _] =>
+              m.map { case (k, e) => String.valueOf(k) -> norm(e) }.toMap
+            case other => other
+          }
+          val got = rows.map(r => norm(r.getOrElse("k", null))).sortBy(String.valueOf)
+          val want = Seq(stored, null, null, partner).map(norm).sortBy(String.valueOf)
+          if (got == want) None else Some(s"[$route] [$statement] answered $got instead of $want")
+      }
+    } yield error
+    val failed = for {
+      (route, limited) <- routes
+      statement = sql("z", "d", limited)
+      error <- rowsOf(statement, route) match {
+        case Left(msg)
+            if msg.contains(s"Could not read '$zoned' as a TIMESTAMP") &&
+              msg.contains(s"the date format '$zoneFormat' of field z") =>
+          None
+        case other => Some(s"[$route] [$statement] answered $other instead of failing")
+      }
+    } yield error
+    (kept ++ failed) shouldBe empty
   }
 
   it should "refuse by name only a date beside a number, before anything runs" in {
