@@ -490,7 +490,13 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         // that is not an `IndicesApi`, mappings that cannot be read or that disagree) nothing is
         // refused on types: Elasticsearch answers, exactly as for a single statement. A branch
         // without a schema keeps its bare columns `Any`, which pass.
-        (if (resolved.exists(_.schema.isDefined)) MultiSearch.branchTypes(resolved)
+        //
+        // The OPERATORS go with the branches: the one verdict the relational engine's caller asks
+        // too, typed over the operator tree (only `UNION ALL` reaches this line today). It refuses
+        // only what fails when the statement runs: a date beside a number, a nested type beside
+        // another.
+        (if (resolved.exists(_.schema.isDefined))
+           MultiSearch.branchTypes(resolved, multiple.resolvedOperators)
          else Right(())) match {
           case Left(reason) =>
             ElasticResult.failure(
@@ -2442,11 +2448,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   )(implicit context: ConversionContext): Seq[ListMap[String, Any] => ListMap[String, Any]] = {
     val outputFields = unionAllOutputFieldNames(multiple)
     if (outputFields.isEmpty) multiple.requests.map(_ => identity[ListMap[String, Any]] _)
-    else
-      multiple.requests.map { leg =>
-        rowProjector(unionAllLegFieldNames(leg, outputFields), outputFields)
+    else {
+      // ...and each column in the ONE type the result gives it, converted as the row is rebuilt
+      // (`SetOperationValues`); `None` for every leg of a statement whose columns agree
+      val converters = SetOperationValues.converters(multiple, setOperationVersion)
+      multiple.requests.zip(converters).map { case (leg, convert) =>
+        rowProjector(unionAllLegFieldNames(leg, outputFields), outputFields, convert.orNull)
       }
+    }
   }
+
+  /** The Elasticsearch version the statement runs on (`VersionApi.version`, cached per client): a
+    * set operation reads a date field's values as THAT major reads the field's mapping format
+    * (`SetOperationValues.converters`, which asks for it at most once per statement, and only when
+    * a converting position reads a date field). `None` for a client that cannot tell it.
+    */
+  private def setOperationVersion: Option[String] =
+    this match {
+      case api: VersionApi => api.version.toOption
+      case _               => None
+    }
 
   /** The names the result's columns take: the FIRST branch's, SQL-92 §7.10. */
   private def unionAllOutputFieldNames(multiple: MultiSearch): Seq[String] =
@@ -2472,13 +2493,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     */
   private def unionAllLegProjections(multiple: MultiSearch): Seq[LegProjection] = {
     val outputFields = unionAllOutputFieldNames(multiple)
-    multiple.requests.map { leg =>
+    // with no declared names there is no column to type, as for the other routes
+    // (`unionAllRowMappers`)
+    val converters =
+      if (outputFields.isEmpty) multiple.requests.map(_ => None)
+      else SetOperationValues.converters(multiple, setOperationVersion)
+    multiple.requests.zip(converters).map { case (leg, convert) =>
       LegProjection(
         leg.fieldAliases,
         unionAllLegFieldNames(leg, outputFields),
         leg.nestedHitsMappings,
         // the plan that built THIS leg's request -- never one made from the merged map
-        toClientAggregations(leg.sqlAggregations)
+        toClientAggregations(leg.sqlAggregations),
+        convert
       )
     }
   }

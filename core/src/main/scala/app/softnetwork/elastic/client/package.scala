@@ -314,12 +314,17 @@ package object client extends SerializationApi {
     *   built its request. A plan made once from the branches' MERGED map (which keeps the LAST
     *   branch's aggregation per name) told a branch to read an aggregation its request had merged
     *   into another, or never emitted: the column came back NULL with HTTP 200.
+    * @param converters
+    *   aligned with `fields`: how the BRANCH's value at each position reaches the type the result
+    *   gives that column (`SetOperationValues`), `null` where it already has it -- `None` for a
+    *   branch with nothing to convert, which is every branch of a statement whose columns agree
     */
   case class LegProjection(
     fieldAliases: ListMap[String, String],
     fields: Seq[String],
     nestedHits: Map[String, Seq[(String, String)]],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    converters: Option[Array[Any => Any]] = None
   )
 
   /** Retry configuration

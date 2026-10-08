@@ -373,7 +373,9 @@ class RelationalClosureGuardSpec extends AnyFlatSpec with Matchers {
     * refused on types -- Elasticsearch answers.
     */
   it should "ask the branch type check after resolution, and refuse nothing on types without a schema" in {
-    val sql = "SELECT 1 AS n FROM t UNION ALL SELECT 'a' AS n FROM u"
+    // a DATE beside a whole number: DuckDB 1.5.5 refuses the pair (`1` beside `'a'` is a VARCHAR
+    // column there, and is answered since the lead's rule of 2026-10-06)
+    val sql = "SELECT CURRENT_DATE AS n FROM t UNION ALL SELECT 1 AS n FROM u"
     Parser(sql) match {
       case Right(multi: MultiSearch) =>
         MultiSearch.branchTypes(multi.requests).swap.getOrElse("") should include(

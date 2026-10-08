@@ -462,8 +462,9 @@ SELECT 10 % -3 AS result;
 
 **Description:**  
 Since `0.24.0`, `+` and `-` follow the rules SQL engines apply to dates, in every place a script
-runs: a row `SELECT`, a `WHERE`, a per-group calculation over aggregates (`MAX(d) - MIN(d) AS x`),
-a `HAVING` over its alias, a computed column (`SCRIPT AS`) and a materialized view.
+runs: a row `SELECT`, a `WHERE`, a per-group calculation over aggregates (`MAX(d) - MIN(d) AS x`)
+or one over the whole table with no `GROUP BY`, a `HAVING` over its alias, a computed column
+(`SCRIPT AS`) and a materialized view.
 
 | Expression | Result | Type |
 |---|---|---|

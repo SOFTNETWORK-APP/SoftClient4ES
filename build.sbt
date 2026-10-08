@@ -232,7 +232,15 @@ lazy val core = project
     scalacOptions ++= Seq(
       "-language:experimental.macros",
       "-Ymacro-debug-lite"
-    )
+    ),
+    // core holds code ported from third-party software (FloatingPointText from {fmt},
+    // TemporalText from DuckDB): their notices ship in the jar, as META-INF/THIRD-PARTY-NOTICES,
+    // and through the class directory into every assembly that bundles core
+    Compile / resourceGenerators += Def.task {
+      val notices = (Compile / resourceManaged).value / "META-INF" / "THIRD-PARTY-NOTICES"
+      IO.copyFile((ThisBuild / baseDirectory).value / "THIRD-PARTY-NOTICES", notices)
+      Seq(notices)
+    }.taskValue
   )
   .dependsOn(
     macros % "compile->compile;test->test;it->it"
@@ -431,7 +439,9 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         case PathList("META-INF", "services", "java.net.spi.InetAddressResolverProvider") =>
           MergeStrategy.discard
         case PathList("META-INF", "services", _ @_*) => MergeStrategy.concat
-        case PathList("META-INF", _ @_*) => MergeStrategy.discard
+        // the notices of the third-party code core ports ({fmt}, DuckDB) stay in the bundle
+        case PathList("META-INF", "THIRD-PARTY-NOTICES") => MergeStrategy.concat
+        case PathList("META-INF", _ @_*)                 => MergeStrategy.discard
         case "reference.conf"            => MergeStrategy.concat
         case "README.md"                 => MergeStrategy.first
         case "LICENSE"                   => MergeStrategy.first

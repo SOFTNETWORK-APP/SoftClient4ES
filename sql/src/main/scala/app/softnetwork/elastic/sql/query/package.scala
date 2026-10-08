@@ -16,8 +16,8 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.operator.{AND, OR, SetOperator, UNION}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.operator.{AND, OR, SetOperator, UNION, UNION_DISTINCT}
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
@@ -838,6 +838,10 @@ package object query {
           .filterNot(_.isScriptField)
           .filterNot(_.nested)
           .filterNot(_.isAggregation)
+          // a calculation over aggregates (`MAX(n) - MIN(n)`) is a metric of the whole table, never
+          // a document field: listing it made the statement fetch documents and page through them
+          // as a ROW query (issue #413) -- see `wholeTableCalculation`
+          .filterNot(_.isBucketScript)
           .map(_.sourceField)
           .filterNot(f => excludes.contains(f))
           .distinct
@@ -976,6 +980,30 @@ package object query {
       */
     lazy val wholeTableHaving: Boolean =
       groupBy.isEmpty && having.flatMap(_.criteria).isDefined && !returnsRows
+
+    /** A calculation over aggregates with NO `GROUP BY` -- `SELECT MAX(n) - MIN(n) FROM t`,
+      * `COUNT(*) * 2`, `MAX(d) + 1`, `DATEDIFF(MAX(d), MIN(d))` (issue #413): the whole table is
+      * ONE implicit group, and the statement answers ONE row.
+      *
+      * The calculation is a `bucket_script`, which Elasticsearch accepts only inside a multi-bucket
+      * aggregation -- at the top level of `aggs` it refused the search on every major (MEASURED on
+      * 6.8.23, 7.17.29 and 8.18.3). So the bridge gives it the parent [[wholeTableHaving]] already
+      * uses: the root aggregations move inside the single-bucket keyed `filters` aggregation named
+      * [[SingleSearch.WholeTableHavingAgg]], whose one bucket is the whole table. The calculation
+      * then means exactly what it means per group -- same script, same `buckets_path`, same NULL
+      * contract
+      * -- by construction rather than by a second, client-side evaluation of the expression.
+      *
+      * Only when EVERY SELECT item is an aggregate, a calculation over aggregates or a
+      * row-invariant literal: an item naming a column has no value for the whole table (`SELECT id,
+      * MAX(n) - MIN(n) FROM t`), and such a statement keeps the answer it had.
+      */
+    lazy val wholeTableCalculation: Boolean =
+      groupBy.isEmpty && !windowFunctions.exists(_.isWindowing) &&
+      select.fields.exists(_.isBucketScript) &&
+      select.fields.forall(f =>
+        f.hasAggregation || SingleSearch.isRowInvariantLiteral(f.identifier)
+      )
 
     private lazy val selectAggs: Seq[Field] =
       select.fieldsWithComputedAliases
@@ -2646,43 +2674,620 @@ package object query {
       }
     }
 
-    /** Positional type compatibility with the FIRST declaring branch, using the ONE pairwise
-      * predicate the cast/coercion layer already trusts (`SQLTypeUtils.matches`: same family, or
-      * either side `Any`/`Null`).
+    /** The type of ONE position of a set operation -- a column, a field of a struct, the element of
+      * a list -- as the relational engine types it: ONE rule at every depth ([[typeNode]], the
+      * lead's rules of 2026-10-07).
       *
-      * At parse time a bare column is `Any` and passes; once `SearchApi.resolveWithSchema` has
-      * attached each branch's schema the SAME method rejects a `keyword UNION long` pair before any
-      * request is sent — which is why this is `private[elastic]` and not `private[query]`.
-      *
-      * 🔴 Deliberately NOT `leastCommonSuperType`, which answers `Varchar` for `{BigInt, Varchar}`
-      * — a super type, not a verdict — and would let `SELECT 1 … UNION SELECT 'a' …` through. And
-      * this is the ONLY type guard: DuckDB performs implicit casting across set-operation branches
-      * (MEASURED on 1.5.5.1: `BIGINT UNION VARCHAR` succeeds and yields a VARCHAR column), so the
-      * engine is never a backstop.
-      *
-      * Column NAMES are NOT checked: SQL takes the first branch's.
+      * @param sqlType
+      *   the position's type, the families DuckDB does not tell apart folded (`KEYWORD`, `TEXT` and
+      *   `CHAR` are `VARCHAR`, a `DATETIME` a `TIMESTAMP`); a list's is `ARRAY<its element's
+      *   type>`; `ANY` where it is not known (no schema), `NULL` for a `NULL` literal, `NUMERIC` /
+      *   `TEMPORAL` for a number / a temporal of unknown width
+      * @param fields
+      *   a `STRUCT`'s or a `GEO_POINT`'s fields, in DuckDB's order ([[StructField]]) -- a
+      *   `GEO_POINT` is `STRUCT(lat DOUBLE, lon DOUBLE)`; empty for any other type, and for a
+      *   `STRUCT` whose fields are not known, whose values are then answered as read
+      * @param element
+      *   a list's element type -- a list of objects' carrying their fields; `None` for any other
+      *   type
+      * @param format
+      *   a BRANCH's date FIELD's mapping `format` -- its own (`yyyy/MM/dd`, `epoch_second`, ...),
+      *   else Elasticsearch's default ([[TemporalLiterals.DefaultDateFormat]]) -- by which core
+      *   reads its values where they convert, as the Elasticsearch major reads them; `None` for a
+      *   computed value, for any other type, and on a column's [[SetOperationColumn.result]], which
+      *   no field decides
       */
-    private[elastic] def branchTypes(requests: Seq[SingleSearch]): Either[String, Unit] = {
-      val known = requests.zipWithIndex.flatMap { case (r, i) => declared(r).map(f => (i, f)) }
-      known.headOption match {
-        case None => Right(())
-        case Some((i0, f0)) =>
-          val offending = for {
-            (i, f)        <- known.tail
-            ((a, b), pos) <- f0.zip(f).zipWithIndex
-            if !SQLTypeUtils.matches(a.identifier.out, b.identifier.out)
-          } yield (i, pos, a, b)
-          offending.headOption match {
-            case Some((i, pos, a, b)) =>
-              Left(
-                s"Set operation branches must project compatible types at column ${pos + 1}: " +
-                s"branch ${i0 + 1} '${a.outputName}' is ${a.identifier.out.typeId}, branch " +
-                s"${i + 1} '${b.outputName}' is ${b.identifier.out.typeId}"
-              )
-            case None => Right(())
+    final case class SetOperationType(
+      sqlType: SQLType,
+      fields: Seq[StructField] = Nil,
+      element: Option[SetOperationType] = None,
+      format: Option[String] = None
+    )
+
+    object SetOperationType {
+
+      /** A `GEO_POINT` to the relational engine: `STRUCT(lat DOUBLE, lon DOUBLE)`. */
+      lazy val GeoPoint: SetOperationType =
+        SetOperationType(SQLTypes.GeoPoint, StructField.GeoPoint)
+    }
+
+    /** One field of a `STRUCT` or a `GEO_POINT` position: its name and its type, at every depth. */
+    final case class StructField(name: String, valueType: SetOperationType) {
+      def sqlType: SQLType = valueType.sqlType
+      def fields: Seq[StructField] = valueType.fields
+    }
+
+    object StructField {
+
+      /** A field of a scalar type. */
+      def apply(name: String, sqlType: SQLType): StructField =
+        StructField(name, SetOperationType(sqlType))
+
+      /** A `GEO_POINT`'s fields: `lat` and `lon`, two `DOUBLE`s. */
+      lazy val GeoPoint: Seq[StructField] =
+        Seq(StructField("lat", SQLTypes.Double), StructField("lon", SQLTypes.Double))
+    }
+
+    /** One column of a set operation, typed by the lead's rules of 2026-10-07 ([[typeNode]]) -- the
+      * type DuckDB 1.5.5 gives it where DuckDB gives one, the relational engine that runs `UNION`,
+      * `INTERSECT` and `EXCEPT` being DuckDB; `VARCHAR` where it gives none; a refusal only where
+      * the relational engine fails -- at the column and at every depth inside it. The contract read
+      * by core's `UNION ALL` and by the relational engine (arrow):
+      *
+      * @param result
+      *   the column's type, at every depth ([[SetOperationType]])
+      * @param branches
+      *   each branch's type at this column, by branch index, at every depth; `None` for a branch
+      *   that projects `*`, which declares no projection
+      */
+    final case class SetOperationColumn(
+      result: SetOperationType,
+      branches: Seq[Option[SetOperationType]]
+    ) {
+
+      def resultType: SQLType = result.sqlType
+
+      def branchTypes: Seq[Option[SQLType]] = branches.map(_.map(_.sqlType))
+
+      def fields: Seq[StructField] = result.fields
+
+      /** Whether the branches' values change class to reach [[result]]: when a branch's type
+        * differs from it at the column or anywhere inside ([[SetOperationColumn.converts]]) --
+        * never for a column whose branches already agree (a `NULL` literal aside), the
+        * overwhelmingly common case, which pays nothing; never for a type that is not known, nor
+        * beside a `SELECT *` branch, whose values are not typed here. A column of points always
+        * converts: every point, stored as an object, a text, an array, a geohash or a WKT `POINT`,
+        * becomes `{lat, lon}`.
+        */
+      lazy val converts: Boolean =
+        branches.forall(_.isDefined) && (result.sqlType == SQLTypes.GeoPoint ||
+        SetOperationColumn.converts(result, branches.flatten))
+    }
+
+    object SetOperationColumn {
+
+      /** The scalar types a value is converted to: every one a position can REACH from branches of
+        * different types. `DATE`, `TIME` and `BOOLEAN` are reached only by branches of that same
+        * type (a `NULL` aside), so a value never needs converting to them.
+        */
+      private[query] val Converted: Set[SQLType] = Set(
+        SQLTypes.Varchar,
+        SQLTypes.Double,
+        SQLTypes.Real,
+        SQLTypes.BigInt,
+        SQLTypes.Int,
+        SQLTypes.SmallInt,
+        SQLTypes.TinyInt,
+        SQLTypes.Timestamp,
+        SQLTypes.VarBinary
+      )
+
+      /** Whether the values at ONE position -- a column, a field, an element -- convert: when a
+        * branch's type there differs from `result`, at that position or inside it. Then EVERY
+        * branch's value there is converted, recursively; a position whose branches all agree keeps
+        * its values as read. A point is a point: two `GEO_POINT`s agree.
+        */
+      def converts(result: SetOperationType, branches: Seq[SetOperationType]): Boolean =
+        branches.exists(differs(_, result))
+
+      private def differs(branch: SetOperationType, result: SetOperationType): Boolean =
+        if (branch.sqlType == SQLTypes.Null) false
+        else
+          result.sqlType match {
+            case SQLTypes.Any | SQLTypes.GeoPoint => false
+            case SQLTypes.Struct =>
+              result.fields.nonEmpty && (branch.sqlType == SQLTypes.GeoPoint ||
+              branch.fields.map(_.name) != result.fields.map(_.name) ||
+              branch.fields.zip(result.fields).exists { case (b, r) =>
+                differs(b.valueType, r.valueType)
+              })
+            case SQLTypes.Array(_) =>
+              (branch.element, result.element) match {
+                case (Some(b), Some(r)) => differs(b, r)
+                case _                  => false
+              }
+            case scalar => branch.sqlType != scalar && Converted.contains(scalar)
           }
+
+      /** Each branch's type at the field `name` of a struct position, matched whatever its case --
+        * `None` for a branch that has no such field, whose value there is NULL.
+        */
+      def fieldTypes(
+        branches: Seq[Option[SetOperationType]],
+        name: String
+      ): Seq[Option[SetOperationType]] =
+        branches.map(_.flatMap(_.fields.find(_.name.equalsIgnoreCase(name)).map(_.valueType)))
+
+      /** Each branch's element type at a list position. */
+      def elementTypes(branches: Seq[Option[SetOperationType]]): Seq[Option[SetOperationType]] =
+        branches.map(_.flatMap(_.element))
+    }
+
+    /** DuckDB's numeric lattice over core's types: a `BOOLEAN` reads as 1 / 0 beside any number,
+      * and the wider type wins (`INTEGER` with `BIGINT` is `BIGINT`, with `REAL` is `REAL`, with
+      * `DOUBLE` is `DOUBLE`). MEASURED on DuckDB 1.5.5, every pair.
+      */
+    private val numberRank: Map[SQLType, Int] = Map(
+      SQLTypes.Boolean  -> 0,
+      SQLTypes.TinyInt  -> 1,
+      SQLTypes.SmallInt -> 2,
+      SQLTypes.Int      -> 3,
+      SQLTypes.BigInt   -> 4,
+      SQLTypes.Real     -> 5,
+      SQLTypes.Double   -> 6
+    )
+
+    /** A `DATE` or a `TIMESTAMP`: the types rule 1 refuses beside a number ([[typeNode]]). */
+    private def dateCarrying(t: SQLType): Boolean = t == SQLTypes.Date || t == SQLTypes.Timestamp
+
+    /** A number of any width -- `NUMERIC`, a number of unknown width, included -- or a `BOOLEAN`,
+      * the bottom of DuckDB's numeric lattice.
+      */
+    private def numberOrBoolean(t: SQLType): Boolean =
+      t == SQLTypes.Numeric || numberRank.contains(t)
+
+    /** An `ARRAY`, a `STRUCT` or a `GEO_POINT` (a `STRUCT` to the relational engine): a type no
+      * other type is cast to ([[typeNode]]).
+      */
+    private def nested(t: SQLType): Boolean =
+      t match {
+        case SQLTypes.Array(_) | SQLTypes.Struct | SQLTypes.GeoPoint => true
+        case _                                                       => false
+      }
+
+    /** The type a branch's column has for a set operation, before the text types fold to `VARCHAR`:
+      * the type the item is DECLARED with (`ComparisonRule.declaredTypeOf`: a `DATE` column is a
+      * `DATE` although Painless reads a `TIMESTAMP`), with DuckDB's reading of a whole number
+      * literal -- an `INTEGER` when it fits one, as `SELECT 1` is.
+      */
+    private def declaredOperandType(field: Field): SQLType = {
+      val id = field.identifier
+      if (id.name.isEmpty)
+        id.functions match {
+          case (l: LongValue) :: Nil if l.value.isValidInt => SQLTypes.Int
+          case _                                           => ComparisonRule.declaredTypeOf(id)
+        }
+      else ComparisonRule.declaredTypeOf(id)
+    }
+
+    /** A scalar declared type with the type families DuckDB does not tell apart folded: `KEYWORD`,
+      * `TEXT` and `CHAR` are `VARCHAR`, a `DATETIME` is a `TIMESTAMP`.
+      */
+    private def unionOperandType(declared: SQLType): SQLType =
+      declared match {
+        case t if t.isText     => SQLTypes.Varchar
+        case SQLTypes.Char     => SQLTypes.Varchar
+        case SQLTypes.DateTime => SQLTypes.Timestamp
+        case other             => other
+      }
+
+    /** The type DuckDB 1.5.5 gives two non-NULL, non-text, non-nested branch types together, or
+      * `None` when it gives them none: a temporal beside a number or a `BOOLEAN`, a `TIME` beside a
+      * `DATE` or a `TIMESTAMP`, a `VARBINARY` beside another type. `NUMERIC` and `TEMPORAL` (a
+      * number or a temporal of unknown width) join their own family.
+      */
+    private def joinTypes(a: SQLType, b: SQLType): Option[SQLType] =
+      if (a == b) Some(a)
+      else
+        (numberRank.get(a), numberRank.get(b)) match {
+          case (Some(x), Some(y)) => Some(if (x >= y) a else b)
+          case _ =>
+            if (numberOrBoolean(a) && numberOrBoolean(b))
+              // a number of unknown width is a DOUBLE beside a DOUBLE, the top of the lattice
+              Some(
+                if (a == SQLTypes.Double || b == SQLTypes.Double) SQLTypes.Double
+                else SQLTypes.Numeric
+              )
+            else if (
+              (a == SQLTypes.Temporal && b.isTemporal) || (b == SQLTypes.Temporal && a.isTemporal)
+            )
+              // a temporal of unknown kind is never refused beside another temporal
+              Some(SQLTypes.Temporal)
+            else if (dateCarrying(a) && dateCarrying(b)) Some(SQLTypes.Timestamp)
+            else None
+        }
+
+    /** One operand of a node at one position: a branch, or a subtree of the operator tree -- the
+      * branch that decides its type, the one a refusal names, with the item and the type it is
+      * declared with -- and its type THERE: the column's, or, inside, a field's or an element's.
+      */
+    private final case class Operand(
+      branch: Int,
+      field: Field,
+      declared: SQLType,
+      valueType: SetOperationType
+    ) {
+      def folded: SQLType = valueType.sqlType
+      def at(t: SetOperationType): Operand = copy(valueType = t)
+    }
+
+    private def operandOf(branch: Int, field: Field): Operand = {
+      val declaredType = declaredOperandType(field)
+      val column = field.identifier match {
+        case id: GenericIdentifier if id.functions.isEmpty => id.col
+        case _                                             => None
+      }
+      Operand(branch, field, declaredType, positionType(declaredType, column))
+    }
+
+    /** A declared type as a set operation types it, built once at every depth: a scalar folded
+      * ([[unionOperandType]]); a list with its element's type; a `STRUCT` with its fields -- its
+      * column's, read from the schema, BY NAME: the schema read from a mapping holds an object's
+      * fields in no reliable order -- a list of objects' element too; a `GEO_POINT` as `{lat,
+      * lon}`. A `STRUCT` whose column is not known has no fields.
+      */
+    private def positionType(declared: SQLType, column: Option[Column]): SetOperationType =
+      declared match {
+        case SQLTypes.GeoPoint => SetOperationType.GeoPoint
+        case SQLTypes.Struct   => SetOperationType(SQLTypes.Struct, fieldsOf(column))
+        case SQLTypes.Array(element) =>
+          val e = positionType(element, column)
+          SetOperationType(SQLTypes.Array(e.sqlType), element = Some(e))
+        case scalar =>
+          SetOperationType(
+            unionOperandType(scalar),
+            format =
+              if (scalar.isTemporal)
+                column.map(
+                  app.softnetwork.elastic.sql.query.TemporalLiterals.FieldFormat.of(_).spec
+                )
+              else None
+          )
+      }
+
+    /** A type as a column's RESULT holds it: no field decides it, so no date format. */
+    private def resultOf(t: SetOperationType): SetOperationType =
+      t.copy(
+        fields = t.fields.map(f => f.copy(valueType = resultOf(f.valueType))),
+        element = t.element.map(resultOf),
+        format = None
+      )
+
+    private def fieldsOf(column: Option[Column]): Seq[StructField] =
+      column.toSeq.flatMap(_.multiFields).sortBy(_.name).map { c =>
+        StructField(c.name, positionType(c.dataType, Some(c)))
+      }
+
+    /** Two operands a node refuses, in branch order, at one position: `path` names it -- empty for
+      * the column, the field's path inside it (`p.c` for the field `c` of the field `p`).
+      */
+    private final case class Conflict(a: Operand, b: Operand, path: Seq[String])
+
+    private def conflict(a: Operand, b: Operand, path: Seq[String]): Conflict =
+      if (a.branch <= b.branch) Conflict(a, b, path) else Conflict(b, a, path)
+
+    /** Nested operands -- lists, structs, points -- typed together, every operand of a node at
+      * once, by the SAME rule as a column ([[typeNode]]): lists by their elements; structs and
+      * points by their fields, merged as DuckDB 1.5.5 merges them (MEASURED): every field of every
+      * operand in the order it first appears (`STRUCT(lat, lon)` beside `STRUCT(a, b)` is
+      * `STRUCT(lat, lon, a, b)`), a field several of them have, matched whatever its case, keeping
+      * its first name and typed over all of them at once; points alone stay a `GEO_POINT`. A list
+      * beside a struct is refused, as a list's element or a field the rule refuses is -- an element
+      * named by its lists.
+      */
+    private def nestedNode(operands: Seq[Operand], path: Seq[String]): Either[Conflict, Operand] = {
+      val (lists, structs) = operands.partition(o => !structLike(o.folded))
+      if (lists.nonEmpty && structs.nonEmpty) Left(conflict(lists.head, structs.head, path))
+      else if (structs.isEmpty) {
+        val elements =
+          lists.map(o => o.at(o.valueType.element.getOrElse(SetOperationType(SQLTypes.Any))))
+        typeNode(elements, path) match {
+          case Right(e) =>
+            Right(
+              lists.head.at(SetOperationType(SQLTypes.Array(e.folded), element = Some(e.valueType)))
+            )
+          case Left(Conflict(a, b, at)) if at == path =>
+            // a list's elements refused: the lists are named, with their types
+            def list(o: Operand) = lists.find(_.branch == o.branch).getOrElse(o)
+            Left(conflict(list(a), list(b), path))
+          case Left(refused) => Left(refused)
+        }
+      } else if (structs.forall(_.folded == SQLTypes.GeoPoint)) Right(structs.head)
+      // a STRUCT whose fields are not known has nothing to merge: the position's fields are not
+      // known either
+      else if (structs.exists(_.valueType.fields.isEmpty))
+        Right(structs.head.at(SetOperationType(SQLTypes.Struct)))
+      else {
+        val names = structs.flatMap(_.valueType.fields.map(_.name)).foldLeft(Vector.empty[String]) {
+          (seen, name) => if (seen.exists(_.equalsIgnoreCase(name))) seen else seen :+ name
+        }
+        names
+          .foldLeft[Either[Conflict, Vector[StructField]]](Right(Vector.empty)) {
+            case (Right(merged), name) =>
+              val having = structs.flatMap { o =>
+                o.valueType.fields.find(_.name.equalsIgnoreCase(name)).map(f => o.at(f.valueType))
+              }
+              typeNode(having, path :+ name).map(t => merged :+ StructField(name, t.valueType))
+            case (refused, _) => refused
+          }
+          .map(fields => structs.head.at(SetOperationType(SQLTypes.Struct, fields)))
       }
     }
+
+    private def structLike(t: SQLType): Boolean = t == SQLTypes.Struct || t == SQLTypes.GeoPoint
+
+    /** The type of ONE node at ONE position -- every operand of a `UNION ALL`, of a run of one
+      * union kind, or the two sides of an `INTERSECT` or an `EXCEPT`, at a column, a struct's field
+      * or a list's element alike: ONE rule at every depth -- as the operand that decides it, its
+      * type the node's; or, `Left`, the two operands the node refuses, at `path`.
+      *
+      * The lead's rules of 2026-10-07, which refuse only what fails when the statement runs
+      * (MEASURED through arrow, the relational engine, statement by statement):
+      *
+      *   - REFUSED, a NESTED type beside another type: an `ARRAY`, a `STRUCT` or a `GEO_POINT`
+      *     beside a type other than its own -- text included, which the relational engine casts to
+      *     a list or a struct only when it spells one. Lists are typed by their elements, structs
+      *     and points by their fields, each by this same rule ([[nestedNode]]).
+      *   - REFUSED, a DATE beside a NUMBER: a `DATE` or a `TIMESTAMP` beside a `BOOLEAN` or a
+      *     number of any width, in either order (DuckDB's `Unimplemented type for cast (INTEGER ->
+      *     DATE)`), in a node with neither a text nor a `VARBINARY` operand: either makes the node
+      *     text, a `VARBINARY` being its base64 text to the relational engine.
+      *   - ANSWERED, everything else: the type DuckDB gives the node where it gives one (the widest
+      *     number, a `TIMESTAMP` for a `DATE` beside a `TIMESTAMP`, `VARCHAR` beside text,
+      *     `VARBINARY` for a `VARBINARY` beside text only, the type every operand shares), and
+      *     `VARCHAR` where it gives none -- a `VARBINARY` beside a number, a temporal or a
+      *     `BOOLEAN`, a `TIME` beside a date or a number -- every value then spelled as text.
+      *
+      * The type does not depend on the operands' order. A node whose type is not known (`ANY`)
+      * refuses nothing; a `NULL` literal takes the others' type.
+      */
+    private def typeNode(operands: Seq[Operand], path: Seq[String]): Either[Conflict, Operand] =
+      operands.find(_.folded == SQLTypes.Any) match {
+        case Some(unknown) => Right(unknown)
+        case None =>
+          val valued = operands.filterNot(_.folded == SQLTypes.Null)
+          valued.headOption match {
+            case None => Right(operands.head)
+            case Some(first) =>
+              valued.find(o => nested(o.folded)) match {
+                case Some(list) =>
+                  // a nested type beside its own family only
+                  valued.find(o => !nested(o.folded)) match {
+                    case Some(other) => Left(conflict(list, other, path))
+                    case None        => nestedNode(valued, path)
+                  }
+                case None =>
+                  valued.find(_.folded == SQLTypes.Varchar) match {
+                    case Some(text) =>
+                      // DuckDB: a BLOB beside text is a BLOB, each text value cast to bytes; text
+                      // beside any other mix is VARCHAR
+                      val others = valued.filterNot(_.folded == SQLTypes.Varchar)
+                      if (others.nonEmpty && others.forall(_.folded == SQLTypes.VarBinary))
+                        Right(others.head)
+                      else Right(text)
+                    case None =>
+                      val binary = valued.exists(_.folded == SQLTypes.VarBinary)
+                      (
+                        if (binary) None
+                        else commonType(valued.filter(o => dateCarrying(o.folded))),
+                        commonType(valued.filter(o => numberOrBoolean(o.folded)))
+                      ) match {
+                        case (Some(date), Some(number)) => Left(conflict(date, number, path))
+                        case _                          =>
+                          // every pair must have a common type, so the order cannot change it
+                          val joined =
+                            if (
+                              valued
+                                .combinations(2)
+                                .forall(pair =>
+                                  joinTypes(pair.head.folded, pair(1).folded).isDefined
+                                )
+                            ) commonType(valued)
+                            else None
+                          Right(joined.getOrElse(first.at(SetOperationType(SQLTypes.Varchar))))
+                      }
+                  }
+              }
+          }
+      }
+
+    /** DuckDB's common type of non-NULL, non-text `operands`, as the operand that decides it -- the
+      * first one with the widest type -- or `None` when two of them have none ([[joinTypes]]).
+      */
+    private def commonType(operands: Seq[Operand]): Option[Operand] =
+      operands.headOption.flatMap { first =>
+        operands.tail.foldLeft[Option[Operand]](Some(first)) {
+          case (Some(acc), e) =>
+            joinTypes(acc.folded, e.folded).map(joined =>
+              (if (joined == acc.folded) acc else e).at(SetOperationType(joined))
+            )
+          case (none, _) => none
+        }
+      }
+
+    /** The refusal of column `position`, naming the two operands a node refuses there: at the
+      * column, by the type each is declared with; inside it, by the field's path and its type
+      * there.
+      */
+    private def refusal(position: Int, refused: Conflict): String = {
+      val Conflict(a, b, path) = refused
+      def side(o: Operand): String =
+        if (path.isEmpty) s"branch ${o.branch + 1} '${o.field.outputName}' is ${o.declared.typeId}"
+        else
+          s"branch ${o.branch + 1} '${o.field.outputName}' field '${path.mkString(".")}' is " +
+          o.folded.typeId
+      s"Set operation branches must project compatible types at column ${position + 1}: " +
+      side(a) + ", " + side(b)
+    }
+
+    /** The type of each column of a `UNION ALL`, position by position over the declaring branches
+      * -- every branch one node ([[typeNode]]): `columnTypes(requests, operators)` with `UNION ALL`
+      * everywhere -- or, `Left`, the column refused and why, by name.
+      *
+      * DuckDB's types, MEASURED pair by pair over core's types: a column takes the WIDEST type of
+      * its branches in the numeric lattice (`BOOLEAN` < `TINYINT` < `SMALLINT` < `INTEGER` <
+      * `BIGINT` < `REAL` < `DOUBLE`); a `DATE` beside a `TIMESTAMP` is a `TIMESTAMP`; a text branch
+      * makes the column `VARCHAR` whatever the others are, even two the column could not otherwise
+      * combine (`d UNION ALL n UNION ALL '1'`); a `VARBINARY` beside text makes a `VARBINARY`
+      * column (DuckDB's `BLOB`); a `NULL` literal takes the others' type. Where DuckDB gives no
+      * type, the column is `VARCHAR` -- and a date beside a number, or a nested type beside
+      * another, is refused ([[typeNode]]). Each branch's value is then converted from ITS type to
+      * the column's, never through an intermediate one: `d UNION ALL ts UNION ALL 'x'` spells `d`
+      * as a date, not as a midnight timestamp.
+      */
+    private[elastic] def columnTypes(
+      requests: Seq[SingleSearch]
+    ): Either[String, Seq[SetOperationColumn]] =
+      columnTypes(requests, Nil)
+
+    /** The operator tree as DuckDB types it: [[precedenceTree]] -- `INTERSECT [ALL]` first, then
+      * left to right -- with every run of ONE union kind (`UNION ALL` after `UNION ALL`, or `UNION`
+      * after `UNION`) typed as one node, and every other operator typing its two sides.
+      */
+    private sealed trait TypingNode
+    private final case class TypingLeaf(branch: Int) extends TypingNode
+    private final case class TypingRun(children: Seq[TypingNode]) extends TypingNode
+
+    private def typingTree(node: SetOpNode): TypingNode =
+      node match {
+        case SetOpLeaf(branch) => TypingLeaf(branch)
+        case SetOpBranch(left, operator, right) =>
+          def flattened(child: SetOpNode): Seq[TypingNode] =
+            child match {
+              case SetOpBranch(l, inner, r)
+                  if inner == operator && (operator == UNION || operator == UNION_DISTINCT) =>
+                flattened(l) ++ flattened(r)
+              case other => Seq(typingTree(other))
+            }
+          TypingRun(flattened(left) ++ flattened(right))
+      }
+
+    /** The operand a node of the tree folds to at one column -- `None` when no branch under it
+      * declares one (`SELECT *`) -- or the two operands refused under it.
+      */
+    private def typeOf(
+      node: TypingNode,
+      operand: Int => Option[Operand]
+    ): Either[Conflict, Option[Operand]] =
+      node match {
+        case TypingLeaf(branch) => Right(operand(branch))
+        case TypingRun(children) =>
+          children
+            .foldLeft[Either[Conflict, Vector[Operand]]](Right(Vector.empty)) {
+              case (Right(typed), child) => typeOf(child, operand).map(typed ++ _)
+              case (conflict, _)         => conflict
+            }
+            .flatMap(typed => if (typed.isEmpty) Right(None) else typeNode(typed, Nil).map(Some(_)))
+      }
+
+    /** The type of each column of a set operation whose branches are joined by `operators`, or the
+      * column refused and why, by name. See `branchTypes(requests, operators)` for the contract.
+      *
+      * The statement is typed as a TREE, as DuckDB types it (MEASURED on 18,000 chains of two to
+      * five branches over the six operators): SQL precedence (`INTERSECT [ALL]` binds first, then
+      * left to right), a run of ONE union kind typed as one node -- so `n UNION d UNION s` is
+      * `VARCHAR` -- and every other node typed over its two sides -- so `n EXCEPT d UNION ALL s` is
+      * refused, `n` and `d` being one node. EACH node is typed by the rules of [[typeNode]], and a
+      * subtree is an operand of its parent with the subtree's type. Each column comes with the type
+      * each branch projects there and, for a `STRUCT` or a `GEO_POINT` column, its fields and each
+      * branch's ([[SetOperationColumn]]).
+      */
+    private[elastic] def columnTypes(
+      requests: Seq[SingleSearch],
+      operators: Seq[SetOperator]
+    ): Either[String, Seq[SetOperationColumn]] = {
+      val joins =
+        if (operators.isEmpty) Seq.fill(math.max(requests.size - 1, 0))(UNION) else operators
+      val known = requests.map(declared).zipWithIndex.collect { case (Some(f), i) => (i, f) }
+      if (known.isEmpty) Right(Nil)
+      else if (joins.size != requests.size - 1)
+        Left(
+          s"A set operation over ${requests.size} branches needs ${requests.size - 1} operators, " +
+          s"got ${joins.size}"
+        )
+      else {
+        val tree = typingTree(precedenceTree(requests.indices.toList, joins.toList))
+        val byBranch = known.toMap
+        val width = known.map(_._2.size).min
+        (0 until width).foldLeft[Either[String, Vector[SetOperationColumn]]](Right(Vector.empty)) {
+          case (Right(columns), pos) =>
+            val leaves = requests.indices.map(branch =>
+              byBranch.get(branch).map(f => operandOf(branch, f(pos)))
+            )
+            typeOf(tree, leaves) match {
+              case Right(result) =>
+                Right(
+                  columns :+ SetOperationColumn(
+                    result.fold(SetOperationType(SQLTypes.Any))(r => resultOf(r.valueType)),
+                    leaves.map(_.map(_.valueType))
+                  )
+                )
+              case Left(refused) => Left(refusal(pos, refused))
+            }
+          case (refused, _) => refused
+        }
+      }
+    }
+
+    /** Whether the branches of a set operation, joined by `operators`, may run, column by column,
+      * once each branch's schema is attached -- `Right(())` -- or the refusal, by name.
+      *
+      * THE CONTRACT, shared by core (`SearchApi.resolveWithSchema(MultiSearch)`, for `UNION ALL`)
+      * and softclient4es-arrow (`app.softnetwork.elastic.arrow`, for the operators it runs on
+      * DuckDB), which is why it is `private[elastic]`:
+      *
+      *   - INPUT: the branches, in text order, each with its schema ATTACHED
+      *     (`SingleSearch.update(Some(schema))`), and the operators between them, in text order
+      *     (`MultiSearch.resolvedOperators`; `Nil` is `UNION ALL` everywhere). A bare column of a
+      *     branch without a schema is `ANY` and passes -- nothing is refused before the column
+      *     types are known (the lead's ruling of 2026-10-05) -- and a `SELECT *` branch declares
+      *     nothing and is skipped.
+      *   - TYPING: the operator tree (`columnTypes(requests, operators)`): `INTERSECT [ALL]` binds
+      *     first, a run of one union kind is typed as one node, every other operator types its two
+      *     sides; each node, at every depth, by the lead's rules of 2026-10-07 ([[typeNode]]).
+      *   - REFUSED, and only these, each because the relational engine fails on it when the
+      *     statement runs: an `ARRAY`, a `STRUCT` or a `GEO_POINT` beside a type of another family
+      *     (`ARRAY`s, structs or points as DuckDB 1.5.5 types them, every element and every field
+      *     over all the operands of the node at once); a `DATE` or a `TIMESTAMP` beside a `BOOLEAN`
+      *     or a number, in one node with neither a text nor a `VARBINARY` operand. `Left(message)`:
+      *     `Set operation branches must project compatible types at column <n>: branch <i> '<name>'
+      *     is <type>, branch <j> '<name>' is <type>` -- the two operands (a subtree is named by the
+      *     branch that decides its type), `<type>` being what the item is declared as (`DATE` for a
+      *     `DATE` column, `INT` for a whole number literal); for two structs that collide on a
+      *     field, `branch <i> '<name>' field '<path>' is <type>, branch <j> '<name>' field '<path>'
+      *     is <type>`, `<path>` the field (`a`, or `p.c` inside a field `p`) and `<type>` its type
+      *     as DuckDB reads it (`INT`, `DATE`, `VARCHAR` for a `KEYWORD`); or `A set operation over
+      *     <n> branches needs <n - 1> operators, got <m>`.
+      *   - `Right(())`: the statement may run. Every other node answers: the type DuckDB 1.5.5
+      *     gives it -- a `STRUCT` beside a `STRUCT` or a `GEO_POINT` its merged struct, a
+      *     `GEO_POINT` beside a `GEO_POINT` a `GEO_POINT` -- or `VARCHAR` where DuckDB gives none
+      *     (a `VARBINARY` beside a number, a temporal or a `BOOLEAN`; a `TIME` beside a date or a
+      *     number), every value spelled as text.
+      *
+      * The branch WIDTH is `branchArity`'s rule, asked by `validate()`; column NAMES are not
+      * checked: SQL takes the first branch's.
+      */
+    private[elastic] def branchTypes(
+      requests: Seq[SingleSearch],
+      operators: Seq[SetOperator]
+    ): Either[String, Unit] =
+      columnTypes(requests, operators).map(_ => ())
+
+    /** `branchTypes(requests, operators)` with `UNION ALL` between every branch: one run, typed as
+      * `columnTypes(requests)` types it.
+      */
+    private[elastic] def branchTypes(requests: Seq[SingleSearch]): Either[String, Unit] =
+      branchTypes(requests, Nil)
   }
 
   /** FROM-less SELECT of constant scalar expressions — the connection/health idiom of the

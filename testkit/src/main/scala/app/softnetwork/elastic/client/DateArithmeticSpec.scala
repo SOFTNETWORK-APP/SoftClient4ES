@@ -1112,6 +1112,57 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     verdict("per-group SELECT", groupVerdicts(groupForms))
   }
 
+  /** A `DATE` or `TIMESTAMP` conversion over a per-group date calculation, as DuckDB converts it: a
+    * `DATE` is the calculation's UTC day, a `TIMESTAMP` the instant itself. Per group the value is
+    * the number of milliseconds a calculation answers there, and the conversion used to call a
+    * `java.time` method on that number: Elasticsearch failed the search (`member method [double,
+    * toInstant/0] not found`).
+    */
+  private val castGroupForms: Seq[GroupForm] = Seq(
+    GroupForm("(MAX(d) + 1)::DATE", g => expect(g.maxD.map(a => At(start(a.plusDays(1)))))),
+    GroupForm("(MAX(d) + 1)::TIMESTAMP", g => expect(g.maxD.map(a => At(start(a.plusDays(1)))))),
+    GroupForm("(MAX(d) - 1)::DATE", g => expect(g.maxD.map(a => At(start(a.minusDays(1)))))),
+    GroupForm(
+      "(MAX(d) + 1.5)::DATE",
+      g => expect(g.maxD.map(a => At(start(utcDay(start(a).plusMillis(DayMillis * 3 / 2))))))
+    ),
+    GroupForm("(MAX(d) + 1.5)::TIMESTAMP", g => expect(g.maxD.map(a => moved(start(a), 1.5)))),
+    GroupForm(
+      "(MAX(ts) - 0.5)::DATE",
+      g => expect(g.maxTs.map(t => At(start(utcDay(t.minusMillis(DayMillis / 2))))))
+    ),
+    GroupForm("(MAX(ts) - 0.5)::TIMESTAMP", g => expect(g.maxTs.map(t => moved(t, -0.5)))),
+    GroupForm(
+      "(MAX(ts) + 1)::DATE",
+      g => expect(g.maxTs.map(t => At(start(utcDay(t.plusMillis(DayMillis))))))
+    ),
+    GroupForm(
+      "GREATEST(MAX(d), MAX(d2))::DATE",
+      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
+    ),
+    GroupForm(
+      "GREATEST(MAX(d), MAX(d2))::TIMESTAMP",
+      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
+    )
+  )
+
+  "a DATE or TIMESTAMP conversion over a per-group date calculation" should "answer the java.time oracle in every group, in a HAVING over its alias, and over the whole table" in {
+    verdict("per-group conversion", groupVerdicts(castGroupForms))
+    // a HAVING over the converted alias keeps the groups whose day is after February 1
+    val having = s"SELECT g, (MAX(d) + 1)::DATE AS x FROM $table GROUP BY g HAVING x > '2024-02-01'"
+    val want = groups
+      .filter(_.maxD.exists(a => a.plusDays(1).isAfter(on("2024-02-01"))))
+      .map(_.g)
+      .toSet
+    want should not be empty
+    gatewayRows(having).map(_.map(_.getOrElse("g", "?").toString).toSet) shouldBe Right(want)
+    // with no GROUP BY, the whole table is one group
+    val maxD = rows.flatMap(_.d).reduce((a, b) => if (a.isAfter(b)) a else b)
+    gatewayRows(s"SELECT (MAX(d) + 1)::DATE AS x FROM $table").map(rs =>
+      rs.map(r => differs(At(start(maxD.plusDays(1))), r.getOrElse("x", null)))
+    ) shouldBe Right(Seq(None))
+  }
+
   "a HAVING over date arithmetic" should "keep exactly the groups the java.time oracle keeps" in {
     havingForms.exists(f => groups.exists(g => f.keeps(g).contains(true))) shouldBe true
     havingForms.exists(f => groups.exists(g => !f.keeps(g).contains(true))) shouldBe true
@@ -2667,7 +2718,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         "LEAST requires numeric arguments, or date and timestamp arguments, but got VARCHAR for 'a'"
       ),
       s"SELECT id, 1 + 'abc' AS x FROM $table" -> Seq("input 'VARCHAR'"),
-      s"SELECT id FROM $table UNION ALL SELECT n FROM $table" -> Seq(
+      // a DATE beside an INT, which DuckDB refuses too (a KEYWORD beside an INT is a VARCHAR column
+      // there, answered since the lead's rule of 2026-10-06)
+      s"SELECT d FROM $table UNION ALL SELECT n FROM $table" -> Seq(
         "compatible types at column 1"
       )
     )

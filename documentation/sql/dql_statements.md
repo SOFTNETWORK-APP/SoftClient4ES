@@ -615,11 +615,11 @@ LIMIT 10 OFFSET 20;
 > Bare `UNION` (with row de-duplication) is **not supported** and is rejected at parse time — the
 > two are not synonyms. It used to be accepted silently, returning only the first leg's rows.
 
-All SELECT statements in a UNION ALL must be **strictly compatible**:
+All SELECT statements in a UNION ALL must project:
 
-- **same number of columns**
-- **same column names** (after alias resolution)
-- **same or implicitly compatible types**
+- the **same number of columns**, matched **by position** (the result takes the first SELECT's
+  column names);
+- **types that combine**, column by column (see [Column types](#column-types) below).
 
 If these conditions are not met, the Gateway raises a validation error before executing the query.
 
@@ -643,11 +643,189 @@ The SQL Gateway executes `UNION ALL` using **Elasticsearch Multi‑Search (`_mse
 ### Notes
 
 - `UNION ALL` does **not** sort or deduplicate results.
-- Column names in the final output are taken from the **first SELECT**.
-- All subsequent SELECTs must produce columns with the **same names**.
-- A type mismatch between branches is refused before execution, once each branch's mapping is read
-  (`SELECT id FROM a UNION ALL SELECT amount FROM b`, a `keyword` against a number); with no
-  mapping to read, nothing is refused on types and Elasticsearch answers.
+- Column names in the final output are taken from the **first SELECT**; the columns of the other
+  SELECTs are matched by position, whatever they are called.
+
+### Column types
+
+Since `0.24.0`, a set operation is typed by ONE rule, the same at every depth: a column, each field
+of an object (a `STRUCT`, a `GEO_POINT`), each element of a list (an `ARRAY`), and so on inside
+them. The rule gives the type DuckDB gives — DuckDB being the engine that runs `UNION`,
+`INTERSECT` and `EXCEPT`, so a statement answers the same types on both paths — `VARCHAR` where
+DuckDB gives none, and refuses only what the relational engine fails on when the statement runs.
+At one position, over the branches of one node (below):
+
+| Branches | Type | Example |
+|---|---|---|
+| numbers, and `BOOLEAN` | the widest: `TINYINT` < `SMALLINT` < `INT` < `BIGINT` < `REAL` < `DOUBLE`; a `BOOLEAN` reads as `1` / `0` | `n` (`INT`) with `x` (`DOUBLE`) is `DOUBLE` |
+| a `DATE` and a `TIMESTAMP` | `TIMESTAMP`, the date at midnight UTC | `d` with `ts` |
+| a text branch (`KEYWORD`, `TEXT`, a string literal) with any other type | `VARCHAR`, each value spelled as DuckDB spells its type (below) | `id` with `n`, `1` with `'a'`, `ts` with `s` |
+| a `VARBINARY` with text branches only | `VARBINARY` (bytes), DuckDB's `BLOB`: a binary value is the bytes of its base64 text, a text value is cast to bytes (below) | `payload` with `name` |
+| a `NULL` literal | the other branches' type | `n` with `NULL` is `INT` |
+| a `DATE` or a `TIMESTAMP` with a number or a `BOOLEAN`, and neither a text nor a `VARBINARY` branch | refused | `d` with `n` |
+| any other pair DuckDB gives no type: a `VARBINARY` with a number, a temporal or a `BOOLEAN`; a `TIME` with a `DATE`, a `TIMESTAMP`, a number or a `BOOLEAN` | `VARCHAR`, each value spelled as text (below) | `payload` with `price`, `CAST(ts AS TIME)` with `d` |
+| an `ARRAY`, a `STRUCT` or a `GEO_POINT` with a type of another family, text included | refused | `location` with `name` |
+| lists | a list of the type this rule gives their elements | `ARRAY<INT>` with `ARRAY<KEYWORD>` is `ARRAY<VARCHAR>` |
+| objects and points | DuckDB's merged `STRUCT`: every field of every branch, in the order it first appears, matched whatever its case; a field a branch does not have is `NULL`, and each field takes the type this rule gives it over the branches that have it; points alone stay a `GEO_POINT` | `location` with `address` |
+
+So a field `a` that is an `INT` in one object and a `TIME` in another is a `VARCHAR`, as two such
+columns are, and an `INT` beside a `DATE` is refused in a field as in a column, the field named by
+its path. A `VARBINARY` counts as text beside a date and a number — the relational engine reads a
+`binary` field as its base64 text — so `payload`, `d` and `n` make a `VARCHAR` column.
+
+A `GEO_POINT` is DuckDB's `STRUCT(lat DOUBLE, lon DOUBLE)`: in a column of points, or of points and
+objects, every point is a `{lat, lon}` map whatever way Elasticsearch stored it — an object, a
+`"lat,lon"` text, an array `[lon, lat]`, a geohash (the south-west corner of its cell, as
+Elasticsearch reads it), a WKT `POINT (lon lat)` or a GeoJSON point. A `STRUCT`'s fields are taken
+by name, in name order. A value that cannot be read as its branch's point or object, or several of
+them in one row, fails the statement. A column read without a type (`ANY`), as an `ARRAY<INT>`
+column of a mapping is read today, refuses nothing.
+
+A whole number literal is an `INT` (`SELECT 1`), a `BIGINT` past the `INT` range. The type
+compares every branch, so `d`, `n` and `'1'` make a `VARCHAR` column although `d` and `n` alone
+are refused; and each branch's value goes to the column's type from its OWN type (`d`, `ts` and
+`'1'` spell `d` as a date, not as a midnight timestamp).
+
+A chain that mixes operators is typed as a tree, as DuckDB types it: `INTERSECT` binds first, then
+the operators apply left to right, `INTERSECT` and `EXCEPT` typing their two sides, and a run of
+ONE union kind (`UNION ALL` after `UNION ALL`, or `UNION` after `UNION`) is typed as one node,
+whatever its order; a `UNION` beside a `UNION ALL`, a derived table, are separate nodes. Each node
+of the tree takes the rule above, at every depth, over all its branches at once — a subtree's type
+being one of them — so their order never changes the type. So `n UNION d UNION s` and `payload
+INTERSECT d INTERSECT n` are `VARCHAR` columns, while `n INTERSECT d INTERSECT s`, `d INTERSECT n
+INTERSECT payload` and `n EXCEPT x UNION ALL d` are refused: `n INTERSECT d`, and `n EXCEPT x`
+beside `d`, are a number beside a date with no text. The relational engine runs these operators;
+core runs `UNION ALL` itself.
+
+Every value holds its position's type, at every depth: wherever the branches' types differ at a
+position — a column, a field, an element — every branch's value there is converted, and the
+position holds ONE class: a `DOUBLE` a `Double`, a `BIGINT` a `Long`, a `TIMESTAMP` a
+`ZonedDateTime` (a date-only, zone-less or epoch-milliseconds value included), a `VARBINARY`
+bytes, a `VARCHAR` a string, a list a list of its element's type, an object a map of its fields
+in order — which is the type JDBC and Arrow report, since they read it from the first value. A
+position whose branches already have one type is returned as each branch reads it, nothing
+converted: a branch over an aggregate keeps the form an aggregate answers, a `Double`, so `SELECT
+MAX(n) ... UNION ALL SELECT n ...` answers `10.0` beside `3` and `5`.
+
+Each value is first read as the type its field is declared with, as Elasticsearch indexed it, and
+only then converted: a value Elasticsearch accepted as text is the value its queries see. In an
+integer field `"5"`, `"5.0"`, `"5.5"` and `5.5` are `5` (truncated toward zero), `"5e2"` is `500`;
+in a `DOUBLE` field `"5"` is `5.0` (spelled `5.0` in a `VARCHAR` position) and `"1e3"` is `1000.0`;
+in a `BOOLEAN` field `"true"` is `true` and an empty text `false`; an empty text in a number field
+is no value.
+
+At a position that converts, a date field's value is read with the field's mapping `format` —
+its own, or Elasticsearch's default `strict_date_optional_time||epoch_millis` — as the Elasticsearch major the statement runs
+on reads that format: Elasticsearch 6 parses with Joda-Time, Elasticsearch 7 and later with
+`java.time`, and the same mapping reads some texts differently across them. A `TIMESTAMP` is the
+instant that major indexed, to the millisecond, as Elasticsearch keeps it, and a `DATE` its day, in
+UTC. So `1706697000` in an `epoch_second` field is `2024-01-31 10:30:00`, not a moment of 1970;
+`"1706697000.5"` there keeps its half second on Elasticsearch 7 and 8 and is truncated to the
+second on Elasticsearch 6; `"2024/01/31"` in a `yyyy/MM/dd` field is a date, not a text; a format's
+`||` alternatives are tried in order, and the first one that parses a value decides; in the default
+format `"2024"` and `2024` are the year 2024. A value computed by the statement (a function, a
+`CAST`) has no format: there, digits are epoch milliseconds and an ISO text is its instant.
+
+A value is read only where its reading is the same on every Java version core runs on (8, 11, 17
+and 21) and equal to the instant the Elasticsearch major indexed, measured value by value on
+Elasticsearch 6.8.23, 7.17.29 and 8.18.3. That covers the built-in formats of each major's
+documentation (the epoch, ISO, ordinal, week, time and `basic_` formats; in camel case on
+Elasticsearch 6 and 7; with a leading `8`), and custom patterns — the pattern letters at each
+width, alone and in the combinations measured, with `java.time` on Elasticsearch 7 and later and
+in Elasticsearch 6.8's `8`-prefixed mode, with Joda-Time on Elasticsearch 6 — with a zone written
+as `Z`, an offset, `UTC`, `GMT` or `UT`, together with epochs, negative ones included, and JSON
+numbers. Elasticsearch's own readings are kept, however odd: in a `YYYY-MM-dd` field (a week-based year)
+Elasticsearch 8 indexes `2024-01-31` as `2023-12-31`, the first day of the week-based year's first
+week, and Elasticsearch 7 as `2024-01-01`; a year with no month and an hour (`2024T10` in a
+`strict_date_optional_time` field) is `1970-01-01 10:00:00`.
+
+A value its field's format does not read fails the statement, naming the value, the field and the
+format, and so does a value core cannot read without guessing, rather than be read as a date it
+may not be:
+
+- a pattern letter, a width or a combination of letters that no measurement covers — two zone
+  letters included (an offset beside a zone id, Joda-Time's `ZZ ZZZ`) — and a name of
+  Elasticsearch 6.8's `8`-prefixed mode;
+- a zone id or a zone name other than `UTC`, `GMT` and `UT`, in every format, the default
+  included: a region id (`Europe/Paris` in a `VV` or a Joda-Time `ZZZ` letter, in the default
+  format, or in brackets after an offset, `+05:00[Europe/Paris]`) and an abbreviation or a long
+  name (`CET`, `PST`, `Pacific Time`). Its offset comes from zone data, and the zone data core's
+  Java version holds is not the one Elasticsearch indexed the value with: `2023-07-01T12:00:00
+  America/Mexico_City` is `17:00:00Z` on Elasticsearch 8.18.3 and `18:00:00Z` with older zone data,
+  and `IST` is UTC on Elasticsearch 8 and Israel time on Elasticsearch 7;
+- a value whose reading would depend on the Java version core runs on: a localized offset (`O`,
+  `OOOO`, `ZZZZ`: `GMT+1`), which Java 8 parses differently from later versions; a fraction right
+  after digits of a variable width (`yyyyMMddHHmmssSSS`); and, in Elasticsearch 6.8's `8`-prefixed
+  mode, an AM/PM with no hour (`8yyyy a`), which Java 16 and later set to 06:00 or 18:00, and a week
+  past the last of its week-based year (`2020-53-7` in a `8YYYY-ww-e` field), which Java 21
+  rejects;
+- a value the response already gives as a date or a time, without the offset or the digits its
+  format reads (`10:30:00Z` in a `time` field);
+- a fractional JSON number (`1706697000.0`) whose digits, which Elasticsearch read, the number no
+  longer pins to the millisecond.
+
+```sql
+-- ts is a TIMESTAMP field of format 'yyyy/MM/dd' holding '31-01-2024', s a KEYWORD
+SELECT ts AS k FROM t UNION ALL SELECT s AS k FROM t;
+-- Error: Conversion Error: Could not read '31-01-2024' as a TIMESTAMP when casting from source column k: the date format 'yyyy/MM/dd' of field ts does not read it as Elasticsearch 8 does
+-- a zone name
+-- Error: Conversion Error: Could not read '2024-01-31T10:30:00 CET' as a TIMESTAMP when casting from source column k: core cannot read it with the date format 'yyyy-MM-dd'T'HH:mm:ss z' of field ts as Elasticsearch 8 does: the zone 'CET' is a region id or a zone name, whose offset comes from the zone data of the JVM reading it, not Elasticsearch's: core reads only Z, an offset, UTC, GMT and UT
+```
+
+The readings were measured on Elasticsearch 6.8.23, 7.17.29 and 8.18.3. The other minor versions
+of a major are read as its measured one, and Elasticsearch 9 as Elasticsearch 8.
+
+A value with several values — a multi-valued field — has no one value of its position's type, so
+at a position that converts its values it fails the statement, in the words DuckDB uses for the
+same failure: `Conversion Error: Unimplemented type for cast (INTEGER -> VARCHAR[]) when casting
+from source column k` for a multi-valued keyword beside an `INT`. A position whose branches have
+one type converts nothing, and answers such a value as its branch reads it.
+
+```sql
+-- id is a KEYWORD, n an INT: one VARCHAR column ('r1', ..., '3', ...)
+SELECT id AS k FROM t UNION ALL SELECT n AS k FROM t;
+-- n is an INT, x a DOUBLE: one DOUBLE column (3.0, ..., 0.25, ...)
+SELECT n AS k FROM t UNION ALL SELECT x AS k FROM t;
+-- refused, by name, before anything runs
+SELECT d AS k FROM t UNION ALL SELECT n AS k FROM t;
+-- Error: Set operation branches must project compatible types at column 1: branch 1 'k' is DATE, branch 2 'k' is INT
+-- two objects whose field a is an INT and a DATE: refused, naming the field
+SELECT oi AS k FROM t UNION ALL SELECT od AS k FROM t;
+-- Error: Set operation branches must project compatible types at column 1: branch 1 'k' field 'a' is INT, branch 2 'k' field 'a' is DATE
+```
+
+Inside a `VARCHAR` column, each value is spelled as DuckDB spells its own type when it casts it to
+text, so both paths answer the same string:
+
+| Branch type | Text | Examples |
+|---|---|---|
+| a whole number | its digits | `3`, `-2`, `3000000000` |
+| `DOUBLE`, `REAL` | the shortest digits, with a fractional part; an exponent below `1e-04` or from `1e+16` | `250000000000.0`, `-2.5`, `5.0`, `1e-05`, `1e+16` |
+| `BOOLEAN` | `true` / `false` | |
+| `DATE` | `YYYY-MM-DD` | `2024-01-31`, `0044-03-15 (BC)` |
+| `TIMESTAMP` | `YYYY-MM-DD HH:MM:SS`, in UTC, the fraction of a second only when there is one | `2024-01-31 10:30:00`, `2023-12-25 23:59:59.999`, `2024-01-31 00:00:00` for a date-only value |
+| `TIME` | `HH:MM:SS`, the same fraction | `10:30:00`, `06:00:00.5` |
+| `VARBINARY` | its base64 text, as Elasticsearch holds a `binary` field | `YWI=` |
+
+```sql
+-- ts is a TIMESTAMP, s a KEYWORD: one VARCHAR column ('2024-01-31 10:30:00', ..., 'a', ...)
+SELECT ts AS k FROM t UNION ALL SELECT s AS k FROM t;
+-- x is a DOUBLE: ('250000000000.0', '1e-05', ..., 'a')
+SELECT x AS k FROM t UNION ALL SELECT 'a' AS k FROM t;
+```
+
+A text value becomes bytes in a `VARBINARY` column as DuckDB casts a `VARCHAR` to a `BLOB`: each
+ASCII character is its byte and `\xHH` (two hexadecimal digits) is the byte `HH`; a character
+outside ASCII, or a backslash not followed by `x` and two hexadecimal digits, fails the statement,
+as it fails in DuckDB (`Conversion Error: Invalid byte encountered in STRING -> BLOB conversion`).
+
+A `DOUBLE` is spelled as DuckDB spells it, digit for digit, including the few values its algorithm
+does not shorten (`7.168e25` is `7.1680000000000004e+25`). A decimal literal is a `DOUBLE` here
+(`1.50` is `1.5`), where DuckDB keeps it a `DECIMAL` (`1.50`). A value Elasticsearch returns as
+text, in a column of another type, stays that text.
+
+The types are compared once each branch's mapping is read; with no mapping to read, nothing is
+refused on types and Elasticsearch answers.
 
 ---
 
@@ -841,6 +1019,19 @@ ORDER BY COUNT(*) DESC;
   wrap a transform (`HAVING MAX(YEAR(birthdate)) > 1990`, `ORDER BY MAX(ABS(age)) DESC`).
 - Arithmetic over aggregates is computed per group (`MAX(price) - MIN(price) AS price_range`); the
   operands are computed as hidden aggregations of the group.
+- With **no `GROUP BY`**, the whole table is one group and the statement answers **one row**,
+  calculations included (since `0.24.0`): `SELECT MAX(price) - MIN(price) AS price_range FROM t`,
+  `COUNT(*) * 2`, `MAX(created) + 1` (a `DATE`), `DATEDIFF(MAX(created), MIN(created))`,
+  `GREATEST(MAX(created), MAX(updated))`. A calculation is evaluated as it is per group, with the
+  same rules. Every `SELECT` item must then be an aggregate, a calculation over aggregates or a
+  constant.
+- Over **no matching document**, with no `GROUP BY`: a `MAX`, a `MIN` or an `AVG` is NULL, and so
+  is a calculation that reads one; `COUNT(*)` is `0` (`COUNT(*) * 2` is `0`, and
+  `HAVING COUNT(*) = 0` keeps the one row). A calculation over `COUNT(column)`,
+  `COUNT(DISTINCT column)` or `SUM(column)` is evaluated too — `COUNT(n) * 2` is `0`, `SUM(x) * 2`
+  is `0.0`, `SUM` over no value being `0.0` — on Elasticsearch 7.17 and later. Elasticsearch 6.8
+  cannot evaluate it (it refuses the `keep_values` gap policy), so such a calculation is NULL
+  there.
 - `HAVING` may reference a `SELECT` aggregate by its alias (`COUNT(*) AS cnt ... HAVING cnt > 1`),
   including the alias of an arithmetic expression over aggregates (`... AS price_range ... HAVING
   price_range > 10`); `BETWEEN`, `IN` and `NOT` apply to aggregates as to columns.

@@ -65,7 +65,8 @@ import com.sksamuel.elastic4s.searches.aggs.{
   NestedAggregation,
   StatsAggregation,
   TermsAggregation,
-  TermsOrder
+  TermsOrder,
+  ValueCountAggregation
 }
 import com.sksamuel.elastic4s.searches.aggs.pipeline.BucketScriptPipelineAgg
 import com.sksamuel.elastic4s.searches.sort.FieldSort
@@ -726,11 +727,15 @@ object ElasticAggregation {
         val script = metricSelectorForBucket(criteria, None, references)
         if (script.isEmpty) None
         else {
+          val documentCounts = documentCountNames(aggs)
           val bucketSelector =
             bucketSelectorAggregation(
               "having_filter",
               now(Script(script)),
-              extractMetricsPathForBucket(criteria, None, references)
+              readingDocumentCount(
+                extractMetricsPathForBucket(criteria, None, references),
+                documentCounts
+              )
             )
           Some(
             KeyedFiltersAggregation(
@@ -739,12 +744,90 @@ object ElasticAggregation {
                 app.softnetwork.elastic.sql.query.SingleSearch.WholeTableHavingBucket ->
                 matchAllQuery()
               ),
-              subaggs = aggs.map(_.agg) :+ bucketSelector
+              subaggs = aggs.map(agg => readingDocumentCount(agg.agg, documentCounts)) :+
+                bucketSelector
             )
           )
         }
       case _ => None
     }
+
+  /** The names of the aggregations of the whole-table bucket that count its DOCUMENTS: `COUNT(*)`
+    * (and `COUNT(_id)`, `COUNT(DISTINCT *)`), the `value_count` on `_index` that
+    * [[countAggregation]] emits -- a field every document carries exactly once.
+    */
+  private def documentCountNames(aggs: Seq[ElasticAggregation]): Set[String] =
+    aggs
+      .map(_.agg)
+      .collect {
+        case count: ValueCountAggregation
+            if count.field.contains("_index") && count.script.isEmpty =>
+          count.name
+      }
+      .toSet
+
+  /** A pipeline of the whole-table bucket reads `COUNT(*)` as the bucket's own document count,
+    * `_count` -- equal to it by construction -- because Elasticsearch never takes `_count` for a
+    * gap. Over ZERO documents every other `buckets_path` is one, so `COUNT(*) * 2` was skipped
+    * (NULL) and `HAVING COUNT(*) = 0` dropped the bucket (no row); SQL answers `0` and one row.
+    * MEASURED on 6.8.23, 7.17.29 and 8.18.3: `_count` is `0` there on every major.
+    */
+  private def readingDocumentCount(
+    paths: Map[String, String],
+    documentCounts: Set[String]
+  ): Map[String, String] =
+    if (documentCounts.isEmpty) paths
+    else
+      paths.map { case (param, path) =>
+        param -> (if (documentCounts.contains(path)) "_count" else path)
+      }
+
+  private def readingDocumentCount(
+    agg: AbstractAggregation,
+    documentCounts: Set[String]
+  ): AbstractAggregation =
+    agg match {
+      case script: BucketScriptPipelineAgg
+          if script.bucketsPaths.values.exists(documentCounts.contains) =>
+        script.copy(bucketsPaths = readingDocumentCount(script.bucketsPaths, documentCounts))
+      case other => other
+    }
+
+  /** The synthetic whole-table bucket for a calculation over aggregates with NO `GROUP BY` (issue
+    * #413, [[app.softnetwork.elastic.sql.query.SingleSearch.wholeTableCalculation]]).
+    *
+    * The calculation is a `bucket_script`, and Elasticsearch accepts one only inside a multi-bucket
+    * aggregation: at the top level of `aggs` the search was refused on every major (6.8: `Only
+    * sibling pipeline aggregations are allowed at the top level`; 7.17 and 8.18: `must be declared
+    * inside of another aggregation`). The root aggregations therefore move inside the keyed
+    * `filters` aggregation [[wholeTableHavingAggregation]] builds -- the same name, the same one
+    * `match_all` bucket, which `parseAggregations` already reads as transparent -- and the
+    * calculation is evaluated in that bucket exactly as it is in a `GROUP BY` bucket.
+    *
+    * Not under a `HAVING`: that statement is [[wholeTableHavingAggregation]] 's, and when that one
+    * declines (no condition of the predicate resolves at this level) wrapping here would hang the
+    * calculation WITHOUT the predicate -- a filter silently dropped. It keeps the emission it had.
+    */
+  def wholeTableCalculationAggregation(
+    request: app.softnetwork.elastic.sql.query.SingleSearch,
+    aggs: Seq[ElasticAggregation]
+  ): Option[Aggregation] =
+    if (
+      request.wholeTableCalculation && request.having.flatMap(_.criteria).isEmpty &&
+      aggs.exists(_.aggType.isBucketScript)
+    ) {
+      val documentCounts = documentCountNames(aggs)
+      Some(
+        KeyedFiltersAggregation(
+          app.softnetwork.elastic.sql.query.SingleSearch.WholeTableHavingAgg,
+          Seq(
+            app.softnetwork.elastic.sql.query.SingleSearch.WholeTableHavingBucket ->
+            matchAllQuery()
+          ),
+          subaggs = aggs.map(agg => readingDocumentCount(agg.agg, documentCounts))
+        )
+      )
+    } else None
 
   /** Generates the bucket_selector script for a given bucket
     */

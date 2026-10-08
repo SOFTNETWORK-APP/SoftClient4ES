@@ -233,10 +233,13 @@ package object bridge {
           // No buckets. A `HAVING` with no `GROUP BY` filters the ONE implicit whole-table group,
           // so the metric aggregations move inside a synthetic single-bucket `filters` aggregation
           // that the `having_filter` bucket_selector can hang from; without it the predicate was
-          // silently discarded (see ElasticAggregation.wholeTableHavingAggregation).
+          // silently discarded (see ElasticAggregation.wholeTableHavingAggregation). A calculation
+          // over the aggregates needs the same parent, its `bucket_script` being refused at the top
+          // level (issue #413, ElasticAggregation.wholeTableCalculationAggregation).
           case Nil =>
             ElasticAggregation
               .wholeTableHavingAggregation(request, aggs, notNestedReferences)
+              .orElse(ElasticAggregation.wholeTableCalculationAggregation(request, aggs))
               .map(Seq(_))
               .getOrElse(aggs.map(_.agg))
           case aggs =>

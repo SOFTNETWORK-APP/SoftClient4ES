@@ -237,17 +237,25 @@ class SetOperatorSpec extends AnyFlatSpec with Matchers {
 
   "Branch types" should "be validated where both sides are typeable" in {
     // A TYPE rule, asked once each branch's schema is attached (`SearchApi.resolveWithSchema`),
-    // never when the statement is parsed (the lead's ruling of 2026-10-05).
+    // never when the statement is parsed (the lead's ruling of 2026-10-05). It answers what
+    // DuckDB 1.5.5 answers (the lead's rule of 2026-10-06; `SetOperationTypesSpec` has the table).
     def branchTypes(sql: String): Either[String, Unit] =
       MultiSearch.branchTypes(parse(sql).requests)
+    // a temporal beside a number: DuckDB refuses the pair
     Seq(
-      "SELECT 1 AS n FROM t UNION SELECT 'a' AS n FROM u",
-      "SELECT CAST(x AS BIGINT) AS v FROM t UNION ALL SELECT CAST(y AS VARCHAR) AS v FROM u"
+      "SELECT CURRENT_DATE AS n FROM t UNION SELECT 1 AS n FROM u",
+      "SELECT CAST(x AS DATE) AS v FROM t UNION ALL SELECT CAST(y AS BIGINT) AS v FROM u"
     ).foreach { sql =>
       withClue(s"[$sql] ") {
         branchTypes(sql).swap.getOrElse("") should include("compatible types at column 1")
       }
     }
+    // a text branch makes the column VARCHAR -- MEASURED on DuckDB 1.5.5: `SELECT 1 UNION ALL
+    // SELECT 'a'` is VARCHAR '1', 'a' (core refused both pairs before)
+    branchTypes("SELECT 1 AS n FROM t UNION SELECT 'a' AS n FROM u") shouldBe Right(())
+    branchTypes(
+      "SELECT CAST(x AS BIGINT) AS v FROM t UNION ALL SELECT CAST(y AS VARCHAR) AS v FROM u"
+    ) shouldBe Right(())
     // numeric family
     branchTypes("SELECT 1 AS n FROM t UNION SELECT 2.5 AS n FROM u") shouldBe Right(())
     // a bare column is `Any` until its schema is attached — the core seam checks with schemas
