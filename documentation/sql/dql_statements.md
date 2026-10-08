@@ -724,7 +724,12 @@ UTC. So `1706697000` in an `epoch_second` field is `2024-01-31 10:30:00`, not a 
 second on Elasticsearch 6; `"2024/01/31"` in a `yyyy/MM/dd` field is a date, not a text; a format's
 `||` alternatives are tried in order, and the first one that parses a value decides; in the default
 format `"2024"` and `2024` are the year 2024. A value computed by the statement (a function, a
-`CAST`) has no format: there, digits are epoch milliseconds and an ISO text is its instant.
+`CAST`) has no format: there, digits are epoch milliseconds and an ISO text is its instant. A date
+whose branches already agree -- a column, or a field of an object or of a list of objects at any
+depth -- is read the same way, in every branch, as soon as one of its branches is a field with a
+`format` of its own (`epoch_second`, `yyyy/MM/dd`, ...), every other value of the row as read, while
+a date position whose branches all have the default format, a multi-valued value and a date core
+cannot read (a zone name, say) are returned as stored.
 
 A value is read only where its reading is the same on every Java version core runs on (8, 11, 17
 and 21) and equal to the instant the Elasticsearch major indexed, measured value by value on

@@ -371,4 +371,84 @@ class SetOperationTypeRuleSpec extends AnyFlatSpec with Matchers {
     }
     wrong shouldBe empty
   }
+
+  /** The table's rule 2: where DuckDB 1.5.5 gives a node NO type and the rule answers `VARCHAR`. */
+  private def untyped(set: Set[String]): Boolean = table.get(set).contains("VARCHAR" -> "FAILS")
+
+  /** What differs between a node of [[MultiSearch.columnTree]] and the table, for a node joining
+    * `items` by `operator` -- with the type the rule gives it. A run of one union kind is ONE node
+    * over every item; `INTERSECT` and `EXCEPT` nodes are binary, left to right.
+    */
+  private def nodeErrors(
+    node: MultiSearch.SetOperationNode,
+    operator: String,
+    items: Seq[String]
+  ): (Seq[String], String) = {
+    val (operands, set, subtree) =
+      if (operator.startsWith("UNION") || items.size == 2)
+        (items.indices.map(Left(_)), items.toSet, Nil)
+      else
+        node.operands.headOption match {
+          case Some(Right(sub)) =>
+            val (errors, before) = nodeErrors(sub, operator, items.init)
+            (Seq(Right(sub), Left(items.size - 1)), Set(before, items.last), errors)
+          case other => (Nil, items.toSet, Seq(s"a binary node over ${items.size} items is $other"))
+        }
+    val errors = subtree ++
+      (if (node.operator.sql == operator) Nil else Seq(s"operator ${node.operator.sql}")) ++
+      (if (node.operands == operands) Nil else Seq(s"operands ${node.operands}")) ++
+      (if (node.untyped == Seq(untyped(set))) Nil
+       else Seq(s"${set.mkString("+")} untyped ${node.untyped}"))
+    (errors, rule(set))
+  }
+
+  "Every node of a set operation" should "be typed as columnTypes types it, untyped where DuckDB gives none" in {
+    val sets = (types :+ "NULL").map(t => Seq(t, t)) ++
+      (types :+ "NULL").combinations(2).flatMap(_.permutations) ++
+      (types :+ "NULL").combinations(3).flatMap(_.permutations)
+    val statements = for {
+      (depth, prefix) <- depths
+      items           <- sets
+      operator        <- Seq("UNION ALL", "UNION", "INTERSECT", "EXCEPT")
+    } yield (
+      depth,
+      operator,
+      items,
+      items
+        .map(i => s"SELECT ${if (i == "NULL") "NULL" else s"${prefix}_$i"} AS k FROM t")
+        .mkString(s" $operator ")
+    )
+    statements.size shouldBe 13120
+    var nodes = 0
+    var untypedNodes = 0
+    val wrong = statements.flatMap { case (depth, operator, items, sql) =>
+      Parser(sql) match {
+        case Right(m: MultiSearch) =>
+          val requests = m.requests.map(_.update(Some(schema)))
+          (
+            MultiSearch.columnTree(requests, m.resolvedOperators),
+            MultiSearch.columnTypes(requests, m.resolvedOperators)
+          ) match {
+            case (Left(a), Left(b)) if a == b => Nil
+            case (Right(root), Right(columns)) =>
+              def count(n: MultiSearch.SetOperationNode): Unit = {
+                nodes += 1
+                if (n.untyped.exists(identity)) untypedNodes += 1
+                n.operands.foreach(_.foreach(count))
+              }
+              count(root)
+              (if (root.columns == columns.map(_.result)) Nil
+               else Seq(s"root ${root.columns} instead of ${columns.map(_.result)}")) ++
+              nodeErrors(root, operator, items)._1
+                .map(e => s"[$depth] [$sql] $e")
+            case (tree, types) => Seq(s"[$depth] [$sql] tree $tree, types $types")
+          }
+        case other => fail(s"[$sql] expected a set operation, got $other")
+      }
+    }
+    wrong shouldBe empty
+    // every node of every statement the rule answers, and those DuckDB gives no type -- counted
+    // from the table alone
+    (nodes, untypedNodes) shouldBe ((14016, 5136))
+  }
 }
