@@ -76,7 +76,9 @@ private[elastic] object SetOperationValues {
     *
     * `version` is the Elasticsearch version the statement runs on (`VersionApi.version`): a date
     * field's values are read as THAT major reads its mapping format ([[MappedDateFormat]]). It is
-    * asked at most ONCE per statement, and only when a converting position reads a date field.
+    * asked at most ONCE per statement, and only when a position reads a date field: a converting
+    * position, or one whose branches agree and hold a date field with a mapping format of its own
+    * ([[readsMappedDates]]).
     */
   private[client] def converters(
     multiple: MultiSearch,
@@ -160,6 +162,174 @@ private[elastic] object SetOperationValues {
       }
     }
 
+  /** ONE column of ONE leg of a set operation, typed BEFORE any value is read ([[legSchemas]]).
+    *
+    * @param sqlType
+    *   the type the leg's values have there, at every depth: the branch's declared type, a date
+    *   position whose format core cannot read for sure `VARCHAR` ([[DateRoute.AsStored]])
+    * @param read
+    *   the reader of one raw value there, answering `sqlType`'s class ([[legReaders]]' classes;
+    *   `VARCHAR` a `String`, the text as stored)
+    * @param asStored
+    *   the date positions answered as stored -- their path (`tsz`, `oz.z`) and why
+    */
+  private[elastic] final case class LegSlot(
+    sqlType: SetOperationType,
+    read: Any => Any,
+    asStored: Seq[LegSlot.AsStored]
+  )
+
+  private[elastic] object LegSlot {
+
+    /** A date position answered as stored: its `path` -- the field, `.` before a struct's field --
+      * and the `reason`, naming its format.
+      */
+    final case class AsStored(path: String, reason: String)
+  }
+
+  /** A leg's slots, by position; `None` at a position whose values are typed as they come. */
+  private[elastic] final case class LegSchema(slots: IndexedSeq[Option[LegSlot]])
+
+  /** THE SCHEMA of each leg of a set operation, decided BEFORE any value is read -- in leg order,
+    * `None` for a leg that declares no projection (`SELECT *`) -- or, `Left`, the statement's
+    * refusal (`MultiSearch.branchTypes`' message word for word). Same inputs as [[legReaders]]; the
+    * version is asked at most ONCE, and only when a position holds a date read by its format (the
+    * default one too).
+    *
+    * Each position of a leg is a [[LegSlot]] -- the leg's type there at every depth and the reader
+    * of its values -- or `None` where its values are typed as they come:
+    *
+    *   - A date read by its mapping format is routed before any row ([[DateRoute.of]]): read as the
+    *     branch declares it, as [[legReaders]] reads it with [[Unreadable.Fail]] -- a value core
+    *     cannot read fails, at any row; or, where core cannot read every value of the format for
+    *     sure (a zone name or a region id, a letter no measurement covers) or the major is not
+    *     known, `VARCHAR`, the text as stored, every row -- at the column, in a struct's field and
+    *     in a list's element, where the branches agree or not. The routed type is read by the SAME
+    *     reader as every other position ([[legReader]]): a `VARCHAR` position is the text leg's.
+    *   - `None` where [[legReader]] reads nothing (a column whose type is not known, `ANY` -- a
+    *     `WITH` or a derived table aliasing the column --, a `NULL` literal); where the leg's OR
+    *     the column's type holds, at any depth, a type not known (`ANY`, a `STRUCT` whose fields
+    *     are not known) ([[unknownInside]]); and where the leg's type holds, at any depth, one read
+    *     as it comes until the engine types it (`NUMERIC`, `TEMPORAL`, `VARBINARY`, `REAL`)
+    *     ([[valueTyped]]).
+    *
+    * Built ONCE per statement; no decision is made per row.
+    */
+  private[elastic] def legSchemas(
+    requests: Seq[SingleSearch],
+    operators: Seq[SetOperator],
+    version: => Option[String]
+  ): Either[String, Seq[Option[LegSchema]]] =
+    MultiSearch.columnTypes(requests, operators).map { columns =>
+      val names = columnNames(requests, columns.size)
+      val dates = DateReading(version)
+      requests.indices.map { leg =>
+        val search = requests(leg)
+        // an opaque `SELECT *` -- a projection of another width, or the branch
+        // `MultiSearch.columnTypes` types at no column -- has no position to type
+        if (
+          search.select.fieldsWithComputedAliases.size != columns.size ||
+          columns.forall(_.branches.lift(leg).flatten.isEmpty)
+        ) None
+        else
+          Some(LegSchema(columns.indices.map { position =>
+            legSlot(columns(position), leg, names(position), fieldOf(search, position), dates)
+          }))
+      }
+    }
+
+  /** Leg `index`'s slot at ONE column ([[legSchemas]]): its branch's type routed ([[routed]]), read
+    * by [[legReader]] over the column whose branch `index` is the routed type -- `None` where
+    * [[legReader]] reads nothing, where the branch's type is read as it comes ([[valueTyped]]), or
+    * where the column's type is not known at some depth ([[unknownInside]]).
+    */
+  private[client] def legSlot(
+    column: SetOperationColumn,
+    index: Int,
+    name: String,
+    field: String,
+    dates: DateReading
+  ): Option[LegSlot] =
+    column.branches
+      .lift(index)
+      .flatten
+      .filterNot(branch => valueTyped(branch) || unknownInside(column.result))
+      // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before any
+      // date is routed (routing asks the version): routing makes a date `VARCHAR`, never `NULL`,
+      // and leaves the column's type alone, so [[legReader]] answers the same over the routed one
+      .filter(_ => Option(legReader(column, index, name, field, dates, Unreadable.Fail)).isDefined)
+      .flatMap { branch =>
+        val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
+        Option(
+          legReader(
+            column.copy(branches = column.branches.updated(index, Some(slotType))),
+            index,
+            name,
+            field,
+            dates,
+            Unreadable.Fail
+          )
+        ).map(LegSlot(slotType, _, asStored))
+      }
+
+  /** A branch's type with every date position [[DateRoute.of]] answers as stored made `VARCHAR`, at
+    * every depth -- a struct's field (`path.field`), a list's element (the list's path) -- and
+    * those positions.
+    */
+  private def routed(
+    t: SetOperationType,
+    path: String,
+    dates: DateReading
+  ): (SetOperationType, Seq[LegSlot.AsStored]) =
+    t.sqlType match {
+      case SQLTypes.Struct =>
+        val fields = t.fields.map { f =>
+          val (valueType, asStored) = routed(f.valueType, s"$path.${f.name}", dates)
+          (f.copy(valueType = valueType), asStored)
+        }
+        (t.copy(fields = fields.map(_._1)), fields.flatMap(_._2))
+      case SQLTypes.Array(_) =>
+        t.element.fold((t, Seq.empty[LegSlot.AsStored])) { e =>
+          val (element, asStored) = routed(e, path, dates)
+          (t.copy(sqlType = SQLTypes.Array(element.sqlType), element = Some(element)), asStored)
+        }
+      case _ =>
+        DateRoute.of(t.sqlType, t.format, dates) match {
+          case DateRoute.Typed => (t, Nil)
+          case DateRoute.AsStored(reason) =>
+            (SetOperationType(SQLTypes.Varchar), Seq(LegSlot.AsStored(path, reason)))
+        }
+    }
+
+  /** Whether a leg's type holds, at any depth, a type whose values are typed as they come: one not
+    * known ([[unknownInside]]), or one the relational engine types from its values until it reads
+    * it (`NUMERIC`, `TEMPORAL`, `VARBINARY`, `REAL`).
+    */
+  private def valueTyped(t: SetOperationType): Boolean =
+    holds(t) {
+      case SQLTypes.Any | SQLTypes.Numeric | SQLTypes.Temporal | SQLTypes.VarBinary |
+          SQLTypes.Real =>
+        true
+      case _ => false
+    }
+
+  /** Whether a type holds, at any depth, a type not known: `ANY`, or a `STRUCT` whose fields are
+    * not known. Where a COLUMN's type does, [[legReader]] reads every leg's value there as it
+    * comes, not as the leg's own type, which another leg left unknown there: no leg has a slot.
+    */
+  private def unknownInside(t: SetOperationType): Boolean =
+    holds(t)(_ == SQLTypes.Any)
+
+  /** Whether `t` holds, at the column or in a struct's field or a list's element at any depth, a
+    * scalar `leaf` answers for, or a `STRUCT` whose fields are not known.
+    */
+  private def holds(t: SetOperationType)(leaf: SQLType => Boolean): Boolean =
+    t.sqlType match {
+      case SQLTypes.Struct   => t.fields.isEmpty || t.fields.exists(f => holds(f.valueType)(leaf))
+      case SQLTypes.Array(_) => t.element.forall(e => holds(e)(leaf))
+      case scalar            => leaf(scalar)
+    }
+
   /** What a leg's reader ([[legReaders]]) answers for a DATE it cannot read -- one its mapping
     * format does not read, or does not read without guessing (a zone name, a pattern letter no
     * measurement covers), or any date of a format when the Elasticsearch version is not known -- at
@@ -213,8 +383,9 @@ private[elastic] object SetOperationValues {
     mapped(t) || t.fields.exists(f => mappedInside(f.valueType)) || t.element.exists(mappedInside)
 
   /** How a statement reads its date fields: as the Elasticsearch major it runs on reads their
-    * mapping format ([[MappedDateFormat.Dialect]]). The version is asked once, the first time a
-    * converting position reads a date field, and never for a statement that has none.
+    * mapping format ([[MappedDateFormat.Dialect]]). The version is asked at most ONCE per
+    * statement, and only when a position reads a date field -- which positions do, each caller
+    * says: [[converters]], [[legReaders]], [[legSchemas]].
     */
   private[client] final class DateReading(
     version: => Option[String],

@@ -91,6 +91,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def executeVersion(): ElasticResult[String] =
     delegate.executeVersion()
 
+  override private[client] def buildElasticMajor: Option[Int] =
+    delegate.buildElasticMajor
+
+  /** The delegate's: every wrapper of a client reads dates as ONE version, asked once. */
+  override private[elastic] lazy val dateDialectVersion: Option[String] =
+    delegate.dateDialectVersion
+
   /** Get Elasticsearch cluster name.
     *
     * @return

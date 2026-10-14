@@ -48,6 +48,10 @@ trait JestVersionApi extends VersionApi with JestClientHelpers {
       case _ => false
     }
 
+  override private[client] def buildElasticMajor: Option[Int] = Some(
+    JestClientBuildInfo.elasticMajor
+  )
+
   override private[client] def executeVersion(): result.ElasticResult[String] =
     executeJestAction(
       "version",

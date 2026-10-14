@@ -2458,14 +2458,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }
   }
 
-  /** The Elasticsearch version the statement runs on (`VersionApi.version`, cached per client): a
-    * set operation reads a date field's values as THAT major reads the field's mapping format
-    * (`SetOperationValues.converters`, which asks for it at most once per statement, and only when
-    * a converting position reads a date field). `None` for a client that cannot tell it.
+  /** The Elasticsearch version the statement reads dates as (`VersionApi.dateDialectVersion`, asked
+    * once per client): a set operation reads a date field's values as THAT major reads the field's
+    * mapping format (`SetOperationValues.converters`, which asks for it at most once per statement,
+    * and only when a position reads a date field: a converting position, or one whose branches
+    * agree and hold a date field with a mapping format of its own). For a user denied `GET /`, the
+    * major the client module is built for; `None` for a client that can tell neither.
     */
   private def setOperationVersion: Option[String] =
     this match {
-      case api: VersionApi => api.version.toOption
+      case api: VersionApi => api.dateDialectVersion
       case _               => None
     }
 

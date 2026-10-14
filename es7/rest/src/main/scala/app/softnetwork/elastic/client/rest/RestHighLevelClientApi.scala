@@ -231,6 +231,10 @@ trait RestHighLevelClientApi
 trait RestHighLevelClientVersionApi extends VersionApi with RestHighLevelClientHelpers {
   _: RestHighLevelClientCompanion =>
 
+  override private[client] def buildElasticMajor: Option[Int] = Some(
+    RestClientBuildInfo.elasticMajor
+  )
+
   override private[client] def executeVersion(): ElasticResult[String] =
     executeRestLowLevelAction[String](
       operation = "version",
