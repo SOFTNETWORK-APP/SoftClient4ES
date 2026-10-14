@@ -50,6 +50,20 @@ trait VersionApi extends ElasticClientHelpers {
     }
   }
 
+  /** The major of Elasticsearch the client module is built for (its build info's `elasticMajor`),
+    * by which dates are read when the cluster's version cannot be ([[dateDialectVersion]]); `None`
+    * in core, which builds for no major.
+    */
+  private[client] def buildElasticMajor: Option[Int] = None
+
+  /** The Elasticsearch version a statement reads dates as (`SetOperationValues`): the cluster's
+    * ([[version]]), else -- a user whose role is denied `GET /` -- the major the client module is
+    * built for ([[buildElasticMajor]]), else `None`. Asked ONCE per client, and kept: a privilege
+    * granted later is seen after the client restarts.
+    */
+  private[elastic] lazy val dateDialectVersion: Option[String] =
+    version.toOption.orElse(buildElasticMajor.map(_.toString))
+
   // def checkVersion(check: Int => Boolean)
 
   // ========================================================================

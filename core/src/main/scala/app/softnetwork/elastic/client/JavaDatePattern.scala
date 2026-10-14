@@ -643,6 +643,25 @@ private[client] object JavaDatePattern {
     /** Why the pattern is not read, if it is not. */
     def unread: Option[String] = compiled.left.toOption
 
+    /** The kind of its zone letter, when it reads zone data: `"id"` (`VV`) or `"name"` (`z`, `v`).
+      */
+    override private[client] def zoneData: Option[String] =
+      compiled.toOption.map(_.zone).filter(kind => kind == "id" || kind == "name")
+
+    /** On a major resolving SMARTLY (Elasticsearch 6.8's `8`-prefixed mode), why the pattern reads
+      * an AM/PM with no hour, decided from ITS letters (quoted text aside) before any value --
+      * `None` where it does not. The rule is the one of [[shape]], applied to the two classes it
+      * reads there: the AM/PM and the hour, any hour letter (`h`, `K`, `k`, `H`) standing as `h`
+      * (the measured `ah`). [[shape]] applies it to the letters a text carried, which a pattern
+      * read in a lexical pass (weeks of a week-based year on 6.8: `YYYY-ww a`) meets only value by
+      * value.
+      */
+    private[client] lazy val amPmWithoutHour: Option[String] =
+      tokens(pattern).toOption.flatMap { ts =>
+        val classes = ts.collect { case Letters(c, n) => letterClass(c, n) }.toSet
+        shape(classes.collect { case 'a' => 'a'; case 'h' | 'K' | 'k' | 'H' => 'h' }, "")
+      }
+
     def parse(text: String): Parse =
       compiled match {
         case Left(reason) => Unmeasured(s"'$pattern' is not a date format core reads: $reason")

@@ -544,6 +544,10 @@ private[client] object JodaDatePattern {
     /** Why the pattern is not read, if it is not. */
     def unread: Option[String] = compiled.left.toOption
 
+    /** The kind of its zone letter, when it reads zone data: `"id"` (`ZZZ`) or `"name"` (`z`). */
+    override private[client] def zoneData: Option[String] =
+      compiled.toOption.map(_._2).filter(kind => kind == "id" || kind == "name")
+
     def parse(text: String): Parse =
       compiled match {
         case Left(reason) => Unmeasured(s"'$pattern' is not a date format core reads: $reason")

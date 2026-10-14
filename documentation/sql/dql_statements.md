@@ -780,6 +780,11 @@ SELECT ts AS k FROM t UNION ALL SELECT s AS k FROM t;
 The readings were measured on Elasticsearch 6.8.23, 7.17.29 and 8.18.3. The other minor versions
 of a major are read as its measured one, and Elasticsearch 9 as Elasticsearch 8.
 
+The major is the cluster's version, asked once per client (`GET /`). For a user whose role may not
+read it, dates are read as the major the client is built for (the Elasticsearch 8 client reads them
+as Elasticsearch 8), at a position that converts as where the branches agree. The version is kept
+for the life of the client: a privilege granted later is seen once the client restarts.
+
 A value with several values — a multi-valued field — has no one value of its position's type, so
 at a position that converts its values it fails the statement, in the words DuckDB uses for the
 same failure: `Conversion Error: Unimplemented type for cast (INTEGER -> VARCHAR[]) when casting

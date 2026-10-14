@@ -162,6 +162,9 @@ trait JavaClientApi
   */
 trait JavaClientVersionApi extends VersionApi with JavaClientHelpers {
   _: JavaClientCompanion =>
+  override private[client] def buildElasticMajor: Option[Int] = Some(
+    JavaClientBuildInfo.elasticMajor
+  )
   override private[client] def executeVersion(): ElasticResult[String] =
     executeJavaAction(
       operation = "version",

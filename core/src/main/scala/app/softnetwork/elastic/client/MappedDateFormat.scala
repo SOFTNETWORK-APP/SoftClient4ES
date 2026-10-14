@@ -232,6 +232,35 @@ private[client] final case class MappedDateFormat(
 
   private def parses(text: String): Boolean =
     alternatives.exists(_.parse(text) != NotParsed)
+
+  /** Why core does not read EVERY value of the format for sure, decided from the format alone,
+    * before any value -- `None` when every value it reads, it reads for sure: an alternative core
+    * does not read on this major ([[Unknown]]: a letter, a width or a combination no measurement
+    * covers, a name of Elasticsearch 6.8's `8`-prefixed mode); a custom pattern whose zone letter
+    * reads zone names or region ids ([[Alternative.zoneData]]), whose offset comes from the zone
+    * data of the JVM reading it, at any row; a pattern of Elasticsearch 6.8's `8`-prefixed mode
+    * reading an AM/PM with no hour ([[JavaDatePattern.Pattern.amPmWithoutHour]]). The first such
+    * alternative names the reason.
+    */
+  private[client] lazy val unread: Option[String] =
+    alternatives.iterator.map(unreadBy).collectFirst { case Some(reason) => reason }
+
+  private def unreadBy(alternative: Alternative): Option[String] =
+    alternative match {
+      case unknown: Unknown =>
+        Some(unknown.parse(spec) match {
+          case Unmeasured(reason) => reason
+          case _                  => s"'${unknown.name}' is not a date format core reads"
+        })
+      case pattern: JavaDatePattern.Pattern if pattern.amPmWithoutHour.isDefined =>
+        pattern.amPmWithoutHour
+      case other =>
+        other.zoneData.map { kind =>
+          s"its zone letter reads ${if (kind == "id") "region ids" else "zone names"}, whose " +
+          "offset comes from the zone data of the JVM reading it, not Elasticsearch's: core " +
+          "reads only Z, an offset, UTC, GMT and UT"
+        }
+    }
 }
 
 private[client] object MappedDateFormat {
@@ -286,6 +315,12 @@ private[client] object MappedDateFormat {
 
     /** A name core reads, as opposed to a custom pattern or an unknown name. */
     def isName: Boolean = true
+
+    /** The zone data its zone letter reads, decided from the format alone: `"name"` (a zone name:
+      * `java.time`'s `z` and `v`, Joda-Time's `z` and `zzzz`) or `"id"` (a region id: `java.time`'s
+      * `VV`, Joda-Time's `ZZZ`) -- `None` for no zone, or an offset.
+      */
+    private[client] def zoneData: Option[String] = None
   }
 
   /** A name or a pattern core does not read on this major: a value it decides is undecidable. */
