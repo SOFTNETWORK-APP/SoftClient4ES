@@ -47,8 +47,8 @@ import scala.concurrent.duration._
   * search (sync and async), the scroll / PIT / search_after stream, the one-shot `_msearch` and the
   * per-leg `UNION ALL` -- builds its rows with core's own derivation of the projection. The pages
   * are what Elasticsearch 8.18.3 answers for a `_source` restricted to the column (MEASURED, T0-2):
-  * a flat spelling stays flat, a flat `null` beside the nested value is what main's INSERT ...
-  * SELECT writes, an array of objects is returned whole.
+  * a flat spelling stays flat, a flat `null` beside the nested value is returned beside it, an
+  * array of objects is returned whole.
   */
 class NestedPathColumnsSpec
     extends AnyFlatSpec

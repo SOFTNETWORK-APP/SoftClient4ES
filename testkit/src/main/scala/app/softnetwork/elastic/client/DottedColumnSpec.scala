@@ -55,10 +55,9 @@ case class DottedColumnRow(id: String, obj: Option[DottedColumnObj])
   *
   * The documents are written as Elasticsearch stores them (a flat spelling stays flat), one per
   * shape the reader must handle: nested (`dn`), flat (`df`), both spellings (`db`), a flat `null`
-  * beside the nested value -- what main's INSERT ... SELECT writes (`dz`) -- and its nested twin
-  * (`dn4`), an array of objects (`dl`), a sibling only (`ds`), missing (`dm`), a deeper path (`dx`)
-  * and a mixed spelling (`dmx`). The index has two shards, so the scroll is sliced on Elasticsearch
-  * 8.
+  * beside the nested value (`dz`) and its nested twin (`dn4`), an array of objects (`dl`), a
+  * sibling only (`ds`), missing (`dm`), a deeper path (`dx`) and a mixed spelling (`dmx`). The
+  * index has two shards, so the scroll is sliced on Elasticsearch 8.
   *
   * PUBLIC API ONLY: the same file runs on a main clone, which is how the "census" (main's answers,
   * the canary) and the "population" (every statement on every route, as canonical rows) are

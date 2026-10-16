@@ -1991,8 +1991,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * top-level key. Fall back to walking the dotted path into nested maps.
     *
     * SCHEMA-12 (A-3): the row path's one precedence rule, so the key follows the value the row
-    * shows — a NON-NULL flat key wins (`flatValue`), a flat `null` beside the nested value (what
-    * main's INSERT ... SELECT writes) reads the nested one, as Elasticsearch does.
+    * shows — a NON-NULL flat key wins (`flatValue`), and a flat `null` beside the nested value
+    * reads the nested one, as Elasticsearch does.
     */
   private def resolveSortKey(h: Map[String, Any], col: String): Any =
     flatValue(h, col).orElse(findKeyValue(col, h)).orNull
