@@ -1633,7 +1633,8 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
         // INSERT … AS SELECT
         case Left(single: SingleSearch) =>
-          implicit val context: ConversionContext = NativeContext
+          // SCHEMA-12 (D13): the rows become DOCUMENTS, written in main's shape
+          implicit val context: ConversionContext = DocumentContext
           Right(
             scroll(single).map { case (row, _) =>
               // Even with `elastic.include-document-id` enabled, the id column must never be

@@ -349,6 +349,11 @@ trait ElasticConversion {
     // major (a bare number on ES 6, `{value, relation}` on ES 7+).
     val rootDocCount: Option[Long] = docCountOf(json.path("hits"), "total")
 
+    // SCHEMA-12 — the rows below are `_source` documents (Case 1 and Case 4) exactly when the
+    // response carries hits; the aggregation arms (Cases 2 and 3) build bucket rows, which never
+    // hold a nested `_source` shape, so they keep the projector alone.
+    val fromHits = hitsNode.exists(_.nonEmpty)
+
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
@@ -399,17 +404,154 @@ trait ElasticConversion {
         fields.indices.filterNot(i => fields(i) == "*").map(i => converters(i)).toArray
       else null
     if (effective.isEmpty) rows
-    else rows.map(rowProjector(effective.map(_._1), effective.map(_._2), convs))
-  }
-
-  def findKeyValue(path: String, map: Map[String, Any]): Option[Any] = {
-    val keys = path.split("\\.")
-    keys.foldLeft(Option(map): Option[Any]) {
-      case (Some(m: Map[_, _]), key) =>
-        m.asInstanceOf[Map[String, Any]].get(key)
-      case _ => None
+    else {
+      val project = rowProjector(effective.map(_._1), effective.map(_._2), convs)
+      // SCHEMA-12 — an un-aliased dotted column reads its value through the nested path before
+      // the projection places it. The SOURCE names are handed over before the "*" filter: a star
+      // keeps every parent (D5 c). Decided once per response; `project` itself when nothing
+      // qualifies, so every other statement runs exactly the projection above.
+      val shape =
+        if (fromHits) withNestedPaths(fields, fieldAliases, nestedHits)(project) else project
+      rows.map(shape)
     }
   }
+
+  def findKeyValue(path: String, map: Map[String, Any]): Option[Any] =
+    findKeyValue(path.split("\\."), map)
+
+  /** [[findKeyValue]] over a path split once (SCHEMA-12: per stream, never per row). Same rule:
+    * each segment is looked up in the map the previous one reached; anything else than a map before
+    * the last segment, or an absent key, is `None`.
+    */
+  private[client] def findKeyValue(segments: Array[String], map: Map[String, Any]): Option[Any] =
+    if (map eq null) None
+    else {
+      var current: Any = map
+      var i = 0
+      var found = true
+      while (found && i < segments.length) {
+        current match {
+          case m: Map[_, _] =>
+            m.asInstanceOf[Map[String, Any]].get(segments(i)) match {
+              case Some(v) => current = v
+              case None    => found = false
+            }
+          case _ => found = false
+        }
+        i += 1
+      }
+      if (found) Some(current) else None
+    }
+
+  /** The value a row carries under a FLAT key, when it holds one (SCHEMA-12, A-3). A flat `null` is
+    * no value: Elasticsearch indexes none for it (a document `{"obj.a": null, "obj": {"a": 4}}`
+    * holds 4 in doc values, the `fields` API, SUM and COUNT), so the nested spelling is read
+    * instead. The one precedence rule of the row path and of the ranking-window sort key
+    * (`SearchApi.resolveSortKey`).
+    */
+  private[client] def flatValue(map: Map[String, Any], path: String): Option[Any] =
+    map.get(path) match {
+      case found @ Some(v) if v != null => found
+      case _                            => None
+    }
+
+  /** SCHEMA-12 — the un-aliased dotted columns of ONE projection, and the parents the reader may
+    * drop, decided once per stream (per response on the one-shot routes) from the names both row
+    * sites already hold (D2, D5):
+    *
+    *   - a column qualifies when its name contains `.`, no `*`, is not an alias (a value of
+    *     `fieldAliases`, which includes the computed `__cN`) and is not an UNNEST output (a value
+    *     of `nestedHits`): its output name IS its source path;
+    *   - its top-level parent `P` is droppable in NATIVE rows only when (a) the projection does not
+    *     request `P` as a source or an output name, (c) it has no `*` / `x.*`, (d) `P` is not an
+    *     inner-hits key, and (f) no aliased source lies under `P` and no segment of a qualifying
+    *     column under `P` is an alias key or value -- `jsonNodeToMap` renames an alias source at
+    *     every depth, so such a parent may be a value's only carrier (A-5). (b) and (e) are per row
+    *     (see [[ElasticConversion.NestedPathColumns]]);
+    *   - a qualifying path that is also an aliased source reads its alias's value (A-6).
+    *
+    * `None` when nothing qualifies, and under [[DocumentContext]]: an INSERT ... SELECT writes
+    * documents, not SQL rows, and keeps main's document shape (D13).
+    */
+  private[client] def nestedPathColumns(
+    sourceFields: Seq[String],
+    fieldAliases: ListMap[String, String],
+    nestedHits: Map[String, Seq[(String, String)]]
+  )(implicit context: ConversionContext): Option[ElasticConversion.NestedPathColumns] =
+    context match {
+      case DocumentContext => None
+      case _ =>
+        val aliasValues: Set[String] = fieldAliases.values.toSet
+        val unnestOutputs: Set[String] = nestedHits.valuesIterator.flatMap(_.map(_._2)).toSet
+        val paths: Seq[String] = sourceFields
+          .filter(f =>
+            f.indexOf('.') >= 0 && f.indexOf('*') < 0 && !aliasValues.contains(f) &&
+            !unnestOutputs.contains(f)
+          )
+          .distinct
+        if (paths.isEmpty) None
+        else {
+          val segments: Array[Array[String]] = paths.map(_.split("\\.")).toArray
+          val aliasOf: Array[String] = paths.map(p => fieldAliases.getOrElse(p, null)).toArray
+          val parentOf: Array[Int] = Array.fill(paths.size)(-1)
+          val parents: Array[String] = context match {
+            case EntityContext =>
+              // entity rows feed case-class extraction, which reads the document's shape
+              Array.empty[String]
+            case _ =>
+              val star = sourceFields.exists(f => f == "*" || f.endsWith(".*"))
+              val requested: Set[String] = sourceFields.toSet ++ fieldAliases.keySet
+              val aliasNames: Set[String] = aliasValues ++ fieldAliases.keySet
+              def keeps(parent: String): Boolean =
+                star || // (c)
+                requested.contains(parent) || // (a)
+                nestedHits.contains(parent) || // (d)
+                fieldAliases.keysIterator.exists(source =>
+                  source == parent || source.startsWith(parent + ".")
+                ) || // (f) an aliased source under the parent
+                segments.exists(s => s(0) == parent && s.exists(aliasNames.contains)) // (f)
+              val droppable = segments
+                .map(_(0))
+                .distinct
+                .filterNot(keeps)
+                // one bit per parent in the reader's per-row mask: a parent past the 64th is kept
+                .take(64)
+              var i = 0
+              while (i < segments.length) {
+                parentOf(i) = droppable.indexOf(segments(i)(0))
+                i += 1
+              }
+              droppable
+          }
+          Some(
+            new ElasticConversion.NestedPathColumns(
+              paths.toArray,
+              segments,
+              aliasOf,
+              parentOf,
+              parents
+            )
+          )
+        }
+    }
+
+  /** SCHEMA-12 — `project`, preceded by the reader of the projection's un-aliased dotted columns
+    * ([[nestedPathColumns]]). Returns the `project` INSTANCE itself when nothing qualifies, or
+    * under [[DocumentContext]], so a statement without such a column runs the projection it ran
+    * before, and no per-row work is added (D7). The only way core builds a row from hits against a
+    * projection: `jsonToRows`' tail (hit rows) and `ScrollApi.scroll`'s normalizer.
+    */
+  private[client] def withNestedPaths(
+    sourceFields: Seq[String],
+    fieldAliases: ListMap[String, String],
+    nestedHits: Map[String, Seq[(String, String)]]
+  )(
+    project: ListMap[String, Any] => ListMap[String, Any]
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
+    nestedPathColumns(sourceFields, fieldAliases, nestedHits) match {
+      case Some(read) => read.andThen(project)
+      case None       => project
+    }
 
   /** Parse simple hits (without aggregations)
     *
@@ -1536,4 +1678,102 @@ object ElasticConversion extends ElasticConversion {
     * `elastic.include-document-id` is enabled.
     */
   val DocumentIdField: String = "_id"
+
+  /** SCHEMA-12 — the reader of ONE projection's un-aliased dotted columns, built once per stream by
+    * `nestedPathColumns` and composed BEFORE the projector, so `SELECT obj.a FROM t` carries the
+    * value of `obj.a` under the output name `obj.a`, as `SELECT obj.a AS k` carries it under `k`.
+    *
+    * For each column `i`, in order:
+    *   - an alias twin (`aliasOf(i)` set, A-6) takes its alias's value; absent stays absent;
+    *   - a non-null FLAT key (a flat `_source` spelling, a `fields` / docvalue entry) wins and the
+    *     row is left as it is (A-3, `flatValue`): the walk did not read the parent;
+    *   - else the nested path is walked (`findKeyValue`) and its value placed under the output
+    *     name, replacing a flat `null`;
+    *   - on a miss, a second walk -- on the miss path only -- classifies the stop: an absent key in
+    *     objects holding no dotted key means the document has no such value (the parent was read);
+    *     a list, a scalar or an object holding a dotted key before the leaf may carry it (not
+    *     read).
+    *
+    * Then each droppable parent (`parents`, decided once per stream) every column under which was
+    * READ in this row is removed when its value is an object (D5 b, e). Walks run before drops, on
+    * the original parent. Per-row state is one `Long` mask -- bit `j` set = `parents(j)` not read
+    * -- never a per-row split or set.
+    */
+  private[client] final class NestedPathColumns(
+    val paths: Array[String],
+    val segments: Array[Array[String]],
+    val aliasOf: Array[String],
+    val parentOf: Array[Int],
+    val parents: Array[String]
+  ) extends (ListMap[String, Any] => ListMap[String, Any]) {
+
+    private[this] val len: Int = paths.length
+
+    override def apply(in: ListMap[String, Any]): ListMap[String, Any] = {
+      var row = in
+      var notRead = 0L
+      var i = 0
+      while (i < len) {
+        val alias = aliasOf(i)
+        if (alias ne null) {
+          row.get(alias) match {
+            case Some(v) => row = row + (paths(i) -> v)
+            case None    =>
+          }
+        } else if (flatValue(row, paths(i)).isDefined) {
+          if (parentOf(i) >= 0) notRead |= 1L << parentOf(i)
+        } else {
+          findKeyValue(segments(i), row) match {
+            case Some(v) => row = row + (paths(i) -> v)
+            case None =>
+              if (parentOf(i) >= 0 && !absentFrom(segments(i), row))
+                notRead |= 1L << parentOf(i)
+          }
+        }
+        i += 1
+      }
+      var j = 0
+      while (j < parents.length) {
+        if ((notRead & (1L << j)) == 0L) {
+          row.get(parents(j)) match {
+            case Some(_: Map[_, _]) => row = row - parents(j)
+            case _                  =>
+          }
+        }
+        j += 1
+      }
+      row
+    }
+
+    /** On a miss: `true` when the walk stopped on a key absent from objects holding no dotted key
+      * (nothing under the parent can be this column's value), `false` when it met anything that may
+      * carry it -- a list or a scalar before the leaf, or an object holding a dotted key (`obj:
+      * {"x.y": 10}` read as `obj.x.y`). A parent absent from the row has nothing to lose.
+      */
+    private[this] def absentFrom(path: Array[String], row: ListMap[String, Any]): Boolean =
+      row.get(path(0)) match {
+        case None => true
+        case Some(top) =>
+          var current: Any = top
+          var k = 1
+          // 0 = still walking, 1 = absent (read), 2 = may carry the value (not read)
+          var verdict = 0
+          while (verdict == 0 && k < path.length) {
+            current match {
+              case m: Map[_, _] =>
+                val map = m.asInstanceOf[Map[String, Any]]
+                if (map.keysIterator.exists(_.indexOf('.') >= 0)) verdict = 2
+                else
+                  map.get(path(k)) match {
+                    case Some(v) => current = v
+                    case None    => verdict = 1
+                  }
+              case _ => verdict = 2
+            }
+            k += 1
+          }
+          // a walk that reached the leaf found it: unreachable on the miss path, and harmless
+          verdict != 2
+      }
+  }
 }

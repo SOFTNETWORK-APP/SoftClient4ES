@@ -657,6 +657,21 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     )
   }
 
+  it should "return an un-aliased nested field under its dotted name, without its parent" in {
+    // the aliased test above is the canary that a parent object IS visible on this path
+    val res = executeSync("SELECT id, profile.city FROM dql_users ORDER BY id")
+    assertSelectResult(
+      System.nanoTime(),
+      res,
+      Seq(
+        Map("id" -> 1, "profile.city" -> "Paris"),
+        Map("id" -> 2, "profile.city" -> "Lyon"),
+        Map("id" -> 3, "profile.city" -> "Paris"),
+        Map("id" -> 4, "profile.city" -> "Marseille")
+      )
+    )
+  }
+
   it should "execute a UNION ALL query" in {
     val sql =
       """SELECT id, name FROM dql_users WHERE age > 30

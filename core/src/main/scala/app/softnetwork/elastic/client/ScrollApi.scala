@@ -726,9 +726,11 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
     // Normalize rows to ensure all requested fields are present (only if context is native) in the original SQL SELECT order
     // and flatten inner hits into individual rows. The normalizer is built ONCE per stream —
-    // each row is walked a single time, and already-shaped rows pass through untouched (#229)
+    // each row is walked a single time, and already-shaped rows pass through untouched (#229).
+    // SCHEMA-12: an un-aliased dotted column reads its value through the nested path first
+    // (`withNestedPaths`, decided once per stream; the normalizer itself when nothing qualifies).
     val normalized = if (fields.nonEmpty) {
-      source.map(rowNormalizer(fields))
+      source.map(withNestedPaths(fields, fieldAliases, nestedHits)(rowNormalizer(fields)))
     } else {
       source
     }

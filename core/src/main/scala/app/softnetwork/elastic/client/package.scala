@@ -578,4 +578,12 @@ package object client extends SerializationApi {
   case object NativeContext extends ConversionContext
 
   case object EntityContext extends ConversionContext
+
+  /** SCHEMA-12 (D13) — the rows an INSERT ... SELECT writes as DOCUMENTS. Native everywhere (every
+    * `context match` reads it as `NativeContext`), but an un-aliased dotted column is not read
+    * through its nested path: a document is not a SQL row, and core's ingest scripts read a dotted
+    * column as `ctx.obj?.a`, so a document keeps the shape it was read in: a nested source stays
+    * nested (`{"obj": {"a": 1}}`; the row's null `obj.a` cell is not written).
+    */
+  private[client] case object DocumentContext extends ConversionContext
 }

@@ -85,6 +85,8 @@ ORDER BY id ASC;
 - `profile` is a `STRUCT` column.
 - `profile.city` and `profile.followers` access nested fields.
 - Aliases (`AS full_name`, `AS city`) are returned as column names.
+- An un-aliased nested field is returned under its dotted name, without its parent object:
+  `SELECT id, profile.city FROM dql_users` returns the columns `id` and `profile.city`.
 
 ---
 
