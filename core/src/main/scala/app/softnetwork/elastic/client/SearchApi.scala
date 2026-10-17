@@ -1988,22 +1988,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     */
   /** Resolve an OVER ORDER BY column value from a top_hits inner-source map. The inner-source map
     * keeps nested objects un-flattened, so a dotted column (e.g. `address.salary`) is not a
-    * top-level key. Fall back to walking the dotted path into nested maps. This is purely additive
-    * — a flat column hits the direct lookup and behaves exactly as before.
+    * top-level key. Fall back to walking the dotted path into nested maps.
+    *
+    * SCHEMA-12 (A-3): the row path's one precedence rule, so the key follows the value the row
+    * shows — a NON-NULL flat key wins (`flatValue`), and a flat `null` beside the nested value
+    * reads the nested one, as Elasticsearch does.
     */
   private def resolveSortKey(h: Map[String, Any], col: String): Any =
-    h.get(col) match {
-      case Some(v) => v
-      case None =>
-        col
-          .split('.')
-          .foldLeft(Option[Any](h)) {
-            case (Some(m: Map[_, _]), part) =>
-              m.asInstanceOf[Map[String, Any]].get(part)
-            case _ => None
-          }
-          .orNull
-    }
+    flatValue(h, col).orElse(findKeyValue(col, h)).orNull
 
   private def extractRankings(
     row: ListMap[String, Any],
