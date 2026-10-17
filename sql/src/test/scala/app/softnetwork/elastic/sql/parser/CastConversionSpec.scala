@@ -119,4 +119,54 @@ class CastConversionSpec extends AnyFlatSpec with Matchers {
     painlessOf("SELECT CAST(amount AS DOUBLE) FROM t") shouldBe
     "(doc['amount'].size() == 0 ? null : doc['amount'].value)"
   }
+
+  // -- a NULL operand ----------------------------------------------------------
+  /** `CAST(NULL AS <type>)` is NULL. The NULL literal is not `nullable` (no literal is), so the
+    * VARCHAR arm used to wrap it unguarded: `String.valueOf(null)`, the TEXT "null" -- measured on
+    * Elasticsearch 8.18.3, alone in the projection and beside another column.
+    */
+  private def painlessOfField(sql: String, i: Int): String =
+    Parser(sql) match {
+      case Right(ss: SingleSearch) => ss.update(Some(schema)).select.fields(i).painless(None)
+      case other                   => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+
+  "a NULL cast to any type" should "stay NULL" in {
+    for (
+      t <- Seq(
+        "VARCHAR",
+        "CHAR",
+        "TEXT",
+        "KEYWORD",
+        "INT",
+        "BIGINT",
+        "DOUBLE",
+        "REAL",
+        "BOOLEAN",
+        "DATE",
+        "TIME",
+        "TIMESTAMP",
+        "DATETIME"
+      )
+    ) {
+      withClue(s"CAST(NULL AS $t): ") {
+        painlessOf(s"SELECT CAST(NULL AS $t) AS v FROM t") shouldBe "null"
+      }
+    }
+  }
+
+  it should "stay NULL beside another column" in {
+    painlessOfField(
+      "SELECT n, CAST(NULL AS VARCHAR) AS sv, CAST(NULL AS INT) AS iv FROM t",
+      1
+    ) shouldBe "null"
+    painlessOfField(
+      "SELECT n, CAST(NULL AS VARCHAR) AS sv, CAST(NULL AS INT) AS iv FROM t",
+      2
+    ) shouldBe "null"
+  }
+
+  it should "still convert a non-NULL literal" in {
+    painlessOf("SELECT CAST(1 AS VARCHAR) AS v FROM t") should include("String.valueOf")
+  }
 }

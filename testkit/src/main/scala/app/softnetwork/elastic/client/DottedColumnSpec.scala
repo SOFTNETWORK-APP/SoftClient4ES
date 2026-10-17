@@ -596,4 +596,28 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
       )
     )
   }
+
+  // core rendered `CAST(NULL AS VARCHAR)` as `String.valueOf(null)`: the TEXT "null" on every row,
+  // alone in the projection (a regression vs 0.23.0) and beside other columns
+  "A NULL cast to VARCHAR" should "answer NULL, alone and beside other columns, on every route" in {
+    def cell(v: Any): Any = v match {
+      case s: Iterable[_] if s.size == 1 => s.head // a script field arrives as a one-element list
+      case other                         => other
+    }
+    rowRoutes.foreach { route =>
+      Seq(
+        s"SELECT CAST(NULL AS VARCHAR) AS sv FROM $table",
+        s"SELECT id, CAST(NULL AS VARCHAR) AS sv, CAST(NULL AS INT) AS iv FROM $table"
+      ).foreach { sql =>
+        withClue(s"[$route] $sql: ") {
+          val rows = rowsOk(sql, route)
+          rows should not be empty
+          rows.foreach { row =>
+            row.keys should contain("sv")
+            cell(row("sv")) shouldBe (null: Any)
+          }
+        }
+      }
+    }
+  }
 }
