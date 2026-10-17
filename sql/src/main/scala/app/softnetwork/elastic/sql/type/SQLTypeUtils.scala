@@ -303,6 +303,11 @@ object SQLTypeUtils {
     nullable: Boolean,
     context: Option[PainlessContext]
   ): String = {
+    // A NULL converted to any type is NULL (SQL's `CAST(NULL AS <type>)`). The NULL literal is not
+    // `nullable` (literals never are), so without this it reached the VARCHAR arm below unguarded
+    // and `CAST(NULL AS VARCHAR)` answered `String.valueOf(null)`: the TEXT "null", measured on
+    // Elasticsearch 8.18.3 in a projection, beside other columns and alone.
+    if (from == SQLTypes.Null) return "null"
 
     /** The null guard the four temporal arms below must apply THEMSELVES, because they return from
       * inside `ctx.addParam(...)` and so never reach the wrapper at the end of this method. Kept as
