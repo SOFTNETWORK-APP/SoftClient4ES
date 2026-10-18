@@ -237,21 +237,88 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
     ).mkString
   }
 
-  it should "stay where it is when no bucket of its nested level is its own" in {
-    // The canary of the boundary: grouped by the UNNEST key THEN a root key, the root bucket is
-    // emitted outermost and the aggregate's bucket path (`i.qty>o.category`) names no bucket of the
-    // nested level -- moved, `buildBuckets` would drop it. Its emission is the one it always had
-    // (and it still answers NULL per group: not this change's class).
-    queryOf(
-      """SELECT i.qty AS q, o.category AS c, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i
-        |GROUP BY i.qty, o.category""".stripMargin
-    ) shouldBe Seq(
-      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"c":{""",
-      """"terms":{"field":"category","size":65536,"min_doc_count":1},""",
-      """"aggs":{"i":{"nested":{"path":"items"},"aggs":{"m":{"min":{"field":"items.qty"}},""",
-      itemsQty,
-      """}}}}}}}"""
-    ).mkString
+  private def occurrences(text: String, part: String): Int =
+    text.split(java.util.regex.Pattern.quote(part), -1).length - 1
+
+  it should "be kept when no bucket of its nested level is its own" in {
+    // The canary of the boundary. With NO mapping attached, the aggregate's bucket path keeps the
+    // root key's qualifier (`o.category>i.qty`) where the bucket tree's does not, so it names no
+    // bucket of the nested level: moved, `buildBuckets` would drop it, so it keeps its emission.
+    // Only its presence is pinned, deliberately not its placement: where no mapping is known, this
+    // shape still answers NULL per group, a recorded defect.
+    val query = queryOf(
+      """SELECT o.category AS c, i.qty AS q, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i
+        |GROUP BY o.category, i.qty""".stripMargin
+    )
+    occurrences(query, """"m":{"min":{"field":"items.qty"}}""") shouldBe 1
+    occurrences(query, itemsQty) shouldBe 1
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A GROUP BY that lists an UNNEST key before a root key: emitted as its root-first spelling is
+  // ---------------------------------------------------------------------------------------------
+
+  /** `orders` as Elasticsearch maps it: `items` nested, `category` and `rank` root fields. */
+  private lazy val ordersSchema =
+    app.softnetwork.elastic.schema
+      .Index(
+        "orders",
+        """{"mappings":{"properties":{"id":{"type":"keyword"},"category":{"type":"keyword"},""" +
+        """"rank":{"type":"long"},"items":{"type":"nested","properties":{"qty":{"type":"long"},""" +
+        """"sku":{"type":"keyword"}}}}},"settings":{}}"""
+      )
+      .schema
+
+  private def mappedQueryOf(sql: String): String =
+    SelectStatement(sql).statement match {
+      case Some(single: SingleSearch) =>
+        (single.update(Some(ordersSchema)): ElasticSearchRequest).query
+      case other => fail(s"[$sql] is not a single search: $other")
+    }
+
+  private val unnestOrders = "FROM orders o JOIN UNNEST(o.items) AS i"
+
+  "a GROUP BY that lists an UNNEST key before a root key" should
+  "emit the request of the same GROUP BY with the root key first" in {
+    // Read in the written order, the aggregate's bucket path (`items.qty>category`) named no bucket
+    // of the request, which emits the root bucket outermost: an aggregate over the array was left
+    // beside the buckets (NULL per group, and a HAVING on the key HTTP 500 on ES 6.8), and a root
+    // aggregate lost the UNNEST bucket.
+    val wrong = for {
+      aggregate <- Seq(
+        "MIN(i.qty) AS m",
+        "COUNT(DISTINCT i.qty) AS m",
+        "COUNT(i.sku) AS m",
+        "COUNT(o.id) AS m",
+        "SUM(o.rank) AS m",
+        "COUNT(*) AS m",
+        ""
+      )
+      clause <- Seq("", " HAVING i.qty = 1", " HAVING i.qty IN (1, 10)", " LIMIT 2")
+      (written, twin) <- Seq(
+        ("i.qty AS q, o.category AS c", "i.qty, o.category", "o.category, i.qty"),
+        (
+          "i.qty AS q, o.category AS c, i.sku AS k",
+          "i.qty, o.category, i.sku",
+          "o.category, i.qty, i.sku"
+        )
+      ).map { case (keys, gb, rootFirst) =>
+        val select = if (aggregate.isEmpty) keys else s"$keys, $aggregate"
+        (
+          s"SELECT $select $unnestOrders GROUP BY $gb$clause",
+          s"SELECT $select $unnestOrders GROUP BY $rootFirst$clause"
+        )
+      }
+      if mappedQueryOf(written) != mappedQueryOf(twin)
+    } yield s"[$written]\n  ${mappedQueryOf(written)}\n  vs [$twin]\n  ${mappedQueryOf(twin)}"
+    withClue(s"${wrong.size} differ:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "place an aggregate over the UNNEST key under the key's bucket" in {
+    val query = mappedQueryOf(
+      s"SELECT i.qty AS q, o.category AS c, MIN(i.qty) AS m $unnestOrders GROUP BY i.qty, o.category"
+    )
+    occurrences(query, itemsQty + ""","aggs":{"m":{"min":{"field":"items.qty"}}}""") shouldBe 1
   }
 
   // ---------------------------------------------------------------------------------------------

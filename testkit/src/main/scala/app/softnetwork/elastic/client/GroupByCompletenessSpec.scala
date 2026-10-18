@@ -2789,9 +2789,10 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   // An aggregate over an UNNEST GROUP BY key, grouped by that key: one value PER GROUP
   // ---------------------------------------------------------------------------------------------
 
-  /** `items` is nested; each entry is (qty, sku). `qty` 1 has three entries, 2 two, 10 and 21 one;
-    * the (sku, qty) pair (x, 1) has three entries and every other pair one. `category` is a root
-    * key.
+  /** `items` is nested; each entry is (qty, sku), and `w`, a number of its own
+    * ([[nestedMetricWeight]]). `qty` 1 has three entries, 2 two, 10 and 21 one; the (sku, qty) pair
+    * (x, 1) has three entries and every other pair one. `category` is a root key and `rank` a root
+    * number.
     */
   private val nestedMetricIndex = "group_by_nested_key_metric"
 
@@ -2806,6 +2807,13 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   private val nestedMetricCategory: Map[String, String] =
     Map("m1" -> "a", "m2" -> "b", "m3" -> "a", "m4" -> "c", "m5" -> "b")
 
+  private val nestedMetricRank: Map[String, Long] =
+    Map("m1" -> 3L, "m2" -> 5L, "m3" -> 7L, "m4" -> 11L, "m5" -> 13L)
+
+  /** The `w` of an entry: a field of the array other than the key. */
+  private def nestedMetricWeight(qty: Long, sku: String): Long =
+    qty * 10 + (if (sku == "x") 1 else 2)
+
   private lazy val nestedMetricLoaded: Unit = {
     val settings = """{"number_of_shards": 2, "number_of_replicas": 0}"""
     val mapping =
@@ -2813,9 +2821,12 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         |  "properties": {
         |    "id":       { "type": "keyword" },
         |    "category": { "type": "keyword" },
+        |    "rank":     { "type": "long" },
         |    "items": {
         |      "type": "nested",
-        |      "properties": { "qty": { "type": "long" }, "sku": { "type": "keyword" } }
+        |      "properties": {
+        |        "qty": { "type": "long" }, "sku": { "type": "keyword" }, "w": { "type": "long" }
+        |      }
         |    }
         |  }
         |}""".stripMargin
@@ -2826,8 +2837,13 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     implicit def metricListToSource[T](list: List[T]): Source[T, NotUsed] =
       Source.fromIterator(() => list.iterator)
     val docs = nestedMetricDocs.map { case (id, items) =>
-      val entries = items.map { case (q, k) => s"""{"qty": $q, "sku": "$k"}""" }.mkString(", ")
-      s"""{"id": "$id", "category": "${nestedMetricCategory(id)}", "items": [$entries]}"""
+      val entries = items
+        .map { case (q, k) =>
+          s"""{"qty": $q, "sku": "$k", "w": ${nestedMetricWeight(q, k)}}"""
+        }
+        .mkString(", ")
+      s"""{"id": "$id", "category": "${nestedMetricCategory(id)}", """ +
+      s""""rank": ${nestedMetricRank(id)}, "items": [$entries]}"""
     }.toList
     client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
       case ElasticSuccess(_) => client.refresh(nestedMetricIndex)
@@ -2979,5 +2995,102 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         Seq("k", "mn", "mx")
       )
     ) shouldBe Right(Seq(Seq("x", "1", "10"), Seq("y", "2", "21")))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // An UNNEST key listed before a root key: answered as the same GROUP BY with the root key first
+  // ---------------------------------------------------------------------------------------------
+
+  /** Every aggregate of the key, and of `w` and `sku`, two other fields of the array. */
+  private val pairAggregates =
+    s"$keyAggregates, MIN(i.w) AS wn, MAX(i.w) AS wx, SUM(i.w) AS ws, AVG(i.w) AS wa, " +
+    "COUNT(i.w) AS wc, COUNT(i.sku) AS kc, COUNT(DISTINCT i.sku) AS kd"
+
+  private val pairColumns =
+    Seq("cat", "q", "mn", "mx", "s", "a", "c", "d", "wn", "wx", "ws", "wa", "wc", "kc", "kd")
+
+  /** The SQL meaning, from the documents: per kept (category, qty) pair, every aggregate of
+    * [[pairAggregates]].
+    */
+  private def perCategoryQty(keep: Long => Boolean): Seq[Seq[String]] =
+    nestedMetricDocs
+      .flatMap { case (id, items) => items.map { case (q, k) => (nestedMetricCategory(id), q, k) } }
+      .groupBy { case (cat, q, _) => (cat, q) }
+      .toSeq
+      .collect {
+        case ((cat, q), entries) if keep(q) =>
+          val n = entries.size.toLong
+          val ws = entries.map { case (_, qty, sku) => BigDecimal(nestedMetricWeight(qty, sku)) }
+          val distinctSkus = entries.map(_._3).distinct.size.toLong
+          Seq(cat) ++ Seq(q, q, q, q * n, q, n, 1L).map(_.toString) ++
+          Seq(ws.min, ws.max, ws.sum, ws.sum / BigDecimal(n)).map(numericText) ++
+          Seq(n, n, distinctSkus).map(_.toString)
+      }
+      .sortBy(_.mkString("|"))
+
+  private val pairSelect = s"SELECT o.category AS cat, i.qty AS q, $pairAggregates $unnestItems"
+
+  "a GROUP BY that lists an UNNEST key before a root key" should
+  "answer per pair as the root-first GROUP BY does, for every aggregate and key condition" in {
+    // Was NULL for every aggregate of the array, which the request left out, on every major; and on
+    // Elasticsearch 6.8 a one-value HAVING on the key failed with HTTP 500.
+    val wrong = Seq(
+      ""                         -> perCategoryQty(_ => true),
+      " HAVING i.qty = 1"        -> perCategoryQty(_ == 1L),
+      " HAVING i.qty <> 2"       -> perCategoryQty(_ != 2L),
+      " HAVING i.qty NOT IN (2)" -> perCategoryQty(_ != 2L),
+      " HAVING i.qty = 2.0"      -> perCategoryQty(_ == 2L),
+      " HAVING i.qty IN (1, 10)" -> perCategoryQty(Set(1L, 10L)),
+      " HAVING MIN(i.qty) > 1"   -> perCategoryQty(_ > 1L)
+    ).flatMap { case (clause, expected) =>
+      val written = s"$pairSelect GROUP BY i.qty, o.category$clause"
+      val actual = metricRows(written, pairColumns)
+      val twin = metricRows(s"$pairSelect GROUP BY o.category, i.qty$clause", pairColumns)
+      Seq(
+        if (sortedByKey(actual) == Right(expected)) None
+        else Some(s"[$written] expected $expected, got $actual"),
+        if (actual == twin) None else Some(s"[$written] answered $actual, the root-first $twin")
+      ).flatten
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "order and limit the pairs as the root-first GROUP BY does" in {
+    val all = perCategoryQty(_ => true)
+    val wrong = Seq(" ORDER BY MIN(i.qty) DESC", " ORDER BY SUM(i.w) DESC", " LIMIT 2").flatMap {
+      clause =>
+        val written = s"$pairSelect GROUP BY i.qty, o.category$clause"
+        val actual = metricRows(written, pairColumns)
+        val twin = metricRows(s"$pairSelect GROUP BY o.category, i.qty$clause", pairColumns)
+        val rowsRight = actual match {
+          case Right(rows) if clause.contains("LIMIT") => rows.nonEmpty && rows.forall(all.contains)
+          case Right(rows)                             => rows.sortBy(_.mkString("|")) == all
+          case Left(_)                                 => false
+        }
+        Seq(
+          if (rowsRight) None else Some(s"[$written] expected rows of $all, got $actual"),
+          if (actual == twin) None else Some(s"[$written] answered $actual, the root-first $twin")
+        ).flatten
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "answer a root aggregate, and the keys alone, as the root-first GROUP BY does" in {
+    // A root aggregate beside an UNNEST key is wrong in EVERY order, a recorded defect: written UNNEST
+    // key first it answered one row per category with the key NULL. It now answers what the
+    // root-first spelling answers, which is asserted here -- never a value.
+    val wrong = for {
+      aggregate <- Seq("COUNT(o.id) AS m", "SUM(o.rank) AS m", "COUNT(*) AS m", "")
+      clause    <- Seq("", " HAVING i.qty = 1", " HAVING i.qty IN (1, 10)")
+      columns = if (aggregate.isEmpty) Seq("q", "cat") else Seq("q", "cat", "m")
+      select =
+        if (aggregate.isEmpty) "SELECT i.qty AS q, o.category AS cat"
+        else s"SELECT i.qty AS q, o.category AS cat, $aggregate"
+      written = s"$select $unnestItems GROUP BY i.qty, o.category$clause"
+      actual = metricRows(written, columns)
+      twin = metricRows(s"$select $unnestItems GROUP BY o.category, i.qty$clause", columns)
+      if actual != twin
+    } yield s"[$written] answered $actual, the root-first $twin"
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
   }
 }
