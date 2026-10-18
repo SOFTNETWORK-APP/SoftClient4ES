@@ -129,6 +129,7 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(dateDiffIndex)
     client.deleteIndex(keyIndex)
     client.deleteIndex(nestedKeyIndex)
+    client.deleteIndex(nestedMetricIndex)
     super.afterAll()
   }
 
@@ -2470,8 +2471,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
   }
 
-  /** The group KEYS the client answers -- and only them: an UNNEST grouping's metrics are a
-    * separate, known defect, so a row asserting them would test that instead.
+  /** The group KEYS the client answers -- and only them: these rows are about which groups a key
+    * condition keeps; the metrics of an UNNEST grouping have rows of their own below.
     */
   private def keysBy(sql: String, field: String): Either[String, Set[String]] = {
     nestedKeyFilterLoaded
@@ -2726,5 +2727,201 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
     }
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // An aggregate over an UNNEST GROUP BY key, grouped by that key: one value PER GROUP
+  // ---------------------------------------------------------------------------------------------
+
+  /** `items` is nested; each entry is (qty, sku). `qty` 1 has three entries, 2 two, 10 and 21 one;
+    * the (sku, qty) pair (x, 1) has three entries and every other pair one. `category` is a root
+    * key.
+    */
+  private val nestedMetricIndex = "group_by_nested_key_metric"
+
+  private val nestedMetricDocs: Seq[(String, Seq[(Long, String)])] = Seq(
+    "m1" -> Seq(1L -> "x", 2L -> "x"),
+    "m2" -> Seq(2L -> "y", 10L -> "x"),
+    "m3" -> Seq(21L -> "y", 1L -> "x"),
+    "m4" -> Seq(1L -> "x"),
+    "m5" -> Seq.empty
+  )
+
+  private val nestedMetricCategory: Map[String, String] =
+    Map("m1" -> "a", "m2" -> "b", "m3" -> "a", "m4" -> "c", "m5" -> "b")
+
+  private lazy val nestedMetricLoaded: Unit = {
+    val settings = """{"number_of_shards": 2, "number_of_replicas": 0}"""
+    val mapping =
+      """{
+        |  "properties": {
+        |    "id":       { "type": "keyword" },
+        |    "category": { "type": "keyword" },
+        |    "items": {
+        |      "type": "nested",
+        |      "properties": { "qty": { "type": "long" }, "sku": { "type": "keyword" } }
+        |    }
+        |  }
+        |}""".stripMargin
+    client.createIndex(nestedMetricIndex, settings = settings).get shouldBe true
+    client.setMapping(nestedMetricIndex, mapping).get shouldBe true
+    implicit val metricBulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = nestedMetricIndex, logEvery = 1000)
+    implicit def metricListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    val docs = nestedMetricDocs.map { case (id, items) =>
+      val entries = items.map { case (q, k) => s"""{"qty": $q, "sku": "$k"}""" }.mkString(", ")
+      s"""{"id": "$id", "category": "${nestedMetricCategory(id)}", "items": [$entries]}"""
+    }.toList
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(nestedMetricIndex)
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $nestedMetricIndex failed: ${error.message}")
+    }
+  }
+
+  private val unnestItems = s"FROM $nestedMetricIndex o JOIN UNNEST(o.items) AS i"
+
+  /** Every aggregate over the key, one column each. */
+  private val keyAggregates =
+    "MIN(i.qty) AS mn, MAX(i.qty) AS mx, SUM(i.qty) AS s, AVG(i.qty) AS a, COUNT(i.qty) AS c, " +
+    "COUNT(DISTINCT i.qty) AS d"
+
+  private val keyColumns = Seq("q", "mn", "mx", "s", "a", "c", "d")
+
+  /** The SQL meaning, from the documents: per kept `qty`, MIN = MAX = AVG = the key, COUNT = its
+    * entries, SUM = key x entries, COUNT(DISTINCT) = 1.
+    */
+  private def perQty(keep: Long => Boolean): Seq[Seq[String]] =
+    nestedMetricDocs
+      .flatMap(_._2)
+      .groupBy(_._1)
+      .toSeq
+      .collect {
+        case (q, entries) if keep(q) =>
+          val n = entries.size.toLong
+          Seq(q, q, q, q * n, q, n, 1L).map(_.toString)
+      }
+      .sortBy(_.mkString("|"))
+
+  /** The rows as the client answers them, in its order; `Left` carries a failure's message. */
+  private def metricRows(sql: String, columns: Seq[String]): Either[String, Seq[Seq[String]]] = {
+    nestedMetricLoaded
+    implicit val metricCtx: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        Right(response.results.map { row =>
+          columns.map(c =>
+            row
+              .get(c)
+              .map(v =>
+                Option(v).map(x => Try(numericText(x)).getOrElse(x.toString)).getOrElse("<null>")
+              )
+              .getOrElse("<absent>")
+          )
+        })
+      case ElasticFailure(error) => Left(error.message)
+    }
+  }
+
+  private def sortedByKey(
+    rows: Either[String, Seq[Seq[String]]]
+  ): Either[String, Seq[Seq[String]]] =
+    rows.map(_.sortBy(_.mkString("|")))
+
+  "an aggregate over an UNNEST GROUP BY key, grouped by that key" should
+  "answer one value per group, for every aggregate" in {
+    // Was NULL on every group: the metric was emitted beside the buckets, one value over all of them.
+    sortedByKey(
+      metricRows(s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty", keyColumns)
+    ) shouldBe Right(perQty(_ => true))
+  }
+
+  it should "filter the groups on it in a HAVING" in {
+    sortedByKey(
+      metricRows(
+        s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty HAVING MIN(i.qty) > 1",
+        keyColumns
+      )
+    ) shouldBe Right(perQty(_ > 1))
+  }
+
+  it should "order the groups by it" in {
+    metricRows(
+      s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty ORDER BY MIN(i.qty) DESC",
+      keyColumns
+    ) shouldBe Right(perQty(_ => true).sortBy(row => -row.head.toLong))
+  }
+
+  it should "still answer per group beside a HAVING on the key, with two values and with one" in {
+    // the one-value spelling is the one Elasticsearch 6.8 used to refuse with an HTTP 500
+    val wrong = Seq(
+      s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty HAVING i.qty IN (1, 10)" ->
+      perQty(Set(1L, 10L)),
+      s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty HAVING i.qty = 1" ->
+      perQty(_ == 1L)
+    ).flatMap { case (sql, expected) =>
+      val actual = sortedByKey(metricRows(sql, keyColumns))
+      if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "answer per group under a LIMIT" in {
+    metricRows(
+      s"SELECT i.qty AS q, $keyAggregates $unnestItems GROUP BY i.qty LIMIT 2",
+      keyColumns
+    ) match {
+      case Right(rows) =>
+        rows should have size 2
+        rows.foreach(row => perQty(_ => true) should contain(row))
+      case Left(error) => fail(error)
+    }
+  }
+
+  it should "answer per pair over two keys of the same array, in both orders" in {
+    val perPair: Seq[Seq[String]] =
+      nestedMetricDocs
+        .flatMap(_._2)
+        .groupBy(identity)
+        .toSeq
+        .map { case ((q, k), entries) => Seq(k, q.toString, q.toString, entries.size.toString) }
+        .sortBy(_.mkString("|"))
+    val wrong = Seq("i.sku, i.qty", "i.qty, i.sku").flatMap { keys =>
+      val sql =
+        s"SELECT i.sku AS k, i.qty AS q, MIN(i.qty) AS mn, COUNT(i.qty) AS c $unnestItems " +
+        s"GROUP BY $keys"
+      val actual = sortedByKey(metricRows(sql, Seq("k", "q", "mn", "c")))
+      if (actual == Right(perPair)) None else Some(s"[$sql] expected $perPair, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "answer per pair grouped by a root key, then the UNNEST key" in {
+    val perPair: Seq[Seq[String]] =
+      nestedMetricDocs
+        .flatMap { case (id, items) => items.map(e => nestedMetricCategory(id) -> e._1) }
+        .groupBy(identity)
+        .toSeq
+        .map { case ((cat, q), entries) => Seq(cat, q.toString, q.toString, entries.size.toString) }
+        .sortBy(_.mkString("|"))
+    sortedByKey(
+      metricRows(
+        s"SELECT o.category AS cat, i.qty AS q, MIN(i.qty) AS mn, COUNT(i.qty) AS c $unnestItems " +
+        "GROUP BY o.category, i.qty",
+        Seq("cat", "q", "mn", "c")
+      )
+    ) shouldBe Right(perPair)
+  }
+
+  it should "leave an aggregate over ANOTHER field of the array as it was -- per group" in {
+    // the canary: grouped by `sku`, the aggregate over `qty` always was a sub-aggregation
+    sortedByKey(
+      metricRows(
+        s"SELECT i.sku AS k, MIN(i.qty) AS mn, MAX(i.qty) AS mx $unnestItems GROUP BY i.sku",
+        Seq("k", "mn", "mx")
+      )
+    ) shouldBe Right(Seq(Seq("x", "1", "10"), Seq("y", "2", "21")))
   }
 }

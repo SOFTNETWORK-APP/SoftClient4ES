@@ -306,16 +306,20 @@ package object bridge {
           val nestedBuckets =
             nestedGroupedBuckets.map(_.getOrElse(n.innerHitsName, Seq.empty))
 
-          val notRelatedAggregationsToBuckets = elasticAggregations
-            .filterNot { ea =>
-              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
-            }
+          // An aggregation over a GROUP BY key of this element is emitted BESIDE the buckets only
+          // when no bucket of this element is its own: one whose `bucketPath` names a node goes to
+          // `buildBuckets`, which places it under that node by the very same test. Emitted beside,
+          // it was one value over every group, which the response reader never looks for inside a
+          // bucket: `MIN(i.qty) ... GROUP BY i.qty` answered NULL on every group.
+          def emittedBesideTheBuckets(ea: ElasticAggregation): Boolean =
+            nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField) &&
+            !nestedBuckets.flatten.exists(nb => nb.bucketPath == ea.bucketPath)
 
-          val relatedAggregationsToBuckets = elasticAggregations
-            .filter { ea =>
-              nestedBuckets.flatten.exists(nb => nb.bucket.identifier.path == ea.sourceField)
-            }
-            .map(_.agg)
+          val notRelatedAggregationsToBuckets =
+            elasticAggregations.filterNot(emittedBesideTheBuckets)
+
+          val relatedAggregationsToBuckets =
+            elasticAggregations.filter(emittedBesideTheBuckets).map(_.agg)
 
           // Get the directions for this nested aggregation -- read by `valuePath`, as the root's
           val ordered = references

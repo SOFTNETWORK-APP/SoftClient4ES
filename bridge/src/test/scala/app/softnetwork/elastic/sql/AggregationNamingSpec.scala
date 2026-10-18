@@ -188,6 +188,73 @@ class AggregationNamingSpec extends AnyFlatSpec with Matchers {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // An aggregate over an UNNEST GROUP BY key, grouped by that key: a sub-aggregation of its bucket
+  // ---------------------------------------------------------------------------------------------
+
+  private val itemsQty = """"q":{"terms":{"field":"items.qty","size":65536,"min_doc_count":1}"""
+
+  "an aggregate over an UNNEST GROUP BY key, grouped by that key" should
+  "be a sub-aggregation of the key's bucket, not a sibling of it" in {
+    // Was `"aggs":{"m":{"min":...},"q":{"terms":...}}`: ONE value over every group, beside the
+    // buckets, which the response reader never looks for inside a bucket -- NULL on every group.
+    queryOf(
+      "SELECT i.qty AS q, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i GROUP BY i.qty"
+    ) shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"i":{"nested":{"path":"items"},""",
+      """"aggs":{""",
+      itemsQty,
+      ""","aggs":{"m":{"min":{"field":"items.qty"}}}}}}}}"""
+    ).mkString
+  }
+
+  it should "sit beside the HAVING selector that reads it" in {
+    // Was a `bucket_selector` inside `q` reading an `m` that lived outside it.
+    queryOf(
+      """SELECT i.qty AS q, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i
+        |GROUP BY i.qty HAVING MIN(i.qty) > 1""".stripMargin
+    ) shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"i":{"nested":{"path":"items"},""",
+      """"aggs":{""",
+      itemsQty,
+      ""","aggs":{"m":{"min":{"field":"items.qty"}},""",
+      """"having_filter":{"bucket_selector":{"buckets_path":{"m":"m"},"script":{"source":"""",
+      """(((def) (params.m == null || Double.isNaN(params.m) || Double.isInfinite(params.m) ? null : params.m))""",
+      """ == null ? false : """,
+      """(((def) (params.m == null || Double.isNaN(params.m) || Double.isInfinite(params.m) ? null : params.m))""",
+      """ > 1))"}}}}}}}}}"""
+    ).mkString
+  }
+
+  it should "be a sub-aggregation of the innermost bucket over two keys of the same array" in {
+    queryOf(
+      """SELECT i.sku AS k, i.qty AS q, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i
+        |GROUP BY i.sku, i.qty""".stripMargin
+    ) shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"i":{"nested":{"path":"items"},""",
+      """"aggs":{"k":{"terms":{"field":"items.sku","size":65536,"min_doc_count":1},"aggs":{""",
+      itemsQty,
+      ""","aggs":{"m":{"min":{"field":"items.qty"}}}}}}}}}}"""
+    ).mkString
+  }
+
+  it should "stay where it is when no bucket of its nested level is its own" in {
+    // The canary of the boundary: grouped by the UNNEST key THEN a root key, the root bucket is
+    // emitted outermost and the aggregate's bucket path (`i.qty>o.category`) names no bucket of the
+    // nested level -- moved, `buildBuckets` would drop it. Its emission is the one it always had
+    // (and it still answers NULL per group: not this change's class).
+    queryOf(
+      """SELECT i.qty AS q, o.category AS c, MIN(i.qty) AS m FROM orders o JOIN UNNEST(o.items) AS i
+        |GROUP BY i.qty, o.category""".stripMargin
+    ) shouldBe Seq(
+      """{"query":{"match_all":{}},"size":0,"_source":false,"aggs":{"c":{""",
+      """"terms":{"field":"category","size":65536,"min_doc_count":1},""",
+      """"aggs":{"i":{"nested":{"path":"items"},"aggs":{"m":{"min":{"field":"items.qty"}},""",
+      itemsQty,
+      """}}}}}}}"""
+    ).mkString
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // #223 -- HAVING / ORDER BY over a transformed aggregate
   // ---------------------------------------------------------------------------------------------
 
