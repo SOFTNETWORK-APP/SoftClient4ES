@@ -570,7 +570,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "terms": {
       |        "field": "Country",
       |        "size": 65536,
-      |        "exclude": "USA",
+      |        "exclude": ["USA", "USA"],
       |        "min_doc_count": 1,
       |        "order": {
       |          "_key": "asc"
@@ -581,7 +581,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "terms": {
       |            "field": "City",
       |            "size": 65536,
-      |            "exclude": "Berlin",
+      |            "exclude": ["Berlin", "Berlin"],
       |            "min_doc_count": 1,
       |            "order": {
       |              "cnt": "desc"
@@ -841,7 +841,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |              "terms": {
       |                "field": "products.category",
       |                "size": 10,
-      |                "exclude": "coffee",
+      |                "exclude": ["coffee", "coffee"],
       |                "min_doc_count": 1
       |              },
       |              "aggs": {
@@ -1147,7 +1147,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "terms": {
       |        "field": "Country",
       |        "size": 65536,
-      |        "exclude": "USA",
+      |        "exclude": ["USA", "USA"],
       |        "min_doc_count": 1,
       |        "order": {
       |          "_key": "asc"
@@ -1158,7 +1158,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "terms": {
       |            "field": "City",
       |            "size": 65536,
-      |            "exclude": "Berlin",
+      |            "exclude": ["Berlin", "Berlin"],
       |            "min_doc_count": 1
       |          },
       |          "aggs": {
@@ -1228,7 +1228,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      "terms": {
       |        "field": "Country",
       |        "size": 65536,
-      |        "exclude": "USA",
+      |        "exclude": ["USA", "USA"],
       |        "min_doc_count": 1,
       |        "order": {
       |          "_key": "asc"
@@ -1239,7 +1239,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |          "terms": {
       |            "field": "City",
       |            "size": 65536,
-      |            "exclude": "Berlin",
+      |            "exclude": ["Berlin", "Berlin"],
       |            "min_doc_count": 1
       |          },
       |          "aggs": {
@@ -5191,8 +5191,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val query = select.query
     println(query)
     query should include(""""field":"category"""")
-    // elastic4s 6 renders a single-value terms exclude as a bare string; 7+ renders an array.
-    query should include(""""exclude":"x""")
+    // This bridge writes a one-value list as the value twice -- an exact SET on 6.8 (elastic4s 6
+    // writes a one-entry list as a bare string, which 6.8 reads as a regex).
+    query should include(""""exclude":["x","x"]""")
   }
 
   it should "resolve an ordinal GROUP BY that an aliased ORDER BY or HAVING then names" in {
@@ -5204,8 +5205,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
 
     val filtered: ElasticSearchRequest =
       SelectStatement("SELECT category AS cat FROM Table GROUP BY 1 HAVING cat <> 'x'")
-    // elastic4s 6 renders a single-value terms exclude as a bare string; 7+ renders an array.
-    filtered.query should include(""""exclude":"x""")
+    // This bridge writes a one-value list as the value twice -- an exact SET on 6.8.
+    filtered.query should include(""""exclude":["x","x"]""")
   }
 
   it should "script EVERY bucket that has no field name, not only the constant ones" in {

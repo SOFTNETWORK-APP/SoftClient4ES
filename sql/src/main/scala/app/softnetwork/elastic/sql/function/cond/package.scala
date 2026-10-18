@@ -1777,7 +1777,7 @@ package object cond {
       t == SQLTypes.Temporal
 
     /** A whole-number type: TINYINT, SMALLINT, INT or BIGINT. */
-    private[cond] def wholeNumber(t: SQLType): Boolean = t match {
+    private[sql] def wholeNumber(t: SQLType): Boolean = t match {
       case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => true
       case _                                                         => false
     }

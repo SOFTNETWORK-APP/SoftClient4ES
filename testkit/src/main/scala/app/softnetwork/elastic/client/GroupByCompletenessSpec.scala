@@ -21,6 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Sink, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result.{
+  ElasticError,
   ElasticFailure,
   ElasticResult,
   ElasticSuccess,
@@ -33,6 +34,7 @@ import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence.generateUUID
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -43,6 +45,7 @@ import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.implicitConversions
+import scala.util.{Failure, Success, Try}
 
 case class CategoryCount(category: String, cnt: Long)
 
@@ -124,6 +127,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(nullIndex)
     client.deleteIndex(coalesceIndex)
     client.deleteIndex(dateDiffIndex)
+    client.deleteIndex(keyIndex)
+    client.deleteIndex(nestedKeyIndex)
     super.afterAll()
   }
 
@@ -1012,12 +1017,9 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   }
 
   it should "still honour one include and one exclude under AND" in {
-    // ⚠️ Both lists carry SEVERAL values on purpose. RESIDUAL, pre-existing and ES-6-ONLY, found
-    // by this matrix: the es6 bridge renders a SINGLE-element list as a bare string
-    // (`"exclude":"c"`), which ES 6.8 reads as a REGEX, and mixing a set-based include with a
-    // regex-based exclude is rejected with HTTP 400 `Cannot mix a set-based include with a
-    // regex-based method`. The emission is byte-identical to `455433ae`; it is recorded, not fixed
-    // here.
+    // Both lists carry SEVERAL values. The ONE-value forms of this shape used to fail on ES 6.8 (a
+    // one-entry list was written as a bare string, which 6.8 reads as a REGEX, and a regex beside a
+    // set is `Cannot mix ...`, HTTP 400); the one-value key-filter rows below pin them.
     categoriesOf(
       "HAVING category IN ('cat_35','cat_36','cat_37') AND category NOT IN ('cat_35','cat_36')"
     ) shouldBe Seq("cat_37")
@@ -2302,5 +2304,427 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         }
       }
     }
+  }
+
+  // =============================================================================================
+  // A ONE-value `terms` include / exclude is an EXACT value, on every major.
+  //
+  // Elasticsearch 6.8 used to read a one-value key filter as a REGEX: the es6 bridge's elastic4s
+  // 6.7.8 writes a one-entry list as a bare JSON string and 6.8 compiles a string `include` as a
+  // Lucene RegExp. The fixture above holds only `cat_NN` keys and one integer, so every earlier row
+  // passed on 6.8 by construction. This index is built so the REGEX reading and the EXACT reading
+  // give DIFFERENT groups for every value under test (`a.b` beside `axb`, `a*` beside `a`, `aa`
+  // and the empty key, ...). The oracle is the SQL meaning computed from the documents below --
+  // never the engine -- and the same rows run on every major. The es6 bridge's
+  // `TermsIncludeExcludeSpec` sweeps the same alphabet through Elasticsearch 6.8.23's own code.
+  // =============================================================================================
+
+  private val keyIndex = "group_by_key_filter"
+
+  private val valuesUnderTest: Seq[String] =
+    Seq("a.b", "a*", "a+b", "(x)", "[a]", "a|b", "a@b", "a\"b", "a\\b", "it's", "^a$", "é", "")
+
+  /** Keys the REGEX reading of some value above also keeps -- they make the readings disagree. */
+  private val decoys: Seq[String] = Seq("axb", "a", "aa", "ab", "aab", "x", "b", "its")
+
+  private val stringKeys: Seq[String] = valuesUnderTest ++ decoys
+
+  private final case class KeyDoc(id: String, fields: Seq[(String, AnyRef)])
+
+  /** `sval` key #i holds i + 1 documents; the numeric and boolean keys carry their own counts; four
+    * documents carry a keyword AND a long key, for the two-level row.
+    */
+  private lazy val keyDocs: Seq[KeyDoc] =
+    stringKeys.zipWithIndex.flatMap { case (k, i) =>
+      (0 to i).map(j => KeyDoc(s"s$i-$j", Seq("sval" -> k)))
+    } ++
+    Seq(1L -> 1, 2L -> 2, 10L -> 3, 21L -> 4).flatMap { case (v, n) =>
+      (1 to n).map(j => KeyDoc(s"l$v-$j", Seq("lval" -> java.lang.Long.valueOf(v))))
+    } ++
+    Seq(1.5 -> 1, 2.5 -> 2, 10.5 -> 3).flatMap { case (v, n) =>
+      (1 to n).map(j => KeyDoc(s"d$v-$j", Seq("dval" -> java.lang.Double.valueOf(v))))
+    } ++
+    Seq(true -> 2, false -> 3).flatMap { case (v, n) =>
+      (1 to n).map(j => KeyDoc(s"b$v-$j", Seq("bval" -> java.lang.Boolean.valueOf(v))))
+    } ++
+    Seq("a.b" -> 1L, "a.b" -> 1L, "axb" -> 1L, "a.b" -> 2L).zipWithIndex.map { case ((s, l), j) =>
+      KeyDoc(s"p$j", Seq("sval" -> s, "lval" -> java.lang.Long.valueOf(l)))
+    }
+
+  private val keyJson = new ObjectMapper()
+
+  private def jsonOf(doc: KeyDoc): String = {
+    val fields = new java.util.LinkedHashMap[String, AnyRef]()
+    fields.put("id", doc.id)
+    doc.fields.foreach { case (k, v) => fields.put(k, v) }
+    keyJson.writeValueAsString(fields) // escapes `"` and `\` in the keys -- never interpolate them
+  }
+
+  private lazy val keyFilterLoaded: Unit = {
+    val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
+    val mapping =
+      """{
+        |  "properties": {
+        |    "id":   { "type": "keyword" },
+        |    "sval": { "type": "keyword" },
+        |    "lval": { "type": "long" },
+        |    "dval": { "type": "double" },
+        |    "bval": { "type": "boolean" }
+        |  }
+        |}""".stripMargin
+    client.createIndex(keyIndex, settings = settings).get shouldBe true
+    client.setMapping(keyIndex, mapping).get shouldBe true
+    implicit val keyBulkOptions: BulkOptions = BulkOptions(defaultIndex = keyIndex, logEvery = 1000)
+    implicit def keyListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](keyDocs.map(jsonOf).toList, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(keyIndex)
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $keyIndex failed: ${error.message}")
+    }
+  }
+
+  /** An UNNEST grouping key: `items` is nested, and its `qty` values group as 1, 2, 10 and 21. */
+  private val nestedKeyIndex = "group_by_nested_key_filter"
+
+  private lazy val nestedKeyFilterLoaded: Unit = {
+    val settings = """{"number_of_shards": 2, "number_of_replicas": 0}"""
+    val mapping =
+      """{
+        |  "properties": {
+        |    "id":       { "type": "keyword" },
+        |    "category": { "type": "keyword" },
+        |    "items":    { "type": "nested", "properties": { "qty": { "type": "long" } } }
+        |  }
+        |}""".stripMargin
+    client.createIndex(nestedKeyIndex, settings = settings).get shouldBe true
+    client.setMapping(nestedKeyIndex, mapping).get shouldBe true
+    implicit val nestedBulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = nestedKeyIndex, logEvery = 1000)
+    implicit def nestedListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    val docs = Seq(
+      ("n1", "a", Seq(1L, 2L)),
+      ("n2", "b", Seq(2L, 10L)),
+      ("n3", "a", Seq(21L)),
+      ("n4", "c", Seq(1L))
+    ).map { case (id, category, items) =>
+      val quantities = items.map(q => s"""{"qty": $q}""").mkString(", ")
+      s"""{"id": "$id", "category": "$category", "items": [$quantities]}"""
+    }.toList
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(nestedKeyIndex)
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $nestedKeyIndex failed: ${error.message}")
+    }
+  }
+
+  private def unnestedKey(predicate: String): String =
+    s"SELECT inner_items.qty AS q, MIN(inner_items.qty) AS m FROM $nestedKeyIndex tt " +
+    s"JOIN UNNEST(tt.items) AS inner_items GROUP BY inner_items.qty HAVING $predicate"
+
+  private lazy val esMajor: Int =
+    client.version match {
+      case ElasticSuccess(v) => v.takeWhile(_ != '.').toInt
+      case ElasticFailure(error) =>
+        fail(s"Failed to retrieve the Elasticsearch version: ${error.message}")
+    }
+
+  /** A number as ONE spelling, whatever type a client materialises it as (`1`, `1L`, `1.0`). */
+  private def numericText(v: Any): String =
+    BigDecimal(v.toString).bigDecimal.stripTrailingZeros.toPlainString
+
+  /** The numeric key columns, `l` being `lval` under its SELECT alias. */
+  private val numericKeys: Set[String] = Set("lval", "dval", "l")
+
+  /** A key as the oracle and the client answer are compared: numeric keys by value. */
+  private def keyText(field: String, v: Any): String =
+    if (numericKeys(field)) numericText(v) else v.toString
+
+  /** The SQL meaning, from the documents: kept key -> its document count. */
+  private def expectedCounts(field: String, keep: String => Boolean): Map[String, Long] = {
+    val column = if (field == "l") "lval" else field
+    keyDocs
+      .flatMap(_.fields.collect { case (`column`, v) => keyText(field, v) })
+      .filter(keep)
+      .groupBy(identity)
+      .map { case (k, vs) => k -> vs.size.toLong }
+  }
+
+  /** Key -> count as the client answers; `Left` carries a failure's message. */
+  private def countsBy(sql: String, field: String): Either[String, Map[String, Long]] = {
+    keyFilterLoaded
+    implicit val keyCtx: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        Right(response.results.map { row =>
+          row
+            .get(field)
+            .map(v => Option(v).map(keyText(field, _)).getOrElse("<null>"))
+            .getOrElse("<absent>") ->
+          row.get("c").map(_.toString.toDouble.toLong).getOrElse(-1L)
+        }.toMap)
+      case ElasticFailure(error) => Left(error.message)
+    }
+  }
+
+  /** The group KEYS the client answers -- and only them: an UNNEST grouping's metrics are a
+    * separate, known defect, so a row asserting them would test that instead.
+    */
+  private def keysBy(sql: String, field: String): Either[String, Set[String]] = {
+    nestedKeyFilterLoaded
+    implicit val keyCtx: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        Right(
+          response.results
+            .map(_.get(field).map(v => Option(v).map(numericText).getOrElse("<null>")))
+            .map(_.getOrElse("<absent>"))
+            .toSet
+        )
+      case ElasticFailure(error) => Left(error.message)
+    }
+  }
+
+  private def sqlString(v: String): String = "'" + v.replace("'", "''") + "'"
+
+  /** `field <op> literal` for the four one-value operators, and whether each KEEPS the value. */
+  private val oneValueOps: Seq[(String, Boolean, (String, String) => String)] = Seq(
+    ("=", true, (f, l) => s"$f = $l"),
+    ("IN", true, (f, l) => s"$f IN ($l)"),
+    ("<>", false, (f, l) => s"$f <> $l"),
+    ("NOT IN", false, (f, l) => s"$f NOT IN ($l)")
+  )
+
+  "a one-value filter on a keyword GROUP BY key" should
+  "keep or remove EXACTLY that value -- never its regex reading" in {
+    val cells = for {
+      v                        <- valuesUnderTest
+      (op, include, predicate) <- oneValueOps
+      // `= ''` / `<> ''` never reach the key filter: refused before emission on every major
+      if !(v.isEmpty && (op == "=" || op == "<>"))
+    } yield (v, include, predicate("sval", sqlString(v)))
+    cells should have size (valuesUnderTest.size * oneValueOps.size - 2).toLong
+    val wrong = cells.flatMap { case (v, include, predicate) =>
+      val sql = s"SELECT sval, COUNT(*) AS c FROM $keyIndex GROUP BY sval HAVING $predicate"
+      val expected = expectedCounts("sval", k => if (include) k == v else k != v)
+      countsBy(sql, "sval") match {
+        case Right(actual) if actual == expected => None
+        case other => Some(s"[$sql]\n    expected $expected\n    got      $other")
+      }
+    }
+    withClue(s"${wrong.size} of ${cells.size} cells wrong:\n${wrong.mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
+  }
+
+  it should "refuse the empty string compared with = or <> before emission (a CONTROL)" in {
+    keyFilterLoaded
+    val wrong = Seq("sval = ''", "sval <> ''").flatMap { predicate =>
+      val sql = s"SELECT sval, COUNT(*) AS c FROM $keyIndex GROUP BY sval HAVING $predicate"
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error) if error.statusCode.contains(400) => None
+        case other => Some(s"[$sql] must be refused before emission, got $other")
+      }
+    }
+    withClue(s"${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "compare a numeric key as a number and a boolean key as a boolean -- never fail" in {
+    val numericWrong = for {
+      (field, v)               <- Seq("lval" -> "1", "dval" -> "1.5")
+      (op, include, predicate) <- oneValueOps
+      sql = s"SELECT $field, COUNT(*) AS c FROM $keyIndex GROUP BY $field HAVING ${predicate(field, v)}"
+      expected = expectedCounts(field, k => if (include) k == v else k != v)
+      actual = countsBy(sql, field)
+      if actual != Right(expected)
+    } yield s"[$sql] expected $expected, got $actual"
+    // `=` / `<>` only -- no boolean IN grammar. A boolean key's spelling in a row differs by client,
+    // so the COUNT identifies the group: 2 documents are true, 3 are false.
+    val booleanWrong = Seq("bval = true" -> 2L, "bval <> true" -> 3L).flatMap {
+      case (predicate, count) =>
+        val sql = s"SELECT bval, COUNT(*) AS c FROM $keyIndex GROUP BY bval HAVING $predicate"
+        val actual = countsBy(sql, "bval").map(_.values.toSeq)
+        if (actual == Right(Seq(count))) None
+        else Some(s"[$sql] expected Right(List($count)), got $actual")
+    }
+    val wrong = numericWrong ++ booleanWrong
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "filter each of two grouping levels exactly" in {
+    keyFilterLoaded
+    implicit val levelsCtx: ConversionContext = NativeContext
+    val sql =
+      s"SELECT sval, lval, COUNT(*) AS c FROM $keyIndex GROUP BY sval, lval " +
+      "HAVING sval = 'a.b' AND lval = 1"
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        response.results.map(r =>
+          (r("sval").toString, numericText(r("lval")), r("c").toString.toDouble.toLong)
+        ) shouldBe Seq(("a.b", "1", 2L))
+      case ElasticFailure(error) => fail(s"[$sql] ${error.message}")
+    }
+  }
+
+  "the kept and removed lists of one key filter" should
+  "combine exactly -- and on Elasticsearch 6 refuse, by name, only a pattern beside several values" in {
+    keyFilterLoaded
+    val aKeys: Set[String] = stringKeys.filter(_.startsWith("a")).toSet
+    val cells: Seq[(String, String, Set[String])] = Seq(
+      ("V1+V1", "sval = 'a.b' AND sval <> 'axb'", Set("a.b")),
+      ("V1+Vn", "sval = 'a.b' AND sval NOT IN ('axb','b')", Set("a.b")),
+      ("V1+P", "sval = 'a.b' AND sval NOT LIKE 'x%'", Set("a.b")),
+      ("Vn+V1", "sval IN ('a.b','axb') AND sval <> 'axb'", Set("a.b")),
+      ("Vn+Vn", "sval IN ('a.b','axb','b') AND sval NOT IN ('axb','x')", Set("a.b", "b")),
+      ("Vn+P", "sval IN ('a.b','axb') AND sval NOT LIKE 'x%'", Set("a.b", "axb")),
+      ("P+V1", "sval LIKE 'a%' AND sval <> 'a.b'", aKeys - "a.b"),
+      ("P+Vn", "sval LIKE 'a%' AND sval NOT IN ('a.b','axb')", aKeys -- Set("a.b", "axb")),
+      ("P+P", "sval LIKE 'a%' AND sval NOT LIKE 'a.%'", aKeys - "a.b")
+    )
+    val refusedOnSix = Set("Vn+P", "P+Vn")
+    def namedRefusal(e: ElasticError): Boolean =
+      e.statusCode.contains(400) &&
+      e.message.contains("HAVING cannot filter the GROUP BY key 'sval' on Elasticsearch 6") &&
+      e.message.contains("RLIKE") && e.message.contains("escaping") && e.message.contains("7.11")
+    // COLLECTED, never `foreach { ... shouldBe ... }`: a red run must read as the per-cell map.
+    val wrong = cells.flatMap { case (label, predicate, kept) =>
+      val sql = s"SELECT sval, COUNT(*) AS c FROM $keyIndex GROUP BY sval HAVING $predicate"
+      if (esMajor == 6 && refusedOnSix(label)) {
+        // the gateway route (REPL / JDBC / Arrow): an honest 400 naming the key and the remedy
+        val gateway = Await.result(client.run(sql), 60.seconds) match {
+          case ElasticFailure(error) if namedRefusal(error) => None
+          case other =>
+            Some(s"[$label] gateway: must be refused by name on Elasticsearch 6, got $other")
+        }
+        // the direct client API: the same ElasticError, THROWN or returned; an answer is not
+        implicit val directCtx: ConversionContext = NativeContext
+        val direct = Try(client.search(SelectStatement(sql))) match {
+          case Failure(e: ElasticError) if namedRefusal(e)   => None
+          case Success(ElasticFailure(e)) if namedRefusal(e) => None
+          case other => Some(s"[$label] direct API: must be refused by name, got $other")
+        }
+        gateway.toSeq ++ direct.toSeq
+      } else {
+        val expected = expectedCounts("sval", kept)
+        countsBy(sql, "sval") match {
+          case Right(actual) if actual == expected => Nil
+          case other => Seq(s"[$label] $sql\n    expected $expected\n    got      $other")
+        }
+      }
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "answer the remedy the refusal names -- on every major, with the groups meant" in {
+    val aKeys: Set[String] = stringKeys.filter(_.startsWith("a")).toSet
+    val wrong = Seq(
+      "sval LIKE 'a%' AND sval NOT RLIKE 'a\\.b|axb'" -> (aKeys -- Set("a.b", "axb")),
+      "sval RLIKE 'a\\.b|axb' AND sval NOT LIKE 'x%'" -> Set("a.b", "axb")
+    ).flatMap { case (predicate, kept) =>
+      val sql = s"SELECT sval, COUNT(*) AS c FROM $keyIndex GROUP BY sval HAVING $predicate"
+      val expected = Right(expectedCounts("sval", kept))
+      val actual = countsBy(sql, "sval")
+      if (actual == expected) None else Some(s"[$sql] expected $expected, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  "a key filter on the completeness fixture" should "filter an INTEGER grouping key exactly" in {
+    implicit val intCtx: ConversionContext = NativeContext
+    client.search(
+      SelectStatement(
+        "SELECT amount, COUNT(*) AS c FROM group_by_completeness GROUP BY amount HAVING amount = 2"
+      )
+    ) match {
+      case ElasticSuccess(response) =>
+        // amount 2 exists in cat_02 .. cat_37: 36 documents, one group
+        response.results.map(r =>
+          numericText(r("amount")) -> r("c").toString.toDouble.toLong
+        ) shouldBe
+          Seq("2" -> (categories - 1).toLong)
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
+  }
+
+  it should "honour a multi-value include beside a ONE-value exclude" in {
+    categoriesOf(
+      "HAVING category IN ('cat_35','cat_36','cat_37') AND category <> 'cat_35'"
+    ) shouldBe Seq("cat_36", "cat_37")
+  }
+
+  "a fractional number compared with an INTEGER GROUP BY key" should
+  "be refused by name on every major -- never rounded by Elasticsearch" in {
+    keyFilterLoaded
+    nestedKeyFilterLoaded
+    // (statement, the key column in the rows, the key as the refusal names it). The SELECT-alias
+    // rows are the spelling whose HAVING leaf carries no column of its own: the rule must read the
+    // BUCKET's type.
+    val rows = Seq(
+      (
+        s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval = 1.5",
+        "lval",
+        "lval"
+      ),
+      (
+        s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval <> 1.5",
+        "lval",
+        "lval"
+      ),
+      (
+        s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval IN (1.5, 2.5)",
+        "lval",
+        "lval"
+      ),
+      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = 1.5", "l", "l"),
+      // a STRING reaches the filter as the same text, and Elasticsearch parses it as a number
+      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = '1.5'", "l", "l"),
+      // an UNNEST key, whose predicate the resolution wraps in its nested relation
+      (unnestedKey("inner_items.qty <> 1.5"), "q", "inner_items.qty"),
+      (unnestedKey("inner_items.qty NOT IN (1.5)"), "q", "inner_items.qty")
+    )
+    // COLLECTED, and a row that is answered prints WHAT Elasticsearch answered: that is the premise
+    // of the rule (`lval = 1.5` keeps the group 1, `lval <> 1.5` drops it).
+    val wrong = rows.flatMap { case (sql, column, key) =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error)
+            if error.statusCode.contains(400) &&
+              error.message.contains(s"HAVING cannot compare the integer GROUP BY key $key") =>
+          None
+        case other =>
+          Some(
+            s"[$sql] must be refused, got $other -- the groups answered: ${countsBy(sql, column)}"
+          )
+      }
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "still accept a whole number with a decimal point, and a fraction on a DOUBLE key" in {
+    val wrong = Seq(
+      (s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval = 2.0", "lval") ->
+      expectedCounts("lval", _ == "2"),
+      (s"SELECT dval, COUNT(*) AS c FROM $keyIndex GROUP BY dval HAVING dval = 1.5", "dval") ->
+      expectedCounts("dval", _ == "1.5"),
+      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = 2.0", "l") ->
+      expectedCounts("l", _ == "2")
+    ).flatMap { case ((sql, field), expected) =>
+      val actual = countsBy(sql, field)
+      if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "still accept a whole number on an UNNEST key -- asserted on the group KEYS" in {
+    val wrong = Seq(
+      unnestedKey("inner_items.qty = 2.0") -> Set("2"),
+      unnestedKey("inner_items.qty <> 2")  -> Set("1", "10", "21")
+    ).flatMap { case (sql, expected) =>
+      val actual = keysBy(sql, "q")
+      if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
   }
 }
