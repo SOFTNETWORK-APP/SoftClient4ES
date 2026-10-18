@@ -215,8 +215,10 @@ A single value in either list is unaffected, and so is every other combination.
 `HAVING year = 2025.5` (and `<>`, `IN`, `NOT IN`) over an integer grouping key is refused with a
 `400` on every Elasticsearch release — *"HAVING cannot compare the integer GROUP BY key year with
 2025.5 …"*: no integer equals that number, and Elasticsearch would round it down and keep the group
-`2025`. Compare the key with a whole number. The check needs the index mapping: over an index
-pattern or several indices, the number is rounded down by Elasticsearch, without an error. See
+`2025`. Compare the key with a whole number. The check needs the index mapping; an index pattern
+or several indices have one too, merged over the indices they match. Where no mapping is known — a
+pattern that matches no index, a mapping that cannot be read, or a key the matched indices map with
+different types — the number is rounded down by Elasticsearch, without an error. See
 [Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
 
 ## `DATE_FORMAT` / `DATETIME_FORMAT` over a bare date column — Elasticsearch 6.8 refuses it

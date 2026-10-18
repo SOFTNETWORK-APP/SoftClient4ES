@@ -130,6 +130,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(keyIndex)
     client.deleteIndex(nestedKeyIndex)
     client.deleteIndex(nestedMetricIndex)
+    client.deleteIndex(mixedIntIndex)
+    client.deleteIndex(mixedLongIndex)
     super.afterAll()
   }
 
@@ -2727,6 +2729,60 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
     }
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  /** The keys fixture under an index PATTERN: it matches that one index. */
+  private val keyPattern = "group_by_key_filt*"
+
+  /** Two indices mapping `lval` with DIFFERENT numeric types: integer in one, long in the other. */
+  private val mixedIntIndex = "group_by_key_mixed_int"
+  private val mixedLongIndex = "group_by_key_mixed_long"
+
+  private lazy val mixedKeyLoaded: Unit =
+    Seq(mixedIntIndex -> "integer", mixedLongIndex -> "long").foreach { case (index, lvalType) =>
+      val settings = """{"number_of_shards": 1, "number_of_replicas": 0}"""
+      val mapping =
+        s"""{"properties": {"id": {"type": "keyword"}, "lval": {"type": "$lvalType"}}}"""
+      client.createIndex(index, settings = settings).get shouldBe true
+      client.setMapping(index, mapping).get shouldBe true
+      implicit val mixedBulkOptions: BulkOptions =
+        BulkOptions(defaultIndex = index, logEvery = 1000)
+      implicit def mixedListToSource[T](list: List[T]): Source[T, NotUsed] =
+        Source.fromIterator(() => list.iterator)
+      // lval 1: one document in the integer index, two in the long one
+      val values = if (lvalType == "integer") Seq(1L, 2L) else Seq(1L, 1L, 3L)
+      val docs = values.zipWithIndex.map { case (v, j) =>
+        s"""{"id": "$lvalType-$j", "lval": $v}"""
+      }.toList
+      client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+        case ElasticSuccess(_) => client.refresh(index)
+        case ElasticFailure(error) =>
+          error.cause.foreach(_.printStackTrace())
+          fail(s"Bulk indexing $index failed: ${error.message}")
+      }
+    }
+
+  it should "be refused over an INDEX PATTERN too, whose merged mapping types the key" in {
+    keyFilterLoaded
+    val sql = s"SELECT lval, COUNT(*) AS c FROM $keyPattern GROUP BY lval HAVING lval = 1.5"
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticFailure(error) =>
+        withClue(s"[$sql] ") {
+          error.statusCode shouldBe Some(400)
+          error.message should include("HAVING cannot compare the integer GROUP BY key lval")
+        }
+      case other => fail(s"[$sql] must be refused, got $other")
+    }
+  }
+
+  it should "be left to Elasticsearch where the indices map the key with different types" in {
+    // the merged mapping gives `lval` no type, so no check runs: Elasticsearch rounds 1.5 down
+    // and keeps the group 1 -- the documented boundary of the check
+    mixedKeyLoaded
+    val sql =
+      s"SELECT lval, COUNT(*) AS c FROM $mixedIntIndex, $mixedLongIndex GROUP BY lval " +
+      "HAVING lval = 1.5"
+    countsBy(sql, "lval") shouldBe Right(Map("1" -> 3L))
   }
 
   // ---------------------------------------------------------------------------------------------

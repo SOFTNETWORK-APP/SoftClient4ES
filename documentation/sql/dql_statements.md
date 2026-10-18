@@ -1115,10 +1115,12 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   (`HAVING year = 2025.5`, `HAVING year IN (2024.5, 2025)`) — whether the key is named by its
   column, its SELECT alias or its GROUP BY position, or is grouped from an `UNNEST`: no integer
   equals that number, and Elasticsearch would round it down and keep the group `2025`. Compare the
-  key with a whole number (`2025` or `2025.0`). The check reads the index mapping, so it applies to
-  a query over one index whose mapping is known — not to an index pattern or several indices.
-  There, Elasticsearch rounds the number down and answers without an error (on Elasticsearch 6.8, a
-  comparison with a single value used to fail instead).
+  key with a whole number (`2025` or `2025.0`). The check reads the index mapping: that of the
+  index, or, over an index pattern or several indices, the mapping of every index they match,
+  merged. It cannot run where no mapping is known — a pattern that matches no index, a mapping that
+  cannot be read, or a key the matched indices map with different types (`integer` in one, `long`
+  in another). There, Elasticsearch rounds the number down and answers without an error (on
+  Elasticsearch 6.8, a comparison with a single value used to fail instead).
 - ⚠️ **Elasticsearch 6 only:** a pattern (`LIKE` / `RLIKE`) in one list and **two or more** values
   in the other (`city LIKE 'P%' AND city NOT IN ('Pau', 'Pise')`) is refused, because that release
   applies the kept and removed terms together only when both are patterns or both are values. Write
