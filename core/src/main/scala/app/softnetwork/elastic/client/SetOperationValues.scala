@@ -254,22 +254,27 @@ private[elastic] object SetOperationValues {
       .lift(index)
       .flatten
       .filterNot(branch => valueTyped(branch) || unknownInside(column.result))
-      // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before any
-      // date is routed (routing asks the version): routing makes a date `VARCHAR`, never `NULL`,
-      // and leaves the column's type alone, so [[legReader]] answers the same over the routed one
-      .filter(_ => Option(legReader(column, index, name, field, dates, Unreadable.Fail)).isDefined)
       .flatMap { branch =>
-        val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
-        Option(
-          legReader(
-            column.copy(branches = column.branches.updated(index, Some(slotType))),
-            index,
-            name,
-            field,
-            dates,
-            Unreadable.Fail
-          )
-        ).map(LegSlot(slotType, _, asStored))
+        // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before any
+        // date is routed (routing asks the version): routing makes a date `VARCHAR`, never `NULL`,
+        // and leaves the column's type alone, so [[legReader]] answers the same over the routed one
+        Option(legReader(column, index, name, field, dates, Unreadable.Fail)).flatMap { declared =>
+          val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
+          // routing changed nothing (every readable date): the routed column IS the declared one,
+          // so its reader is the one just built -- built once, not twice per slot
+          if (slotType == branch) Some(LegSlot(slotType, declared, asStored))
+          else
+            Option(
+              legReader(
+                column.copy(branches = column.branches.updated(index, Some(slotType))),
+                index,
+                name,
+                field,
+                dates,
+                Unreadable.Fail
+              )
+            ).map(LegSlot(slotType, _, asStored))
+        }
       }
 
   /** A branch's type with every date position [[DateRoute.of]] answers as stored made `VARCHAR`, at
