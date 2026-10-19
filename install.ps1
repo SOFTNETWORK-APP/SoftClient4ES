@@ -3,11 +3,13 @@
 # For Windows (PowerShell)
 #
 
+# CmdletBinding: an unknown option (a typo, or the removed -ScalaVersion) is an error instead
+# of being silently ignored
+[CmdletBinding()]
 param(
     [string]$Target = "$env:USERPROFILE\softclient4es",
     [string]$EsVersion = "8",
     [string]$Version = "latest",
-    [string]$ScalaVersion = "2.13",
     [switch]$ListVersions,
     [switch]$NoExtensions,
     [switch]$Help
@@ -17,8 +19,11 @@ param(
 # Configuration
 # =============================================================================
 
-$JFROG_REPO_URL = "https://softnetwork.jfrog.io/artifactory/releases/app/softnetwork/elastic"
-$JFROG_API_URL = "https://softnetwork.jfrog.io/artifactory/api/storage/releases/app/softnetwork/elastic"
+# The REPL jars (plain engine and -all bundle) are GitHub release assets: tags cli-vX.Y.Z and
+# cli-all-vX.Y.Z. Set GITHUB_TOKEN to lift the anonymous GitHub API limit (60 requests/hour).
+$RELEASES_REPO = if ($env:SOFTCLIENT4ES_RELEASES_REPO) { $env:SOFTCLIENT4ES_RELEASES_REPO } else { "SOFTNETWORK-APP/softclient4es-releases" }
+$RELEASES_DOWNLOAD_URL = "https://github.com/${RELEASES_REPO}/releases/download"
+$RELEASES_API_URL = "https://api.github.com/repos/${RELEASES_REPO}/releases"
 
 $GITHUB_RAW_URL = "https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/refs/heads/main"
 $README_URL = "${GITHUB_RAW_URL}/documentation/client/repl.md"
@@ -41,7 +46,6 @@ Options:
   -Version <ver>      SoftClient4ES version (default: latest). By default this is
                       a version of the -all bundle (it has its own version line);
                       with -NoExtensions it is an engine version.
-  -ScalaVersion <ver> Scala version (default: 2.13)
   -ListVersions       List available versions of the artifact that would be
                       installed (the -all bundle, or the engine with
                       -NoExtensions)
@@ -95,12 +99,15 @@ if ($EsVersion -notmatch '^[6-9]$') {
 # Derived Variables
 # =============================================================================
 
-# Plain artifact: the pure Apache-2.0 engine assembly (published by elasticsql).
-$PLAIN_ARTIFACT_NAME = "softclient4es${EsVersion}-cli_${ScalaVersion}"
+# Plain artifact: the pure Apache-2.0 engine assembly (published by elasticsql),
+# release tags cli-vX.Y.Z.
+$PLAIN_PRODUCT = "cli"
+$PLAIN_ARTIFACT_NAME = "softclient4es${EsVersion}-cli"
 # Bundle artifact: the self-contained -all assembly (engine + community
 # extensions + arrow JOIN extension + all dependencies), published by the
-# softclient4es-repl packaging repo on its OWN version line.
-$BUNDLE_ARTIFACT_NAME = "softclient4es${EsVersion}-cli-all_${ScalaVersion}"
+# softclient4es-repl packaging repo on its OWN version line, release tags cli-all-vX.Y.Z.
+$BUNDLE_PRODUCT = "cli-all"
+$BUNDLE_ARTIFACT_NAME = "softclient4es${EsVersion}-cli-all"
 # Finalized by the bundle-selection block below; until then it refers to the
 # plain artifact (fallback/legacy paths).
 $ARTIFACT_NAME = $PLAIN_ARTIFACT_NAME
@@ -349,44 +356,53 @@ $script:VersionListings = @{}
 # reach the user as a bare "no versions found".
 $script:LastListingError = $null
 
+# The released versions of a product: its GitHub release tags <product>-vX.Y.Z, sorted.
 function Get-AvailableVersions {
     param(
-        # Default to the PLAIN artifact, never $ARTIFACT_NAME: that one is
-        # deliberately mutated by the bundle-selection block below.
-        [string]$Artifact = $PLAIN_ARTIFACT_NAME,
+        # Default to the PLAIN product, never the one bundle selection settles on below.
+        [string]$Product = $PLAIN_PRODUCT,
         # Bundle probing must be able to fail softly and fall back to the plain
         # artifact; the plain path keeps the original fail-hard behaviour.
         [switch]$Quiet
     )
 
-    if ($script:VersionListings.ContainsKey($Artifact)) {
-        return $script:VersionListings[$Artifact]
+    if ($script:VersionListings.ContainsKey($Product)) {
+        return $script:VersionListings[$Product]
     }
 
-    $apiUrl = "${JFROG_API_URL}/${Artifact}"
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+    $tagPattern = '^' + [regex]::Escape($Product) + '-v(\d+\.\d+\.\d+)$'
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $response = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
+        $tags = @()
+        for ($page = 1; $page -le 10; $page++) {
+            $releases = Invoke-RestMethod -Uri "${RELEASES_API_URL}?per_page=100&page=$page" -Headers $headers -UseBasicParsing
+            # Piping the variable enumerates the page whether it arrives as an array (PowerShell 7)
+            # or as ONE array object (Windows PowerShell 5.1)
+            $pageTags = @($releases | ForEach-Object { $_.tag_name } | Where-Object { $_ })
+            $tags += $pageTags
+            if ($pageTags.Count -lt 100) { break }
+        }
 
-        $versions = $response.children |
-            Where-Object { $_.folder -eq $true } |
-            ForEach-Object { $_.uri.TrimStart('/') } |
-            Where-Object { $_ -notmatch '^\.' } |
-            Sort-Object { [Version]($_ -replace '-SNAPSHOT', '.0' -replace '[^0-9.]', '') }
+        $versions = $tags |
+            Where-Object { $_ -match $tagPattern } |
+            ForEach-Object { $_ -replace $tagPattern, '$1' } |
+            Sort-Object { [Version]$_ }
 
         # Successes only: a listing that failed keeps its own semantics (fail hard,
         # or empty under -Quiet) if it is asked for again.
         $versions = @($versions)
-        if ($versions.Count -gt 0) { $script:VersionListings[$Artifact] = $versions }
+        if ($versions.Count -gt 0) { $script:VersionListings[$Product] = $versions }
 
         return $versions
     }
     catch {
         $script:LastListingError = $_.Exception.Message
         if ($Quiet) { return @() }
-        Write-Err "Failed to fetch versions from repository"
-        Write-Err "Artifact: $Artifact"
+        Write-Err "Failed to fetch versions from $RELEASES_API_URL"
+        Write-Err "(GitHub API rate limit, or an invalid GITHUB_TOKEN? Set a valid GITHUB_TOKEN and retry)"
         Write-Err $_.Exception.Message
         exit 1
     }
@@ -412,15 +428,15 @@ if ($ListVersions) {
     # -NoExtensions or when no bundle is published.
     if ($WITH_EXTENSIONS) {
         $listedArtifact = $BUNDLE_ARTIFACT_NAME
-        $versions = Get-AvailableVersions -Artifact $listedArtifact -Quiet
+        $versions = Get-AvailableVersions -Product $BUNDLE_PRODUCT -Quiet
         if (-not $versions -or $versions.Count -eq 0) {
             Write-Warn "No -all bundle versions found for $listedArtifact - listing the plain artifact instead"
             $listedArtifact = $PLAIN_ARTIFACT_NAME
-            $versions = Get-AvailableVersions -Artifact $listedArtifact
+            $versions = Get-AvailableVersions -Product $PLAIN_PRODUCT
         }
     } else {
         $listedArtifact = $PLAIN_ARTIFACT_NAME
-        $versions = Get-AvailableVersions -Artifact $listedArtifact
+        $versions = Get-AvailableVersions -Product $PLAIN_PRODUCT
     }
     $ARTIFACT_NAME = $listedArtifact
 
@@ -464,23 +480,16 @@ function Resolve-LatestVersion {
     # Latest of the PLAIN artifact (engine version line) - used on the fallback
     # and -NoExtensions paths; the bundle path resolves its latest from the
     # bundle listing in the bundle-selection block below.
-    $versions = Get-AvailableVersions -Artifact $PLAIN_ARTIFACT_NAME
+    $versions = Get-AvailableVersions -Product $PLAIN_PRODUCT
 
     if (-not $versions -or $versions.Count -eq 0) {
         Write-Err "No versions found"
         exit 1
     }
 
-    # Prefer non-snapshot versions.
+    # Release tags only (snapshots live in the separate cli-snapshot pre-release).
     # @(...) matters: with a single match the pipeline yields a bare string, and
     # [-1] on a string returns its last CHARACTER ("0.20.3" -> "3").
-    $releaseVersions = @($versions | Where-Object { $_ -notmatch 'SNAPSHOT' })
-
-    if ($releaseVersions.Count -gt 0) {
-        return $releaseVersions[-1]
-    }
-
-    # Fallback to any version
     return @($versions)[-1]
 }
 
@@ -489,24 +498,26 @@ function Resolve-LatestVersion {
 # =============================================================================
 # Resolving Java can write ~300 MB into $Target, and it used to be the FIRST thing
 # to touch the disk - so a typo in -Version, an artifact that does not exist for
-# the chosen -EsVersion / -ScalaVersion, or an unreachable repository was only
+# the chosen -EsVersion, or an unreachable repository was only
 # discovered by Download-Jar, leaving an orphaned jdk\ behind that nothing in the
 # failure output even mentioned (issue #236). The listings are the same two cheap
 # calls bundle selection makes below, memoised, so this costs nothing.
 function Test-RequestedVersion {
     $artifacts = @()
-    if ($WITH_EXTENSIONS) { $artifacts += $BUNDLE_ARTIFACT_NAME }
+    $products = @()
+    if ($WITH_EXTENSIONS) { $artifacts += $BUNDLE_ARTIFACT_NAME; $products += $BUNDLE_PRODUCT }
     $artifacts += $PLAIN_ARTIFACT_NAME
+    $products += $PLAIN_PRODUCT
 
     $known = @()
-    foreach ($artifact in $artifacts) {
-        $known += @(Get-AvailableVersions -Artifact $artifact -Quiet)
+    foreach ($product in $products) {
+        $known += @(Get-AvailableVersions -Product $product -Quiet)
     }
 
     if ($known.Count -eq 0) {
         Write-Err "No versions found for $($artifacts -join ' or ')"
-        Write-Err "Check -EsVersion $EsVersion and -ScalaVersion $ScalaVersion, and that the repository is reachable:"
-        Write-Err $JFROG_API_URL
+        Write-Err "Check -EsVersion $EsVersion, and that GitHub is reachable:"
+        Write-Err $RELEASES_API_URL
         if ($script:LastListingError) { Write-Err $script:LastListingError }
         exit 1
     }
@@ -541,8 +552,7 @@ $REQUESTED_VERSION = $Version
 
 $USE_BUNDLE = $false
 if ($WITH_EXTENSIONS) {
-    $bundleVersions = @(Get-AvailableVersions -Artifact $BUNDLE_ARTIFACT_NAME -Quiet |
-        Where-Object { $_ -notmatch 'SNAPSHOT' })
+    $bundleVersions = @(Get-AvailableVersions -Product $BUNDLE_PRODUCT -Quiet)
     if ($bundleVersions.Count -gt 0) {
         if ($Version -eq "latest") {
             $Version = $bundleVersions[-1]      # bundle-version line (0.20.2, 0.20.3, 0.20.4, ...)
@@ -588,17 +598,20 @@ if (-not $USE_BUNDLE -and $Version -eq "latest") {
 }
 
 if ($USE_BUNDLE) {
+    $PRODUCT = $BUNDLE_PRODUCT
     $ARTIFACT_NAME = $BUNDLE_ARTIFACT_NAME
 } else {
+    $PRODUCT = $PLAIN_PRODUCT
     $ARTIFACT_NAME = $PLAIN_ARTIFACT_NAME
 }
 $JAR_NAME = "${ARTIFACT_NAME}-${Version}-assembly.jar"
-$DOWNLOAD_URL = "${JFROG_REPO_URL}/${ARTIFACT_NAME}/${Version}/${JAR_NAME}"
+$DOWNLOAD_URL = "${RELEASES_DOWNLOAD_URL}/${PRODUCT}-v${Version}/${JAR_NAME}"
 
 if ($USE_BUNDLE -and -not (Test-UrlExists -Url $DOWNLOAD_URL)) {
     Write-Warn "-all bundle not reachable at $DOWNLOAD_URL"
     Write-Warn "Falling back to the plain artifact"
     $USE_BUNDLE = $false
+    $PRODUCT = $PLAIN_PRODUCT
     $ARTIFACT_NAME = $PLAIN_ARTIFACT_NAME
     $Version = $REQUESTED_VERSION
     if ($Version -eq "latest") {
@@ -606,7 +619,7 @@ if ($USE_BUNDLE -and -not (Test-UrlExists -Url $DOWNLOAD_URL)) {
         Write-Success "Resolved latest version: $Version"
     }
     $JAR_NAME = "${ARTIFACT_NAME}-${Version}-assembly.jar"
-    $DOWNLOAD_URL = "${JFROG_REPO_URL}/${ARTIFACT_NAME}/${Version}/${JAR_NAME}"
+    $DOWNLOAD_URL = "${RELEASES_DOWNLOAD_URL}/${PRODUCT}-v${Version}/${JAR_NAME}"
 }
 
 # =============================================================================
@@ -696,6 +709,36 @@ function Download-Jar {
         exit 1
     }
     finally { $ProgressPreference = $previousProgress }
+
+    Test-JarChecksum -Jar $dest
+}
+
+# Every release jar has a <jar>.sha256 asset next to it: a jar that does not match it is
+# deleted and the install stops.
+function Test-JarChecksum {
+    param([string]$Jar)
+
+    $sumFile = "$Jar.sha256"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "${DOWNLOAD_URL}.sha256" -OutFile $sumFile -UseBasicParsing -ErrorAction Stop
+        $expected = ((Get-Content -Path $sumFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+    }
+    catch {
+        Remove-Item -Path $Jar -Force -ErrorAction SilentlyContinue
+        Write-Err "Could not download the checksum ${DOWNLOAD_URL}.sha256"
+        Write-Err $_.Exception.Message
+        exit 1
+    }
+    finally { Remove-Item -Path $sumFile -Force -ErrorAction SilentlyContinue }
+
+    $actual = (Get-FileHash -Path $Jar -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        Remove-Item -Path $Jar -Force -ErrorAction SilentlyContinue
+        Write-Err "Checksum mismatch for $JAR_NAME (expected $expected, got $actual): download deleted"
+        exit 1
+    }
+    Write-Success "Checksum verified (sha256)"
 }
 
 # =============================================================================
@@ -1167,7 +1210,7 @@ SoftClient4ES Installation Info
 Installed:          $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
 Elasticsearch:      $EsVersion
 Version:            $Version
-Scala:              $ScalaVersion
+Scala:              2.13
 Java Required:      ${REQUIRED_JAVA_VERSION}+
 Java In Use:        $($script:JavaMajor) via $($script:JavaSource)
 Artifact:           $ARTIFACT_NAME

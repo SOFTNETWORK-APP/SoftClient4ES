@@ -213,14 +213,17 @@ Connect to Elasticsearch from any JDBC-compatible tool — **DBeaver**, **Tablea
 
 ### Driver Setup
 
-Download the self-contained fat JAR for your Elasticsearch version:
+Download the self-contained fat JAR (all dependencies included) for your Elasticsearch version:
 
-| Elasticsearch Version | Artifact                               |
-|-----------------------|----------------------------------------|
-| ES 6.x                | `softclient4es6-jdbc-driver-0.3.3.jar` |
-| ES 7.x                | `softclient4es7-jdbc-driver-0.3.3.jar` |
-| ES 8.x                | `softclient4es8-jdbc-driver-0.3.3.jar` |
-| ES 9.x                | `softclient4es9-jdbc-driver-0.3.3.jar` |
+| Elasticsearch Version | Download |
+|---|---|
+| ES 6.x | [`softclient4es6-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es6-jdbc-driver-0.3.3.jar) |
+| ES 7.x | [`softclient4es7-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es7-jdbc-driver-0.3.3.jar) |
+| ES 8.x | [`softclient4es8-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es8-jdbc-driver-0.3.3.jar) |
+| ES 9.x | [`softclient4es9-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es9-jdbc-driver-0.3.3.jar) |
+
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.3); check a download with
+`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.3.jar.sha256`.
 
 > **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
@@ -228,32 +231,6 @@ Download the self-contained fat JAR for your Elasticsearch version:
 JDBC URL:    jdbc:elastic://localhost:9200
 Driver class: app.softnetwork.elastic.jdbc.ElasticDriver
 ```
-
-### Maven / Gradle / sbt
-
-**Maven:**
-
-```xml
-<dependency>
-  <groupId>app.softnetwork.elastic</groupId>
-  <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.3.3</version>
-</dependency>
-```
-
-**Gradle:**
-
-```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.3.3'
-```
-
-**sbt:**
-
-```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.3.3"
-```
-
-The JDBC driver JARs are Scala-version-independent (no `_2.12` or `_2.13` suffix) and include all required dependencies.
 
 ---
 
