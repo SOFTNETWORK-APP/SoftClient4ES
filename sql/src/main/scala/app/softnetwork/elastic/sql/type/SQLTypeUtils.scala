@@ -261,7 +261,25 @@ object SQLTypeUtils {
     SQLTypes.Any
   }
 
-  def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
+  def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String =
+    coerce(in, renderedSourceType(in, context), to, context)
+
+  /** [[coerce]] converting FROM a type the caller names rather than [[renderedSourceType]].
+    *
+    * ⚠️ The CASE keeps 0.23.0's conversion; its typing is deferred. A `CASE` converts its results,
+    * its operand and its `WHEN` values from their `baseType`, the type the CASE's own type (`out`,
+    * the type its results are converted TO) is derived from, so `from` and `to` keep one derivation
+    * (#292). Converting them from what they render instead changes the type of a CASE that mixes a
+    * cast with a literal or a bare column: that is the CASE's typing, a change of its own.
+    *
+    * `from` is by-name: it is read after `in` renders, where the form above reads its own.
+    */
+  def coerce(
+    in: PainlessScript,
+    from: => SQLType,
+    to: SQLType,
+    context: Option[PainlessContext]
+  ): String = {
     context match {
       case Some(ctx) =>
         in match {
@@ -291,10 +309,32 @@ object SQLTypeUtils {
       case _ => // do nothing
     }
     val expr = in.painless(context)
-    val from = in.baseType
-    val nullable = in.nullable
-    coerce(expr, from, to, nullable, context)
+    coerce(expr, from, to, in.nullable, context)
   }
+
+  /** The type `coerce` converts FROM: what the operand's rendering IS, not what its column was.
+    *
+    * A schema-resolved identifier reports its COLUMN's runtime type as `baseType` (TIMESTAMP for
+    * every `date` field) whatever functions wrap it, so over `CAST(d AS DATE)` the consumer
+    * converted TIMESTAMP -> DATE a second time, onto the `LocalDate` the cast had already produced
+    * (`param2.toInstant()` on a `LocalDate`: the shard fails). `DATE_FORMAT(CAST(d AS DATE), …)`
+    * and `LAST_DAY(CAST(d AS DATE))` failed at a concrete index, and at a pattern or a list once
+    * those resolve a mapping too.
+    *
+    * The answer is [[Identifier.renderedType]] only where the chain holds a temporal PRODUCER (the
+    * #384 scan, [[Identifier.temporalProducerType]]) and renders a temporal value; everything else
+    * keeps `baseType`, byte for byte. An INGEST script keeps it too: there the operand is the raw
+    * `ctx.<field>`, whose conversion follows the declared type (see `isProcessorContext` below).
+    */
+  def renderedSourceType(in: PainlessScript, context: Option[PainlessContext]): SQLType =
+    in match {
+      case identifier: Identifier
+          if identifier.functions.nonEmpty && !identifier.isAggregation &&
+            !context.exists(_.isProcessor) && identifier.temporalProducerType.isDefined &&
+            identifier.renderedType.isInstanceOf[SQLTemporal] =>
+        identifier.renderedType
+      case _ => in.baseType
+    }
 
   def coerce(
     expr: String,

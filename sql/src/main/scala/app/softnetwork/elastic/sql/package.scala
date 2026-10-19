@@ -2242,15 +2242,22 @@ package object sql {
       val ct = chainType
       if (isAggregation || !ct.isInstanceOf[SQLTemporal]) ct
       else
-        FunctionUtils
-          .transformFunctions(this)
-          .collectFirst {
-            case f: TransformFunction[_, _]
-                if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
-              f.outputType
-          }
+        temporalProducerType
           .getOrElse(if (baseType.isInstanceOf[SQLTemporal]) baseType else ct)
     }
+
+    /** The temporal type the OUTERMOST producer of this chain renders (the #384 scan behind
+      * [[renderedType]]), or `None` when no function in the chain produces a temporal value of its
+      * own — every adjuster returns its receiver's type, so only a producer changes the answer.
+      */
+    def temporalProducerType: Option[SQLType] =
+      FunctionUtils
+        .transformFunctions(this)
+        .collectFirst {
+          case f: TransformFunction[_, _]
+              if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
+            f.outputType
+        }
 
     /** The type the column was DECLARED as, where that differs from what a query hands Painless.
       * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.

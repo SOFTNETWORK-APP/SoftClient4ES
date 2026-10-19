@@ -1345,10 +1345,12 @@ package object time {
           // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
           // call. Passing `false` here made a document merely MISSING the field run
           // `LocalDate.parse(null, ...)` and fail the shard.
-          val operand = identifier.baseType match {
+          // The operand's RENDERED source type: over `CAST(s AS DATE)` or `DATE_PARSE(s, …)` it is
+          // already a `LocalDate`, and parsing it a second time failed the shard.
+          val source = SQLTypeUtils.renderedSourceType(identifier, context)
+          val operand = source match {
             case _: SQLVarchar =>
-              SQLTypeUtils
-                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
+              SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
             case _ => arg
           }
           context match {
@@ -1555,10 +1557,12 @@ package object time {
           // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
           // call. Passing `false` here made a document merely MISSING the field run
           // `LocalDate.parse(null, ...)` and fail the shard.
-          val operand = identifier.baseType match {
+          // The operand's RENDERED source type: over `CAST(s AS DATE)` or `DATE_PARSE(s, …)` it is
+          // already a `LocalDate`, and parsing it a second time failed the shard.
+          val source = SQLTypeUtils.renderedSourceType(identifier, context)
+          val operand = source match {
             case _: SQLVarchar =>
-              SQLTypeUtils
-                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
+              SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
             case _ => arg
           }
           context match {

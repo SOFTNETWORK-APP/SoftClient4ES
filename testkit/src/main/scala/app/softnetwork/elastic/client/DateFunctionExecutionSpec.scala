@@ -30,7 +30,7 @@ import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.time.{Instant, LocalDate, ZoneOffset}
+import java.time.{Instant, LocalDate, LocalTime, ZoneOffset}
 import scala.collection.immutable.ListMap
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -207,6 +207,54 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     // The control the issue names: `.get(ChronoField.YEAR)` was always fine, and the accessor
     // change must not have moved it.
     byId(s"SELECT id, YEAR(d) AS y FROM $index", "y") shouldBe expectedYear
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // A function over `CAST(d AS DATE)` converts the column ONCE. It converted the cast's `LocalDate`
+  // from the column's type a second time (`toInstant()` on a `LocalDate`): the shards failed, an
+  // error at a concrete index and, at a pattern or a list whose other indices hold no document, no
+  // row at all. Asserted at both venues, since a pattern resolves the mapping too.
+  // -----------------------------------------------------------------------------------------------
+
+  private val expectedYearMonth: Map[String, String] =
+    fixture.map { case (id, d, _, _, _) => id -> d.substring(0, 7) }.toMap
+
+  private val castVenues: Seq[(String, String)] =
+    Seq("a concrete index" -> index, "an index pattern" -> s"${index.dropRight(5)}*")
+
+  castVenues.foreach { case (venue, from) =>
+    s"DATE_FORMAT over CAST(d AS DATE) from $venue" should "format the converted date" in {
+      byId(
+        s"SELECT id, DATE_FORMAT(CAST(d AS DATE), '%Y-%m') AS ym FROM $from",
+        "ym"
+      ) shouldBe expectedYearMonth
+    }
+
+    s"LAST_DAY over CAST(d AS DATE) from $venue" should "return the last day of that month" in {
+      // EXACT text: the cast's `LocalDate` adjusted, a bare date -- not a timestamp at midnight
+      byId(s"SELECT id, LAST_DAY(CAST(d AS DATE)) AS ld FROM $from", "ld") shouldBe expectedLastDay
+    }
+  }
+
+  // -----------------------------------------------------------------------------------------------
+  // A CASE over a TIME cast and a TIME literal answers a bare time in every row, on 6.8 too, whose
+  // date doc value has no `toLocalTime()`: the fix of a function over a cast leaves a CASE's
+  // conversion of its results as it was, and this row guards that.
+  // -----------------------------------------------------------------------------------------------
+
+  "a CASE over CAST(d AS TIME) and a TIME literal" should "answer a bare time in every row" in {
+    val got = byId(
+      s"SELECT id, CASE WHEN id = 'd1' THEN CAST(d AS TIME) ELSE CAST('12:00:00' AS TIME) END AS k " +
+      s"FROM $index",
+      "k"
+    )
+    got.keySet shouldBe fixture.map(_._1).toSet
+    got.foreach { case (id, text) =>
+      // a bare time text: `LocalTime.parse` refuses a date or a timestamp
+      withClue(s"$id -> $text: ") {
+        LocalTime.parse(text) shouldBe (if (id == "d1") LocalTime.MIDNIGHT else LocalTime.NOON)
+      }
+    }
   }
 
   // -----------------------------------------------------------------------------------------------
