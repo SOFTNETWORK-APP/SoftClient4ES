@@ -296,7 +296,17 @@ class HavingNullAwareSelectorSpec extends AnyFlatSpec with Matchers with OptionV
 
   it should "leave a MATCH over the GROUP BY key as it is" in {
     parsed(group + "MATCH (g) AGAINST ('x')")
-    parsed("SELECT g, COUNT(*) AS c FROM t GROUP BY g, h HAVING MATCH (g, h) AGAINST ('x')")
+  }
+
+  it should "refuse a MATCH over two GROUP BY keys by the OR rule" in {
+    // Story IDENT-4 -- over TWO keys a MATCH is an OR across two grouping levels, which
+    // Elasticsearch nests (it ran as a conjunction): refused by that rule, never by this one.
+    Parser("SELECT g, COUNT(*) AS c FROM t GROUP BY g, h HAVING MATCH (g, h) AGAINST ('x')") match {
+      case Left(error) =>
+        error.msg should include("DIFFERENT GROUP BY keys")
+        error.msg should not include "HAVING cannot apply MATCH"
+      case Right(other) => fail(s"accepted: $other")
+    }
   }
 
   it should "leave a MATCH the nested filter applies as it is" in {

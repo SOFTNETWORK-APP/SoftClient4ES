@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.`type`.{SQLTemporal, SQLType}
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.operator._
 import scala.util.{DynamicVariable, Try}
@@ -286,6 +286,32 @@ case class Bucket(
 
   lazy val path: String = sourceBucket
 
+  /** Story IDENT-4 -- do two buckets group on the SAME key? The ONE comparison every "which level
+    * does this HAVING leaf address" question reads: the three include sites of `Where.scala`
+    * (`Expression`, `InExpr`, `MatchCriteria`) and `SingleSearch.keyBucketOf`.
+    *
+    * It used to be `name == other.name`, and [[name]] is the DISPLAY name -- the SELECT alias, else
+    * the column. Three ways that is not an identity:
+    *   - a SELF-JOIN's two levels (`GROUP BY o.category, p.category`) are both named `category`
+    *     after one resolution, so a condition on one correlation filtered BOTH levels;
+    *   - two FUNCTIONS of one column (`GROUP BY YEAR(d), MONTH(d)`) are both named `d` when the
+    *     SELECT does not project them, so `HAVING MONTH(d) = 1` also filtered the YEAR level;
+    *   - a copy recorded before resolution (`a.category`) never equalled its resolved level
+    *     (`category`), which is why the qualified spelling was refused.
+    *
+    * So the key is the display name AND the correlation AND the grouped expression -- strings only,
+    * never `Identifier.equals`, which compares a doc access, not a grouping key.
+    *
+    * A NESTED level keeps the display-name comparison: its attached copy is recorded from the
+    * parsed spelling (no alias, no nested element) while the level is resolved, and only the
+    * display name agrees between them (`sourceBucket`).
+    */
+  def sameKeyAs(other: Bucket): Boolean =
+    name == other.name && (nested || other.nested || (
+      identifier.tableAlias == other.identifier.tableAlias &&
+      identifier.identifierName == other.identifier.identifierName
+    ))
+
   lazy val nestedPath: String = {
     identifier.nestedElement match {
       case Some(ne) => ne.nestedPath
@@ -294,6 +320,12 @@ case class Bucket(
   }
 
   override def out: SQLType = identifier.out
+
+  /** Story IDENT-4 -- does this level reach Elasticsearch as a `date_histogram`? The ONE derivation
+    * both bridges' emission AND the HAVING classifier read: a `date_histogram` carries no include /
+    * exclude, so a key filter addressed to this level could not be applied.
+    */
+  def isDateHistogram: Boolean = out.isInstanceOf[SQLTemporal]
 
   /** A bucket with NO FIELD NAME must be scripted, or nothing describes it.
     *

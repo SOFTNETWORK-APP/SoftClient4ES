@@ -2692,7 +2692,11 @@ package object sql {
                 nested = true,
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                // Story IDENT-4 -- ONE decision for all five branches: `SingleSearch.bucketFor`.
+                // In the three nested branches it IS the spelling lookup (a nested or UNNEST-
+                // qualified name has no identity), so only the qualified-plain and unqualified
+                // branches can answer differently.
+                bucket = request.bucketFor(this).orElse(bucket),
                 nestedElement = nestedElement,
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(colName)),
@@ -2707,7 +2711,7 @@ package object sql {
                 name = s"${tuple._2._1}.$colName",
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucket = request.bucketFor(this).orElse(bucket),
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(colName)),
                 table = table
@@ -2718,7 +2722,7 @@ package object sql {
               .copy(
                 tableAlias = Some(tableAlias),
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucket = request.bucketFor(this).orElse(bucket),
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(name)),
                 table = table
@@ -2726,15 +2730,21 @@ package object sql {
               .withFunctions(this.updateFunctions(request))
           case _ =>
             val colName = parts.tail.mkString(".")
-            this.copy(
-              tableAlias = Some(tableAlias),
-              name = colName,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket),
-              bucketPath = bucketPath,
-              col = columnSchema.flatMap(schema => schema.find(colName)),
-              table = table
-            )
+            this
+              .copy(
+                tableAlias = Some(tableAlias),
+                name = colName,
+                fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+                bucket = request.bucketFor(this).orElse(bucket),
+                bucketPath = bucketPath,
+                col = columnSchema.flatMap(schema => schema.find(colName)),
+                table = table
+              )
+              // Story IDENT-4 -- the chain resolves with the column, as in every other branch.
+              // Without it every function in a qualified column's chain kept the PARSED receiver
+              // (`doc['t.d']`) until a second `update()` -- which an index-pattern search, a
+              // materialized view and a watcher never perform.
+              .withFunctions(this.updateFunctions(request))
         }
       } else {
         // An UN-QUALIFIED name. It resolves against the MAIN table, whatever that is — and since
@@ -2745,7 +2755,7 @@ package object sql {
         this
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-            bucket = request.bucketNames.get(identifierName).orElse(bucket),
+            bucket = request.bucketFor(this).orElse(bucket),
             bucketPath = bucketPath,
             col = columnSchema.flatMap(schema => schema.find(name))
           )

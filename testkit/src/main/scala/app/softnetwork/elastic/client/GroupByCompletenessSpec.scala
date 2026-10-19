@@ -32,7 +32,7 @@ import app.softnetwork.elastic.client.result.{
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.query.{SelectStatement, SingleSearch}
 import app.softnetwork.persistence.generateUUID
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -132,6 +132,10 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(nestedMetricIndex)
     client.deleteIndex(mixedIntIndex)
     client.deleteIndex(mixedLongIndex)
+    client.deleteIndex(datesIndex)
+    client.deleteIndex(oneResolutionIndex)
+    client.deleteIndex(oneResolutionDates)
+    client.deleteIndex(im10OneResolution)
     super.afterAll()
   }
 
@@ -3092,5 +3096,652 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       if actual != twin
     } yield s"[$written] answered $actual, the root-first $twin"
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  // =============================================================================================
+  // Story IDENT-4 -- a QUALIFIED GROUP BY key filters groups exactly as the bare spelling does.
+  //
+  // BI tools always qualify (`SELECT g.category ... FROM idx g GROUP BY g.category HAVING
+  // g.category = 'x'`). Every single-table row runs at TWO venues because they resolve the
+  // statement a different number of times: `group_by_completeness g` (one concrete index -- the
+  // client resolves the statement again against its mapping) and `group_by_complet* g` (an index
+  // pattern -- the client sends the parse-time resolution as it is). The witnesses are MAX and SUM,
+  // which Elasticsearch cannot answer from `doc_count`: a metric aggregation left off its level
+  // cannot hide behind COUNT(*). Oracle, from the fixture alone: `cat_i` holds i documents with
+  // amounts 1..i.
+  // =============================================================================================
+
+  private val qualifiedVenues: Seq[String] = Seq("group_by_completeness g", "group_by_complet* g")
+
+  /** A metric as one number: -1 when the column is ABSENT (its aggregation never reached the
+    * level), -2 when it is NULL.
+    */
+  private def metricOf(row: Map[String, Any], column: String): Long =
+    row.get(column) match {
+      case None        => -1L
+      case Some(null)  => -2L
+      case Some(value) => BigDecimal(numericText(value)).toLongExact
+    }
+
+  /** key `k` -> (count, max, sum), as the client answers them. */
+  private def maxSumRows(sql: String): Either[String, Map[String, (Long, Long, Long)]] = {
+    implicit val rowCtx: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        Right(response.results.map { row =>
+          row.get("k").map(v => String.valueOf(v)).getOrElse("<absent>") ->
+          (metricOf(row, "c"), metricOf(row, "mx"), metricOf(row, "s"))
+        }.toMap)
+      case ElasticFailure(error) => Left(error.message)
+    }
+  }
+
+  /** (count, max, sum) of every group, sorted -- for statements that project no key. */
+  private def metricTriples(sql: String): Either[String, Seq[(Long, Long, Long)]] = {
+    implicit val tripleCtx: ConversionContext = NativeContext
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) =>
+        Right(
+          response.results
+            .map(row => (metricOf(row, "c"), metricOf(row, "mx"), metricOf(row, "s")))
+            .sorted
+        )
+      case ElasticFailure(error) => Left(error.message)
+    }
+  }
+
+  private def expectedGroups(keep: String => Boolean): Map[String, (Long, Long, Long)] =
+    (1 to categories)
+      .map { i =>
+        f"cat_$i%02d" -> ((i.toLong, i.toLong, i.toLong * (i + 1) / 2))
+      }
+      .filter { case (k, _) => keep(k) }
+      .toMap
+
+  private def refusalOf(sql: String): String =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(result) => fail(s"[$sql] was accepted and answered $result")
+      case ElasticFailure(error)  => error.message
+    }
+
+  /** (label, SELECT key, GROUP BY key, HAVING operand): the key bare or qualified on each side. */
+  private val fourSpellings: Seq[(String, String, String, String)] = Seq(
+    ("bare / bare", "category", "category", "category"),
+    ("bare / qualified", "category", "category", "g.category"),
+    ("qualified / bare", "g.category", "g.category", "category"),
+    ("qualified / qualified", "g.category", "g.category", "g.category")
+  )
+
+  private val qualifiedOps: Seq[(String, String => String, String => Boolean)] = Seq(
+    ("=", k => s"$k = 'cat_37'", _ == "cat_37"),
+    ("<>", k => s"$k <> 'cat_01'", _ != "cat_01"),
+    ("IN", k => s"$k IN ('cat_36', 'cat_37')", Set("cat_36", "cat_37")),
+    ("NOT IN", k => s"$k NOT IN ('cat_01', 'cat_02')", k => !Set("cat_01", "cat_02")(k)),
+    ("LIKE", k => s"$k LIKE 'cat_3%'", _.startsWith("cat_3")),
+    ("NOT LIKE", k => s"$k NOT LIKE 'cat_0%'", k => !k.startsWith("cat_0")),
+    ("RLIKE", k => s"$k RLIKE 'cat_3[0-2]'", Set("cat_30", "cat_31", "cat_32")),
+    ("MATCH", k => s"MATCH ($k) AGAINST ('cat_37')", _ == "cat_37")
+  )
+
+  /** The 4 spellings x {`AS k`, unaliased} x 8 operators at the given venues (the unaliased
+    * qualified / qualified spelling is the one that used to be refused), each against the oracle --
+    * by output name when the key is projected, through `metricTriples` when it is not (the triples
+    * of `cat_i` are distinct, so they name the groups). COLLECTED: the wrong cells.
+    */
+  private def qualifiedMatrix(venues: Seq[String]): (Int, Seq[String]) = {
+    val cells = for {
+      venue                            <- venues
+      (label, select, groupBy, having) <- fourSpellings
+      aliased                          <- Seq(true, false)
+      (op, predicate, keep)            <- qualifiedOps
+    } yield (
+      s"$venue | $label | ${if (aliased) "AS k" else "unaliased"} | $op",
+      (if (aliased) s"SELECT $select AS k, " else "SELECT ") +
+      s"COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $venue GROUP BY $groupBy HAVING ${predicate(having)}",
+      aliased,
+      expectedGroups(keep)
+    )
+    val wrong = cells.flatMap { case (label, sql, aliased, expected) =>
+      val (actual, wanted) =
+        if (aliased) (maxSumRows(sql), Right(expected))
+        else (metricTriples(sql), Right(expected.values.toSeq.sorted))
+      if (actual == wanted) None
+      else
+        Some(s"[$label] $sql\n    expected ${wanted
+          .map(_.toString.take(300))}\n    got      ${actual.map(_.toString.take(300))}")
+    }
+    (cells.size, wrong)
+  }
+
+  "IDENT-4: a qualified GROUP BY key" should
+  "filter groups exactly as the bare spelling does -- four spellings, two alias forms, eight operators, two venues" in {
+    val (size, wrong) = qualifiedMatrix(qualifiedVenues)
+    size shouldBe qualifiedVenues.size * fourSpellings.size * 2 * qualifiedOps.size
+    // COLLECTED, never `foreach { … shouldBe … }`: the wrong cells are reported together.
+    withClue(s"${wrong.size} of $size cells wrong:\n${wrong.mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
+  }
+
+  it should "put its metrics on their level at BOTH venues" in {
+    // At a ONE-resolution venue the metric's bucket path used to be the parsed `g.category`, the
+    // level's `category`, so `mx` and `s` never reached a level -- the columns came back NULL (-2)
+    // under `NativeContext`. Since #412 both venues here resolve twice;
+    // the one-resolution venue has its own block below.
+    val wrong = qualifiedVenues.flatMap { venue =>
+      val sql =
+        s"SELECT g.category AS k, COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $venue GROUP BY g.category"
+      maxSumRows(sql) match {
+        case Right(actual) if actual == expectedGroups(_ => true) => None
+        case other                                                => Some(s"[$sql] $other")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  it should "answer its SELECT-alias spelling at both venues (the remedy if the story were killed)" in {
+    val wrong = qualifiedVenues.flatMap { venue =>
+      val sql =
+        s"SELECT g.category AS k, COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $venue " +
+        "GROUP BY g.category HAVING k = 'cat_37'"
+      maxSumRows(sql) match {
+        case Right(actual) if actual == expectedGroups(_ == "cat_37") => None
+        case other                                                    => Some(s"[$sql] $other")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  it should "answer GROUP BY <select alias> over a qualified column at both venues" in {
+    // Accepted and answered before this story at a venue that resolves twice (at a one-resolution
+    // venue its body lacked the metrics).
+    // Executable in core, so it is held at RUN, not only at RENDER.
+    val wrong = qualifiedVenues.flatMap { venue =>
+      val sql =
+        s"SELECT g.category AS k, COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $venue " +
+        "GROUP BY k HAVING k = 'cat_37'"
+      maxSumRows(sql) match {
+        case Right(actual) if actual == expectedGroups(_ == "cat_37") => None
+        case other                                                    => Some(s"[$sql] $other")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  it should "select exactly the groups it names inside a WHERE subquery" in {
+    maxSumRows(
+      "SELECT category AS k, COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM group_by_completeness " +
+      "WHERE category IN (SELECT g.category FROM group_by_completeness g GROUP BY g.category " +
+      "HAVING g.category = 'cat_37') GROUP BY category"
+    ) shouldBe Right(expectedGroups(_ == "cat_37"))
+  }
+
+  it should "refuse a table's own name once aliased, and an undeclared qualifier -- neither is a key" in {
+    Seq("group_by_completeness.category", "zz.category").foreach { operand =>
+      val sql =
+        "SELECT g.category AS k, COUNT(*) AS c FROM group_by_completeness g GROUP BY g.category " +
+        s"HAVING $operand = 'cat_37'"
+      withClue(s"[$sql] ") { refusalOf(sql) should include("can only filter on a GROUP BY key") }
+    }
+  }
+
+  it should "carry Elasticsearch 6's refusal set on the qualified spelling" in {
+    // IDENT-3 contract item 4: a pattern in one list beside two or more values in the other.
+    val sql =
+      "SELECT g.category AS k, COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s " +
+      "FROM group_by_completeness g GROUP BY g.category " +
+      "HAVING g.category LIKE 'cat_3%' AND g.category NOT IN ('cat_30', 'cat_31')"
+    if (esMajor == 6) refusalOf(sql) should include("on Elasticsearch 6")
+    else
+      maxSumRows(sql) shouldBe Right(
+        expectedGroups(k => k.startsWith("cat_3") && !Set("cat_30", "cat_31")(k))
+      )
+  }
+
+  it should "refuse a QUALIFIED integer key compared with a fractional number, like the bare one" in {
+    keyFilterLoaded
+    val wrong = Seq(
+      s"SELECT k.lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY k.lval HAVING k.lval = 1.5",
+      s"SELECT k.lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY k.lval HAVING lval = 1.5",
+      s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY lval HAVING k.lval = 1.5"
+    ).flatMap { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error)
+            if error.statusCode.contains(400) &&
+              // the refusal names the key as the condition spells it (`lval` or `k.lval`)
+              error.message.contains("HAVING cannot compare the integer GROUP BY key") =>
+          None
+        case other =>
+          Some(s"[$sql] must be refused, got $other -- the groups: ${countsBy(sql, "l")}")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+    countsBy(
+      s"SELECT k.lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY k.lval HAVING k.lval = 2.0",
+      "l"
+    ) shouldBe
+    Right(expectedCounts("lval", _ == "2"))
+  }
+
+  // ---- the date fixture: two functions of one column, and the date-histogram suspect ----------
+
+  private val datesIndex = "group_by_qualified_dates"
+
+  /** 2024-01: 1 + 2 documents, 2024-02: 3, 2025-01: 4 -- amounts 1..10 in that order. */
+  private val datedDocs: Seq[(String, Int)] = Seq(
+    "2024-01-03" -> 1,
+    "2024-01-20" -> 2,
+    "2024-01-20" -> 3,
+    "2024-02-03" -> 4,
+    "2024-02-03" -> 5,
+    "2024-02-03" -> 6,
+    "2025-01-05" -> 7,
+    "2025-01-05" -> 8,
+    "2025-01-05" -> 9,
+    "2025-01-05" -> 10
+  )
+
+  private lazy val qualifiedDatesLoaded: Unit = indexDatesFixture(datesIndex)
+
+  private def indexDatesFixture(target: String): Unit = {
+    val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
+    val mapping =
+      """{
+        |  "properties": {
+        |    "id":     { "type": "keyword" },
+        |    "d":      { "type": "date" },
+        |    "amount": { "type": "integer" }
+        |  }
+        |}""".stripMargin
+    client.createIndex(target, settings = settings).get shouldBe true
+    client.setMapping(target, mapping).get shouldBe true
+    implicit val datesBulkOptions: BulkOptions = BulkOptions(defaultIndex = target, logEvery = 1000)
+    implicit def datesListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    val docs = datedDocs.zipWithIndex.map { case ((d, amount), i) =>
+      s"""{"id":"q$i","d":"$d","amount":$amount}"""
+    }.toList
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) =>
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $target failed: ${error.message}")
+    }
+    client.refresh(target)
+  }
+
+  "IDENT-4: two functions of one date column as two keys" should
+  "REFUSE an OR across the two levels, which Elasticsearch would run as an AND" in {
+    qualifiedDatesLoaded
+    // Answered until now, with the conjunction `[(3,3,6)]` at a one-resolution venue.
+    val wrong = Seq(
+      s"SELECT COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $datesIndex " +
+      "GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 OR MONTH(d) = 1",
+      s"SELECT COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $datesIndex q " +
+      "GROUP BY YEAR(q.d), MONTH(q.d) HAVING YEAR(q.d) = 2024 OR MONTH(q.d) = 1"
+    ).flatMap { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error) if error.message.contains("DIFFERENT GROUP BY keys") => None
+        case _ => Some(s"[$sql] must be refused, got ${metricTriples(sql)}")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  // The date-histogram key-filter refusal (required).
+  "IDENT-4: a key predicate on a DATE grouping level" should
+  "be refused by name -- and the remedy the refusal names must answer" in {
+    // Answered until now with the unfiltered groups: the date histogram dropped the condition, at
+    // every venue.
+    qualifiedDatesLoaded
+    val wrong = Seq(
+      s"SELECT COUNT(*) AS c FROM $datesIndex GROUP BY DATE_TRUNC(d, MONTH) " +
+      "HAVING DATE_TRUNC(d, MONTH) = '2024-01-01'",
+      s"SELECT COUNT(*) AS c FROM $datesIndex q GROUP BY DATE_TRUNC(q.d, MONTH) " +
+      "HAVING DATE_TRUNC(q.d, MONTH) = '2024-01-01'",
+      s"SELECT COUNT(*) AS c FROM $datesPattern q GROUP BY DATE_TRUNC(q.d, MONTH) " +
+      "HAVING DATE_TRUNC(q.d, MONTH) = '2024-01-01'"
+    ).flatMap { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error)
+            if error.message.contains("HAVING cannot filter a DATE grouping level") =>
+          None
+        case _ => Some(s"[$sql] must be refused, got ${dateGroups(sql)}")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+    metricTriples(
+      s"SELECT COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $datesIndex q " +
+      "WHERE q.d >= '2024-01-01' AND q.d < '2024-02-01' GROUP BY DATE_TRUNC(q.d, MONTH)"
+    ) shouldBe Right(Seq((3L, 3L, 6L)))
+  }
+
+  // The HAVING rules seeing a MATCH (required).
+  "IDENT-4: a MATCH on the GROUP BY key" should "be refused where the rules cannot honour it" in {
+    // COLLECTED, both venues and both spellings: answered until now with the intersection
+    // `{cat_37}` where SQL means `{cat_36, cat_37}`.
+    val combinations = for {
+      venue         <- qualifiedVenues
+      (select, key) <- Seq("category" -> "category", "g.category" -> "g.category")
+    } yield s"SELECT $select AS k, COUNT(*) AS c FROM $venue GROUP BY $key " +
+    s"HAVING MATCH ($key) AGAINST ('cat_37') OR COUNT(*) > 35"
+    // The UNALIASED form too (metric-only, groups told apart by their triples).
+    val unaliased = for {
+      venue <- qualifiedVenues
+      key   <- Seq("category", "g.category")
+    } yield s"SELECT COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s FROM $venue GROUP BY $key " +
+    s"HAVING MATCH ($key) AGAINST ('cat_37') OR COUNT(*) > 35"
+    val wrong = ((combinations ++ unaliased).map(_ -> "different mechanisms") :+ (
+      // since #408 a MATCH over a column that is neither a key nor an aggregate is refused by the
+      // MATCH rule itself (not a witness of the HAVING rules seeing a MATCH)
+      "SELECT category AS k, COUNT(*) AS c FROM group_by_completeness GROUP BY category " +
+      "HAVING MATCH (id) AGAINST ('cat_37_1')" -> "HAVING cannot apply MATCH"
+    )).flatMap { case (sql, reason) =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error) if error.message.contains(reason) => None
+        case _ =>
+          val answered =
+            if (sql.contains(" AS k,")) maxSumRows(sql).map(_.keys.toSeq.sorted)
+            else metricTriples(sql)
+          Some(s"[$sql] must be refused ($reason), got $answered")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  // ---- shared rows of the date fixture ---------------------------------------------------------
+
+  private val datesPattern = "group_by_qualified_d*"
+
+  /** The document count of every group, sorted -- each date and each month of the date fixture has
+    * its own count, so the counts name the groups.
+    */
+  private def dateGroups(sql: String): Either[String, Seq[Long]] =
+    metricTriples(sql).map(_.map(_._1))
+
+  // ---- a temporal WHERE comparison of a GROUP BY key column ----------------------------------
+  //
+  // Two date fields; the right operand of `q.d > DATE_ADD(q.e, INTERVAL 1 DAY)` is temporal without
+  // a mapping, so the comparison is a date one at every resolution. SQL: `d > e + 1 day` keeps r1
+  // only. Run at the one-resolution venue below.
+
+  private def indexIm10Fixture(target: String): Unit = {
+    val settings = """{"number_of_shards": 1, "number_of_replicas": 0}"""
+    val mapping =
+      """{"properties": {"id": {"type": "keyword"}, "d": {"type": "date"}, "e": {"type": "date"}}}"""
+    client.createIndex(target, settings = settings).get shouldBe true
+    client.setMapping(target, mapping).get shouldBe true
+    implicit val im10BulkOptions: BulkOptions = BulkOptions(defaultIndex = target, logEvery = 1000)
+    implicit def im10ListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    val docs = List(
+      """{"id":"r1","d":"2024-01-10","e":"2024-01-01"}""",
+      """{"id":"r2","d":"2024-01-02","e":"2024-01-01"}""",
+      """{"id":"r3","d":"2024-01-01","e":"2024-01-05"}"""
+    )
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(target)
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $target failed: ${error.message}")
+    }
+  }
+
+  private def im10Rows(index: String): Seq[(String, Seq[Long])] = Seq(
+    s"SELECT COUNT(*) AS c FROM $index q WHERE q.d > DATE_ADD(q.e, INTERVAL 1 DAY) GROUP BY q.d" -> Seq(
+      1L
+    ),
+    s"SELECT COUNT(*) AS c FROM $index WHERE d > DATE_ADD(e, INTERVAL 1 DAY) GROUP BY d" -> Seq(1L)
+  )
+
+  // ---- the fractional key check over an index pattern (since #412 a pattern is typed) ---------
+
+  "IDENT-4: an integer key compared with a fractional number over an index pattern" should
+  "be refused in every spelling" in {
+    keyFilterLoaded
+    val wrong = Seq(
+      "SELECT lval AS l, COUNT(*) AS c FROM group_by_key_filter* k GROUP BY lval HAVING lval = 1.5",
+      "SELECT k.lval AS l, COUNT(*) AS c FROM group_by_key_filter* k GROUP BY k.lval HAVING k.lval = 1.5"
+    ).flatMap { sql =>
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error)
+            if error.message.contains("HAVING cannot compare the integer GROUP BY key") =>
+          None
+        case other =>
+          Some(
+            s"[$sql] must be refused, got ${other.toString.take(300)} -- groups ${countsBy(sql, "l")}"
+          )
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  // ---- the ONE-resolution venue: a remembered schema miss -------------------------------------
+  //
+  // Every one-update path of `resolveWithSchema` sends the same unresolved statement -- a failed or
+  // denied mapping read, a remembered 404, a client that is not an `IndicesApi` -- so a FROM queried
+  // BEFORE its index exists runs, while the miss is remembered (`schema-cache.ttl`, at most five
+  // minutes), the bytes a user without the mapping privilege runs. Each index below is armed that
+  // way, then created with the mapping and documents of its twin above; that the rows ran at ONE
+  // resolution is proven by the MECHANISM, before and after them: the statement comes back out of
+  // the resolution as the SAME instance (no mapping was attached).
+
+  private val oneResolutionIndex = "group_by_one_resolution"
+
+  private val oneResolutionDates = "group_by_one_resolution_dates"
+
+  private val im10OneResolution = "group_by_im10_one"
+
+  @scala.annotation.tailrec
+  private def baseClientOf(c: ElasticClientApi): ElasticClientApi = c match {
+    case delegator: ElasticClientDelegator => baseClientOf(delegator.delegate)
+    case other                             => other
+  }
+
+  /** True when the statement is sent as parsed: no mapping was looked up. */
+  private def resolvedOnce(sql: String): Boolean =
+    Parser(sql) match {
+      case Right(single: SingleSearch) =>
+        baseClientOf(client).resolveWithSchema(single) match {
+          case ElasticSuccess(sent) => sent eq single
+          case ElasticFailure(_)    => false
+        }
+      case _ => false
+    }
+
+  private def armSchemaMiss(index: String): Unit = {
+    implicit val armCtx: ConversionContext = NativeContext
+    // the index does not exist yet: the lookup answers 404 and the miss is remembered
+    client.search(SelectStatement(s"SELECT COUNT(*) AS c FROM $index g")) match {
+      case ElasticSuccess(response) =>
+        fail(s"[$index] exists already: ${response.results.size} rows")
+      case ElasticFailure(_) => ()
+    }
+  }
+
+  private def indexCategoriesFixture(target: String): Unit = {
+    val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
+    val mapping =
+      """{
+        |  "properties": {
+        |    "id":       { "type": "keyword" },
+        |    "category": { "type": "keyword" },
+        |    "amount":   { "type": "integer" }
+        |  }
+        |}""".stripMargin
+    client.createIndex(target, settings = settings).get shouldBe true
+    client.setMapping(target, mapping).get shouldBe true
+    val docs = (for {
+      c <- 1 to categories
+      d <- 1 to c
+    } yield {
+      val category = f"cat_$c%02d"
+      s"""{"id":"${category}_$d","category":"$category","amount":$d}"""
+    }).toList
+    implicit val categoriesBulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = target, logEvery = 1000)
+    implicit def categoriesListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(target)
+      case ElasticFailure(error) =>
+        error.cause.foreach(_.printStackTrace())
+        fail(s"Bulk indexing $target failed: ${error.message}")
+    }
+  }
+
+  "IDENT-4 at a ONE-resolution venue (a remembered schema miss)" should
+  "answer every qualified row as the bare spelling does" in {
+    val armed = Seq(oneResolutionIndex, oneResolutionDates, im10OneResolution)
+    armed.foreach(armSchemaMiss)
+    indexCategoriesFixture(oneResolutionIndex)
+    indexDatesFixture(oneResolutionDates)
+    indexIm10Fixture(im10OneResolution)
+    val started = System.currentTimeMillis()
+    def witnesses: Seq[(String, Boolean)] =
+      armed.map(i => i -> resolvedOnce(s"SELECT COUNT(*) AS c FROM $i g"))
+    val before = witnesses
+    val venue = s"$oneResolutionIndex g"
+    val dates = s"$oneResolutionDates q"
+    val metrics = "COUNT(*) AS c, MAX(amount) AS mx, SUM(amount) AS s"
+    val (matrixSize, matrixWrong) = qualifiedMatrix(Seq(venue))
+    def row(sql: String, expected: Any, answered: => Any): Option[String] = {
+      val got = answered
+      if (got == expected) None
+      else Some(s"[$sql] expected $expected, got ${got.toString.take(400)}")
+    }
+    def refused(sql: String, reason: String, answered: => Any): Option[String] =
+      Await.result(client.run(sql), 60.seconds) match {
+        case ElasticFailure(error) if error.message.contains(reason) => None
+        case _ => row(sql, s"refused ($reason)", answered)
+      }
+    val named = Seq(
+      // A qualified key's metrics, and a HAVING over them
+      row(
+        s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category",
+        Right(expectedGroups(_ => true)),
+        maxSumRows(s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category")
+      ),
+      row(
+        s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category HAVING COUNT(*) > 35",
+        Right(expectedGroups(Set("cat_36", "cat_37"))),
+        maxSumRows(
+          s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category HAVING COUNT(*) > 35"
+        )
+      ),
+      // the SELECT-alias remedy
+      row(
+        s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category HAVING k = 'cat_37'",
+        Right(expectedGroups(_ == "cat_37")),
+        maxSumRows(
+          s"SELECT g.category AS k, $metrics FROM $venue GROUP BY g.category HAVING k = 'cat_37'"
+        )
+      ),
+      row(
+        s"SELECT g.category AS k, $metrics FROM $venue GROUP BY k HAVING k = 'cat_37'",
+        Right(expectedGroups(_ == "cat_37")),
+        maxSumRows(s"SELECT g.category AS k, $metrics FROM $venue GROUP BY k HAVING k = 'cat_37'")
+      )
+    ) ++ (for {
+      // A MATCH on the key: aliased and unaliased, bare and qualified
+      key <- Seq("category", "g.category")
+      sql <- Seq(
+        s"SELECT $key AS k, $metrics FROM $venue GROUP BY $key HAVING MATCH ($key) AGAINST ('cat_37') OR COUNT(*) > 35",
+        s"SELECT $metrics FROM $venue GROUP BY $key HAVING MATCH ($key) AGAINST ('cat_37') OR COUNT(*) > 35"
+      )
+    } yield refused(sql, "different mechanisms", metricTriples(sql))) ++ Seq(
+      // Two functions of one column keeping their own filters, bare and qualified
+      row(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING MONTH(d) = 1",
+        Right(Seq((3L, 3L, 6L), (4L, 10L, 34L))),
+        metricTriples(s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING MONTH(d) = 1")
+      ),
+      row(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING MONTH(q.d) = 1",
+        Right(Seq((3L, 3L, 6L), (4L, 10L, 34L))),
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING MONTH(q.d) = 1"
+        )
+      ),
+      // The AND of the two levels, each half on its own level (refused until now)
+      row(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 AND MONTH(d) = 1",
+        Right(Seq((3L, 3L, 6L))),
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 AND MONTH(d) = 1"
+        )
+      ),
+      row(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING YEAR(q.d) = 2024 AND MONTH(q.d) = 1",
+        Right(Seq((3L, 3L, 6L))),
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING YEAR(q.d) = 2024 AND MONTH(q.d) = 1"
+        )
+      ),
+      // An OR across the two levels, bare and qualified (answered until now as the AND)
+      refused(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 OR MONTH(d) = 1",
+        "DIFFERENT GROUP BY keys",
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 OR MONTH(d) = 1"
+        )
+      ),
+      refused(
+        s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING YEAR(q.d) = 2024 OR MONTH(q.d) = 1",
+        "DIFFERENT GROUP BY keys",
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY YEAR(q.d), MONTH(q.d) HAVING YEAR(q.d) = 2024 OR MONTH(q.d) = 1"
+        )
+      ),
+      // A DATE_TRUNC key filter refused at every venue, bare and qualified; a DATE key at
+      // this venue is a terms level on a date field -- its filter applies (the one date of count 1)
+      refused(
+        s"SELECT $metrics FROM $dates GROUP BY DATE_TRUNC(d, MONTH) HAVING DATE_TRUNC(d, MONTH) = '2024-01-01'",
+        "HAVING cannot filter a DATE grouping level",
+        metricTriples(
+          s"SELECT $metrics FROM $dates GROUP BY DATE_TRUNC(d, MONTH) HAVING DATE_TRUNC(d, MONTH) = '2024-01-01'"
+        )
+      ),
+      refused(
+        s"SELECT COUNT(*) AS c FROM $dates GROUP BY DATE_TRUNC(q.d, MONTH) HAVING DATE_TRUNC(q.d, MONTH) = '2024-01-01'",
+        "HAVING cannot filter a DATE grouping level",
+        dateGroups(
+          s"SELECT COUNT(*) AS c FROM $dates GROUP BY DATE_TRUNC(q.d, MONTH) HAVING DATE_TRUNC(q.d, MONTH) = '2024-01-01'"
+        )
+      ),
+      row(
+        s"SELECT COUNT(*) AS c FROM $dates GROUP BY q.d HAVING q.d = '2024-01-03'",
+        Right(Seq(1L)),
+        dateGroups(s"SELECT COUNT(*) AS c FROM $dates GROUP BY q.d HAVING q.d = '2024-01-03'")
+      ),
+      row(
+        s"SELECT COUNT(*) AS c FROM $dates GROUP BY d HAVING d = '2024-01-03'",
+        Right(Seq(1L)),
+        dateGroups(s"SELECT COUNT(*) AS c FROM $dates GROUP BY d HAVING d = '2024-01-03'")
+      ),
+      row(
+        s"SELECT COUNT(*) AS c FROM $dates GROUP BY d",
+        Right(Seq(1L, 2L, 3L, 4L)),
+        dateGroups(s"SELECT COUNT(*) AS c FROM $dates GROUP BY d")
+      )
+    ) ++ (
+      // a temporal WHERE comparison of a GROUP BY key column, qualified or bare (Elasticsearch 7 and
+      // up, which hand a script a genuine `ZonedDateTime`)
+      if (esMajor < 7) Nil
+      else
+        im10Rows(im10OneResolution).map { case (sql, expected) =>
+          row(sql, Right(expected), dateGroups(sql))
+        }
+    )
+    val after = witnesses
+    val elapsed = System.currentTimeMillis() - started
+    val wrong = matrixWrong ++ named.flatten
+    withClue(s"the schema miss did not stand for every row: before $before, after $after") {
+      (before ++ after).forall(_._2) shouldBe true
+    }
+    elapsed should be < SchemaCacheSettings.DefaultTtlMs
+    withClue(s"${wrong.size} wrong ($matrixSize matrix cells):\n${wrong.mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
   }
 }

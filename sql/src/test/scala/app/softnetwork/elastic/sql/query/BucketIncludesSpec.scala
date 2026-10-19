@@ -216,4 +216,56 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
   it should "leave a statement with no mapping alone -- its key's type is unknown (CHARACTERIZATION)" in {
     Parser(keyed("n", "n = 1.5")).isRight shouldBe true
   }
+
+  /** Story IDENT-4 -- the query venue's verdict once the mapping is attached (`resolveWithSchema`):
+    * IDENT-3's [[verdicts]], which must agree at both resolutions.
+    */
+  private def resolvedVerdict(sql: String): Either[String, Unit] =
+    verdicts(sql).map(_._2).distinct match {
+      case Seq(verdict) => verdict
+      case several      => Left(s"the two resolutions disagree: $several")
+    }
+
+  "a QUALIFIED integer key compared with a fractional number (IDENT-4)" should
+  "be refused once the mapping is known, in every spelling, and left alone before it" in {
+    // R1 has no mapping (every column is ANY), so the fractional-key check cannot fire there -- the boundary IDENT-3
+    // states, inherited by the qualified spelling. R2 is `SearchApi.resolveWithSchema`.
+    val refusedAfterResolution = Seq(
+      "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING tb.n = 1.5",
+      "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING n = 1.5",
+      "SELECT n, COUNT(*) AS c FROM t tb GROUP BY n HAVING tb.n = 1.5",
+      "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING tb.n IN (1.5, 2.5)",
+      "SELECT tb.n AS k, COUNT(*) AS c FROM t tb GROUP BY k HAVING k = 1.5"
+    )
+    val wrong = refusedAfterResolution.flatMap { sql =>
+      val atParse = Parser(sql) match {
+        case Right(_: SingleSearch) => None
+        case other => Some(s"[$sql] R1: expected accepted (no mapping), got $other")
+      }
+      val afterResolution =
+        if (atParse.isDefined) None // reported by atParse
+        else
+          resolvedVerdict(sql) match {
+            case Left(reason)
+                if reason.contains("HAVING cannot compare the integer GROUP BY key") =>
+              None
+            case other => Some(s"[$sql] R2: expected the fractional-key refusal, got $other")
+          }
+      atParse.toSeq ++ afterResolution.toSeq
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  it should "accept a whole number with a decimal point in every spelling" in {
+    Seq(
+      "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING tb.n = 2.0",
+      "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING n = 2.0",
+      "SELECT n, COUNT(*) AS c FROM t tb GROUP BY n HAVING tb.n = 2.0"
+    ).flatMap { sql =>
+      resolvedVerdict(sql) match {
+        case Right(()) => None
+        case other     => Some(s"[$sql] $other")
+      }
+    } shouldBe empty
+  }
 }
