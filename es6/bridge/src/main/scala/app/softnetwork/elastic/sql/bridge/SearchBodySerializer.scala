@@ -55,15 +55,44 @@ object SearchBodySerializer {
     "statistic would silently be computed over the raw field. Aggregate over a raw field, or use " +
     "Elasticsearch 8+."
 
-  /** Today's behaviour -- the one-argument `SearchBodyBuilderFn` -- guarded against the one shape
-    * it cannot render honestly. A transform-bearing extended_stats has no script-emitting builder
-    * on this line, so the request is REFUSED, loudly and by name, instead of leaving as the
-    * statistic of the wrong field.
+  /** The GROUP BY key whose `terms` filter pairs a pattern with a list of two or more values -- the
+    * one key-filter shape Elasticsearch 6.8 rejects outright (see [[TermsIncludeExclude]]).
+    */
+  def unmixableTermsFilter(search: SearchRequest): Option[String] =
+    TermsIncludeExclude.unmixableIn(search.aggs)
+
+  /** Why that shape cannot be sent, and what to write instead. The key NAME is quoted; values never
+    * are -- they are data, and the gateway logs every refusal.
+    */
+  private def unmixableTermsFilterReason(key: String, venue: String): String =
+    s"HAVING cannot filter the GROUP BY key '$key' $venue: it combines a pattern (LIKE, RLIKE or " +
+    "MATCH) with a list of several values, and Elasticsearch before 7.11 applies a key filter's " +
+    "kept and removed terms together only when both are patterns or both are value lists. Write " +
+    "the value list as a single RLIKE pattern, escaping any regular-expression metacharacter a " +
+    "value carries (for example NOT RLIKE 'b|c', and 'a\\.b' for the value a.b), or use " +
+    "Elasticsearch 7.11 or later."
+
+  /** The version-agnostic refusal the Default serializer raises for that shape. */
+  def unmixableTermsFilterUnsupported(key: String): String =
+    unmixableTermsFilterReason(key, "with the default Elasticsearch body builder")
+
+  /** The refusal an ES-major-aware client module raises for the same shape, naming its major. */
+  def unmixableTermsFilterOn(major: Int, key: String): String =
+    unmixableTermsFilterReason(key, s"on Elasticsearch $major")
+
+  /** Today's behaviour -- the one-argument `SearchBodyBuilderFn` -- guarded against the shapes it
+    * cannot render honestly. A transform-bearing extended_stats has no script-emitting builder on
+    * this line, so the request is REFUSED, loudly and by name, instead of leaving as the statistic
+    * of the wrong field; and a GROUP BY key filter pairing a pattern with several values is refused
+    * by name instead of reaching Elasticsearch 6.8's own "Cannot mix" error.
     */
   object Default extends SearchBodySerializer {
     override def serialize(search: SearchRequest): String = {
       if (hasTransformExtendedStats(search))
         throw new UnsupportedOperationException(TransformExtendedStatsUnsupported)
+      unmixableTermsFilter(search).foreach { key =>
+        throw new UnsupportedOperationException(unmixableTermsFilterUnsupported(key))
+      }
       SearchBodyBuilderFn(search).string()
     }
   }

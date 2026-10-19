@@ -336,16 +336,46 @@ case class Bucket(
   def isObject: Boolean = identifier.isObject
 }
 
+// Extends the function type the synthetic companion of a case class extends, and keeps its
+// `toString`, so that declaring this companion leaves `BucketPath`'s binary shape as it was.
+object BucketPath extends scala.runtime.AbstractFunction1[Seq[Bucket], BucketPath] {
+
+  final override def toString: String = "BucketPath"
+
+  /** The order a request EMITS a sequence of buckets in -- a GROUP BY's, or a window's PARTITION BY
+    * -- which every path and every tree built from that sequence must follow: the root keys first,
+    * then the nested ones, each part in its written order.
+    *
+    * The request nests every nested level inside the root buckets, never a root bucket inside a
+    * nested one, so `GROUP BY i.qty, t.category` (an UNNEST key before a root key) is emitted as
+    * `GROUP BY t.category, i.qty` is. Read in the WRITTEN order, the path of `MIN(i.qty)` named
+    * `items.qty>category`, a node the request never carries: the aggregate was left out of the
+    * request and answered NULL on every group, and a root aggregate lost the UNNEST bucket. In this
+    * order the statement emits, and answers, what its root-first spelling does.
+    *
+    * The identity whenever no nested key precedes a root key. ONE function for every reader that
+    * builds a path or a tree from a bucket sequence (`BucketPath.path`, `BucketTree.fromBuckets`);
+    * the written GROUP BY (`GroupBy.sql`) keeps its order.
+    */
+  def emissionOrder(buckets: Seq[Bucket]): Seq[Bucket] = {
+    val firstNested = buckets.indexWhere(_.nested)
+    if (firstNested < 0 || buckets.drop(firstNested).forall(_.nested)) buckets
+    else buckets.filterNot(_.nested) ++ buckets.filter(_.nested)
+  }
+}
+
 case class BucketPath(buckets: Seq[Bucket]) {
 
   lazy val path: String =
-    buckets.foldLeft("")((acc, b) => {
-      if (acc.isEmpty) {
-        s"${b.path}"
-      } else {
-        s"$acc>${b.path}"
-      }
-    })
+    BucketPath
+      .emissionOrder(buckets)
+      .foldLeft("")((acc, b) => {
+        if (acc.isEmpty) {
+          s"${b.path}"
+        } else {
+          s"$acc>${b.path}"
+        }
+      })
 
   override def toString: String = path
 }
@@ -976,7 +1006,8 @@ object BucketTree {
       return BucketTree(Seq.empty)
     }
 
-    val validBuckets = buckets.filter(_.nonEmpty)
+    // each path in the order the request emits it, as `BucketPath.path` builds it
+    val validBuckets = buckets.filter(_.nonEmpty).map(BucketPath.emissionOrder)
 
     // Group by root bucket path
     val groupedByRoot = validBuckets.groupBy(_.head.path)

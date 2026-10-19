@@ -1614,6 +1614,71 @@ package object query {
       having.flatMap(_.criteria).toSeq.flatMap(leaves)
     }
 
+    /** Every leaf `Expression` under `c`, the ones scoped to a relation INCLUDED -- which is what
+      * sets it apart from [[havingLeaves]]. Rule (c) of `validate()` and
+      * [[fractionalIntegerKeyComparison]] read it: a leaf inside a nested relation needs a stage,
+      * and compares with a value, just as a flat one does.
+      */
+    private[query] def leavesUnder(c: Criteria): Seq[Expression] = c match {
+      case Predicate(l, _, r, _, _)  => leavesUnder(l) ++ leavesUnder(r)
+      case relation: ElasticRelation => leavesUnder(relation.criteria)
+      case e: Expression             => Seq(e)
+      case _                         => Nil
+    }
+
+    /** The first HAVING key filter comparing an INTEGER grouping key with a number that has a
+      * fractional part, as the reason it is refused -- or `None`.
+      *
+      * Every Elasticsearch major reads a `terms` include / exclude value on an integer field with
+      * `DocValueFormat.RAW.parseLong`: `Long.parseLong`, and for anything else
+      * `Math.round(Math.floor(Double.parseDouble(value)))` (the same in the 6.8.23 and 8.18.3
+      * sources). So `HAVING n = 1.5` keeps the group 1 and `HAVING n <> 1.5` removes it, HTTP 200
+      * -- a comparison no integer satisfies, answered with the floored value instead.
+      *
+      * The values judged are the ones the key filter SENDS -- the real `includes` / `excludes`,
+      * never a copy of their rules -- and each is read the way Elasticsearch reads it, whatever the
+      * literal's class: `n = 2.0` is exact and passes; `n = 1.5`, `n = PI` and a string that spells
+      * a fraction (`'1.5'`, `'NaN'`, `'Infinity'`: no integer equals them) are refused. A string
+      * that is not a number at all is left to Elasticsearch, which fails on it as it always has.
+      *
+      * The key's type is read from the BUCKET the leaf resolves to ([[keyBucketOf]], the derivation
+      * [[havingScopeOf]] uses), never from the leaf: a leaf spelled as the SELECT alias (`SELECT n
+      * AS k ... GROUP BY k HAVING k = 1.5`) carries no column, while the bucket is bound to the
+      * aliased column. It needs the MAPPING -- every column is `Any` at parse time -- so it is
+      * asked by [[validateResolved]] only, and a statement resolved without one is not covered.
+      */
+    private[query] def fractionalIntegerKeyComparison: Option[String] =
+      if (groupBy.isEmpty) None
+      else {
+        val empty = BucketIncludesExcludes()
+        having
+          .flatMap(_.criteria)
+          .toSeq
+          .flatMap(leavesUnder)
+          .view
+          .flatMap { e =>
+            // The bucket's type first: a keyword key -- the commonest -- is answered by one lookup,
+            // and no value is parsed.
+            keyBucketOf(e.identifier)
+              .filter(b =>
+                e.identifier.functions.isEmpty && b.identifier.functions.isEmpty &&
+                NumericReducer.wholeNumber(b.identifier.out)
+              )
+              .flatMap { b =>
+                (e.includes(b, not = false, empty)
+                  .values ++ e.excludes(b, not = false, empty).values)
+                  .flatMap(v => SingleSearch.fractionalReading(v).map(v -> _))
+                  .headOption
+              }
+              .map { case (value, d) =>
+                s"HAVING cannot compare the integer GROUP BY key ${e.identifier.sql} with $value: no " +
+                  "integer is equal to it, and Elasticsearch would compare the key with " +
+                  s"${math.round(math.floor(d))} instead. Compare it with a whole number."
+              }
+          }
+          .headOption
+      }
+
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
     lazy val sources: Seq[String] = from.tables.map(_.name)
@@ -1831,7 +1896,10 @@ package object query {
       // which is issue #250's family. That throw stays as the last-resort invariant; this is what
       // makes it unreachable in practice.
       having.map(_.unrepresentable).getOrElse(Nil).headOption.map(u => Left(u.message)).getOrElse {
-        typeErrors.headOption.map(Left(_)).getOrElse(Right(()))
+        typeErrors.headOption
+          .orElse(fractionalIntegerKeyComparison)
+          .map(Left(_))
+          .getOrElse(Right(()))
       }
 
     /** Every TYPE refusal of this RESOLVED statement, by name, in clause order.
@@ -2139,12 +2207,6 @@ package object query {
                 // green in round 2).
                 case HavingScope.GroupKey => "key"
               }
-          def leavesUnder(c: Criteria): Seq[Expression] = c match {
-            case Predicate(l, _, r, _, _)  => leavesUnder(l) ++ leavesUnder(r)
-            case relation: ElasticRelation => leavesUnder(relation.criteria)
-            case e: Expression             => Seq(e)
-            case _                         => Nil
-          }
           // 🔴 The STAGE, not just the mechanism. `mechanismOf` collapses every grouping level
           // to the single label "key", so an OR across TWO GROUP BY keys looked homogeneous --
           // and Elasticsearch NESTS the two `terms` aggregations, which IS the conjunction this
@@ -2396,6 +2458,28 @@ package object query {
   }
 
   object SingleSearch {
+
+    /** The number a `terms` key-filter value spells, when it has a fractional part, read the way
+      * Elasticsearch's `DocValueFormat.RAW.parseLong` reads it: `Long.parseLong` first (a whole
+      * number: `None`), then `Double.parseDouble`. NaN and the infinities are fractional here -- no
+      * integer equals them, and Elasticsearch turns them into 0 and the extreme longs. `None` too
+      * for a text that is no number at all: Elasticsearch fails on it, as it always has.
+      */
+    private[query] def fractionalReading(value: String): Option[Double] =
+      if (!maySpellNumber(value)) None
+      else
+        Try(java.lang.Long.parseLong(value)).toOption match {
+          case Some(_) => None
+          case None =>
+            Try(java.lang.Double.parseDouble(value)).toOption
+              .filter(d => d.isNaN || d.isInfinite || d != math.floor(d))
+        }
+
+    /** Can `s` spell a number `Double.parseDouble` reads? Every such text holds a digit, or is NaN
+      * or an infinity -- a text with neither is not worth a parse that would throw.
+      */
+    private def maySpellNumber(s: String): Boolean =
+      s.exists(_.isDigit) || s.contains("NaN") || s.contains("Infinity")
 
     /** Does a HAVING reference read a per-group calculation the way an arithmetic over aggregates
       * is read? The ONE predicate the inline-arithmetic refusal (`validate()`) and a materialized

@@ -601,20 +601,13 @@ object ElasticAggregation {
               bucket.size.foreach(s => terms = terms.size(s))
               having match {
                 case Some(criteria) =>
-                  criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.include(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.include(values.toArray)
-                    case _ =>
-                  }
-                  criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.exclude(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.exclude(values.toArray)
-                    case _ =>
-                  }
+                  // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
+                  // string, which Elasticsearch 6.8 reads as a REGEX. See [[TermsIncludeExclude]].
+                  terms = TermsIncludeExclude(
+                    terms,
+                    criteria.includes(bucket, not = false, BucketIncludesExcludes()),
+                    criteria.excludes(bucket, not = false, BucketIncludesExcludes())
+                  )
                 case _ =>
               }
               agg = terms

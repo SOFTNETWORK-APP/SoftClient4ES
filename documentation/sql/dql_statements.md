@@ -1108,6 +1108,26 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 ```
 
 - Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE`.
+  On a `keyword`, `integer`, `long`, `double` or `boolean` key, `=`, `<>`, `IN` and `NOT IN` keep or
+  remove **exactly** the values written, on every supported release: a `.`, `*`, `(`, `\` or `'` in a
+  value is an ordinary character, and a numeric or boolean key is compared as a number or a boolean.
+- ⚠️ **An integer key compared with a number that has a fractional part is refused**
+  (`HAVING year = 2025.5`, `HAVING year IN (2024.5, 2025)`) — whether the key is named by its
+  column, its SELECT alias or its GROUP BY position, or is grouped from an `UNNEST`: no integer
+  equals that number, and Elasticsearch would round it down and keep the group `2025`. Compare the
+  key with a whole number (`2025` or `2025.0`). The check reads the index mapping: that of the
+  index, or, over an index pattern or several indices, the mapping of every index they match,
+  merged. It cannot run where no mapping is known — a pattern that matches no index, a mapping that
+  cannot be read, or a key the matched indices map with different types (`integer` in one, `long`
+  in another). There, Elasticsearch rounds the number down and answers without an error (on
+  Elasticsearch 6.8, a comparison with a single value used to fail instead).
+- ⚠️ **Elasticsearch 6 only:** a pattern (`LIKE` / `RLIKE`) in one list and **two or more** values
+  in the other (`city LIKE 'P%' AND city NOT IN ('Pau', 'Pise')`) is refused, because that release
+  applies the kept and removed terms together only when both are patterns or both are values. Write
+  the value list as one `RLIKE` pattern, escaping any regular-expression metacharacter a value
+  carries — `city LIKE 'P%' AND city NOT RLIKE 'Pau|Pise'` — which is answered on every release.
+  Elasticsearch 7.11 and later apply both as written. See
+  [Known limitations](known_limitations.md#a-pattern-and-several-values-on-one-group-by-key--elasticsearch-6-refuses-it).
 - ⚠️ **Which COMBINATIONS are supported follows from how Elasticsearch applies them.** The `terms`
   filter carries one list of kept values and one list of removed values, and each is a UNION:
 

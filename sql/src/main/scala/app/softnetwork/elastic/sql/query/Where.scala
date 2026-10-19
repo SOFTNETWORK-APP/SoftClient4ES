@@ -2326,8 +2326,13 @@ case class InExpr[R, +T <: Value[R]](
     identifier.bucket.find(_.name == bucket.name) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
+          // The VALUE, never its SQL rendering -- the rule `Expression.includes` states on its EQ
+          // arm. `.sql` escapes a backslash and an apostrophe, and stripping only the quote
+          // delimiters left both escapes behind: `IN ('a\b')` sent `a\\b` and `IN ('it''s')` sent
+          // `it\s`, which keep no group. The IN grammar admits string, long and double literals
+          // only, so no element is null.
           bucketIncludesExcludes.copy(values =
-            bucketIncludesExcludes.values ++ values.values.map(_.sql.replaceAll("'", "")).toSet
+            bucketIncludesExcludes.values ++ values.values.map(_.value.toString).toSet
           )
         else bucketIncludesExcludes
       case _ => bucketIncludesExcludes

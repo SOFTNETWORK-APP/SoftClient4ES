@@ -30,6 +30,10 @@ import com.sksamuel.elastic4s.searches.SearchRequest
   * refusal is an `ElasticError` with status 400 so it reaches the caller as an honest failure. The
   * 6.x elastic4s line is unmaintained: there is no upstream path (spec R-1b), so unlike the ES 7
   * module this refusal is permanent.
+  *
+  * A GROUP BY key filter pairing a pattern with a list of several values -- the one key-filter
+  * shape Elasticsearch 6.8 rejects outright -- is refused here too, by name and with its remedy,
+  * before any JSON exists.
   */
 object JestSearchBodySerializer extends SearchBodySerializer {
 
@@ -42,6 +46,12 @@ object JestSearchBodySerializer extends SearchBodySerializer {
   val TransformExtendedStatsUnsupported: String =
     SearchBodySerializer.transformExtendedStatsUnsupportedOn(ElasticsearchMajor)
 
+  /** The named error a pattern beside a list of several values on one GROUP BY key is refused with
+    * on this module.
+    */
+  def unmixableTermsFilterRefusal(key: String): String =
+    SearchBodySerializer.unmixableTermsFilterOn(ElasticsearchMajor, key)
+
   override def serialize(search: SearchRequest): String = {
     if (SearchBodySerializer.hasTransformExtendedStats(search))
       throw ElasticError(
@@ -49,6 +59,13 @@ object JestSearchBodySerializer extends SearchBodySerializer {
         statusCode = Some(400),
         operation = Some("search")
       )
+    SearchBodySerializer.unmixableTermsFilter(search).foreach { key =>
+      throw ElasticError(
+        message = unmixableTermsFilterRefusal(key),
+        statusCode = Some(400),
+        operation = Some("search")
+      )
+    }
     SearchBodySerializer.Default.serialize(search)
   }
 }

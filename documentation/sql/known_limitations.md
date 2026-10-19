@@ -186,6 +186,41 @@ unmaintained, so the fix cannot reach it; until this rule, the query silently re
 of the **raw** field. Aggregate over a raw field there, or use Elasticsearch 7+. That refusal is
 permanent. See [STDDEV / VARIANCE family](functions_aggregate.md#function-stddev--variance-family).
 
+## A pattern and several values on one GROUP BY key — Elasticsearch 6 refuses it
+
+A `HAVING` condition on the grouping key is applied by the `terms` filter, which holds one list of
+kept terms and one of removed terms. **Elasticsearch 6** applies the two together only when both
+are patterns (`LIKE` / `RLIKE`) or both are values, so a pattern in one list and **two or more**
+values in the other is refused with a `400` — *"HAVING cannot filter the GROUP BY key … on
+Elasticsearch 6 …"*:
+
+```sql
+-- refused on Elasticsearch 6; answered on 7.11 and later
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city
+HAVING city LIKE 'P%' AND city NOT IN ('Pau', 'Pise');
+```
+
+Write the value list as ONE `RLIKE` pattern — a pattern too, so the pair is applied on every
+release (escape any regular-expression metacharacter a value carries, e.g. `'a\.b'` for `a.b`):
+
+```sql
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city
+HAVING city LIKE 'P%' AND city NOT RLIKE 'Pau|Pise';
+```
+
+A single value in either list is unaffected, and so is every other combination.
+
+## A fractional number compared with an integer GROUP BY key is refused
+
+`HAVING year = 2025.5` (and `<>`, `IN`, `NOT IN`) over an integer grouping key is refused with a
+`400` on every Elasticsearch release — *"HAVING cannot compare the integer GROUP BY key year with
+2025.5 …"*: no integer equals that number, and Elasticsearch would round it down and keep the group
+`2025`. Compare the key with a whole number. The check needs the index mapping; an index pattern
+or several indices have one too, merged over the indices they match. Where no mapping is known — a
+pattern that matches no index, a mapping that cannot be read, or a key the matched indices map with
+different types — the number is rounded down by Elasticsearch, without an error. See
+[Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
+
 ## `DATE_FORMAT` / `DATETIME_FORMAT` over a bare date column — Elasticsearch 6.8 refuses it
 
 `DATE_FORMAT(created_at, '%Y-%m-%d')` and `DATETIME_FORMAT(ts, '%Y-%m-%d %H:%i:%s')` — the operand a

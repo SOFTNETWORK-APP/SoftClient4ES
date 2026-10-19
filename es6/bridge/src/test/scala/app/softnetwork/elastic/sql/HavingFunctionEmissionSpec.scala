@@ -14,9 +14,10 @@ import scala.jdk.CollectionConverters._
   * measured against the HAND-MAINTAINED es6 bridge (AC-7).
   *
   * 🔴 NO bridge file changed in round 3 — the whole rule lives in `sql`. This twin is what PROVES
-  * it: the same derived matrix and the same pins against a different elastic4s major, with two
-  * expectations differing (elastic4s 6 renders a single-value `terms` `include` / `exclude` as a
-  * bare string).
+  * it: the same derived matrix and the same pins against a different elastic4s major, the one-value
+  * `include` / `exclude` pins differing: this bridge writes a one-value list as the value twice,
+  * because elastic4s 6 writes a one-entry list as a bare string, which Elasticsearch 6.8 reads as a
+  * regex.
   *
   * The `sql` half (detection, the representability gate, the refusals) is pinned in
   * `HavingOverAggregateFunctionSpec`. What is measured HERE is what Elasticsearch is actually sent:
@@ -211,7 +212,7 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
 
   "a key predicate the terms filter expresses" should "stay in the terms filter and touch nothing else" in {
     val q = queryOf(group + "status = 'a'")
-    q should include(""""include":"a"""")
+    q should include(""""include":["a","a"]""")
     // 🔴 No query filter: the round-2 push-down put one here, and that is what made a multi-valued
     // grouping wrong.
     q should include(""""query":{"match_all":{}}""")
@@ -222,7 +223,7 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     val q = queryOf(
       "SELECT status, COUNT(*) AS c FROM t WHERE amount > 1 GROUP BY status HAVING status = 'a'"
     )
-    q should include(""""include":"a"""")
+    q should include(""""include":["a","a"]""")
     q should not include "toUpperCase"
   }
 
@@ -256,11 +257,9 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
 
   it should "keep working beside a metric, which is a different mechanism" in {
     val q = queryOf(group + "status <> 'a' AND COUNT(*) > 1")
-    // ⚠️ ES6 RENDERING, and it is a RESIDUAL, not a choice: this bridge renders a SINGLE-element
-    // value list as a bare string, which Elasticsearch 6.8 reads as a REGEX. It happens to select
-    // the right terms here (anchored, no metacharacters) but it is why a set-based include beside
-    // a single-valued exclude is rejected outright by 6.8 -- recorded, pre-existing, not fixed.
-    q should include(""""exclude":"a"""")
+    // A one-value list is written as the value twice, an exact SET on 6.8 (a bare string would be
+    // a regex).
+    q should include(""""exclude":["a","a"]""")
     q should include("bucket_selector")
   }
 
@@ -287,8 +286,7 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "still allow one include and one exclude under a conjunction" in {
-    // Both lists MULTI-valued, so this bridge renders both as arrays -- see the residual note
-    // above; ES 6.8 rejects a set-based include beside a regex-rendered exclude.
+    // Both lists MULTI-valued: arrays, written as they always were.
     val q = queryOf(group + "status IN ('a','b') AND status NOT IN ('c','d')")
     q should include(""""include":["a","b"]""")
     q should include(""""exclude":["c","d"]""")
@@ -340,10 +338,9 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       case Right(_) => fail(s"accepted; it emitted ${queryOf(two + "status = 'a' OR city = 'b'")}")
     }
     val q = queryOf(two + "status = 'a' AND city = 'b'")
-    // ⚠️ ES6 RENDERING: this bridge writes a SINGLE-element list as a bare string. See the
-    // residual note above -- recorded, pre-existing, byte-identical to `455433ae`.
-    q should include(""""include":"a"""")
-    q should include(""""include":"b"""")
+    // A one-value list is written as the value twice.
+    q should include(""""include":["a","a"]""")
+    q should include(""""include":["b","b"]""")
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -392,8 +389,8 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     // The key predicate is a `terms` exclude, the aggregate one a `bucket_selector`. Neither may
     // cost the other.
     val q = queryOf(group + "COALESCE(COUNT(*), 0) > 1 AND status <> 'x'")
-    // elastic4s 6 renders a single-value `exclude` as a bare string, 7+ as an array.
-    q should include(""""exclude":"x"""")
+    // A one-value list is written as the value twice.
+    q should include(""""exclude":["x","x"]""")
     q should include("""(params.c != null ? params.c : 0) > 1""")
   }
 
