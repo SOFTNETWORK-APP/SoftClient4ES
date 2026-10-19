@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
+import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql._
 
 import scala.annotation.tailrec
@@ -3160,6 +3161,29 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
 
 }
 
+object ElasticRelation {
+
+  /** Whether some join field of `schema` holds `relation` in this role: as a parent (a key of its
+    * `relations`) for `PARENT(…)`, as a child (one of their values) for `CHILD(…)`. Holding the
+    * relation is required, not only having a join field: an index without the field holds no
+    * relation, so its `has_child` / `has_parent` may then tolerate it (`ignore_unmapped`), but the
+    * same key would also silence a relation no index holds (a typo), which must keep failing.
+    * Without a schema, `false`.
+    */
+  private[sql] def joinHolds(schema: Option[Schema], relation: String, asParent: Boolean): Boolean =
+    schema.exists(_.columns.exists(_.options.get("relations") match {
+      case Some(ObjectValue(rels)) =>
+        if (asParent) rels.contains(relation)
+        else
+          rels.values.exists {
+            case StringValue(child) => child == relation
+            case vs: Values[_, _]   => vs.values.exists(_.value == relation)
+            case _                  => false
+          }
+      case _ => false
+    }))
+}
+
 case class ElasticNested(
   override val criteria: Criteria,
   override val limit: Option[Limit],
@@ -3188,19 +3212,41 @@ case class ElasticNested(
 }
 
 case class ElasticChild(
-  override val criteria: Criteria
+  override val criteria: Criteria,
+  joinRelationKnown: Boolean = false
 ) extends ElasticRelation(criteria, Child) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SingleSearch): ElasticChild =
-    this.copy(criteria = criteria.update(request))
+
+  /** `ignore_unmapped` of this `has_child`: only when a join field of the schema holds the relation
+    * as a child.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (joinRelationKnown) Some(true) else None
+
+  override def update(request: SingleSearch): ElasticChild = {
+    val updated = this.copy(criteria = criteria.update(request))
+    updated.copy(joinRelationKnown =
+      updated.relationType.exists(ElasticRelation.joinHolds(request.schema, _, asParent = false))
+    )
+  }
 }
 
 case class ElasticParent(
-  override val criteria: Criteria
+  override val criteria: Criteria,
+  joinRelationKnown: Boolean = false
 ) extends ElasticRelation(criteria, Parent) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SingleSearch): ElasticParent =
-    this.copy(criteria = criteria.update(request))
+
+  /** `ignore_unmapped` of this `has_parent`: only when a join field of the schema holds the
+    * relation as a parent.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (joinRelationKnown) Some(true) else None
+
+  override def update(request: SingleSearch): ElasticParent = {
+    val updated = this.copy(criteria = criteria.update(request))
+    updated.copy(joinRelationKnown =
+      updated.relationType.exists(ElasticRelation.joinHolds(request.schema, _, asParent = true))
+    )
+  }
 }
 
 case class Where(criteria: Option[Criteria]) extends Updateable {

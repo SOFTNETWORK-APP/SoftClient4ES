@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.`type`.SQLTypeUtils
 import app.softnetwork.elastic.sql.operator.{AND, EQ}
 import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql.{
@@ -964,8 +965,15 @@ case class NestedElement(
   size: Option[Int],
   children: Seq[NestedElement] = Nil, // TODO remove and use parent instead
   sources: Seq[String] = Nil,
-  parent: Option[NestedElement]
+  parent: Option[NestedElement],
+  mappedAsNested: Boolean = false
 ) {
+
+  /** `ignore_unmapped` of this element's nested query: only when the statement's schema maps `path`
+    * as nested.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (mappedAsNested) Some(true) else None
+
   lazy val root: NestedElement = {
     parent match {
       case Some(p) => p.root
@@ -1017,6 +1025,16 @@ object NestedElements {
       .flatMap(v => Try(String.valueOf(v.value).trim.toInt).toOption)
       .filter(_ > 0)
       .fold(DefaultInnerHitsSize)(math.min(DefaultInnerHitsSize, _))
+
+  /** Whether `schema` maps `path` (the full dotted path) as `nested`. Over an index pattern or list
+    * the schema is the members' merge: a path one member maps keeps that member's type, and members
+    * that disagree merge to no type. So `true` means some index maps the path as nested and none
+    * maps it otherwise; an index that does not map it holds no element, and its nested query may
+    * then tolerate it (`ignore_unmapped`). Without a schema, or for a path no index maps as nested,
+    * `false`: the statement fails as before.
+    */
+  def mappedAsNested(schema: Option[Schema], path: String): Boolean =
+    schema.flatMap(_.find(path)).exists(c => SQLTypeUtils.elasticType(c.dataType) == "nested")
 
   def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
     if (nestedElements.isEmpty) return Nil

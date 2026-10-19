@@ -434,6 +434,7 @@ package object bridge {
               .inner(
                 nestedInner(n)
               )
+              .copy(ignoreUnmapped = n.ignoreUnmapped)
           } else {
             nestedQuery(
               n.path,
@@ -442,6 +443,7 @@ package object bridge {
               .inner(
                 nestedInner(n)
               )
+              .copy(ignoreUnmapped = n.ignoreUnmapped)
           }
         }
 

@@ -930,7 +930,8 @@ package object query {
           .get(updated.innerHitsName)
           .map(_.map(_.identifier.name.split('.').tail.mkString(".")))
           .getOrElse(Nil),
-        parent = parent
+        parent = parent,
+        mappedAsNested = NestedElements.mappedAsNested(schema, updated.path)
       )
     }
 

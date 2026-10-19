@@ -885,7 +885,7 @@ WHERE items.quantity >= 1
 ORDER BY o.id ASC;
 ```
 
-`JOIN UNNEST` behaves like a standard SQL UNNEST operation: each element of an `ARRAY<STRUCT>` becomes a separate output row, with parent fields duplicated — exactly like a relational unnest.
+`JOIN UNNEST` behaves like a standard SQL UNNEST operation: each element of an `ARRAY<STRUCT>` becomes a separate output row, with parent fields duplicated — exactly like a relational unnest. Over an index pattern or list, an index that does not map the UNNEST path contributes no rows, when another index maps it as `nested`.
 
 This means:
 
