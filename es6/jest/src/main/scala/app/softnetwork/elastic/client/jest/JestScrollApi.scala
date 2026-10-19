@@ -166,6 +166,20 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
       .mapConcat(identity)
   }
 
+  /** The `_id` sort that `search_after` pages on when the statement has no sort, and its
+    * tie-breaker otherwise. On Elasticsearch 6, an index created without any mapping has no type,
+    * hence no `_id` field to sort on: without `unmapped_type` every shard of such an index fails
+    * the page. `_id` is mapped in every other index, where the key changes nothing.
+    */
+  private[this] def idSort(): JsonObject = {
+    val options = new JsonObject()
+    options.addProperty("order", "asc")
+    options.addProperty("unmapped_type", "keyword")
+    val sort = new JsonObject()
+    sort.add("_id", options)
+    sort
+  }
+
   /** Search After (only for hits, more efficient)
     */
   override private[client] def searchAfter(
@@ -201,9 +215,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 "This may lead to inconsistent results if documents are updated during scroll."
               )
               val sortArray = new com.google.gson.JsonArray()
-              val sortObj = new JsonObject()
-              sortObj.addProperty("_id", "asc")
-              sortArray.add(sortObj)
+              sortArray.add(idSort())
               queryJson.add("sort", sortArray)
             } else if (hasSorts && queryJson.has("sort")) {
               // Sorts already present, check that a tie-breaker exists
@@ -214,9 +226,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               if (!hasIdSort) {
                 // Add _id as tie-breaker
                 logger.debug("Adding _id as tie-breaker to existing sorts")
-                val tieBreaker = new JsonObject()
-                tieBreaker.addProperty("_id", "asc")
-                existingSorts.add(tieBreaker)
+                existingSorts.add(idSort())
               }
             }
 
