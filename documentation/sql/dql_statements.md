@@ -443,20 +443,28 @@ The `WHERE` clause supports:
 > document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
 > "no match" applies to a **condition**, never to a value.
 >
-> 🔴 **`ORDER BY` over a function of a column some documents do not carry LOSES ROWS SILENTLY.** The
-> engine emits a null-preserving sort script; Elasticsearch then fails the shard while building the
-> comparator (`null_pointer_exception`). What you see depends on the shard count, and the dangerous
-> case is the normal one:
+> 🔴 **`ORDER BY` over a function of a column some documents do not carry answers an error.** The
+> engine emits a null-preserving sort script; Elasticsearch then fails every shard that holds such
+> a document while building the comparator (`null_pointer_exception`). The statement fails
+> whatever the shard count:
 >
-> - on a **single-shard** index the whole search is rejected — you get an error;
-> - on a **multi-shard** index the search returns **HTTP 200** and the failing shard's documents are
->   simply **absent from the result**. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with
->   one lacking the field: `_shards.failed: 1`, `hits.total: 5` — two rows gone, no error anywhere.
->   The engine does not surface `_shards.failures`, so nothing reaches the caller.
+> - on a **single-shard** index Elasticsearch rejects the whole search (HTTP 500, `all shards
+>   failed`);
+> - on a **multi-shard** index Elasticsearch answers HTTP 200 with the other shards' documents only;
+>   the engine reads `_shards` and answers an error instead, with no status code:
+>   `1 of 3 shards failed: null_pointer_exception: Cannot invoke "java.lang.CharSequence.length()"
+>   because "text" is null`. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with one
+>   lacking the field (`_shards.failed: 1`, `hits.total: 5`). Before **0.24.0** the engine returned
+>   those 5 rows as the whole result, with no error.
 >
-> Until that is fixed, sort by the bare column, or keep the field present on every document. Do not
-> rely on getting an error. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which
-> is NULL-valued for the rows no branch matches.
+> A statement without `LIMIT` is read page by page and fails the same way
+> (`PIT search_after failed: …`). To sort such a column, sort by the bare column, or keep the field
+> present on every document. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`,
+> which is NULL-valued for the rows no branch matches.
+>
+> Since **0.24.0**, a sort by the bare column over an index pattern or list also answers the
+> documents of an index that does not map that column, sorted as `NULL`, when the other indices map
+> it as `keyword`, `boolean`, `date`, `byte`, `short`, `integer`, `long`, `float` or `double`.
 >
 > ⚠️ Two limits of the rule above, stated rather than implied. `NOT <function>(x) IS NULL` is a
 > PARSE rejection — the grammar takes a bare name after `NOT` there — so the rule covers the

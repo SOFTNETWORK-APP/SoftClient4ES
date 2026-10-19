@@ -112,13 +112,23 @@ trait JavaClientConversion { _: JavaClientCompanion =>
   /** Response tree of a one-shot search (#228), single-parse.
     *
     * Hits-only responses — the common row-shaped case — re-parent the `_source` trees the transport
-    * already parsed (see [[hitsToResponseNode]]); aggregation-bearing responses serialize the whole
-    * envelope once at token level via [[convertToTree]], never through a String.
+    * already parsed (see [[hitsToResponseNode]]) and carry the typed `_shards` section (see
+    * [[withShards]]); aggregation-bearing responses serialize the whole envelope once at token
+    * level via [[convertToTree]], never through a String.
     */
   protected def searchResponseToTree(response: SearchResponse[ObjectNode]): JsonNode =
     if (response.aggregations() != null && !response.aggregations().isEmpty)
       convertToTree(response)
-    else hitsToResponseNode(response.hits().hits())
+    else withShards(hitsToResponseNode(response.hits().hits()), response.shards())
+
+  /** Carry a one-shot response's `_shards` into its hits-only tree: core reads it to answer a
+    * search on which some shards failed as an error, not as the rows of the shards that succeeded.
+    * The typed section is converted at token level, never through a String (#228).
+    */
+  protected def withShards[S <: JsonpSerializable](root: ObjectNode, shards: S): ObjectNode = {
+    if (shards != null) root.set[JsonNode]("_shards", convertToTree(shards))
+    root
+  }
 
   /** Response tree of a multi search (#228), single-parse.
     *
@@ -135,7 +145,7 @@ trait JavaClientConversion { _: JavaClientCompanion =>
         if (result.aggregations() != null && !result.aggregations().isEmpty) {
           responses.add(convertToTree(result))
         } else {
-          responses.add(hitsToResponseNode(result.hits().hits()))
+          responses.add(withShards(hitsToResponseNode(result.hits().hits()), result.shards()))
         }
       } else {
         responses.add(convertToTree(item))

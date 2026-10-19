@@ -322,6 +322,25 @@ trait SortNullsSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Match
     }
   }
 
+  "ORDER BY a function of a column a populated index does not map" should "answer an error, not the other indices' rows" in {
+    unmappedFixture
+    // A script sort carries no key, and the script cannot read the column on the shards of
+    // `sort_unm_p_b` that hold a document: those shards fail, and the search answers an error
+    // instead of the six rows of `sort_unm_p_a`.
+    val sql = "SELECT id FROM sort_unm_p_* ORDER BY UPPER(name) LIMIT 100"
+    client.search(SelectStatement(sql)) match {
+      case ElasticFailure(error) =>
+        withClue(error.message) {
+          "[12] of 6 shards failed".r.findFirstIn(error.message) should not be empty
+        }
+      case ElasticSuccess(response) =>
+        fail(
+          s"a search on which a shard failed answered ${response.results.size} row(s) with no " +
+          s"error: $sql"
+        )
+    }
+  }
+
   "a UNION ALL leg sorted over a column some indices do not map" should "answer every row of both legs" in {
     unmappedFixture
     val leg1 = "SELECT id FROM sort_unm_e_a WHERE name = 'n1' LIMIT 10"

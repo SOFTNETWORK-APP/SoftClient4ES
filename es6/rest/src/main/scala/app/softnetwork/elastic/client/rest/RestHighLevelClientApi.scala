@@ -1495,31 +1495,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
   /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
     * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
-    * check.
+    * check. One reading of `_shards` for every door: [[ShardFailures]].
     */
-  private def shardFailures(tree: JsonNode): Option[String] = {
-    val shards = tree.path("_shards")
-    if (shards.path("failed").asInt(0) > 0) {
-      val failures = shards.path("failures")
-      val reasons =
-        if (failures.isArray && failures.size() > 0) {
-          failures
-            .elements()
-            .asScala
-            .map { failure =>
-              val reason = failure.path("reason")
-              val message = reason.path("reason")
-              if (message.isTextual) message.asText() else reason.toString
-            }
-            .mkString("; ")
-        } else {
-          "Unknown shard failure"
-        }
-      Some(reasons)
-    } else {
-      None
-    }
-  }
+  private def shardFailures(tree: JsonNode): Option[String] = ShardFailures.of(tree).map(_.reasons)
 
   /** Convert a hit's `sort` array into the values fed back as `search_after` on the next page. */
   private def sortValuesOf(sortNode: JsonNode): Array[AnyRef] =

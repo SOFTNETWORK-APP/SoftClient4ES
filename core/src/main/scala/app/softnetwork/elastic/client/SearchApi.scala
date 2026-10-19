@@ -719,7 +719,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Searching with query \n$elasticQuery\nin indices '$indices'"
     )
 
-    executeSingleSearch(elasticQuery) match {
+    failedShardsAsFailure(executeSingleSearch(elasticQuery), Some(indices)) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
@@ -832,7 +832,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Multi-searching with query \n$elasticQueries"
     )
 
-    executeMultiSearch(elasticQueries) match {
+    failedShardsAsFailure(
+      executeMultiSearch(elasticQueries),
+      Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed multi-search for query \n$elasticQueries"
@@ -1008,6 +1011,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     val query = elasticQuery.query
     val indices = elasticQuery.indices.mkString(",")
     executeSingleSearchAsync(elasticQuery)
+      .map(failedShardsAsFailure(_, Some(indices)))
       .flatMap {
         case ElasticSuccess(Some(response)) =>
           logger.info(
@@ -1130,6 +1134,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     )
 
     executeMultiSearchAsync(elasticQueries)
+      .map(
+        failedShardsAsFailure(
+          _,
+          Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+        )
+      )
       .flatMap {
         case ElasticSuccess(Some(response)) =>
           logger.info(
@@ -1550,7 +1560,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         .mkString(",")}'"
     )
 
-    executeSingleSearch(elasticQuery) match {
+    failedShardsAsFailure(
+      executeSingleSearch(elasticQuery),
+      Some(elasticQuery.indices.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed search with inner hits in indices '${elasticQuery.indices.mkString(",")}'"
@@ -1636,7 +1649,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Multi-searching inner hits with ${elasticQueries.queries.size} queries"
     )
 
-    executeMultiSearch(elasticQueries) match {
+    failedShardsAsFailure(
+      executeMultiSearch(elasticQueries),
+      Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed multi-search inner hits with ${elasticQueries.queries.size} queries"
@@ -1673,6 +1689,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         )
     }
   }
+
+  /** A one-shot search on which SOME shards failed answers an error, not partial rows.
+    *
+    * Elasticsearch answers such a search with HTTP 200 and the hits / buckets of the shards that
+    * succeeded only; every one-shot door reads `_shards` here (per `responses[i]` for a multi
+    * search, see [[ShardFailures.error]]) and reports it through its own failure arm. The scroll /
+    * PIT doors check every page in the clients.
+    */
+  private def failedShardsAsFailure(
+    result: ElasticResult[Option[JsonNode]],
+    index: Option[String]
+  ): ElasticResult[Option[JsonNode]] =
+    result match {
+      case ElasticSuccess(Some(tree)) =>
+        ShardFailures.error(tree) match {
+          case Some(error) => ElasticResult.failure(error.copy(index = index))
+          case None        => result
+        }
+      case other => other
+    }
 
   // ========================================================================
   // METHODS TO IMPLEMENT
