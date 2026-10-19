@@ -817,7 +817,10 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
           case ElasticFailure(error) =>
             logger.error(s"❌ Failed to compute window functions: ${error.message}")
-            if (config.failOnWindowError.getOrElse(false)) {
+            // Strict by default: the fallback answers the rows WITHOUT their window values, which
+            // is a wrong answer for every projected window column. Only an explicit
+            // `failOnWindowError = Some(false)` restores it (see `ScrollConfig`).
+            if (config.failOnWindowError.getOrElse(true)) {
               // Strict mode: propagate the error
               Source.failed(
                 new RuntimeException(s"Window function computation failed: ${error.message}")

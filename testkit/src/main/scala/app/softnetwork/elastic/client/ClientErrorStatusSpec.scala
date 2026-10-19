@@ -21,6 +21,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Sink, Source}
 import app.softnetwork.elastic.client.bulk._
 import app.softnetwork.elastic.client.result._
+import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SelectStatement
@@ -34,6 +35,7 @@ import scala.collection.immutable.ListMap
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContextExecutor}
 import scala.language.implicitConversions
+import scala.util.{Failure, Success, Try}
 
 /** A minimal document shape for the `getAsyncAs` probe — mirrors the call
   * `MaterializedViewExtension.loadMetadata` makes (extensions#40 / SoftClient4ES#184).
@@ -252,5 +254,69 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
     shardFixture
     val result = client.search(SelectStatement(unionSql))
     assertShardFailure(unionSql, result, resultsOf(result))
+  }
+
+  // -- the same search read page by page ----------------------------------------------------------
+
+  /** Without a LIMIT a row query is read page by page, through the client's paging door: PIT (ES
+    * 7.12+) or `search_after` with an ORDER BY, and the classic scroll when the paging API is opted
+    * out of. Every one of them fails on a page whose shards failed; the message is the door's own,
+    * so only the failure is asserted.
+    */
+  "an un-LIMITed search whose shards fail" should "answer an error with an ORDER BY (search_after / PIT)" in {
+    shardFixture
+    val sql = s"SELECT id, CAST(num AS INT) AS n FROM $shardIndex ORDER BY id"
+    client.search(SelectStatement(sql)) match {
+      case ElasticFailure(_) => // the door's own message
+      case ElasticSuccess(response) =>
+        fail(
+          s"a paged search on which a shard failed answered ${response.results.size} row(s) " +
+          s"with no error: $sql"
+        )
+    }
+  }
+
+  it should "answer an error through the classic scroll" in {
+    shardFixture
+    val sql = s"SELECT id, CAST(num AS INT) AS n FROM $shardIndex"
+    Try(
+      Await.result(
+        client
+          .scroll(SelectStatement(sql), ScrollConfig(preferSearchAfter = false))
+          .map(_._1)
+          .runWith(Sink.seq),
+        timeout
+      )
+    ) match {
+      case Failure(_) => // the door's own message
+      case Success(rows) =>
+        fail(
+          s"a classic scroll on which a shard failed answered ${rows.size} row(s) with no " +
+          s"error: $sql"
+        )
+    }
+  }
+
+  /** The window values of an un-LIMITed statement are computed first, by one aggregation search;
+    * here its partition key `CAST(num AS INT)` throws on the shard holding `bad`, while the rows
+    * themselves read nothing that throws. The statement answers an error, not its rows without
+    * their window values.
+    */
+  "an un-LIMITed window whose computation fails on some shards" should "answer an error, not the rows without their window values" in {
+    shardFixture
+    val sql =
+      s"SELECT id, FIRST_VALUE(id) OVER (PARTITION BY CAST(num AS INT) ORDER BY id) AS fv " +
+      s"FROM $shardIndex"
+    client.search(SelectStatement(sql)) match {
+      case ElasticFailure(error) =>
+        withClue(error.message) {
+          error.message should include("Window function computation failed")
+        }
+      case ElasticSuccess(response) =>
+        fail(
+          s"answered ${response.results.size} row(s) without their window values: $sql -> " +
+          response.results.take(3).mkString("; ")
+        )
+    }
   }
 }
