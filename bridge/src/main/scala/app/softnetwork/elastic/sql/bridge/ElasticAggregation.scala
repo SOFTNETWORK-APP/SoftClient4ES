@@ -332,20 +332,23 @@ object ElasticAggregation {
                     size = limit,
                     sorts = th.orderBy
                       .map(
-                        _.sorts.map(sort =>
-                          sort.order match {
+                        _.sorts.map { sort =>
+                          val fieldSort = FieldSort(sort.field.name)
+                          val directed = sort.order match {
                             case Some(Desc) =>
                               th.window match {
-                                case LAST_VALUE => FieldSort(sort.field.name).asc()
-                                case _          => FieldSort(sort.field.name).desc()
+                                case LAST_VALUE => fieldSort.asc()
+                                case _          => fieldSort.desc()
                               }
                             case _ =>
                               th.window match {
-                                case LAST_VALUE => FieldSort(sort.field.name).desc()
-                                case _          => FieldSort(sort.field.name).asc()
+                                case LAST_VALUE => fieldSort.desc()
+                                case _          => fieldSort.asc()
                               }
                           }
-                        )
+                          // The row sort's `unmapped_type` (see `FieldSort.unmappedType`).
+                          directed.copy(unmappedType = sort.unmappedType)
+                        }
                       )
                       .getOrElse(Seq.empty)
                   )
