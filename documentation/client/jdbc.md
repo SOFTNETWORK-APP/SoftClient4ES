@@ -18,36 +18,15 @@ SoftClient4ES provides a JDBC Type 4 driver that lets you connect any JDBC-compa
 
 Download the self-contained fat JAR for your Elasticsearch version. The JARs are Scala-version-independent and include all required dependencies.
 
-| Elasticsearch | Artifact |
-|---------------|----------|
-| ES 6.x | `softclient4es6-jdbc-driver-0.3.3.jar` |
-| ES 7.x | `softclient4es7-jdbc-driver-0.3.3.jar` |
-| ES 8.x | `softclient4es8-jdbc-driver-0.3.3.jar` |
-| ES 9.x | `softclient4es9-jdbc-driver-0.3.3.jar` |
+| Elasticsearch | Download |
+|---|---|
+| ES 6.x | [`softclient4es6-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es6-jdbc-driver-0.3.3.jar) |
+| ES 7.x | [`softclient4es7-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es7-jdbc-driver-0.3.3.jar) |
+| ES 8.x | [`softclient4es8-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es8-jdbc-driver-0.3.3.jar) |
+| ES 9.x | [`softclient4es9-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es9-jdbc-driver-0.3.3.jar) |
 
-### Build Tool Integration
-
-**Maven:**
-
-```xml
-<dependency>
-  <groupId>app.softnetwork.elastic</groupId>
-  <artifactId>softclient4es8-jdbc-driver</artifactId>
-  <version>0.3.3</version>
-</dependency>
-```
-
-**Gradle:**
-
-```groovy
-implementation 'app.softnetwork.elastic:softclient4es8-jdbc-driver:0.3.3'
-```
-
-**sbt:**
-
-```scala
-libraryDependencies += "app.softnetwork.elastic" % "softclient4es8-jdbc-driver" % "0.3.3"
-```
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.3); check a download with
+`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.3.jar.sha256`.
 
 ---
 

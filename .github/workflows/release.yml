@@ -7,9 +7,21 @@ name: Release
 # Run workflow on commits to the `main` branch
 on:
   workflow_dispatch:
+    inputs:
+      snapshot_jars:
+        description: 'SNAPSHOT version: also publish the REPL jars to the cli-snapshot pre-release'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
+
+# One release run at a time: a tag push and a manual dispatch of the same version must not race
+# for the GitHub release
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -52,3 +64,31 @@ jobs:
         verbose: true
     - name: Publish
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" SCALACTIC_FILL_FILE_PATHNAMES=yes sbt '+ publish'
+    # The REPL jars are downloads, not dependencies: they go to GitHub Releases on
+    # SOFTNETWORK-APP/softclient4es-releases, never to JFrog. A release version always publishes
+    # them; a SNAPSHOT version only when `snapshot_jars` is checked, into the cli-snapshot
+    # pre-release. RELEASES_TOKEN: contents:write on softclient4es-releases.
+    - name: Version
+      run: echo "VERSION=$(sed -nE 's/^ThisBuild \/ version := "([^"]+)".*/\1/p' build.sbt)" >> $GITHUB_ENV
+    - name: Assemble the REPL jars
+      if: ${{ !endsWith(env.VERSION, '-SNAPSHOT') || inputs.snapshot_jars }}
+      run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt es6cli/assembly es7cli/assembly es8cli/assembly es9cli/assembly
+    - name: Checkout the release publisher
+      if: ${{ !endsWith(env.VERSION, '-SNAPSHOT') || inputs.snapshot_jars }}
+      uses: actions/checkout@v4
+      with:
+        repository: SOFTNETWORK-APP/softclient4es-releases
+        # a reviewed commit, bumped deliberately: this script runs with RELEASES_TOKEN
+        ref: 6a5eac858eadc2ee88adfca373632ae7b39e3314
+        path: .softclient4es-releases
+    - name: Publish the REPL jars to GitHub Releases
+      if: ${{ !endsWith(env.VERSION, '-SNAPSHOT') || inputs.snapshot_jars }}
+      env:
+        GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+      run: |
+        mode=release
+        [[ "$VERSION" == *-SNAPSHOT ]] && mode=snapshot
+        # the external publisher never sees the job's other credentials
+        unset JFROG_USER JFROG_PASSWORD GITHUB_TOKEN CODECOV_TOKEN
+        bash .softclient4es-releases/scripts/publish.sh "$mode" cli "$VERSION" \
+          es*/cli/target/scala-2.13/softclient4es*-cli-"$VERSION"-assembly.jar

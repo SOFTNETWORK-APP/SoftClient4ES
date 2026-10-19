@@ -32,8 +32,8 @@ A timestamp is added on the server. That is the **entire** record.
 ## How it is used
 
 The aggregate counts power an internal adoption dashboard (downloads per day/week, broken down by
-driver, version, and source). Downloads are also counted independently from the public artifact
-registry (JFrog Artifactory), so the two figures cross-check each other.
+driver, version, and source). Downloads are also counted independently from the download counts of
+the public release assets (GitHub Releases), so the two figures cross-check each other.
 
 The download beacon is **fire-and-forget**: it is sent asynchronously and never blocks, delays, or
 fails your download. If it cannot be sent, your download still proceeds normally.
