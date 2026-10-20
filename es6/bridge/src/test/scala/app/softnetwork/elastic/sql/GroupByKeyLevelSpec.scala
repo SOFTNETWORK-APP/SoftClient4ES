@@ -175,4 +175,126 @@ class GroupByKeyLevelSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  // ---- Elasticsearch 6 only: a key that formats a date column's raw doc value ------------------
+
+  /** The body the conversion builds for a client module talking to `target`'s major. */
+  private def bodyFor(sql: String, target: PainlessTarget): Either[String, String] =
+    Parser(sql) match {
+      case Right(ss: SingleSearch) =>
+        scala.util
+          .Try(
+            requestToElasticSearchRequest(ss.update(Some(schema)))(
+              timestamp,
+              PainlessContextType.Query,
+              SearchBodySerializer.Default,
+              target
+            ).query
+          )
+          .toEither
+          .left
+          .map(_.getMessage)
+      case other => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+
+  private def grouped(key: String): String =
+    s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key"
+
+  "a key formatting a date column as stored" should "be refused by name on Elasticsearch 6" in {
+    Seq(
+      ("DATE_FORMAT(d, '%Y-%m')", "DATE_FORMAT", "d", "DAY"),
+      ("DATE_FORMAT(ts, '%Y-%m')", "DATE_FORMAT", "ts", "DAY"),
+      ("DATETIME_FORMAT(ts, '%Y-%m')", "DATETIME_FORMAT", "ts", "SECOND")
+    ).foreach { case (key, function, column, unit) =>
+      withClue(key) {
+        bodyFor(grouped(key), PainlessTarget(6)) shouldBe Left(
+          ElasticAggregation.dateFormatOfDocValueUnsupportedOn(6, function, column, unit)
+        )
+      }
+    }
+    val message = ElasticAggregation.dateFormatOfDocValueUnsupportedOn(6, "DATE_FORMAT", "d", "DAY")
+    message should include("Elasticsearch 6")
+    message should include("DATE_FORMAT(DATE_TRUNC(d, DAY), ...)")
+    message should not include "#"
+  }
+
+  it should "be sent as a script on every other major, and with no major given" in {
+    Seq(PainlessTarget.Default, PainlessTarget(7), PainlessTarget(8)).foreach { target =>
+      withClue(target) {
+        bodyFor(grouped("DATETIME_FORMAT(ts, '%Y-%m')"), target).map(
+          _.contains("\"script\"")
+        ) shouldBe
+        Right(true)
+        bodyFor(grouped("DATE_FORMAT(d, '%Y-%m')"), target).map(_.contains("\"script\"")) shouldBe
+        Right(true)
+      }
+    }
+  }
+
+  it should "not be refused when a function reads the column first, or without a mapping" in {
+    Seq(
+      "DATE_FORMAT(CAST(d AS DATE), '%Y-%m')",
+      "DATE_FORMAT(DATE_TRUNC(d, DAY), '%Y-%m')",
+      "DATETIME_FORMAT(DATE_TRUNC(ts, SECOND), '%Y-%m')",
+      "DATE_TRUNC(d, MONTH)",
+      "YEAR(d)",
+      "d"
+    ).foreach { key =>
+      withClue(key) { bodyFor(grouped(key), PainlessTarget(6)).isRight shouldBe true }
+    }
+    // without a mapping the column's type is unknown: no refusal, as the statement is parsed
+    Parser(grouped("DATE_FORMAT(d, '%Y-%m')")) match {
+      case Right(ss: SingleSearch) =>
+        ss.groupBy.map(_.buckets.map(_.rawDateDocValueFormat.isDefined)) shouldBe Some(Seq(false))
+      case other => fail(s"$other")
+    }
+  }
+
+  /** The request the conversion builds for `target`, its body not yet serialized. */
+  private def requestFor(sql: String, target: PainlessTarget): ElasticSearchRequest =
+    Parser(sql) match {
+      case Right(ss: SingleSearch) =>
+        requestToElasticSearchRequest(ss.update(Some(schema)))(
+          timestamp,
+          PainlessContextType.Query,
+          SearchBodySerializer.Default,
+          target
+        )
+      case other => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+
+  it should "be refused at an INNER level too: the refusal is found anywhere in the tree" in {
+    val message = ElasticAggregation.dateFormatOfDocValueUnsupportedOn(6, "DATE_FORMAT", "d", "DAY")
+    Seq(
+      "SELECT s, DATE_FORMAT(d, '%Y-%m') AS k, COUNT(*) AS c FROM t GROUP BY s, DATE_FORMAT(d, '%Y-%m')",
+      "SELECT DATE_FORMAT(d, '%Y-%m') AS k, s, COUNT(*) AS c FROM t GROUP BY DATE_FORMAT(d, '%Y-%m'), s"
+    ).foreach { sql =>
+      withClue(sql) {
+        SearchBodySerializer.refusedLevel(requestFor(sql, PainlessTarget(6)).search) shouldBe
+        Some(message)
+        bodyFor(sql, PainlessTarget(6)) shouldBe Left(message)
+        SearchBodySerializer.refusedLevel(requestFor(sql, PainlessTarget(8)).search) shouldBe None
+      }
+    }
+  }
+
+  it should "leave every body it does not refuse untagged, and byte-identical to the builder's" in {
+    for {
+      key <- Seq(
+        "DATE_FORMAT(DATE_TRUNC(d, DAY), '%Y-%m')",
+        "DATE_FORMAT(d, '%Y-%m')",
+        "YEAR(d)",
+        "d",
+        "s"
+      )
+      target <- Seq(PainlessTarget.Default, PainlessTarget(6), PainlessTarget(8))
+      if !(target == PainlessTarget(6) && key == "DATE_FORMAT(d, '%Y-%m')")
+    } withClue(s"$key / $target") {
+      val search = requestFor(grouped(key), target).search
+      SearchBodySerializer.refusedLevel(search) shouldBe None
+      val body = SearchBodySerializer.Default.serialize(search)
+      body should not include SearchBodySerializer.Refusal
+      body shouldBe com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn(search).string()
+    }
+  }
 }

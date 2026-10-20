@@ -4028,4 +4028,76 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
     withClue(s"${outcomes.size} wrong:\n${outcomes.mkString("\n")}\n") { outcomes shouldBe empty }
   }
+
+  "a GROUP BY key formatting a date column as stored" should
+  "be refused by name on Elasticsearch 6, and its remedy answer on every major" in {
+    // Elasticsearch 6.8 cannot run such a script (MEASURED): it receives the column's value as a
+    // JodaCompatibleZonedDateTime there, which the formatter cannot read, and every shard holding a
+    // document fails. The refusal names the column before the query is sent, at an outer level and
+    // at an inner one alike.
+    def month(i: java.time.Instant): String = {
+      val z = i.atZone(java.time.ZoneOffset.UTC)
+      f"${z.getYear}%04d-${z.getMonthValue}%02d"
+    }
+    val byDate = countsOf(x => Seq(f"${x._2.getYear}%04d-${x._2.getMonthValue}%02d"))
+    val byTimestamp = countsOf(x => Seq(month(x._3)))
+    val cases = Seq(
+      // (key, column, its remedy, the groups)
+      ("DATE_FORMAT(d, '%Y-%m')", "d", "DATE_FORMAT(DATE_TRUNC(d, DAY), '%Y-%m')", byDate),
+      (
+        "DATETIME_FORMAT(ts, '%Y-%m')",
+        "ts",
+        "DATETIME_FORMAT(DATE_TRUNC(ts, SECOND), '%Y-%m')",
+        byTimestamp
+      )
+    )
+    val outcomes = for {
+      v                             <- Seq(dateKeyIndex, dateKeyPattern)
+      (key, column, remedy, groups) <- cases
+      outcome <- {
+        val formatted = s"SELECT $key AS k, COUNT(*) AS c FROM $v GROUP BY $key"
+        val remedied = s"SELECT $remedy AS k, COUNT(*) AS c FROM $v GROUP BY $remedy"
+        val formattedOutcome = dateKeyRows(formatted, Seq("k", "c")) match {
+          case Left(message)
+              if esMajor < 7 && message.contains(s"Elasticsearch $esMajor") &&
+                message.contains(s"'$column'") && message.contains("DATE_TRUNC(") =>
+            None
+          case Right(rows) if esMajor >= 7 && rows == groups => None
+          case other => Some(s"[$formatted] on Elasticsearch $esMajor: ${other.toString.take(400)}")
+        }
+        val remedyOutcome = dateKeyRows(remedied, Seq("k", "c")) match {
+          case Right(rows) if rows == groups => None
+          case other                         => Some(s"[$remedied] expected $groups, got $other")
+        }
+        formattedOutcome.toSeq ++ remedyOutcome
+      }
+    } yield outcome
+    // the same key at an INNER level, beside a keyword key
+    val inner = Seq(dateKeyIndex, dateKeyPattern).flatMap { v =>
+      val sql =
+        s"SELECT s, DATE_FORMAT(d, '%Y-%m') AS k, COUNT(*) AS c FROM $v " +
+        "GROUP BY s, DATE_FORMAT(d, '%Y-%m')"
+      val groups = countsOf(x => Seq(x._5, f"${x._2.getYear}%04d-${x._2.getMonthValue}%02d"))
+      dateKeyRows(sql, Seq("s", "k", "c")) match {
+        case Left(message)
+            if esMajor < 7 && message.contains(s"Elasticsearch $esMajor") &&
+              message.contains("'d'") =>
+          None
+        case Right(rows) if esMajor >= 7 && rows == groups => None
+        case other => Some(s"[$sql] on Elasticsearch $esMajor: ${other.toString.take(400)}")
+      }
+    }
+    // a function reading the column first is no raw doc value: answered on every major
+    val cast = Seq(dateKeyIndex, dateKeyPattern).flatMap { v =>
+      val key = "DATE_FORMAT(CAST(d AS DATE), '%Y-%m')"
+      val sql = s"SELECT $key AS k, COUNT(*) AS c FROM $v GROUP BY $key"
+      dateKeyRows(sql, Seq("k", "c")) match {
+        case Right(rows) if rows == byDate => None
+        case other                         => Some(s"[$sql] expected $byDate, got $other")
+      }
+    }
+    val all = outcomes ++ inner ++ cast
+    withClue(s"${all.size} wrong:\n${all.mkString("\n")}\n") { all shouldBe empty }
+  }
+
 }

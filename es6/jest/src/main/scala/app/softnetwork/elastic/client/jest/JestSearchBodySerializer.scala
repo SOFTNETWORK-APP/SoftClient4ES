@@ -66,6 +66,9 @@ object JestSearchBodySerializer extends SearchBodySerializer {
         operation = Some("search")
       )
     }
+    SearchBodySerializer.refusedLevel(search).foreach { message =>
+      throw ElasticError(message = message, statusCode = Some(400), operation = Some("search"))
+    }
     SearchBodySerializer.Default.serialize(search)
   }
 }

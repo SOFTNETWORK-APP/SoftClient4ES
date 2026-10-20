@@ -1047,7 +1047,10 @@ ORDER BY COUNT(*) DESC;
 
   The key of such a function reads back as text (`YEAR(created_at)` answers `'2024'`), and a
   numeric one is ordered as text: `ORDER BY DAY(created_at) DESC` answers `5, 31, 3, 20, 11`. A bare
-  `DATE` column's key reads back as a timestamp at midnight UTC.
+  `DATE` column's key reads back as a timestamp at midnight UTC. On Elasticsearch 6, a key that
+  formats a date column as stored (`DATE_FORMAT(created_at, …)`, `DATETIME_FORMAT(created_at, …)`)
+  is refused: truncate the column first, `DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m')` or
+  `DATETIME_FORMAT(DATE_TRUNC(created_at, SECOND), …)`.
 - `HAVING` filters groups based on aggregate conditions.
 - Translated to Elasticsearch aggregations.
 - An aggregate referenced only in `HAVING` or `ORDER BY` needs no alias and no `SELECT` item: it is

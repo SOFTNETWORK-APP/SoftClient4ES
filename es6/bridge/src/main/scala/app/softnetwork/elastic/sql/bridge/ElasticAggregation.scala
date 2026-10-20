@@ -464,6 +464,29 @@ object ElasticAggregation {
     else valueCountAgg(aggName, field)
   }
 
+  /** Why a GROUP BY key that formats a date column's raw doc value is refused on Elasticsearch 6,
+    * and what to write instead.
+    *
+    * Elasticsearch 6.8 hands a script a `date` doc value as a `JodaCompatibleZonedDateTime`, which
+    * the date formatter cannot read ("Cannot cast
+    * org.elasticsearch.script.JodaCompatibleZonedDateTime to java.time.temporal.TemporalAccessor"):
+    * every shard holding such a document fails, and the search answers that script error (MEASURED
+    * on 6.8.23, a three-shard index). Truncating the column first answers the groups on 6.8
+    * (MEASURED); 7 and later hand a `ZonedDateTime` and answer.
+    *
+    * The key NAME is quoted; values never are.
+    */
+  def dateFormatOfDocValueUnsupportedOn(
+    major: Int,
+    function: String,
+    column: String,
+    unit: String
+  ): String =
+    s"GROUP BY cannot apply $function to the date column '$column' as stored on Elasticsearch " +
+    s"$major: a script receives its value as a JodaCompatibleZonedDateTime there, which the date " +
+    s"formatter cannot read. Truncate the column first ($function(DATE_TRUNC($column, $unit), " +
+    "...)), or use Elasticsearch 7 or later."
+
   def buildBuckets(
     buckets: Seq[Seq[BucketNode]],
     bucketsDirection: Map[String, SortOrder],
@@ -483,6 +506,21 @@ object ElasticAggregation {
           val currentBucketPath = node.bucketPath
 
           val bucket = node.bucket
+
+          // Elasticsearch 6 only, the major the client module gives the bridge: a key that formats a
+          // date column's raw doc value is refused by name. The level carries the refusal, and
+          // every serializer raises it before any JSON exists (`SearchBodySerializer.refusedLevel`).
+          val refusal: Option[String] =
+            if (!target.jodaCompatibleDates) None
+            else
+              bucket.rawDateDocValueFormat.map { f =>
+                dateFormatOfDocValueUnsupportedOn(
+                  target.elasticsearchMajor.getOrElse(6),
+                  f.sql,
+                  bucket.identifier.name,
+                  f.keepingUnit.sql
+                )
+              }
 
           val aggregations =
             aggs.filter(agg => agg.bucketPath == currentBucketPath).map(_.agg)
@@ -608,6 +646,10 @@ object ElasticAggregation {
                     criteria.excludes(bucket, not = false, BucketIncludesExcludes())
                   )
                 case _ =>
+              }
+              refusal.foreach { message =>
+                terms =
+                  terms.copy(metadata = terms.metadata + (SearchBodySerializer.Refusal -> message))
               }
               agg = terms
             case _ =>

@@ -518,6 +518,7 @@ DATE_FORMAT(date_expr, pattern)
 | A literal or cast (`'2025-01-10'::DATE`, `CAST(col AS DATE)`) | Works | Works |
 | A column wrapped in a date function (`DATE_TRUNC(col, DAY)`, `LAST_DAY(col)`, `DATE_ADD(col, INTERVAL 1 DAY)`) | Works | Works |
 | A **bare date column** (`DATE_FORMAT(created_at, '%Y-%m-%d')`) | **Fails** — the query is refused with a script error | Works |
+| A **bare date column** as a `GROUP BY` key | **Refused** by name before the query is sent (a script error where no mapping of the index can be read) | Works |
 
 On Elasticsearch 6.8 a `date` doc-value reaches Painless as a `JodaCompatibleZonedDateTime` rather
 than a `java.time.ZonedDateTime`, and the formatter requires the latter. Wrap the column
@@ -625,6 +626,7 @@ DATETIME_FORMAT(datetime_expr, pattern)
 | A literal or cast (`'2025-01-10'::DATE`, `CAST(col AS DATE)`) | Works | Works |
 | A column wrapped in a date function (`DATE_TRUNC(col, DAY)`, `LAST_DAY(col)`, `DATE_ADD(col, INTERVAL 1 DAY)`) | Works | Works |
 | A **bare date column** (`DATETIME_FORMAT(created_at, '%Y-%m-%d')`) | **Fails** — the query is refused with a script error | Works |
+| A **bare date column** as a `GROUP BY` key | **Refused** by name before the query is sent (a script error where no mapping of the index can be read) | Works |
 
 On Elasticsearch 6.8 a `date` doc-value reaches Painless as a `JodaCompatibleZonedDateTime` rather
 than a `java.time.ZonedDateTime`, and the formatter requires the latter. Wrap the column

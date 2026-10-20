@@ -18,7 +18,7 @@ package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.function.time.DateTrunc
+import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import scala.util.{DynamicVariable, Try}
@@ -422,6 +422,15 @@ case class Bucket(
     * statement; no bridge reads it.
     */
   def isTemporalScriptKey: Boolean = isScriptedKey && renderedTypeOf(identifier).isTemporal
+
+  /** The function of this level's key that formats a date column's RAW doc value (`DATE_FORMAT(d,
+    * '%Y-%m')`, `DATETIME_FORMAT(ts, …)` over a mapped date column), which Elasticsearch 6.8 cannot
+    * run: see [[app.softnetwork.elastic.sql.function.time.FormatsDateDocValue]].
+    */
+  lazy val rawDateDocValueFormat: Option[FormatsDateDocValue] =
+    identifier.functions.collectFirst {
+      case f: FormatsDateDocValue if f.formatsRawDateDocValue => f
+    }
 
   /** Generate painless script for this token
     *
