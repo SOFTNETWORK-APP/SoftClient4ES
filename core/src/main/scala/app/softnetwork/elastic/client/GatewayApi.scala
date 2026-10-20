@@ -89,7 +89,7 @@ import app.softnetwork.elastic.sql.schema.{
   Impossible,
   IngestPipeline,
   IngestPipelineType,
-  PipelineDiff,
+  PipelineRewrite,
   Safe,
   Table,
   TableDiff,
@@ -848,8 +848,9 @@ class TableExecutor(
         }
 
         // load default pipeline diff if needed
-        val defaultPipelineDiff: Option[List[PipelineDiff]] =
+        val defaultPipelineRewrite: Option[PipelineRewrite] =
           loadTablePipelineDiff(
+            schema,
             updatedTable,
             IngestPipelineType.Default,
             updatedTable.defaultPipelineName,
@@ -862,8 +863,9 @@ class TableExecutor(
           }
 
         // load final pipeline diff if needed
-        val finalPipelineDiff: Option[List[PipelineDiff]] =
+        val finalPipelineRewrite: Option[PipelineRewrite] =
           loadTablePipelineDiff(
+            schema,
             updatedTable,
             IngestPipelineType.Final,
             updatedTable.finalPipelineName,
@@ -879,7 +881,7 @@ class TableExecutor(
         var diff = schema.diff(updatedTable)
 
         // handle pipeline diffs
-        defaultPipelineDiff match {
+        defaultPipelineRewrite.map(_.diff) match {
           case Some(pipelineDiffs) =>
             diff = diff.copy(pipeline =
               diff.pipeline.filterNot(_.pipelineType == IngestPipelineType.Default) ++ pipelineDiffs
@@ -896,7 +898,7 @@ class TableExecutor(
             }
           case _ =>
         }
-        finalPipelineDiff match {
+        finalPipelineRewrite.map(_.diff) match {
           case Some(pipelineDiffs) =>
             diff = diff.copy(pipeline =
               diff.pipeline.filterNot(_.pipelineType == IngestPipelineType.Final) ++ pipelineDiffs
@@ -928,7 +930,13 @@ class TableExecutor(
             // ------------------------------------------------------------
             case Safe =>
               logger.info(s"🔧 Applying SAFE ALTER TABLE changes on $indexName.")
-              applyUpdatesInPlace(indexName, updatedTable, diff) match {
+              applyUpdatesInPlace(
+                indexName,
+                updatedTable,
+                diff,
+                defaultPipelineRewrite,
+                finalPipelineRewrite
+              ) match {
                 case Right(result) =>
                   if (result) api.updateSchema(indexName, updatedTable)
                   Future.successful(ElasticSuccess(DdlResult(result)))
@@ -953,7 +961,9 @@ class TableExecutor(
 //                    - "default_pipeline"
 //                    - "final_pipeline"
                 ),
-                diff
+                diff,
+                defaultPipelineRewrite,
+                finalPipelineRewrite
               ) match {
                 case Right(result) =>
                   if (result) api.updateSchema(indexName, updatedTable)
@@ -1315,12 +1325,21 @@ class TableExecutor(
     }
   }
 
+  /** The rewrite of the live `pipelineType` pipeline of an ALTERed table.
+    *
+    * @param before
+    *   the table as loaded, before the statement: it decides which live processors the table owns
+    * @param after
+    *   the table the statement makes
+    */
   private def loadTablePipelineDiff(
-    table: Table,
+    before: Table,
+    after: Table,
     pipelineType: IngestPipelineType,
     updatedPipelineName: Option[String],
     existingPipelineName: Option[String]
-  ): ElasticResult[Option[List[PipelineDiff]]] = {
+  ): ElasticResult[Option[PipelineRewrite]] = {
+    val table = after
     updatedPipelineName match {
       case Some(pipelineName) =>
         if (pipelineName != existingPipelineName.getOrElse(""))
@@ -1330,9 +1349,10 @@ class TableExecutor(
         // load new pipeline
         api.getPipeline(pipelineName) match {
           case ElasticSuccess(maybePipeline) if maybePipeline.isDefined =>
+            val json = maybePipeline.get
             val pipeline = IngestPipeline(
               name = pipelineName,
-              json = maybePipeline.get,
+              json = json,
               pipelineType = Some(pipelineType)
             )
             // compute diff for pipeline update
@@ -1342,9 +1362,23 @@ class TableExecutor(
             // pipeline. Measured: the Final-typed entries the caller applies are the same either
             // way, but the old comparison also produced Default-typed `ProcessorAdded` entries that
             // `alterExistingIndex` splices in and applies as default-pipeline changes.
-            val pipelineDiff: List[PipelineDiff] =
-              pipeline.diff(table.declaredPipeline(pipelineType))
-            ElasticSuccess(Some(pipelineDiff))
+            //
+            // 🔴 The comparison was against what the table DECLARES alone, so every live processor
+            // the table did not declare (added with ALTER PIPELINE, through the Elasticsearch API,
+            // or the whole of a pipeline set outside elasticsql) diffed as removed and the ALTER
+            // deleted it. `rewrite` keeps them: see `IngestPipeline.rewrite`.
+            val rewrite = pipeline.rewrite(
+              before.declaredPipeline(pipelineType),
+              after.declaredPipeline(pipelineType),
+              json
+            )
+            if (rewrite.undeclared.nonEmpty)
+              logger.info(
+                s"Keeping ${rewrite.undeclared.size} processor(s) of the " +
+                s"${pipelineType.name.toLowerCase} pipeline $pipelineName that table ${table.name} " +
+                s"does not declare: ${rewrite.undeclared.map(_.sql).mkString(", ")}"
+              )
+            ElasticSuccess(Some(rewrite))
           case ElasticSuccess(_) =>
             val error =
               ElasticError(
@@ -1370,10 +1404,26 @@ class TableExecutor(
     }
   }
 
+  /** 🔴 A live pipeline's rewrite is installed whole (CREATE OR REPLACE), never as ALTER PIPELINE
+    * statements: those are re-read and re-rendered through the typed model, which would silently
+    * change the processors the table does not declare. Every other key of the stored pipeline
+    * (`on_failure`, `version`, `_meta`) is kept as Elasticsearch returned it, and so is its
+    * `description` unless elasticsql wrote it: see `PipelineApi.replacePipeline`.
+    */
+  private def installRewrite(
+    pipelineName: String,
+    rewrite: Option[PipelineRewrite]
+  ): Option[ElasticResult[Boolean]] =
+    rewrite.filter(_.written.processors.nonEmpty).map { rw =>
+      api.replacePipeline(rw.written.copy(name = pipelineName), rw.stored, rw.previous)
+    }
+
   private def applyUpdatesInPlace(
     indexName: String,
     updated: Table,
-    diff: TableDiff
+    diff: TableDiff,
+    defaultPipelineRewrite: Option[PipelineRewrite],
+    finalPipelineRewrite: Option[PipelineRewrite]
   ): Either[ElasticError, Boolean] = {
 
     val mappingUpdate =
@@ -1398,7 +1448,10 @@ class TableExecutor(
             logger.info(
               s"🔧 Updating default ingesting pipeline for index $indexName to $pipelineName."
             )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Default))
+            installRewrite(pipelineName, defaultPipelineRewrite)
+              .getOrElse(
+                api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Default))
+              )
           case None =>
             val pipelineName = updated.defaultPipeline.name
             api.pipeline(
@@ -1414,7 +1467,8 @@ class TableExecutor(
             logger.info(
               s"🔧 Updating final ingesting pipeline for index $indexName to $pipelineName."
             )
-            api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Final))
+            installRewrite(pipelineName, finalPipelineRewrite)
+              .getOrElse(api.pipeline(diff.alterPipeline(pipelineName, IngestPipelineType.Final)))
           case None =>
             val pipelineName = updated.finalPipeline.name
             api.pipeline(
@@ -1432,11 +1486,20 @@ class TableExecutor(
     } yield last
   }
 
+  /** @param defaultPipelineRewrite
+    *   the rewrite of the live default pipeline; the migration runs through a pipeline holding only
+    *   the declared processors, and the live pipeline is rewritten afterwards only when a processor
+    *   the table declares changed
+    * @param finalPipelineRewrite
+    *   the same for the final pipeline
+    */
   private def migrateToNewSchema(
     indexName: String,
     oldSchema: Table,
     newSchema: Table,
-    diff: TableDiff
+    diff: TableDiff,
+    defaultPipelineRewrite: Option[PipelineRewrite],
+    finalPipelineRewrite: Option[PipelineRewrite]
   ): Either[ElasticError, Boolean] = {
 
     // create temporary index name
@@ -1465,34 +1528,48 @@ class TableExecutor(
         tmpIndex,
         oldSchema.defaultPipeline,
         newSchema.defaultPipeline,
-        diff
+        diff,
+        defaultPipelineRewrite
       )
 
     tmpDefaultPipelineName match {
       case Some(pipelineName) =>
         updatingSchema = updatingSchema.setDefaultPipelineName(pipelineName)
-        if (newSchema.defaultPipeline.processors.nonEmpty) {
+        // 🔴 The rewrite is installed only when it is the pipeline the setting is restored to.
+        // `newSchema` carries the loaded table's settings, so a pipeline renamed in the same
+        // statement is not the one the index ends on: writing the rewrite to it would leave the
+        // declared change off the index. That case writes the declaration, as before.
+        val rewritten =
+          defaultPipelineRewrite.filter(_.written.name == newSchema.defaultPipeline.name)
+        val target = rewritten.map(_.written).getOrElse(newSchema.defaultPipeline)
+        if (target.processors.nonEmpty) {
           alterTableSettings :+=
             AlterTableSetting(
               "default_pipeline",
               sql.StringValue(newSchema.defaultPipeline.name)
             )
-          createOrReplaceTablePipelines :+= { () =>
-            api
-              .pipeline(
-                CreatePipeline(
-                  name = newSchema.defaultPipeline.name,
-                  pipelineType = newSchema.defaultPipeline.pipelineType,
-                  ifNotExists = false,
-                  orReplace = true,
-                  processors = newSchema.defaultPipeline.processors
+          // only a change to a processor the table declares rewrites the live pipeline; otherwise
+          // it is left exactly as it is
+          if (diff.defaultPipeline.nonEmpty)
+            createOrReplaceTablePipelines :+= { () =>
+              installRewrite(target.name, rewritten)
+                .getOrElse(
+                  api.pipeline(
+                    CreatePipeline(
+                      name = target.name,
+                      pipelineType = target.pipelineType,
+                      ifNotExists = false,
+                      orReplace = true,
+                      processors = target.processors
+                    )
+                  )
                 )
-              )
-              .toEither
-          }
-          dropTmpPipelines :+= { () =>
-            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
-          }
+                .toEither
+            }
+          if (pipelineName != NoPipeline)
+            dropTmpPipelines :+= { () =>
+              api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+            }
         }
       case None => // do Nothing
     }
@@ -1503,34 +1580,41 @@ class TableExecutor(
         tmpIndex,
         oldSchema.finalPipeline,
         newSchema.finalPipeline,
-        diff
+        diff,
+        finalPipelineRewrite
       )
 
     tmpFinalPipelineName match {
       case Some(pipelineName) =>
         updatingSchema = updatingSchema.setFinalPipelineName(pipelineName)
-        if (newSchema.finalPipeline.processors.nonEmpty) {
+        val rewritten = finalPipelineRewrite.filter(_.written.name == newSchema.finalPipeline.name)
+        val target = rewritten.map(_.written).getOrElse(newSchema.finalPipeline)
+        if (target.processors.nonEmpty) {
           alterTableSettings :+=
             AlterTableSetting(
               "final_pipeline",
               sql.StringValue(newSchema.finalPipeline.name)
             )
-          createOrReplaceTablePipelines :+= { () =>
-            api
-              .pipeline(
-                CreatePipeline(
-                  name = newSchema.finalPipeline.name,
-                  pipelineType = newSchema.finalPipeline.pipelineType,
-                  ifNotExists = false,
-                  orReplace = true,
-                  processors = newSchema.finalPipeline.processors
+          if (diff.finalPipeline.nonEmpty)
+            createOrReplaceTablePipelines :+= { () =>
+              installRewrite(target.name, rewritten)
+                .getOrElse(
+                  api.pipeline(
+                    CreatePipeline(
+                      name = target.name,
+                      pipelineType = target.pipelineType,
+                      ifNotExists = false,
+                      orReplace = true,
+                      processors = target.processors
+                    )
+                  )
                 )
-              )
-              .toEither
-          }
-          dropTmpPipelines :+= { () =>
-            api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
-          }
+                .toEither
+            }
+          if (pipelineName != NoPipeline)
+            dropTmpPipelines :+= { () =>
+              api.pipeline(DropPipeline(pipelineName, ifExists = true)).toEither
+            }
         }
       case None => // do Nothing
     }
@@ -1604,20 +1688,68 @@ class TableExecutor(
       tmpDefaultPipeline,
       tmpFinalPipeline,
       migrate
-    ) ++ (createOrReplaceTablePipelines :+ updateTableSettings) ++ dropTmpPipelines
+    )
+    val afterMigration = (createOrReplaceTablePipelines :+ updateTableSettings) ++ dropTmpPipelines
 
-    steps.foldLeft(Right(true): Either[ElasticError, Boolean]) {
-      case (Left(err), _) => Left(err)
-      case (_, step)      => step()
+    def run(
+      all: collection.Seq[() => Either[ElasticError, Boolean]]
+    ): Either[ElasticError, Boolean] =
+      all.foldLeft(Right(true): Either[ElasticError, Boolean]) {
+        case (Left(err), _) => Left(err)
+        case (_, step)      => step()
+      }
+
+    run(steps) match {
+      case failure @ Left(_) => failure
+      case Right(_)          =>
+        // 🔴 From here the documents are migrated and the index runs the migration pipeline. A
+        // step that THROWS must not leave it there: the pipeline settings are restored, and then
+        // the temporary pipeline this migration created is dropped, before the exception
+        // propagates. It is dropped only once the index no longer names it.
+        try run(afterMigration)
+        catch {
+          case scala.util.control.NonFatal(e) =>
+            logger.error(
+              s"Index $indexName was migrated but the pipeline update failed: ${e.getMessage}. Restoring its pipeline settings."
+            )
+            val notRestored: Option[String] = scala.util.Try(updateTableSettings()) match {
+              case scala.util.Success(Right(_))  => None
+              case scala.util.Success(Left(err)) => Some(err.message)
+              case scala.util.Failure(t)         => Some(t.getMessage)
+            }
+            notRestored match {
+              case Some(reason) =>
+                logger.error(
+                  s"Failed to restore the pipeline settings of index $indexName: $reason"
+                )
+              case None =>
+                dropTmpPipelines.foreach(drop => scala.util.Try(drop()))
+            }
+            throw e
+        }
     }
   }
 
+  /** The pipeline setting that runs no pipeline. */
+  private val NoPipeline = "_none"
+
+  /** The pipeline the reindex runs through, and the step that creates it.
+    *
+    * 🔴 When the live pipeline holds a processor the table does not declare, or a declared one
+    * changed, the reindex runs through a pipeline holding ONLY what the table declares after the
+    * statement (`_none` if that is nothing): the documents were already processed by the live
+    * pipeline once, and a non-idempotent undeclared processor (an `append`, a counter) re-applied
+    * by the two reindexes would corrupt them. The declared processors are taken from the table, not
+    * from merging the diff into the live pipeline: when a user script collides with a generated one
+    * the diff's entries are not the semantic change.
+    */
   private def migratePipeline(
     indexName: String,
     tmpIndexName: String,
     oldPipeline: IngestPipeline,
     newPipeline: IngestPipeline,
-    diff: TableDiff
+    diff: TableDiff,
+    rewrite: Option[PipelineRewrite]
   ): (Option[String], () => Either[ElasticError, Boolean]) = {
     if (oldPipeline.pipelineType != newPipeline.pipelineType) {
       logger.error(
@@ -1674,16 +1806,22 @@ class TableExecutor(
       }
       (None, step)
     } else {
-      diff.alterPipeline(oldPipeline.name, oldPipeline.pipelineType) match {
-        case Some(alterPipeline) =>
+      val owned = diff.alterPipeline(oldPipeline.name, oldPipeline.pipelineType).isDefined
+      val route = owned || rewrite.exists(_.undeclared.nonEmpty)
+      (if (route) Some(newPipeline.processors) else None) match {
+        case Some(processors) if processors.isEmpty =>
+          logger.warn(
+            s"${oldPipeline.pipelineType.name} ingesting pipeline ${oldPipeline.name} for index $indexName is not used for reindex: the table declares no processor for it."
+          )
+          (Some(NoPipeline), () => Right(true))
+        case Some(processors) =>
           val tmpDefaultPipeline =
             s"${tmpIndexName}_ddl_${oldPipeline.pipelineType.name.toLowerCase}_pipeline"
           logger.warn(
             s"⚠️ Default ingesting pipeline ${oldPipeline.name} for index $indexName has been updated. Creating a temporary pipeline $tmpDefaultPipeline that will be used for reindex."
           )
           val step = () => {
-            // create updated default pipeline
-            val mergedDefaultPipeline = oldPipeline.merge(alterPipeline.statements)
+            // create the pipeline the reindex runs through: what the table declares
             api
               .pipeline(
                 CreatePipeline(
@@ -1691,7 +1829,7 @@ class TableExecutor(
                   pipelineType = oldPipeline.pipelineType,
                   ifNotExists = false,
                   orReplace = true,
-                  processors = mergedDefaultPipeline.processors
+                  processors = processors
                 )
               )
               .toEither

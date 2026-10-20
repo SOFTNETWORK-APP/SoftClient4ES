@@ -24,6 +24,8 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.schema.mapper
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.typesafe.config.ConfigFactory
 
 import java.time.temporal.ChronoUnit
@@ -1570,6 +1572,126 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     renderResults(System.nanoTime(), res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe DdlResult(false)
+  }
+
+  it should "keep the ingest processors a table does not declare across ALTER TABLE" in {
+    // A processor added to a table's pipeline outside its declaration belongs to no column. ALTER
+    // TABLE compared the live pipeline against the declaration alone, so it diffed that processor
+    // as removed and deleted it -- on an ALTER that did not touch the pipeline at all.
+    val pipeline = "alter_undeclared_ddl_default_pipeline"
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS alter_undeclared").futureValue)
+    // a stale pipeline from an earlier run would keep its processors and make the control vacuous
+    assertDdl(System.nanoTime(), client.run(s"DROP PIPELINE IF EXISTS $pipeline").futureValue)
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE alter_undeclared (id KEYWORD, a INT, b INT, c INT SCRIPT AS (a + b), PRIMARY KEY (id))"
+        )
+        .futureValue
+    )
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          s"""ALTER PIPELINE $pipeline (ADD PROCESSOR SET (field = "status", if = "ctx.status == null", ignore_failure = true, value = "active"))"""
+        )
+        .futureValue
+    )
+
+    // a processor added through the Elasticsearch API, with the `separator` Elasticsearch 6 and 7
+    // strip from every processor elasticsql renders: there it can only be kept as it is stored
+    val split =
+      mapper.readTree("""{"split":{"field":"tags","separator":",","ignore_missing":true}}""")
+    val pipelines = client.asInstanceOf[PipelineApi]
+    def stored(): ObjectNode = pipelines.getPipeline(pipeline) match {
+      case ElasticSuccess(Some(json)) => mapper.readTree(json).asInstanceOf[ObjectNode]
+      case other                      => fail(s"$other")
+    }
+    def splitKept(): Boolean = {
+      val all = stored().get("processors")
+      (0 until all.size()).exists(i => all.get(i) == split)
+    }
+    // and the pipeline's own keys: a pipeline-level `on_failure` everywhere, `_meta` where the
+    // cluster takes it (Elasticsearch 7.10+)
+    val onFailure =
+      mapper.readTree("""[{"set":{"field":"error","value":"{{ _ingest.on_failure_message }}"}}]""")
+    val meta = mapper.readTree("""{"owner":"ops"}""")
+    val withMeta = client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.isAtLeast(v, 7, 10)
+      case other             => fail(s"$other")
+    }
+    val withSplit = stored()
+    withSplit.get("processors").asInstanceOf[ArrayNode].add(split)
+    withSplit.set[ObjectNode]("on_failure", onFailure)
+    if (withMeta) withSplit.set[ObjectNode]("_meta", meta)
+    pipelines.createPipeline(pipeline, mapper.writeValueAsString(withSplit)) shouldBe
+    ElasticSuccess(true)
+    def ownKeysKept(): Unit = {
+      stored().get("on_failure") shouldBe onFailure
+      if (withMeta) stored().get("_meta") shouldBe meta
+    }
+
+    def processors(): Seq[Map[String, Any]] =
+      assertQueryRows(System.nanoTime(), client.run(s"DESCRIBE PIPELINE $pipeline").futureValue)
+    def tmpPipelines(): Seq[String] =
+      pipelineNames().map(String.valueOf).filter(_.startsWith("alter_undeclared_tmp_"))
+    def row(sql: String): Map[String, Any] = {
+      val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+      rows should have size 1
+      rows.head
+    }
+
+    // the control: the script, the primary key and the two processors the table does not declare
+    val created = processors()
+    created should have size 4
+    created.count(_("field") == "status") shouldBe 1
+    splitKept() shouldBe true
+    ownKeysKept()
+
+    // an ALTER that changes no processor the table declares
+    val unrelated = client.run("ALTER TABLE alter_undeclared ADD COLUMN note KEYWORD").futureValue
+    renderResults(System.nanoTime(), unrelated)
+    unrelated.isSuccess shouldBe true
+    unrelated.toOption.get shouldBe DdlResult(true)
+    val kept = processors()
+    kept should have size 4
+    kept.count(_("field") == "status") shouldBe 1
+    splitKept() shouldBe true
+    ownKeysKept()
+    tmpPipelines() shouldBe empty
+
+    // RUN-level: the index runs the live pipeline, the computed column AND the kept processor
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO alter_undeclared (id, a, b) VALUES ('r1', 1, 2)").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    val r1 = row("SELECT c, status FROM alter_undeclared WHERE id = 'r1'")
+    String.valueOf(scalarOf(r1, "c")).toDouble shouldBe 3.0
+    String.valueOf(scalarOf(r1, "status")) shouldBe "active"
+
+    // an ALTER that removes a processor the table declares removes that one only
+    assertDdl(
+      System.nanoTime(),
+      client.run("ALTER TABLE alter_undeclared DROP COLUMN c").futureValue
+    )
+    val dropped = processors()
+    dropped.exists(_("processor_type") == "script") shouldBe false
+    dropped.count(_("field") == "status") shouldBe 1
+    // the pipeline was rewritten for the dropped script: the split and the pipeline's own keys
+    // are written as they are stored
+    splitKept() shouldBe true
+    ownKeysKept()
+    tmpPipelines() shouldBe empty
+
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO alter_undeclared (id, a, b) VALUES ('r2', 3, 4)").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    val r2 = row("SELECT status FROM alter_undeclared WHERE id = 'r2'")
+    String.valueOf(scalarOf(r2, "status")) shouldBe "active"
   }
 
   // ---------------------------------------------------------------------------
