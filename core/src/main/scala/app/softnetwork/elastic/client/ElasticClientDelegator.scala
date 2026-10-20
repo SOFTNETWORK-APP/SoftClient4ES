@@ -337,6 +337,12 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def loadPatternSchema(pattern: String): ElasticResult[Schema] =
     delegate.loadPatternSchema(pattern)
 
+  /** The delegate's, like `loadSchema`: the schema cache and the remembered 404 misses this write
+    * refreshes are the ones every statement through this wrapper reads (`search` and `run` go to
+    * the delegate), never the wrapper's own, which nothing reads.
+    */
+  override def updateSchema(index: String, schema: Schema): Unit =
+    delegate.updateSchema(index, schema)
   override def invalidateSchema(index: String): Unit = delegate.invalidateSchema(index)
   override def invalidateAllSchemas(): Unit = delegate.invalidateAllSchemas()
 

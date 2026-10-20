@@ -1272,6 +1272,12 @@ class TableExecutor(
       // create index template
       api.createTemplate(indexName, table.indexTemplate) match {
         case success @ ElasticSuccess(true) =>
+          // the table's name now answers a schema lookup through its template: a 404 remembered
+          // for it, or for a pattern or list it matches, must not outlive this statement
+          api match {
+            case search: SearchApi => search.forgetSchemaMissesOf(indexName)
+            case _                 => ()
+          }
           logger.info(s"✅ Template $indexName created successfully.")
           success
         case ElasticSuccess(_) =>

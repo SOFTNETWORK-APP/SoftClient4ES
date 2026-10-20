@@ -437,6 +437,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * an insert also purges the expired ones, and if it is STILL above four times the threshold (a
     * client probing thousands of distinct unknown names inside one TTL) it is cleared -- the worst
     * case is then today's cost, one failed lookup per statement, never unbounded memory.
+    *
+    * An elasticsql DDL statement through this client forgets the misses it makes stale, wherever it
+    * refreshes or drops a schema-cache entry ([[forgetSchemaMissesOf]]).
     */
   private val schemaMisses =
     new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
@@ -450,10 +453,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * MISS. There is no metadata to read a TTL from, because there was no schema — an index that
     * does not exist cannot ask to be forgotten sooner.
     *
-    * 🔴 And deliberately CAPPED, which the two positive caches are not. Nothing invalidates a miss:
-    * it is cleared only by a later successful load, and `resolveWithSchema` does not even attempt
-    * the lookup while one stands. So a miss remembered for an operator-chosen hour would mean that
-    * querying a table before it exists, then creating it, leaves every statement against it running
+    * 🔴 And deliberately CAPPED, which the two positive caches are not. A miss is cleared by a
+    * later successful load, which `resolveWithSchema` does not even attempt while one stands, or by
+    * an elasticsql DDL statement through THIS client ([[forgetSchemaMissesOf]]). An index created
+    * any other way — another client, a raw `PUT`, an ingest that auto-creates it — is not seen, so
+    * a miss remembered for an operator-chosen hour would leave every statement against it running
     * with NO schema attached for that hour — no `SQLTypeUtils.coerce`, no temporal-literal
     * resolution, silently (#306's skip conditions). Shortening the TTL still shortens this; making
     * the knob able to LENGTHEN it would turn a five-minute nuisance into an unbounded one.
@@ -481,6 +485,28 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         schemaMisses.clear()
     }
   }
+
+  /** Forget the remembered miss on `key` -- an index, an alias -- if there is one. */
+  private[client] def forgetSchemaMiss(key: String): Unit = {
+    val _ = schemaMisses.remove(key)
+  }
+
+  /** Forget every remembered miss `index` answers now: its own, and every PATTERN or LIST key that
+    * matches it ([[IndicesApi.patternKeysReading]] -- the rule the schema cache drops its pattern
+    * entries by, #292). `IndicesApi` calls it wherever an elasticsql DDL statement refreshes or
+    * drops `index`'s schema-cache entry -- `createIndex`, `updateSchema` (ALTER TABLE),
+    * `invalidateSchema` (DROP TABLE, `deleteIndex`, the REPL `refresh`) -- and the gateway after a
+    * partitioned CREATE TABLE's template, which answers the table's lookup: a miss that outlived
+    * the statement would skip the lookup that now finds the mapping, and every statement over the
+    * new table would run with no schema until the miss expired.
+    */
+  private[client] def forgetSchemaMissesOf(index: String): Unit = {
+    forgetSchemaMiss(index)
+    IndicesApi.patternKeysReading(schemaMisses.keySet().asScala, index).foreach(forgetSchemaMiss)
+  }
+
+  /** Forget every remembered miss (`invalidateAllSchemas`, the REPL `refresh` with no index). */
+  private[client] def forgetAllSchemaMisses(): Unit = schemaMisses.clear()
 
   /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
   private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
