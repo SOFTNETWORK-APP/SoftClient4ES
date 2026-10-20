@@ -78,7 +78,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
                 val result = apply().execute(searchBuilder.build())
                 if (!result.isSucceeded) {
-                  throw new IOException(s"Initial scroll failed: ${result.getErrorMessage}")
+                  throw pageFailure("Initial scroll failed", result)
                 }
 
                 val scrollId = result.getJsonObject.get("_scroll_id").getAsString
@@ -129,7 +129,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val result = apply().execute(scrollBuilder.build())
                 if (!result.isSucceeded) {
                   // Lancer une exception pour trigger le retry
-                  throw new IOException(s"Scroll failed: ${result.getErrorMessage}")
+                  throw pageFailure("Scroll failed", result)
                 }
                 val newScrollId = result.getJsonObject.get("_scroll_id").getAsString
                 val rawHits = rawHitCount(result)
@@ -264,7 +264,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
             val result = apply().execute(searchBuilder.build())
 
             if (!result.isSucceeded) {
-              throw new IOException(s"Search after failed: ${result.getErrorMessage}")
+              throw pageFailure("Search after failed", result)
             }
             // Single parse for core (#228): raw body, not the Gson tree re-serialized
             val tree = pageTree(result, "search_after page")

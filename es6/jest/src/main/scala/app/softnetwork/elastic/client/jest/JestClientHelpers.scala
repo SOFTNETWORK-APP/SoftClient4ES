@@ -43,6 +43,30 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
       case ex: LinkageError => Failure(ex)
     }
 
+  /** @see
+    *   [[app.softnetwork.elastic.client.ElasticClientHelpers.statusOf]]
+    *
+    * Jest throws no status-bearing exception of its own: the status is on `JestResult` only. This
+    * reads the one this module keeps when it fails a page Elasticsearch answered with an error
+    * ([[pageFailure]]).
+    */
+  override private[client] def statusOf(t: Throwable): Option[Int] =
+    unwrapThrowable(t) match {
+      case ex: JestClientHelpers.PageFailure => Some(ex.status)
+      case other                             => super.statusOf(other)
+    }
+
+  /** The failure of a page whose `JestResult` did not succeed. It stays an `IOException`, so the
+    * retry policy is unchanged, and it keeps the HTTP status when Elasticsearch answered a 4xx or a
+    * 5xx (`0` means no HTTP response).
+    */
+  private[client] def pageFailure(what: String, result: JestResult): java.io.IOException = {
+    val message = s"$what: ${result.getErrorMessage}"
+    val status = result.getResponseCode
+    if (status >= 400 && status <= 599) new JestClientHelpers.PageFailure(message, status)
+    else new java.io.IOException(message)
+  }
+
   // ========================================================================
   // GENERIC METHODS FOR EXECUTIVE JEST ACTIONS
   // ========================================================================
@@ -114,9 +138,8 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
             cause = Some(ex),
             // The Jest 6.3.1 client exposes the HTTP status only on `JestResult.getResponseCode`
             // (see the non-succeeded branches below); its thrown exceptions are plain IOExceptions
-            // with no status. There is therefore deliberately NO `statusOf` override in this trait
-            // — core's default applies and the async flattening sites fall back to 500
-            // (SoftClient4ES#184, AD-6).
+            // with no status. `statusOf` reads only the status this module's own failed pages keep
+            // (`pageFailure`), so a thrown exception has none here (SoftClient4ES#184, AD-6).
             statusCode = None,
             operation = Some(operation)
           )
@@ -408,12 +431,12 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
               // Future — core's default `statusOf` reads it back. A genuine transport failure is a
               // plain IOException with no status and still yields `None`, which is honest and is what
               // AD-5 requires here: Jest 6.3.1 exposes an HTTP status only on `JestResult`, never on a
-              // thrown exception. That is why there is deliberately NO `statusOf` override in this
-              // trait (SoftClient4ES#184, AD-6). Read through `tryAction` rather than
-              // `statusOrServerError` so the `None` is preserved, while still guaranteeing this
-              // `onComplete` callback cannot throw before `promise.success` below — a `statusOf`
-              // override type-tests against client classes a shaded jar may have removed, and that
-              // is a LinkageError, which `Try` does not catch.
+              // thrown exception, and `statusOf` reads only the status this module's own failed
+              // pages keep (`pageFailure`) (SoftClient4ES#184, AD-6). Read through `tryAction`
+              // rather than `statusOrServerError` so the `None` is preserved, while still
+              // guaranteeing this `onComplete` callback cannot throw before `promise.success` below
+              // — a `statusOf` override type-tests against client classes a shaded jar may have
+              // removed, and that is a LinkageError, which `Try` does not catch.
               statusCode = tryAction(statusOf(ex)).toOption.flatten,
               operation = Some(operation)
             )
@@ -448,4 +471,10 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
   ): scala.concurrent.Future[ElasticResult[Boolean]] = {
     executeAsyncJestAction[R, Boolean](operation, index, retryable)(action)(_.isSucceeded)
   }
+}
+
+object JestClientHelpers {
+
+  /** A page Elasticsearch answered with an error status, with that status. */
+  final class PageFailure(message: String, val status: Int) extends java.io.IOException(message)
 }

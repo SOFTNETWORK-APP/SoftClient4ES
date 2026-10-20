@@ -121,4 +121,26 @@ class JestScrollPageFailureSpec extends AnyWordSpec with Matchers {
       isRetriableError(ex) shouldBe false
     }
   }
+
+  "statusOf" should {
+
+    "read Elasticsearch's status from a failed page, and only from an HTTP error answer" in {
+      val reason = """{"root_cause":[{"type":"illegal_argument_exception"}]}"""
+      def failed(code: Int): io.searchbox.client.JestResult = {
+        val result = new io.searchbox.client.JestResult(new com.google.gson.Gson())
+        result.setSucceeded(false)
+        result.setResponseCode(code)
+        result.setErrorMessage(reason)
+        result
+      }
+      val page = client.pageFailure("Search after failed", failed(400))
+      // the message is the one the page always threw, and the retry policy does not move
+      page.getMessage shouldBe s"Search after failed: $reason"
+      isRetriableError(page) shouldBe true
+      client.statusOf(page) shouldBe Some(400)
+      client.statusOf(client.pageFailure("Scroll failed", failed(503))) shouldBe Some(503)
+      // no HTTP response: no status, as before
+      client.statusOf(client.pageFailure("Scroll failed", failed(0))) shouldBe None
+    }
+  }
 }

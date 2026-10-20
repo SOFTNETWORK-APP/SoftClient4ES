@@ -586,8 +586,9 @@ trait ElasticClientHelpers {
     * The core default understands only the framework's own status-bearing throwables
     * (`ElasticError` / `ElasticFailure`). Each client module overrides this with the exception
     * types of its own client library — see `JavaClientHelpers` (ES 8/9) and
-    * `RestHighLevelClientHelpers` (ES 6/7). ES 6 Jest deliberately has no override: its HTTP status
-    * is only ever exposed on `JestResult.getResponseCode`, never on a thrown exception.
+    * `RestHighLevelClientHelpers` (ES 6/7). ES 6 Jest throws no status-bearing exception of its own
+    * (its HTTP status is only on `JestResult.getResponseCode`), so `JestClientHelpers` reads only
+    * the status its own failed scroll pages keep.
     *
     * `None` means "no HTTP status could be determined" — it is NOT a synonym for 500 and must never
     * be read as "not found". Callers that need a status pick their own fallback; the asynchronous
