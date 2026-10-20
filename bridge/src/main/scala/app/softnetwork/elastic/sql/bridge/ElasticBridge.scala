@@ -107,6 +107,7 @@ case class ElasticBridge(filter: ElasticFilter) {
                     .inner(
                       nestedInner(n)
                     )
+                    .copy(ignoreUnmapped = n.ignoreUnmapped)
                 } else {
                   nestedQuery(
                     n.path,
@@ -115,6 +116,7 @@ case class ElasticBridge(filter: ElasticFilter) {
                     .inner(
                       nestedInner(n)
                     )
+                    .copy(ignoreUnmapped = n.ignoreUnmapped)
                 }
               }
 
@@ -173,14 +175,14 @@ case class ElasticBridge(filter: ElasticFilter) {
         hasChildQuery(
           relationType.getOrElse(""),
           criteria.asQuery(group = group, innerHitsNames = innerHitsNames)
-        )
+        ).copy(ignoreUnmapped = child.ignoreUnmapped)
       case parent: ElasticParent =>
         import parent._
         hasParentQuery(
           relationType.getOrElse(""),
           criteria.asQuery(group = group, innerHitsNames = innerHitsNames),
           score = false
-        )
+        ).copy(ignoreUnmapped = parent.ignoreUnmapped)
       case expression: GenericExpression => expression
       case isNull: IsNullExpr            => isNull
       case isNotNull: IsNotNullExpr      => isNotNull

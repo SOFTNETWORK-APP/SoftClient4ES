@@ -66,6 +66,7 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
 
   override def afterAll(): Unit = {
     if (shardFixtureCreated) client.deleteIndex(shardIndex)
+    if (relationFixtureCreated) relationIndices.foreach(client.deleteIndex)
     Await.result(system.terminate(), Duration(30, TimeUnit.SECONDS))
     super.afterAll()
   }
@@ -318,5 +319,203 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
           response.results.take(3).mkString("; ")
         )
     }
+  }
+
+  // -- a nested or CHILD/PARENT condition over indices that lack the mapping -----------------------
+
+  import akka.stream.scaladsl.Sink
+  import app.softnetwork.elastic.client.result.{
+    ElasticSuccess,
+    QueryRows,
+    QueryStream,
+    QueryStructured
+  }
+  import scala.collection.immutable.ListMap
+  import scala.util.Try
+
+  /** A nested or CHILD/PARENT condition over a pattern whose index lacks the mapping answers the
+    * other indices' matches.
+    *
+    * Elasticsearch fails every shard of an index that does not map a nested query's path (`failed
+    * to find nested object under path [items]`), or has no join field for a `has_child` /
+    * `has_parent` (`no join field has been configured`), even when that index is empty. Such an
+    * index holds no element and no relation, so none of its documents can match: when the schema of
+    * the pattern maps the path as nested, or has a join field holding the relation in that role,
+    * the query now tolerates such an index (`ignore_unmapped`). A path or a relation no index knows
+    * still fails.
+    *
+    * Fixture, 3 shards each: `unm_rel_n_a` and `unm_rel_np_a` map `items` as nested and hold `x1`
+    * (`k1`, `k2`), `x2` (`k1`) and `x3` (`k3`); `unm_rel_j_a` and `unm_rel_jp_a` map a join field
+    * (`question` -> `answer`) and hold the questions `q1` and `q2` and their answers `c1` (body
+    * `x`) and `c2`. `unm_rel_n_e` and `unm_rel_j_e` have no mapping and no document; `unm_rel_np_p`
+    * and `unm_rel_jp_p` map `id` only and hold `p1` and `p2`.
+    */
+  private val relationIndices: Seq[String] = Seq(
+    "unm_rel_n_a",
+    "unm_rel_n_e",
+    "unm_rel_np_a",
+    "unm_rel_np_p",
+    "unm_rel_j_a",
+    "unm_rel_j_e",
+    "unm_rel_jp_a",
+    "unm_rel_jp_p"
+  )
+
+  @volatile private var relationFixtureCreated = false
+
+  private val itemsMapping =
+    """{"properties": {"id": {"type": "keyword"}, "items": {"type": "nested",
+      | "properties": {"k": {"type": "keyword"}, "q": {"type": "integer"}}}}}""".stripMargin
+
+  private val joinMapping =
+    """{"properties": {"id": {"type": "keyword"},
+      | "rel": {"type": "join", "relations": {"question": "answer"}},
+      | "question": {"properties": {"title": {"type": "keyword"}}},
+      | "answer": {"properties": {"body": {"type": "keyword"}}}}}""".stripMargin
+
+  private val idOnlyMapping = """{"properties": {"id": {"type": "keyword"}}}"""
+
+  /** (id, source, routing): an answer is routed to its question's shard, as a join requires. */
+  private val itemsDocs: Seq[(String, String, Option[String])] = Seq(
+    ("x1", """{"id":"x1","items":[{"k":"k1","q":1},{"k":"k2","q":2}]}""", None),
+    ("x2", """{"id":"x2","items":[{"k":"k1","q":3}]}""", None),
+    ("x3", """{"id":"x3","items":[{"k":"k3","q":4}]}""", None)
+  )
+
+  private val joinDocs: Seq[(String, String, Option[String])] = Seq(
+    ("q1", """{"id":"q1","rel":"question","question":{"title":"t1"}}""", Some("q1")),
+    ("q2", """{"id":"q2","rel":"question","question":{"title":"t2"}}""", Some("q2")),
+    (
+      "c1",
+      """{"id":"c1","rel":{"name":"answer","parent":"q1"},"answer":{"body":"x"}}""",
+      Some("q1")
+    ),
+    (
+      "c2",
+      """{"id":"c2","rel":{"name":"answer","parent":"q2"},"answer":{"body":"y"}}""",
+      Some("q2")
+    )
+  )
+
+  private val idOnlyDocs: Seq[(String, String, Option[String])] =
+    Seq(("p1", """{"id":"p1"}""", None), ("p2", """{"id":"p2"}""", None))
+
+  private def relationIndex(
+    name: String,
+    mapping: Option[String],
+    docs: Seq[(String, String, Option[String])]
+  ): Unit = {
+    client
+      .createIndex(name, settings = """{"number_of_shards": 3, "number_of_replicas": 0}""")
+      .get shouldBe true
+    relationFixtureCreated = true
+    mapping.foreach(m => client.setMapping(name, m).get shouldBe true)
+    docs.foreach { case (id, source, routing) =>
+      val request = new org.elasticsearch.client.Request("PUT", s"/$name/_doc/$id")
+      routing.foreach(r => request.addParameter("routing", r))
+      request.setEntity(
+        new org.apache.http.nio.entity.NStringEntity(
+          source,
+          org.apache.http.entity.ContentType.APPLICATION_JSON
+        )
+      )
+      restClient.performRequest(request)
+    }
+    client.refresh(name)
+    ()
+  }
+
+  private lazy val relationFixture: Unit = {
+    relationIndex("unm_rel_n_a", Some(itemsMapping), itemsDocs)
+    relationIndex("unm_rel_n_e", None, Nil)
+    relationIndex("unm_rel_np_a", Some(itemsMapping), itemsDocs)
+    relationIndex("unm_rel_np_p", Some(idOnlyMapping), idOnlyDocs)
+    relationIndex("unm_rel_j_a", Some(joinMapping), joinDocs)
+    relationIndex("unm_rel_j_e", None, Nil)
+    relationIndex("unm_rel_jp_a", Some(joinMapping), joinDocs)
+    relationIndex("unm_rel_jp_p", Some(idOnlyMapping), idOnlyDocs)
+  }
+
+  /** The rows a statement answers through the gateway (the JDBC / REPL / Flight SQL path), whatever
+    * its shape: one search, or a read page by page.
+    */
+  private def answeredRows(sql: String): Seq[ListMap[String, Any]] =
+    Await.result(client.run(sql), timeout) match {
+      case ElasticSuccess(QueryRows(rows, _))    => rows
+      case ElasticSuccess(QueryStructured(r, _)) => r.results
+      case ElasticSuccess(QueryStream(stream, _)) =>
+        Try(Await.result(stream.map(_._1).runWith(Sink.seq), timeout)).fold(
+          e => fail(s"$sql -> the stream failed: ${e.getMessage}"),
+          rows => rows
+        )
+      case ElasticSuccess(other) => fail(s"$sql -> unexpected result $other")
+      case ElasticFailure(error) => fail(s"$sql -> ${error.message}")
+    }
+
+  private def idsOf(sql: String): Seq[String] = answeredRows(sql).map(_("id").toString).sorted
+
+  /** Each element of `items` as `id:k`, the four the nested index holds. */
+  private def elementsOf(sql: String): Seq[String] =
+    answeredRows(sql).map(row => s"${row("id")}:${row("i.k")}").sorted
+
+  private val allElements = Seq("x1:k1", "x1:k2", "x2:k1", "x3:k3")
+
+  "a nested condition over a pattern whose index does not map the path" should
+  "answer the other indices' matches" in {
+    relationFixture
+    idsOf(
+      "SELECT t.id FROM unm_rel_np_* t JOIN UNNEST(t.items) AS i WHERE i.k = 'k1' LIMIT 100"
+    ) shouldBe Seq("x1", "x2")
+  }
+
+  it should "answer every element of an UNNEST, over an empty such index" in {
+    relationFixture
+    elementsOf(
+      "SELECT t.id, i.k FROM unm_rel_n_* t JOIN UNNEST(t.items) AS i LIMIT 100"
+    ) shouldBe allElements
+  }
+
+  it should "answer every element of an UNNEST without a LIMIT (read page by page)" in {
+    relationFixture
+    elementsOf("SELECT t.id, i.k FROM unm_rel_np_* t JOIN UNNEST(t.items) AS i") shouldBe
+    allElements
+  }
+
+  it should "answer as before over the index that maps the path" in {
+    relationFixture
+    idsOf(
+      "SELECT t.id FROM unm_rel_n_a t JOIN UNNEST(t.items) AS i WHERE i.k = 'k1' LIMIT 100"
+    ) shouldBe Seq("x1", "x2")
+  }
+
+  it should "still fail over a path no index maps" in {
+    relationFixture
+    Await
+      .result(
+        client.run(
+          "SELECT t.id FROM unm_rel_np_* t JOIN UNNEST(t.itemz) AS i WHERE i.k = 'k1' LIMIT 100"
+        ),
+        timeout
+      )
+      .isFailure shouldBe true
+  }
+
+  "CHILD(…) and PARENT(…) over a pattern whose index has no join field" should
+  "answer the other indices' matches" in {
+    relationFixture
+    idsOf("SELECT id FROM unm_rel_jp_* WHERE CHILD(answer.body = 'x') LIMIT 100") shouldBe
+    Seq("q1")
+    idsOf("SELECT id FROM unm_rel_j_* WHERE PARENT(question.title = 't1') LIMIT 100") shouldBe
+    Seq("c1")
+  }
+
+  it should "still fail over a relation no index holds" in {
+    relationFixture
+    Await
+      .result(
+        client.run("SELECT id FROM unm_rel_jp_* WHERE CHILD(answr.body = 'x') LIMIT 100"),
+        timeout
+      )
+      .isFailure shouldBe true
   }
 }
