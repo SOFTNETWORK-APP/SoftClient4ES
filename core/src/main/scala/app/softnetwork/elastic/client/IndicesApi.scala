@@ -273,6 +273,11 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     *   the schema if the index exists, an error otherwise
     */
   def loadSchema(index: String): ElasticResult[Schema] = {
+    // An index PATTERN or a comma list is resolved by `loadPatternSchema`, the ONE function for that
+    // cache key (#292). Through the single-index path below, a cold cache refused it (it is not a
+    // concrete index name) while a warm one answered the entry `loadPatternSchema` had written: the
+    // same call answered or failed depending on which statement ran before it.
+    if (IndicesApi.isPattern(index)) return loadPatternSchema(index)
     val now = System.currentTimeMillis()
     // `compute`, not get/fetch/put: the plain form let N concurrent statements over one index each
     // issue their own `GET <index>` and parse the whole mapping on a cold cache or at TTL expiry.
