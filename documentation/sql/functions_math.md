@@ -58,14 +58,13 @@ FROM orders;
 
 ---
 
-#### SIGN / SGN
+#### SIGN
 
 Returns -1, 0, or 1 according to sign.
 
 **Syntax:**
 ```sql
 SIGN(x)
-SGN(x)
 ```
 
 **Inputs:**
@@ -88,8 +87,8 @@ SELECT SIGN(10) AS s;
 SELECT SIGN(0) AS s;
 -- Result: 0
 
--- Using SGN alias
-SELECT SGN(-5.5) AS s;
+-- A fractional value
+SELECT SIGN(-5.5) AS s;
 -- Result: -1
 
 -- Classify values
@@ -396,9 +395,11 @@ CROSS JOIN (
 ) AS avg_calc
 GROUP BY category;
 
--- Euclidean distance (2D)
+-- Squared Euclidean distance (2D), over dx DOUBLE SCRIPT AS (x2 - x1) and
+-- dy DOUBLE SCRIPT AS (y2 - y1): an arithmetic expression is not accepted as a function argument,
+-- so neither POWER(x2 - x1, 2) nor a SQRT over the sum parses
 SELECT 
-  SQRT(POWER(x2 - x1, 2) + POWER(y2 - y1, 2)) AS distance
+  POWER(dx, 2) + POWER(dy, 2) AS dist_squared
 FROM coordinates;
 
 -- Calculate hypotenuse
@@ -445,6 +446,9 @@ LOG(x)
 SELECT LOG(EXP(1)) AS l;
 -- Result: 1
 
+-- Natural log of 10
+SELECT LOG(10) AS l;
+-- Result: 2.302585...
 
 -- Natural log of 1
 SELECT LOG(1) AS l;
@@ -592,7 +596,7 @@ COS(x)
 **Examples:**
 ```sql
 -- Cosine of π/3 (60 degrees)
-SELECT COS(PI() / 3) AS c;
+SELECT COS(RADIANS(60)) AS c;
 -- Result: 0.5
 
 -- Cosine of 0
@@ -600,11 +604,11 @@ SELECT COS(0) AS c;
 -- Result: 1
 
 -- Cosine of π/2 (90 degrees)
-SELECT COS(PI() / 2) AS c;
+SELECT COS(RADIANS(90)) AS c;
 -- Result: 0 (approximately)
 
 -- Cosine of π (180 degrees)
-SELECT COS(PI()) AS c;
+SELECT COS(PI) AS c;
 -- Result: -1
 
 -- Convert degrees to radians and calculate
@@ -672,7 +676,7 @@ SIN(x)
 **Examples:**
 ```sql
 -- Sine of π/6 (30 degrees)
-SELECT SIN(PI() / 6) AS s;
+SELECT SIN(RADIANS(30)) AS s;
 -- Result: 0.5
 
 -- Sine of 0
@@ -680,11 +684,11 @@ SELECT SIN(0) AS s;
 -- Result: 0
 
 -- Sine of π/2 (90 degrees)
-SELECT SIN(PI() / 2) AS s;
+SELECT SIN(RADIANS(90)) AS s;
 -- Result: 1
 
 -- Sine of π (180 degrees)
-SELECT SIN(PI()) AS s;
+SELECT SIN(PI) AS s;
 -- Result: 0 (approximately)
 
 -- Convert degrees to radians
@@ -712,19 +716,19 @@ ASIN(x)
 **Examples:**
 ```sql
 -- Arc sine of 0.5
-SELECT ASIN(0.5) AS as;
+SELECT ASIN(0.5) AS a_sin;
 -- Result: 0.523598... (π/6 or 30 degrees)
 
 -- Arc sine of 1
-SELECT ASIN(1) AS as;
+SELECT ASIN(1) AS a_sin;
 -- Result: 1.570796... (π/2 or 90 degrees)
 
 -- Arc sine of -1
-SELECT ASIN(-1) AS as;
+SELECT ASIN(-1) AS a_sin;
 -- Result: -1.570796... (-π/2 or -90 degrees)
 
 -- Arc sine of 0
-SELECT ASIN(0) AS as;
+SELECT ASIN(0) AS a_sin;
 -- Result: 0
 
 -- Convert to degrees
@@ -752,7 +756,7 @@ TAN(x)
 **Examples:**
 ```sql
 -- Tangent of π/4 (45 degrees)
-SELECT TAN(PI() / 4) AS t;
+SELECT TAN(RADIANS(45)) AS t;
 -- Result: 1
 
 -- Tangent of 0
@@ -760,7 +764,7 @@ SELECT TAN(0) AS t;
 -- Result: 0
 
 -- Tangent of π/6 (30 degrees)
-SELECT TAN(PI() / 6) AS t;
+SELECT TAN(RADIANS(30)) AS t;
 -- Result: 0.577350... (1/√3)
 
 -- Convert degrees to radians
@@ -795,15 +799,15 @@ ATAN(x)
 **Examples:**
 ```sql
 -- Arc tangent of 1
-SELECT ATAN(1) AS at;
+SELECT ATAN(1) AS a_tan;
 -- Result: 0.785398... (π/4 or 45 degrees)
 
 -- Arc tangent of 0
-SELECT ATAN(0) AS at;
+SELECT ATAN(0) AS a_tan;
 -- Result: 0
 
 -- Arc tangent of √3
-SELECT ATAN(SQRT(3)) AS at;
+SELECT ATAN(SQRT(3)) AS a_tan;
 -- Result: 1.047197... (π/3 or 60 degrees)
 
 -- Convert to degrees
@@ -880,8 +884,10 @@ Returns the value of π (pi).
 
 **Syntax:**
 ```sql
-PI()
+PI
 ```
+
+`PI` is a constant, written without parentheses: `PI()` does not parse.
 
 **Output:**
 - `DOUBLE` (3.141592653589793)
@@ -889,25 +895,25 @@ PI()
 **Examples:**
 ```sql
 -- Value of π
-SELECT PI() AS pi;
+SELECT PI AS pi_value;
 -- Result: 3.141592653589793
 
 -- Calculate circle area
 SELECT 
   radius,
-  PI() * POWER(radius, 2) AS area
+  PI * POWER(radius, 2) AS area
 FROM circles;
 
 -- Calculate circle circumference
 SELECT 
   radius,
-  2 * PI() * radius AS circumference
+  2 * PI * radius AS circumference
 FROM circles;
 
 -- Convert degrees to radians
 SELECT 
   degrees,
-  degrees * PI() / 180 AS radians
+  degrees * PI / 180 AS radians
 FROM angles;
 ```
 
@@ -967,15 +973,15 @@ DEGREES(radians)
 **Examples:**
 ```sql
 -- Convert π radians to degrees
-SELECT DEGREES(PI()) AS deg;
+SELECT DEGREES(PI) AS deg;
 -- Result: 180
 
 -- Convert π/2 radians to degrees
-SELECT DEGREES(PI() / 2) AS deg;
+SELECT DEGREES(RADIANS(90)) AS deg;
 -- Result: 90
 
 -- Convert π/4 radians to degrees
-SELECT DEGREES(PI() / 4) AS deg;
+SELECT DEGREES(RADIANS(45)) AS deg;
 -- Result: 45
 
 -- Convert result of ACOS to degrees
@@ -989,9 +995,12 @@ SELECT DEGREES(ACOS(0.5)) AS angle_degrees;
 
 **1. Calculate Distance Using Pythagorean Theorem:**
 ```sql
+-- dx DOUBLE SCRIPT AS (x2 - x1), dy DOUBLE SCRIPT AS (y2 - y1) in the table definition: an
+-- arithmetic expression is not accepted as a function argument (see Known Limitations), so the
+-- query answers the squared distance and its square root is taken from the returned rows
 SELECT 
   point_id,
-  SQRT(POWER(x2 - x1, 2) + POWER(y2 - y1, 2)) AS distance
+  POWER(dx, 2) + POWER(dy, 2) AS dist_squared
 FROM coordinates;
 ```
 
@@ -1072,8 +1081,8 @@ ORDER BY price_bucket_start;
 SELECT 
   circle_id,
   radius,
-  ROUND(2 * PI() * radius, 2) AS circumference,
-  ROUND(PI() * POWER(radius, 2), 2) AS area
+  2 * PI * radius AS circumference,
+  PI * POWER(radius, 2) AS area
 FROM circles;
 ```
 
@@ -1093,16 +1102,16 @@ FROM circles;
 | `LOG(x)`      | Natural log         | `LOG(EXP(1))` → 1            |
 | `LOG10(x)`    | Base-10 log         | `LOG10(1000)` → 3            |
 | `EXP(x)`      | e^x                 | `EXP(1)` → 2.718...          |
-| `COS(x)`      | Cosine              | `COS(PI()/3)` → 0.5          |
+| `COS(x)`      | Cosine              | `COS(RADIANS(60))` → 0.5          |
 | `ACOS(x)`     | Arc cosine          | `ACOS(0.5)` → π/3            |
-| `SIN(x)`      | Sine                | `SIN(PI()/6)` → 0.5          |
+| `SIN(x)`      | Sine                | `SIN(RADIANS(30))` → 0.5          |
 | `ASIN(x)`     | Arc sine            | `ASIN(0.5)` → π/6            |
-| `TAN(x)`      | Tangent             | `TAN(PI()/4)` → 1            |
+| `TAN(x)`      | Tangent             | `TAN(RADIANS(45))` → 1            |
 | `ATAN(x)`     | Arc tangent         | `ATAN(1)` → π/4              |
 | `ATAN2(y, x)` | Two-arg arc tangent | `ATAN2(1, 1)` → π/4          |
-| `PI()`        | Value of π          | `PI()` → 3.14159...          |
+| `PI`          | Value of π          | `PI` → 3.14159...            |
 | `RADIANS(x)`  | Degrees to radians  | `RADIANS(180)` → π           |
-| `DEGREES(x)`  | Radians to degrees  | `DEGREES(PI())` → 180        |
+| `DEGREES(x)`  | Radians to degrees  | `DEGREES(PI)` → 180        |
 
 ---
 

@@ -693,9 +693,12 @@ SELECT GREATEST(price_us, price_eu, price_uk) AS max_price
 FROM products
 ```
 
-**2. Floor on a computed value:**
+**2. Floor on a computed value** — an arithmetic expression is not accepted as a function
+argument, so compute it as a column first (see
+[Known Limitations](known_limitations.md#arithmetic-is-not-accepted-inside-a-function-a-cast-or-a-case-branch)):
 ```sql
-SELECT GREATEST(0, base_price - rebate) AS net
+-- net_raw DOUBLE SCRIPT AS (base_price - rebate) in the table definition
+SELECT GREATEST(0, net_raw) AS net
 FROM orders
 -- Never lets the net go below zero
 ```

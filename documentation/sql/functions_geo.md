@@ -67,10 +67,10 @@ If both arguments are fixed points, the distance is **precomputed at query compi
 ```sql
 SELECT 
   name,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) < 5 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **2. Distance range with BETWEEN (kilometers):**
@@ -78,10 +78,10 @@ ORDER BY distance ASC
 SELECT 
   name,
   address,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) BETWEEN 4 km AND 10 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **3. Multiple distance comparisons with different units:**
@@ -102,11 +102,11 @@ SELECT
   name,
   cuisine,
   rating,
-  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS distance
+  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS dist
 FROM restaurants
 WHERE ST_DISTANCE(POINT(40.7128, -74.0060), location) <= 2 mi
   AND rating >= 4.0
-ORDER BY rating DESC, distance ASC
+ORDER BY rating DESC, dist ASC
 LIMIT 20
 ```
 
@@ -114,30 +114,30 @@ LIMIT 20
 ```sql
 SELECT 
   building_name,
-  ST_DISTANCE(POINT(48.8566, 2.3522), entrance_location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), entrance_location) AS dist
 FROM buildings
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), entrance_location) < 500 m
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **6. Distance in feet:**
 ```sql
 SELECT 
   landmark_name,
-  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS distance
+  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS dist
 FROM landmarks
 WHERE ST_DISTANCE(POINT(40.7128, -74.0060), location) <= 1000 ft
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **7. Distance in nautical miles:**
 ```sql
 SELECT 
   ship_name,
-  DISTANCE(port_location, ship_location) AS distance
+  DISTANCE(port_location, ship_location) AS dist
 FROM vessels
 WHERE DISTANCE(port_location, ship_location) < 50 nmi
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **8. Distance between two fields:**
@@ -159,7 +159,8 @@ ORDER BY distance_km DESC
 SELECT ST_DISTANCE(
   POINT(48.8566, 2.3522),   -- Paris
   POINT(40.7128, -74.0060)  -- New York
-) AS distance
+) AS dist
+FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), POINT(40.7128, -74.0060)) > 5000 km
 -- Distance is precomputed at query compilation time
 ```
@@ -169,12 +170,12 @@ WHERE ST_DISTANCE(POINT(48.8566, 2.3522), POINT(40.7128, -74.0060)) > 5000 km
 SELECT 
   name,
   category,
-  ST_DISTANCE(POINT(51.5074, -0.1278), location) AS distance
+  ST_DISTANCE(POINT(51.5074, -0.1278), location) AS dist
 FROM points_of_interest
 WHERE ST_DISTANCE(POINT(51.5074, -0.1278), location) >= 1 km
   AND ST_DISTANCE(POINT(51.5074, -0.1278), location) <= 10 km
   AND category IN ('restaurant', 'cafe', 'bar')
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **11. Using DISTANCE alias:**
@@ -205,7 +206,7 @@ ORDER BY city_center_dist ASC
 SELECT 
   order_id,
   customer_address,
-  ST_DISTANCE(warehouse_location, delivery_location) AS distance,
+  ST_DISTANCE(warehouse_location, delivery_location) AS dist,
   CASE
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 5 km THEN 'Zone 1 - Free'
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 15 km THEN 'Zone 2 - Standard'
@@ -215,7 +216,7 @@ SELECT
 FROM orders
 WHERE order_date >= CURRENT_DATE
   AND ST_DISTANCE(warehouse_location, delivery_location) < 50 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **14. Geofencing with meters:**
@@ -224,7 +225,7 @@ SELECT
   device_id,
   user_name,
   timestamp,
-  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS distance,
+  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS dist,
   CASE
     WHEN ST_DISTANCE(POINT(48.8566, 2.3522), current_location) <= 50 m THEN 'Inside - Core'
     WHEN ST_DISTANCE(POINT(48.8566, 2.3522), current_location) <= 100 m THEN 'Inside - Buffer'
@@ -269,10 +270,10 @@ SELECT
   airport_code,
   airport_name,
   city,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM airports
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) < 200 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 LIMIT 5
 ```
 
@@ -297,6 +298,10 @@ ORDER BY dist_from_paris ASC
 
 Creates a geo-point from latitude and longitude.
 
+`POINT` has no standalone form: it is only accepted as an argument to `ST_DISTANCE`. Each
+coordinate must be written with a decimal point — `POINT(1.0, 2.0)` is accepted, `POINT(1, 2)` is
+not. Latitude comes first — **not** the GeoJSON order — in the WGS84 (EPSG:4326) reference system.
+
 **Syntax:**
 ```sql
 POINT(latitude, longitude)
@@ -315,37 +320,33 @@ POINT(latitude, longitude)
 
 **Examples:**
 
-**1. Create a point:**
+**1. Create a point** — `POINT` has no standalone form, so a point is written as an argument of
+`ST_DISTANCE`:
 ```sql
-SELECT POINT(48.8566, 2.3522) as paris_location
--- Paris: 48.8566°N, 2.3522°E
+SELECT id, ST_DISTANCE(location, POINT(48.8566, 2.3522)) AS from_paris
+FROM stores
+-- POINT(48.8566, 2.3522) is Paris: 48.8566°N, 2.3522°E
 ```
 
 **2. Major world cities:**
 ```sql
--- Paris, France
-SELECT POINT(48.8566, 2.3522) as paris
-
--- London, UK
-SELECT POINT(51.5074, -0.1278) as london
-
--- New York, USA
-SELECT POINT(40.7128, -74.0060) as new_york
-
--- Tokyo, Japan
-SELECT POINT(35.6762, 139.6503) as tokyo
-
--- Sydney, Australia
-SELECT POINT(-33.8688, 151.2093) as sydney
+-- Paris, France        POINT(48.8566, 2.3522)
+-- London, UK           POINT(51.5074, -0.1278)
+-- New York, USA        POINT(40.7128, -74.0060)
+-- Tokyo, Japan         POINT(35.6762, 139.6503)
+-- Sydney, Australia    POINT(-33.8688, 151.2093)
+SELECT name, ST_DISTANCE(location, POINT(51.5074, -0.1278)) AS from_london
+FROM stores
 ```
 
 **3. Use in distance calculation:**
 ```sql
--- Distance between Paris and London
-SELECT 
-  ST_DISTANCE(POINT(48.8566, 2.3522), POINT(51.5074, -0.1278)) AS distance
-WHERE ST_DISTANCE(POINT(48.8566, 2.3522), POINT(51.5074, -0.1278)) < 400 km
--- Result: precomputed distance, approximately 343 km
+-- Stores within 400 km of London, with their distance
+SELECT
+  name,
+  ST_DISTANCE(location, POINT(51.5074, -0.1278)) AS from_london
+FROM stores
+WHERE ST_DISTANCE(location, POINT(51.5074, -0.1278)) < 400 km
 ```
 
 **4. Use in WHERE clause:**
@@ -365,11 +366,11 @@ SELECT
   name,
   address,
   phone,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) <= 5 km
   AND open_now = true
-ORDER BY distance ASC
+ORDER BY dist ASC
 LIMIT 10
 ```
 
@@ -379,11 +380,11 @@ SELECT
   name,
   cuisine,
   rating,
-  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS distance
+  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS dist
 FROM restaurants
 WHERE ST_DISTANCE(POINT(40.7128, -74.0060), location) <= 1 mi
   AND rating >= 4.0
-ORDER BY rating DESC, distance ASC
+ORDER BY rating DESC, dist ASC
 LIMIT 20
 ```
 
@@ -392,7 +393,7 @@ LIMIT 20
 SELECT 
   order_id,
   customer_name,
-  ST_DISTANCE(warehouse_location, delivery_location) AS distance,
+  ST_DISTANCE(warehouse_location, delivery_location) AS dist,
   CASE
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 5 km THEN 'Local - Free Delivery'
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 20 km THEN 'Regional - 5€'
@@ -402,7 +403,7 @@ SELECT
 FROM orders
 WHERE order_date >= CURRENT_DATE
   AND ST_DISTANCE(warehouse_location, delivery_location) < 100 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **4. Nearest Airport Search:**
@@ -412,10 +413,10 @@ SELECT
   airport_name,
   city,
   country,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM airports
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) < 100 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 LIMIT 5
 ```
 
@@ -432,22 +433,14 @@ WHERE ST_DISTANCE(origin_location, destination_location) BETWEEN 50 nmi AND 200 
 ORDER BY distance_nmi ASC
 ```
 
-**6. Coverage Analysis by Store:**
+**6. Coverage Analysis by Store:** a `JOIN` on a distance is **not** supported — the `ON` of a
+`JOIN` must be an equality or an `AND` of equalities, so
+`JOIN customers c ON ST_DISTANCE(s.location, c.location) <= 5 km` is refused. Compute each store's
+coverage with one query per store, filtering the customers by their distance to it:
 ```sql
-SELECT 
-  s.store_id,
-  s.name as store_name,
-  s.city,
-  COUNT(DISTINCT c.customer_id) as customers_within_5km,
-  COUNT(DISTINCT CASE 
-    WHEN ST_DISTANCE(s.location, c.location) <= 2 km 
-    THEN c.customer_id 
-  END) as customers_within_2km
-FROM stores s
-JOIN customers c ON ST_DISTANCE(s.location, c.location) <= 5 km
-WHERE s.active = true
-GROUP BY s.store_id, s.name, s.city
-ORDER BY customers_within_5km DESC
+SELECT COUNT(*) AS customers_within_5km
+FROM customers
+WHERE ST_DISTANCE(location, POINT(48.8566, 2.3522)) <= 5 km
 ```
 
 **7. Real-time Geofencing:**
@@ -456,7 +449,7 @@ SELECT
   device_id,
   user_name,
   timestamp,
-  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS distance,
+  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS dist,
   CASE
     WHEN ST_DISTANCE(POINT(48.8566, 2.3522), current_location) <= 50 m THEN 'Inside'
     WHEN ST_DISTANCE(POINT(48.8566, 2.3522), current_location) <= 100 m THEN 'Near'
@@ -489,7 +482,7 @@ ORDER BY route_distance ASC
 SELECT 
   order_id,
   customer_name,
-  ST_DISTANCE(warehouse_location, delivery_location) AS distance,
+  ST_DISTANCE(warehouse_location, delivery_location) AS dist,
   CASE
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 10 km THEN 5.00
     WHEN ST_DISTANCE(warehouse_location, delivery_location) <= 25 km THEN 10.00
@@ -499,7 +492,7 @@ SELECT
 FROM orders
 WHERE order_date >= CURRENT_DATE
   AND ST_DISTANCE(warehouse_location, delivery_location) < 100 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 ```
 
 **10. Proximity Search with Multiple Criteria:**
@@ -599,23 +592,23 @@ The API supports comprehensive geo-spatial queries with distance calculations:
 -- Distance in kilometers
 SELECT 
   name,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) < 5 km
-ORDER BY distance ASC
+ORDER BY dist ASC
 
 -- Distance in miles
 SELECT 
   name,
-  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS distance
+  ST_DISTANCE(POINT(40.7128, -74.0060), location) AS dist
 FROM restaurants
 WHERE ST_DISTANCE(POINT(40.7128, -74.0060), location) <= 2 mi
-ORDER BY distance ASC
+ORDER BY dist ASC
 
 -- Distance range with BETWEEN
 SELECT 
   name,
-  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), location) AS dist
 FROM stores
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), location) BETWEEN 4 km AND 10 km
 
@@ -630,14 +623,14 @@ WHERE ST_DISTANCE(POINT(-70.0, 40.0), toLocation) BETWEEN 4000 km AND 5000 km
 -- Distance in nautical miles
 SELECT 
   ship_name,
-  DISTANCE(port_location, ship_location) AS distance
+  DISTANCE(port_location, ship_location) AS dist
 FROM vessels
 WHERE DISTANCE(port_location, ship_location) < 50 nmi
 
 -- Distance in meters for precision
 SELECT 
   device_id,
-  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS distance
+  ST_DISTANCE(POINT(48.8566, 2.3522), current_location) AS dist
 FROM devices
 WHERE ST_DISTANCE(POINT(48.8566, 2.3522), current_location) < 100 m
 ```

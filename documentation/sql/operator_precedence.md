@@ -47,11 +47,11 @@ SELECT 10 - 2 * 3 AS v1,
 
 -- Multiple levels
 SELECT ((5 + 3) * 2 - 4) / 2 AS result;
--- Result: 6
+-- Result: 6.0 (`/` always yields a DOUBLE)
 -- Step 1: (5 + 3) = 8
 -- Step 2: 8 * 2 = 16
 -- Step 3: 16 - 4 = 12
--- Step 4: 12 / 2 = 6
+-- Step 4: 12 / 2 = 6.0
 ```
 
 **Best Practice:**
@@ -195,7 +195,7 @@ FROM calendar;
 ```sql
 -- Multiplication and division (left to right)
 SELECT 10 * 2 / 4 AS result;
--- Result: 5 (evaluated as (10 * 2) / 4 = 20 / 4)
+-- Result: 5.0 (evaluated as (10 * 2) / 4 = 20 / 4)
 
 -- With modulo
 SELECT 17 % 5 * 2 AS result;
@@ -579,8 +579,8 @@ SELECT (1 + 2) * 3 AS v;
 
 -- Complex calculation
 SELECT 10 + 5 * 2 - 8 / 4 AS result;
--- Result: 18
--- Evaluation: 10 + (5 * 2) - (8 / 4) = 10 + 10 - 2 = 18
+-- Result: 18.0
+-- Evaluation: 10 + (5 * 2) - (8 / 4) = 10 + 10 - 2.0 = 18.0
 ```
 
 **Example 2: Comparison and Logical Operators**

@@ -2078,11 +2078,11 @@ All functions operate on Elasticsearch documents and are evaluated by the SQL en
 | Function      | Description          |
 |---------------|----------------------|
 | `ABS(x)`      | Absolute value       |
-| `CEIL(x)`     | Round up             |
+| `CEIL(x)` / `CEILING(x)` | Round up  |
 | `FLOOR(x)`    | Round down           |
 | `ROUND(x, n)` | Round to n decimals  |
 | `SQRT(x)`     | Square root          |
-| `POW(x, y)`   | Power                |
+| `POW(x, y)` / `POWER(x, y)` | Power  |
 | `EXP(x)`      | Exponential          |
 | `LOG(x)`      | Natural logarithm    |
 | `LOG10(x)`    | Base-10 logarithm    |
@@ -2109,7 +2109,7 @@ number: `ROUND(423789293, -5)` is `423800000`. See
 | `ACOS(x)`     | Arc-cosine                       |
 | `ATAN(x)`     | Arc-tangent                      |
 | `ATAN2(y, x)` | Arc-tangent of y/x with quadrant |
-| `PI()`        | π constant                       |
+| `PI`          | π constant (no parentheses)      |
 | `RADIANS(x)`  | Degrees → radians                |
 | `DEGREES(x)`  | Radians → degrees                |
 
@@ -2137,17 +2137,17 @@ FROM dql_users;
 |------------------------------|-------------------------------|
 | `CONCAT(a, b, ...)`          | Concatenate strings           |
 | `SUBSTRING(str, start, len)` | Extract substring             |
-| `LOWER(str)`                 | Lowercase                     |
-| `UPPER(str)`                 | Uppercase                     |
+| `LOWER(str)` / `LCASE(str)`  | Lowercase                     |
+| `UPPER(str)` / `UCASE(str)`  | Uppercase                     |
 | `TRIM(str)`                  | Trim both sides               |
 | `LTRIM(str)`                 | Trim left                     |
 | `RTRIM(str)`                 | Trim right                    |
-| `LENGTH(str)`                | String length                 |
+| `LENGTH(str)` / `LEN(str)`   | String length                 |
 | `REPLACE(str, from, to)`     | Replace substring             |
 | `LEFT(str, n)`               | Left n chars                  |
 | `RIGHT(str, n)`              | Right n chars                 |
 | `REVERSE(str)`               | Reverse string                |
-| `POSITION(substr IN str)`    | 1-based position of substring |
+| `POSITION(substr IN str)` / `STRPOS(str, substr)` | 1-based position of substring |
 
 ##### **Pattern matching:**
 
@@ -2178,11 +2178,11 @@ ORDER BY id ASC;
 
 | Function                                  | Description                 |
 |-------------------------------------------|-----------------------------|
-| `CURRENT_DATE`                            | Current date (UTC)          |
+| `CURRENT_DATE` / `CURDATE()`              | Current date (UTC)          |
 | `TODAY()`                                 | Alias for CURRENT_DATE      |
-| `CURRENT_TIMESTAMP` \| `CURRENT_DATETIME` | Current timestamp (UTC)     |
+| `CURRENT_TIMESTAMP`                       | Current timestamp (UTC)     |
 | `NOW()`                                   | Alias for CURRENT_TIMESTAMP |
-| `CURRENT_TIME`                            | Current time (UTC)          |
+| `CURRENT_TIME` / `CURTIME()`              | Current time (UTC)          |
 
 ##### **Extraction:**
 
@@ -2346,6 +2346,15 @@ Returns NULL if `a = b`, otherwise `a`.
 [Comparing values of different types](operators.md#comparing-values-of-different-types)):
 `NULLIF(status, 0)` over a `KEYWORD` reads `status` as a `BIGINT`, and a `status` that spells no
 number fails the query. A computed column keeps refusing a text against a number.
+
+##### ISNULL / ISNOTNULL
+
+```sql
+ISNULL(expr)
+ISNOTNULL(expr)
+```
+
+`ISNULL` is TRUE when `expr` is NULL, `ISNOTNULL` when it is not.
 
 ##### GREATEST / LEAST
 

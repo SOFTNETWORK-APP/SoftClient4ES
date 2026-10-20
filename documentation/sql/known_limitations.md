@@ -292,7 +292,10 @@ JOINs and correlated subqueries *inside* the branches that count, at any nesting
 
 ## Quoted identifiers — residual limits
 
-Quoted column names, aliases and **table names** work in both spellings — see
+Quoted column names, aliases and **table names** work in both spellings, in every statement —
+`SELECT`, `DELETE`, `INSERT`, `UPDATE`, `CREATE`, `DROP`, `ALTER` and the rest
+(``INSERT INTO `prod_eu`.dest``, ``UPDATE `orders` SET "a" = 1``,
+`CREATE TABLE "dest" ("c" INTEGER)`) — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers) and
 [Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names), in every
 statement — `INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` included. Five things they do **not**

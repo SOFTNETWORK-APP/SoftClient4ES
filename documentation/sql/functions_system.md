@@ -6,7 +6,8 @@
 
 ### Function: VERSION
 **Description:**  
-Return engine version string.
+Not available: `VERSION()` is not a function of this engine, and `SELECT VERSION() AS v` is
+rejected by the parser.
 
 **Inputs:** 
 - none
@@ -16,8 +17,8 @@ Return engine version string.
 
 **Example:**
 ```sql
+-- rejected by the parser
 SELECT VERSION() AS v;
--- Result: 'sql-elasticsearch-engine 1.0.0'
 ```
 
 [Back to index](README.md)
