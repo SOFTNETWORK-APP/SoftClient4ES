@@ -1657,13 +1657,12 @@ package object sql {
       case _ => None
     }
 
-    /** The type an operand is DECLARED with: an aggregate is the metric it produces
-      * (`AggregateFunction.outputTypeOf`), anything else the type it reports (`reportedType`: a
-      * DATE column, a COALESCE of DATE columns, `d + 1` are DATEs).
+    /** The type an operand is DECLARED with: the type it reports (`reportedType`). A DATE column, a
+      * COALESCE of DATE columns, `d + 1` are DATEs; an aggregate is the metric it produces, because
+      * that is what an aggregate reports (`AggregateFunction.outputTypeOf`), so `COUNT(d)` is a
+      * BIGINT. One derivation (#292): there is no aggregate arm here of its own.
       */
     def declaredTypeOf(operand: Token): SQLType = operand match {
-      case i: Identifier if i.isAggregation =>
-        AggregateFunction.outputTypeOf(i).getOrElse(i.reportedType)
       case p: PainlessScript => p.reportedType
       case other             => other.out
     }
@@ -2281,7 +2280,14 @@ package object sql {
       * `reportedType`, so the leaf declarations propagate outward instead of the runtime collapse
       * doing. With no functions this IS the leaf.
       *
-      * ⚠️ An AGGREGATE reports `out`, for the reason [[chainType]] already records.
+      * 🔴 An AGGREGATE reports what it PRODUCES (`AggregateFunction.outputTypeOf`), the one
+      * derivation (#292) that comparisons and set operations read too: `COUNT(DISTINCT b)` is a
+      * BIGINT whatever `b` is, `AVG(n)` a DOUBLE, `MAX(CAST(ts AS DATE))` a DATE. Reporting the
+      * aggregated column's type instead declared a `CREATE TABLE … AS SELECT COUNT(DISTINCT b)`
+      * column BOOLEAN and mapped it `boolean`, and a function over an aggregate inherited the same
+      * mistake (`NULLIF(COUNT(DISTINCT b), 0)` was a BOOLEAN). No recursion: `outputTypeOf` strips
+      * the aggregate before it asks the chain for its `reportedType`. The caveat of [[chainType]]
+      * is about RENDERING and does not apply here: declaring a column renders nothing.
       */
     override def reportedType: SQLType =
       functions.headOption match {
@@ -2298,6 +2304,8 @@ package object sql {
           // falling back to `out` reported `NULLIF(CAST(s AS BIGINT), 0)` as KEYWORD.
           val refined = f.reportedType
           if (refined == f.out) renderedType else refined
+        case _ if isAggregation =>
+          AggregateFunction.outputTypeOf(this).getOrElse(reportedLeafType)
         case _ => reportedLeafType
       }
 

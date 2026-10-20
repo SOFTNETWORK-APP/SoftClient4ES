@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.elastic.sql.schema.mapper
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.typesafe.config.ConfigFactory
 
@@ -393,6 +394,91 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       // … and the TIMESTAMP one stays a TIMESTAMP, so this is narrowing and not a blanket collapse
       ddl should include("eff_ts TIMESTAMP")
     }
+  }
+
+  /** The source of the CTAS-over-aggregate rows: a BOOLEAN to count, an INTEGER to average, and a
+    * key to group by. Created once, by whichever of those rows runs first.
+    */
+  private lazy val ctasAggregateSource: String = {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run("CREATE TABLE IF NOT EXISTS ctas_agg_src (id INT, g KEYWORD, b BOOLEAN, n INT);")
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO ctas_agg_src (id, g, b, n) VALUES " +
+          "(1, 'x', true, 1), (2, 'x', false, 2), (3, 'y', true, 3);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+    "ctas_agg_src"
+  }
+
+  /** `(_meta.columns.<c>.data_type, properties.<c>.type)` of each column, read from the index's own
+    * mapping. ES 6.8 nests both under the mapping type, so the node is found by its `_meta`.
+    */
+  private def declaredAndMapped(index: String, columns: String*): Map[String, (String, String)] =
+    client.asInstanceOf[MappingApi].getMapping(index) match {
+      case ElasticSuccess(json) =>
+        val mapping = JacksonConfig.objectMapper.readTree(json).findParent("_meta")
+        withClue(s"[$json] ") { mapping should not be null }
+        columns.map { c =>
+          c -> (
+            mapping.path("_meta").path("columns").path(c).path("data_type").asText(),
+            mapping.path("properties").path(c).path("type").asText()
+          )
+        }.toMap
+      case other => fail(s"getMapping($index) failed: $other")
+    }
+
+  /** A CTAS column over an aggregate is declared, and mapped, with the type the aggregate PRODUCES.
+    *
+    * 🔴 Since #395 it took the type of the column the aggregate reads: `COUNT(DISTINCT b)` was
+    * declared BOOLEAN and mapped `boolean`, and `VAR_POP(n)` / `AVG(n)` INT and `integer`. On ES
+    * 6.8 every row of such a CTAS then failed to index. The values these rows write are not
+    * asserted here: the CTAS reads its SELECT through the hits path, which is a separate, older
+    * defect.
+    */
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (global)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_global AS SELECT COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_global", "c", "vp", "av") shouldBe Map(
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
+  }
+
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (grouped)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_grouped AS SELECT g, COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src GROUP BY g"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_grouped", "g", "c", "vp", "av") shouldBe Map(
+      "g"  -> ("KEYWORD", "keyword"),
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
   }
 
   it should "keep the script, and keep it WORKING, when the projection carries the operand (#385)" in {
