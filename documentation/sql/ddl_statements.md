@@ -371,8 +371,7 @@ The gateway:
 >
 > The same applies to a pipeline processor the source table declares: one that **writes** — or,
 > where the processor's operands are determinable, **reads** — a column the projection does not
-> carry is not copied either. A processor read back from Elasticsearch that this engine does not
-> recognise is checked on its target field only, because its other operands cannot be identified.
+> carry is not copied either.
 > A processor the source's pipeline holds without the source table declaring it (one added with
 > `ALTER PIPELINE … ADD PROCESSOR`, say) is not copied.
 >

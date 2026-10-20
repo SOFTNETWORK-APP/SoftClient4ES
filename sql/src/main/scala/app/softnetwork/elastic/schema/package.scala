@@ -494,24 +494,6 @@ package object schema {
     resolvedFrom: Option[String] = None
   ) {
 
-    lazy val defaultIngestPipelineName: Option[String] = esSettings.options.get("index") match {
-      case Some(obj: ObjectValue) =>
-        obj.value.get("default_pipeline") match {
-          case Some(s: StringValue) => Some(s.value)
-          case _                    => None
-        }
-      case _ => None
-    }
-
-    lazy val finalIngestPipelineName: Option[String] = esSettings.options.get("index") match {
-      case Some(obj: ObjectValue) =>
-        obj.value.get("final_pipeline") match {
-          case Some(s: StringValue) => Some(s.value)
-          case _                    => None
-        }
-      case _ => None
-    }
-
     lazy val esMappings: IndexMappings = IndexMappings(mappings)
 
     lazy val esSettings: IndexSettings = IndexSettings(settings)
