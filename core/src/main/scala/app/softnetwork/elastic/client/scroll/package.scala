@@ -35,6 +35,11 @@ package object scroll {
       true, // false = force classic scroll even where PIT/search_after is available (slower; for clusters restricting the PIT API)
     metrics: ScrollMetrics = ScrollMetrics(), // Initial scroll metrics
     retryConfig: RetryConfig = RetryConfig(), // Retry configuration
+    // What an un-LIMITed statement with a window function answers when the window values cannot be
+    // computed (for example when some shards of the window aggregation fail). None (the default)
+    // or Some(true): the stream fails with "Window function computation failed: ...".
+    // Some(false): the rows are answered WITHOUT their window values, which is a wrong answer for
+    // every projected window column; an explicit opt-in only.
     failOnWindowError: Option[Boolean] = None,
     // Internal (set by ScrollApi, not by callers): parsed pages keep the document id as an
     // `_id` row key. True for window-enrichment base queries (the ordinal lookup matches rows

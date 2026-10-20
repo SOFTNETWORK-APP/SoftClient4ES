@@ -26,7 +26,7 @@ import app.softnetwork.elastic.client.result.{
   ElasticSuccess
 }
 import app.softnetwork.elastic.client.scroll.{ScrollConfig, ScrollMetrics}
-import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement}
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SelectStatement, SingleSearch}
 import org.mockito.{ArgumentMatchersSugar, MockitoSugar}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
@@ -110,6 +110,17 @@ class ScrollSlicingSpec
 
     private def page: Source[ListMap[String, Any], NotUsed] =
       Source(List.tabulate(rows)(i => ListMap[String, Any]("id" -> s"doc-$i")))
+
+    /** A windowed statement computes its window values first, by one aggregation search, which this
+      * stub cannot answer. An empty cache lets the stream reach the enriched scroll: a failed
+      * window computation now fails the stream instead of falling back to the rows alone.
+      */
+    override private[client] def executeWindowAggregations(
+      request: SingleSearch,
+      aggRequest: SingleSearch,
+      elasticQuery: ElasticQuery
+    )(implicit context: ConversionContext): ElasticResult[WindowCache] =
+      ElasticSuccess(WindowCache(ListMap.empty))
 
     override private[client] def pitSearchAfter(
       elasticQuery: ElasticQuery,

@@ -1571,31 +1571,9 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
   /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
     * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
-    * check.
+    * check. One reading of `_shards` for every door: [[ShardFailures]].
     */
-  private def shardFailures(tree: JsonNode): Option[String] = {
-    val shards = tree.path("_shards")
-    if (shards.path("failed").asInt(0) > 0) {
-      val failures = shards.path("failures")
-      val reasons =
-        if (failures.isArray && failures.size() > 0) {
-          failures
-            .elements()
-            .asScala
-            .map { failure =>
-              val reason = failure.path("reason")
-              val message = reason.path("reason")
-              if (message.isTextual) message.asText() else reason.toString
-            }
-            .mkString("; ")
-        } else {
-          "Unknown shard failure"
-        }
-      Some(reasons)
-    } else {
-      None
-    }
-  }
+  private def shardFailures(tree: JsonNode): Option[String] = ShardFailures.of(tree).map(_.reasons)
 
   /** Convert a hit's `sort` array into the values fed back as `search_after` on the next page. */
   private def sortValuesOf(sortNode: JsonNode): Array[AnyRef] =
@@ -1771,6 +1749,16 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       .mapConcat(identity)
   }
 
+  /** The `_id` sort that `search_after` pages on when the statement has no sort, and its
+    * tie-breaker otherwise (below 7.12 only: from 7.12 the client pages through a PIT). It carries
+    * the same `unmapped_type` as the Elasticsearch 6 client's: there, an index created without any
+    * mapping has no `_id` field to sort on, and every shard of such an index fails the page.
+    * Whether 7.0-7.11 does the same is not measured. `_id` is mapped in every other index, where
+    * the key changes nothing.
+    */
+  private[this] def idSort: FieldSortBuilder =
+    new FieldSortBuilder("_id").order(SortOrder.ASC).unmappedType("keyword")
+
   /** Search After (only for hits, more efficient)
     */
   override private[client] def searchAfter(
@@ -1821,7 +1809,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 "No sort fields in query for search_after, adding default _id sort. " +
                 "This may lead to inconsistent results if documents are updated during scroll."
               )
-              sourceBuilder.sort("_id", SortOrder.ASC)
+              sourceBuilder.sort(idSort)
             } else if (hasSorts && sourceBuilder.sorts() != null) {
               // Sorts already present, check that a tie-breaker exists
               val hasIdSort = sourceBuilder.sorts().asScala.exists { sortBuilder =>
@@ -1835,7 +1823,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
               if (!hasIdSort) {
                 // Add _id as tie-breaker
                 logger.debug("Adding _id as tie-breaker to existing sorts")
-                sourceBuilder.sort("_id", SortOrder.ASC)
+                sourceBuilder.sort(idSort)
               }
             }
 

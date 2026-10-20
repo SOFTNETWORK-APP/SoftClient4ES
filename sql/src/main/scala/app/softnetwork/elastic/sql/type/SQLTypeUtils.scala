@@ -94,6 +94,27 @@ object SQLTypeUtils {
     case _                          => "object"
   }
 
+  /** The Elasticsearch types a field sort may name as its `unmapped_type`: each one sorts without
+    * any mapping parameter of its own.
+    */
+  private[this] val sortableUnmappedTypes: Set[String] =
+    Set("keyword", "boolean", "byte", "short", "integer", "long", "float", "double", "date")
+
+  /** The `unmapped_type` a field sort over a column of type `t` carries, so that an index of a
+    * pattern or list that does not map the column sorts its documents as having no value instead of
+    * failing its shards (`No mapping found for [c] in order to sort on`).
+    *
+    * Defined only for a SCALAR type whose Elasticsearch type sorts without a parameter. `None` for
+    * `Any` (no schema: the request keeps its bytes, and a column nobody maps still fails loudly),
+    * for character types (`text` has no doc values), for `Numeric` (`scaled_float` needs its
+    * `scaling_factor`), for `Struct`, nested, `GeoPoint`, `VarBinary` and every `Array`.
+    */
+  def sortUnmappedType(t: SQLType): Option[String] = t match {
+    case _: SQLArray => None
+    case _ =>
+      Some(elasticType(t)).filter(sortableUnmappedTypes.contains)
+  }
+
   /** The type a column's value has AT RUNTIME, as opposed to the type the user DECLARED.
     *
     * 🔴 These are two different facts, and story 21.5 spent a long night proving that one field

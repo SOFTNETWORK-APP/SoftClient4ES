@@ -60,19 +60,18 @@ class PainlessNullSurvivalSpec extends AnyFlatSpec with Matchers {
   /** ⚠️ ROUND 10, MEDIUM-2 — READ THIS BEFORE READING THE ASSERTION AS AN ENDORSEMENT.
     *
     * The EMISSION below is correct: the sort script preserves `null`, which is what this story
-    * owns. Elasticsearch then fails the SHARD while building the comparator, and what the CALLER
-    * sees depends on the shard count — the dangerous case being the normal one. MEASURED live on
-    * 8.18.3: a SINGLE-shard index rejects the search (`HTTP 500 null_pointer_exception: Cannot
-    * invoke "java.lang.CharSequence.length()" because "text" is null`), but a THREE-shard index
-    * holding 7 documents, one of them lacking the field, answers **HTTP 200** with `_shards.failed:
-    * 1` and `hits.total: 5` — the failing shard's two documents SILENTLY ABSENT, no error anywhere.
-    * Nothing surfaces it: `grep -rn "_shards" core/src/main` finds no consumer on the search path.
-    * That is the #205 / #209 / #253 silent-wrong-answer family, and an earlier draft of this
-    * comment called it a loud error, which is the opposite of what it is.
+    * owns. Elasticsearch then fails every SHARD that holds a document lacking the field while
+    * building the comparator, so the statement answers an ERROR whatever the shard count. MEASURED
+    * live on 8.18.3: a SINGLE-shard index rejects the search (`HTTP 500 null_pointer_exception:
+    * Cannot invoke "java.lang.CharSequence.length()" because "text" is null`); a THREE-shard index
+    * holding 7 documents, one of them lacking the field, answers HTTP 200 with `_shards.failed: 1`
+    * and `hits.total: 5`, which core's one-shot search doors answer as the error `1 of 3 shards
+    * failed: null_pointer_exception: …` (`ShardFailures`, status undetermined). Before core read
+    * `_shards`, the failing shard's two documents were SILENTLY ABSENT — the #205 / #209 / #253
+    * silent-wrong-answer family.
     *
-    * PRE-EXISTING and NOT fixed here — a null-safe sort emission changes ordering semantics for
-    * values that ARE present, which is a product decision; and surfacing `_shards.failures` is its
-    * own issue, deliberately not started in this story. Disclosed in the PR body and both doc
+    * PRE-EXISTING and NOT fixed here: a null-safe sort emission changes ordering semantics for
+    * values that ARE present, which is a product decision. Disclosed in the PR body and both doc
     * twins.
     *
     * This pin therefore says "the emission still carries `null`", never "the sort path works".

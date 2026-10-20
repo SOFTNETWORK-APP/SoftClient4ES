@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLDouble,
   SQLNumeric,
   SQLTemporal,
+  SQLTypes,
   SQLVarchar
 }
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
@@ -677,10 +678,13 @@ package object bridge {
               case _          => scriptSort.asc()
             }
           } else {
-            val baseSort = sort.order match {
+            // `unmapped_type` from the resolved column type: an index of a pattern or list that
+            // does not map the column sorts its documents as having no value instead of failing
+            // its shards. `None` without a schema, so a schema-less request keeps its bytes.
+            val baseSort = (sort.order match {
               case Some(Desc) => FieldSort(sort.field.aliasOrName).desc()
               case _          => FieldSort(sort.field.aliasOrName).asc()
-            }
+            }).copy(unmappedType = sort.unmappedType)
             sort.nullOrdering match {
               case Some(NullsFirst) => baseSort.missing("_first")
               case Some(NullsLast)  => baseSort.missing("_last")
@@ -1182,11 +1186,16 @@ package object bridge {
       case LE | LT if distance.oneIdentifier =>
         val identifier = distance.identifiers.head
         val point = distance.points.head
-        geoDistanceQuery(
+        // `ignore_unmapped` only for a column the schema resolved as a GEO_POINT: an index of a
+        // pattern or list that does not map it then matches nothing instead of failing its shards.
+        (geoDistanceQuery(
           identifier.name,
           point.lat.value,
           point.lon.value
-        ) distance geoDistance.geoDistance
+        ) distance geoDistance.geoDistance).copy(ignoreUnmapped =
+          if (identifier.declaredType == SQLTypes.GeoPoint && !identifier.nested) Some(true)
+          else None
+        )
       case _ =>
         scriptQuery(
           Script(

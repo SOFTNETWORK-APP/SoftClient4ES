@@ -21,14 +21,17 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Source
 import app.softnetwork.elastic.client.{
   endOfScrollPage,
+  mapper,
   retryWithBackoff,
   ClientAggregation,
   ConversionContext,
   ElasticQuery,
-  ScrollApi
+  ScrollApi,
+  ShardFailures
 }
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
+import com.fasterxml.jackson.databind.JsonNode
 import com.google.gson.{JsonNull, JsonObject, JsonParser}
 import io.searchbox.client.JestResult
 import io.searchbox.core.{ClearScroll, Search, SearchScroll}
@@ -83,16 +86,19 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val rawHits = rawHitCount(result)
 
                 try {
-                  // Extract ALL results (hits + aggregations)
                   // Single parse for core (#228): Jackson reads the raw response body Jest
                   // retained — the Gson tree is only consulted for the scroll cursor.
+                  val tree = pageTree(result, "scroll page")
+
+                  // HTTP 200 with failed shards is a partial page: fail it, as the ES 6 REST door
+                  // does (the catch below releases the context opened just above).
+                  ShardFailures.of(tree).foreach { failures =>
+                    throw new IOException(s"Initial scroll failed: ${failures.reasons}")
+                  }
+
+                  // Extract ALL results (hits + aggregations)
                   val results =
-                    extractAllResults(
-                      result.getJsonString,
-                      fieldAliases,
-                      aggregations,
-                      config.retainDocumentId
-                    )
+                    extractAllResults(tree, fieldAliases, aggregations, config.retainDocumentId)
 
                   logger.info(
                     s"Initial scroll returned ${results.size} results, scrollId: $scrollId"
@@ -129,13 +135,19 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 val rawHits = rawHitCount(result)
 
                 try {
-                  val results =
-                    extractAllResults(
-                      result.getJsonString,
-                      fieldAliases,
-                      aggregations,
-                      config.retainDocumentId
+                  val tree = pageTree(result, "scroll page")
+
+                  ShardFailures.of(tree).foreach { failures =>
+                    // the cursor is spent: a retry against a cleared context can only 404, and
+                    // re-polling a scroll cursor skips rows — fail without retrying
+                    clearScroll(scrollId)
+                    throw new IllegalStateException(
+                      s"Scroll continuation failed: ${failures.reasons}"
                     )
+                  }
+
+                  val results =
+                    extractAllResults(tree, fieldAliases, aggregations, config.retainDocumentId)
 
                   logger.debug(s"Scroll returned ${results.size} results")
 
@@ -164,6 +176,20 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
         }
       }
       .mapConcat(identity)
+  }
+
+  /** The `_id` sort that `search_after` pages on when the statement has no sort, and its
+    * tie-breaker otherwise. On Elasticsearch 6, an index created without any mapping has no type,
+    * hence no `_id` field to sort on: without `unmapped_type` every shard of such an index fails
+    * the page. `_id` is mapped in every other index, where the key changes nothing.
+    */
+  private[this] def idSort(): JsonObject = {
+    val options = new JsonObject()
+    options.addProperty("order", "asc")
+    options.addProperty("unmapped_type", "keyword")
+    val sort = new JsonObject()
+    sort.add("_id", options)
+    sort
   }
 
   /** Search After (only for hits, more efficient)
@@ -201,9 +227,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 "This may lead to inconsistent results if documents are updated during scroll."
               )
               val sortArray = new com.google.gson.JsonArray()
-              val sortObj = new JsonObject()
-              sortObj.addProperty("_id", "asc")
-              sortArray.add(sortObj)
+              sortArray.add(idSort())
               queryJson.add("sort", sortArray)
             } else if (hasSorts && queryJson.has("sort")) {
               // Sorts already present, check that a tie-breaker exists
@@ -214,9 +238,7 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
               if (!hasIdSort) {
                 // Add _id as tie-breaker
                 logger.debug("Adding _id as tie-breaker to existing sorts")
-                val tieBreaker = new JsonObject()
-                tieBreaker.addProperty("_id", "asc")
-                existingSorts.add(tieBreaker)
+                existingSorts.add(idSort())
               }
             }
 
@@ -244,10 +266,15 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
             if (!result.isSucceeded) {
               throw new IOException(s"Search after failed: ${result.getErrorMessage}")
             }
-            // Extract ONLY hits (no aggregations)
             // Single parse for core (#228): raw body, not the Gson tree re-serialized
-            val hits =
-              extractHitsOnly(result.getJsonString, fieldAliases, config.retainDocumentId)
+            val tree = pageTree(result, "search_after page")
+
+            ShardFailures.of(tree).foreach { failures =>
+              throw new IOException(s"Search after failed: ${failures.reasons}")
+            }
+
+            // Extract ONLY hits (no aggregations)
+            val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
 
             // End of stream is decided on the RAW page (#241), never on the converted rows
             if (endOfScrollPage(hits.size, rawHitCount(result), "search_after page")) {
@@ -325,13 +352,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     * success (#241/#217, same defect class as #228 / #209 / #224).
     */
   private[client] def extractAllResults(
-    jsonString: String,
+    json: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, SQLAggregation],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
-    parseResponse(
-      jsonString,
+    parseResponseTree(
+      json,
       fieldAliases,
       aggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
       retainDocumentId = retainDocumentId
@@ -342,6 +369,20 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     }
   }
 
+  /** [[extractAllResults]] over a raw body (the page-failure rows read it this way). */
+  private[client] def extractAllResults(
+    jsonString: String,
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, SQLAggregation],
+    retainDocumentId: Boolean
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] =
+    extractAllResults(
+      parseTree(jsonString, "scroll page"),
+      fieldAliases,
+      aggregations,
+      retainDocumentId
+    )
+
   /** Extract ONLY hits (for search_after)
     *
     * A parse failure FAILS the page (non-retriable `IllegalStateException`) — see
@@ -349,13 +390,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
     * `search_after` is this client's only deep-paging alternative to the classic scroll.
     */
   private[client] def extractHitsOnly(
-    jsonString: String,
+    json: JsonNode,
     fieldAliases: ListMap[String, String],
     retainDocumentId: Boolean
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
 
-    parseResponse(
-      jsonString,
+    parseResponseTree(
+      json,
       fieldAliases,
       ListMap.empty,
       retainDocumentId = retainDocumentId
@@ -368,6 +409,30 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
         )
     }
   }
+
+  /** [[extractHitsOnly]] over a raw body (the page-failure rows read it this way). */
+  private[client] def extractHitsOnly(
+    jsonString: String,
+    fieldAliases: ListMap[String, String],
+    retainDocumentId: Boolean
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] =
+    extractHitsOnly(parseTree(jsonString, "search_after page"), fieldAliases, retainDocumentId)
+
+  /** The page's raw body, parsed ONCE by Jackson (#228). A body that does not parse FAILS the page
+    * with the same non-retriable `IllegalStateException` the extractors raise: an `IOException`
+    * would be retried, and on a scroll continuation re-polling the cursor skips rows.
+    */
+  private[client] def parseTree(jsonString: String, page: String): JsonNode =
+    Try(mapper.readTree(jsonString)) match {
+      case Success(tree) if tree != null && !tree.isMissingNode => tree
+      case Success(_) =>
+        throw new IllegalStateException(s"Failed to parse $page: empty response body")
+      case Failure(ex) =>
+        throw new IllegalStateException(s"Failed to parse $page: ${ex.getMessage}", ex)
+    }
+
+  private def pageTree(result: JestResult, page: String): JsonNode =
+    parseTree(result.getJsonString, page)
 
   private def clearScroll(scrollId: String): Unit = {
     Try {
