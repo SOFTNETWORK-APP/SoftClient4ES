@@ -461,9 +461,13 @@ The `WHERE` clause supports:
 >   those 5 rows as the whole result, with no error.
 >
 > A statement without `LIMIT` is read page by page and fails the same way
-> (`PIT search_after failed: …`). To sort such a column, sort by the bare column, or keep the field
-> present on every document. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`,
-> which is NULL-valued for the rows no branch matches.
+> (`PIT search_after failed: …`). This is not specific to sorting: since **0.24.0**, a search on
+> which some shards fail answers an error — `n of m shards failed`, then the first failure's type
+> and reason — never the rows of the shards that succeeded (see
+> [Search: a search whose shards fail](../client/search.md#a-search-whose-shards-fail)). To sort
+> such a column, sort by the bare column, or keep the field present on every document. The same
+> applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which is NULL-valued for the rows no
+> branch matches.
 >
 > Since **0.24.0**, a sort by the bare column over an index pattern or list also answers the
 > documents of an index that does not map that column, sorted as `NULL`, when the other indices map
@@ -1542,8 +1546,8 @@ ORDER BY COUNT(*) DESC;
 ```
 
 - `GROUP BY` supports nested fields (`profile.city`).
-- A key over a date column, or over a function of any column, groups by the key's own value from
-  a single index, an index pattern or a list of indices:
+- Since **0.24.0**, a key over a date column, or over a function of any column, groups by the key's
+  own value from a single index, an index pattern or a list of indices:
   - `DATE_TRUNC(created_at, MONTH)` is one Elasticsearch `date_histogram` level with that calendar
     interval;
   - a bare date column (`GROUP BY created_at`) is a `terms` level on the field: one group per
@@ -1653,12 +1657,16 @@ generated comparison is text against a number and Elasticsearch fails the whole 
 ### Conditions on the GROUP BY key
 
 A `HAVING` condition over the grouping key filters GROUPS, and it is applied by the `terms` filter —
-so it is correct for a multi-valued field, where one document belongs to several groups.
+so it is correct for a multi-valued field, where one document belongs to several groups. The rules
+below hold since **0.24.0**; before it, several of the conditions now refused returned a
+plausible-looking but wrong set of groups, without an error.
 
 ```sql
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city = 'Paris';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city IN ('Paris', 'Lyon');
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city NOT IN ('Pau', 'Pise');
 ```
 
 - Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — whether the key
@@ -1978,6 +1986,11 @@ SELECT
 FROM dql_sales
 ORDER BY product, ts;
 ```
+
+Since **0.24.0**, a statement without `LIMIT` whose window values cannot be computed — for instance
+because shards of the window aggregation fail — answers an error,
+`Window function computation failed: …`. Before 0.24.0 it answered its rows without their window
+values (see [`failOnWindowError`](../client/scroll.md#scrollconfig)).
 
 #### ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
 
@@ -2444,6 +2457,7 @@ Notes:
   paged in `_id` order, and with one `_id` is the tie-breaker. Since `0.24.0`, on Elasticsearch 6,
   a statement without `LIMIT` over a pattern that includes an index created without any mapping is
   read in full, even when that index is empty: the `_id` order no longer fails that index's shards
+  (see [The `_id` order](../client/scroll.md#search_after))
 - Without `ORDER BY`, result ordering is not guaranteed
 
 ### When some shards fail

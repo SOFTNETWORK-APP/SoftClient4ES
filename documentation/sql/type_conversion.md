@@ -29,7 +29,7 @@ SELECT CAST('2025-09-11' AS DATE) AS d FROM logs;
 ## Function: TRY_CAST (Alias: SAFE_CAST)
 
 **Description:**  
-Attempts to convert a value to a specified SQL type. Returns `NULL` if the conversion fails instead of raising an error.
+Attempts to convert a value to a specified SQL type. Returns `NULL` if the conversion fails instead of raising an error. `SAFE_CAST` is accepted as an alias and normalises to `TRY_CAST`.
 
 **Inputs:**  
 - `value` (ANY type)  
@@ -71,7 +71,7 @@ SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b FROM logs;
 - `CAST` (`CONVERT`) will raise errors on invalid conversions.  
 - `TRY_CAST` (`SAFE_CAST`) returns `NULL` instead of failing.  
 - `::` is syntactic sugar, easier to read in queries.  
-- Type inference relies on `baseType`, and explicit `CAST`/`TRY_CAST`/`::` updates the type context for following functions.  
+- Type inference relies on `baseType`, and explicit `CAST`/`TRY_CAST`/`::` updates the type context for following functions, so `'125'::BIGINT + 1` is arithmetic rather than string concatenation.  
 - *Since `0.25.0`.* A `BOOLEAN` cannot be cast to a `DATE`, a `TIME` or a `TIMESTAMP` — in a query,
   a computed column and a pipeline alike, with `CAST`, `TRY_CAST` or `::` — as DuckDB refuses it:
   `CAST(b AS DATE)` used to answer the boolean itself in a date column.
@@ -90,6 +90,8 @@ SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b FROM logs;
   `GREATEST(x, '1e400')` is refused (DuckDB answers `1.5` and `inf`). As a stored text compared with
   a `DOUBLE` column it is `+Infinity` or `-Infinity`, DuckDB's value: `k = x` is false and `k <> x`
   true. A stored `'NaN'` or `'Infinity'` fails the query.
+- Casting is evaluated inside the generated Painless script, so a cast on a field participates in script-based filtering and sorting like any other expression.  
+- Without a `FROM` clause, a `SELECT` of constant expressions is accepted, and a constant cast works there in every spelling (see [FROM-less SELECT](dql_statements.md#from-less-select-connection-handshake)).  
 
 ---
 
@@ -104,7 +106,9 @@ SELECT MAX(salary)::BIGINT AS m FROM emp GROUP BY dept;
 SELECT CAST(MAX(salary) AS BIGINT) AS m FROM emp GROUP BY dept;
 ```
 
-All four spellings behave the same way — `::`, `CAST`, `TRY_CAST` and `CONVERT`.
+All four spellings behave the same way — `::`, `CAST`, `TRY_CAST` and `CONVERT`. The same applies
+in `HAVING`: `HAVING COUNT(*)::INT > 3` is rejected, and unnecessary — compare against a numeric
+literal directly.
 
 Cast the aggregate's **input** instead. This is equivalent for `MIN` and `MAX`, whose result type
 follows their argument:

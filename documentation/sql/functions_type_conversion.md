@@ -47,6 +47,9 @@ Three limitations, stated plainly rather than hidden:
 `CONVERT(expr USING <charset>)` is accepted as a synonym for `CONVERT(expr, VARCHAR)`:
 Elasticsearch stores UTF-8 throughout, so the charset is parsed and dropped.
 
+`CONVERT` also accepts the Transact-SQL argument order, the type first: `CONVERT(BIGINT, expr)` is
+`CONVERT(expr, BIGINT)`.
+
 **Output:**
 - Value converted to target `TYPE`
 

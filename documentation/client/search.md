@@ -1700,6 +1700,29 @@ client.singleSearchAs[Product](query, Map.empty, Map.empty) match {
 
 ---
 
+### A search whose shards fail
+
+Elasticsearch answers a search on which **some** shards fail with HTTP 200, `_shards.failed > 0`,
+and the hits / buckets of the shards that succeeded only. Since **0.24.0** every one-shot search
+reads that section and answers an `ElasticFailure` instead of those partial rows:
+
+- the message is `n of m shards failed`, then the first failure's type and reason, and its cause
+  when Elasticsearch gives one: `1 of 3 shards failed: null_pointer_exception: …`;
+- `statusCode` is `400` when **every** failure is one Elasticsearch attributes to the request
+  (`script_exception`, `query_shard_exception`, `illegal_argument_exception`, `parsing_exception`,
+  `search_parse_exception`, `x_content_parse_exception`), and `None` otherwise;
+- a multi-search is read response by response: the first one whose shards failed answers the
+  error, prefixed with its 1-based position (`Query 2: 1 of 3 shards failed: …`).
+
+`skipped` shards are not failures. Before 0.24.0 the one-shot searches did not read `_shards`, so
+such a search answered the other shards' rows as the whole result, with no error. The paging paths
+fail the same way page by page — see
+[Scroll: a page on which some shards fail](scroll.md#a-page-on-which-some-shards-fail-fails-the-stream).
+For the SQL statement that most often meets it, see
+[`ORDER BY` over a function of a column some documents do not carry](../sql/dql_statements.md#where).
+
+---
+
 ### Multi-Search Partial Failures
 
 ```scala
