@@ -1563,6 +1563,65 @@ trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
     rows should have size 4
   }
 
+  // -------------------------------------------------------------------------
+  // A UNION ALL branch that FAILS at Elasticsearch, under the licensed result cap
+  // -------------------------------------------------------------------------
+
+  behavior of "REPL - a failing UNION ALL branch"
+
+  /** `note` is a `text` field with fielddata disabled, so a branch that sorts on it is refused by
+    * Elasticsearch itself (400). The failing branch names `note` WITHOUT an alias: a sort on a
+    * SELECT alias is a different defect, and these rows must not depend on it.
+    */
+  private def unionBranchFailFixture(): Unit = {
+    assertDdl(
+      System.nanoTime(),
+      executeSync(
+        """CREATE TABLE IF NOT EXISTS union_branch_fail (
+          |  id INT NOT NULL,
+          |  tag KEYWORD,
+          |  note VARCHAR,
+          |  PRIMARY KEY (id)
+          |)""".stripMargin
+      )
+    )
+    assertDml(
+      System.nanoTime(),
+      executeSync(
+        """INSERT INTO union_branch_fail (id, tag, note) VALUES
+          |  (1, 'a', 'alpha'),
+          |  (2, 'b', 'beta')""".stripMargin
+      )
+    )
+  }
+
+  /** The handled failure, with Elasticsearch's status. The REPL turns ANY failed `Future` into an
+    * `ExecutionFailure` without a status, so the status and the statement's name in the message are
+    * what tell a handled branch failure apart from one that escaped `run`.
+    */
+  private def assertHandledBranchFailure(sql: String): Unit = {
+    unionBranchFailFixture()
+    val res = executeSync(sql)
+    res shouldBe a[ExecutionFailure]
+    val error = res.asInstanceOf[ExecutionFailure].error
+    withClue(s"${error.message}: ") {
+      error.statusCode shouldBe Some(400)
+      error.message should include("UNION ALL failed")
+    }
+  }
+
+  it should "answer a handled 400 when a branch sorts on a text field" in {
+    assertHandledBranchFailure(
+      "SELECT tag AS note FROM union_branch_fail UNION ALL SELECT note FROM union_branch_fail ORDER BY note"
+    )
+  }
+
+  it should "answer a handled 400 when a parenthesised branch sorts on a text field" in {
+    assertHandledBranchFailure(
+      "SELECT tag AS note FROM union_branch_fail UNION ALL (SELECT note FROM union_branch_fail ORDER BY note)"
+    )
+  }
+
   // =========================================================================
   // 7. Error handling
   // =========================================================================

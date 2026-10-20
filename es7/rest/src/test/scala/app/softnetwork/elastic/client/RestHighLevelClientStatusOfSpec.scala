@@ -26,6 +26,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
 import java.util.concurrent.CompletionException
+import scala.util.Try
 
 /** SoftClient4ES#184 — proves the ES 6/7 `statusOf` extractor against hand-built real exception
   * instances, without Docker: `ElasticClientCompanion` creates the underlying client lazily, and
@@ -40,6 +41,34 @@ class RestHighLevelClientStatusOfSpec extends AnyWordSpec with Matchers {
   }
 
   private val probe = Probe(ElasticConfig(ConfigFactory.load()))
+
+  /** A real `ResponseException` carrying `status`. `Response`'s constructor is package-private, so
+    * it is reached reflectively; nothing is sent.
+    */
+  private def responseException(status: Int): org.elasticsearch.client.ResponseException = {
+    val constructor = classOf[org.elasticsearch.client.Response].getDeclaredConstructor(
+      classOf[org.apache.http.RequestLine],
+      classOf[org.apache.http.HttpHost],
+      classOf[org.apache.http.HttpResponse]
+    )
+    constructor.setAccessible(true)
+    val response = constructor.newInstance(
+      new org.apache.http.message.BasicRequestLine(
+        "POST",
+        "/idx/_search",
+        org.apache.http.HttpVersion.HTTP_1_1
+      ),
+      new org.apache.http.HttpHost("localhost", 9200),
+      new org.apache.http.message.BasicHttpResponse(
+        new org.apache.http.message.BasicStatusLine(
+          org.apache.http.HttpVersion.HTTP_1_1,
+          status,
+          "Bad Request"
+        )
+      )
+    )
+    new org.elasticsearch.client.ResponseException(response)
+  }
 
   "statusOf" should {
 
@@ -58,6 +87,19 @@ class RestHighLevelClientStatusOfSpec extends AnyWordSpec with Matchers {
 
     "return None for a plain transport failure" in {
       probe.statusOf(new java.net.ConnectException("Connection refused")) shouldBe None
+    }
+
+    "read the status of the 4xx wrapper a search page throws, from its cause" in {
+      val wrapped = new IllegalStateException("m", responseException(400))
+      // the fixture is what it claims to be: the cause carries the status line
+      Try(
+        wrapped.getCause
+          .asInstanceOf[org.elasticsearch.client.ResponseException]
+          .getResponse
+          .getStatusLine
+          .getStatusCode
+      ).toOption shouldBe Some(400)
+      probe.statusOf(wrapped) shouldBe Some(400)
     }
 
     "fall through to the core default for a framework throwable" in {
