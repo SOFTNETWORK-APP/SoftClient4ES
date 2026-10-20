@@ -706,6 +706,17 @@ case class From(tables: Seq[Table]) extends Updateable {
     */
   lazy val mainTableKey: String = aliasKey(mainTable.name, mainTable.qualifiedName)
 
+  /** Story IDENT-4 -- the CORRELATION NAME of the main table: its SQL alias, else its bare name
+    * (the value [[tableAliases]] records for it). What an UNQUALIFIED column is correlated with,
+    * since an unqualified name resolves against the main table (`GenericIdentifier.update`).
+    *
+    * 🔴 NOT [[mainTableKey]]. That is the alias-map KEY -- the INDEX in `aliasKey`'s language --
+    * and both legs of a self-join (`FROM orders a JOIN orders b`) share it. Something comparing two
+    * COLUMNS of one statement keys on the correlation; only something addressing a MAPPING keys on
+    * the index.
+    */
+  lazy val mainTableCorrelation: String = effectiveAlias(mainTable)
+
   /** 🔴 FIX (story BIDC-8, softclient4es-arrow#144) — alias -> table key, built DIRECTLY and
     * LOSSLESS. It used to be `tableAliases.map(_.swap)`.
     *

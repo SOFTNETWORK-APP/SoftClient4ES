@@ -17,7 +17,6 @@
 package app.softnetwork.elastic.sql.bridge
 
 import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType, PainlessTarget}
-import app.softnetwork.elastic.sql.`type`.SQLTemporal
 import app.softnetwork.elastic.sql.query.{
   Asc,
   BucketIncludesExcludes,
@@ -503,8 +502,11 @@ object ElasticAggregation {
             }
 
           var agg: Aggregation = {
+            // Story IDENT-4 -- ONE derivation of "this level is a date histogram", shared with the
+            // HAVING classifier (`SingleSearch.dateHistogramLevelOf`), which refuses a key filter
+            // this level could not carry.
             bucket.out match {
-              case _: SQLTemporal =>
+              case _ if bucket.isDateHistogram =>
                 val functions = bucket.identifier.functions
                 val interval: Option[DateHistogramInterval] =
                   if (functions.size == 1) {

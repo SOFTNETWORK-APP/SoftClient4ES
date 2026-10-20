@@ -1111,6 +1111,18 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   On a `keyword`, `integer`, `long`, `double` or `boolean` key, `=`, `<>`, `IN` and `NOT IN` keep or
   remove **exactly** the values written, on every supported release: a `.`, `*`, `(`, `\` or `'` in a
   value is an ordinary character, and a numeric or boolean key is compared as a number or a boolean.
+- The key may be written **with or without its table qualifier, on either side** — the spelling BI
+  tools generate: `GROUP BY c.city HAVING c.city = 'Paris'`, `GROUP BY c.city HAVING city = 'Paris'`
+  and `GROUP BY city HAVING c.city = 'Paris'` filter exactly the groups `GROUP BY city HAVING
+  city = 'Paris'` does. An unqualified name is the main table's column, as everywhere else in a
+  statement. In a JOIN, a column the `GROUP BY` does not group for that table (`GROUP BY a.city
+  HAVING b.city = 'x'`) is refused as neither a GROUP BY key nor an aggregate. A table's own name is
+  not a qualifier once the table is aliased (`FROM customers c … HAVING customers.city = 'x'` is
+  refused). A key whose function renders its own argument (`CAST`, `TRY_CAST`, `SAFE_CAST`,
+  `ISNULL`, `ISNOTNULL`) is matched by its spelling: write it the same way in `GROUP BY`
+  and `HAVING` (`GROUP BY CAST(c.city AS VARCHAR) HAVING CAST(c.city AS VARCHAR) = 'x'`); a mixed
+  spelling is refused, except in a JOIN, a derived table or a CTE, whose `HAVING` the relational
+  engine evaluates.
 - ⚠️ **An integer key compared with a number that has a fractional part is refused**
   (`HAVING year = 2025.5`, `HAVING year IN (2024.5, 2025)`) — whether the key is named by its
   column, its SELECT alias or its GROUP BY position, or is grouped from an `UNNEST`: no integer
@@ -1157,6 +1169,12 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
   the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
   `WHERE`.
+- ⚠️ **A condition on a date grouping key is refused** when the key is a `DATE_TRUNC` key or a key
+  whose function returns a date
+  (`GROUP BY DATE_TRUNC(created, MONTH) HAVING DATE_TRUNC(created, MONTH) = '2024-01-01'`):
+  Elasticsearch groups such a key with a date histogram, and a date histogram has no key filter.
+  Restrict the rows in `WHERE` instead:
+  `WHERE created >= '2024-01-01' AND created < '2024-02-01' GROUP BY DATE_TRUNC(created, MONTH)`.
 - A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
   (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
 - ⚠️ An `OR` whose branches need **different stages** is refused, because Elasticsearch applies
@@ -1167,6 +1185,14 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
     `GROUP BY country, city HAVING country = 'FR' OR city = 'Paris'` would return only the groups
     matching BOTH. An `OR` on ONE key, within one mechanism, is supported subject to the table
     above; the corresponding `AND` is always fine, because the nesting IS the conjunction.
+    The same holds for two functions of one column (`GROUP BY YEAR(created), MONTH(created) HAVING
+    YEAR(created) = 2024 OR MONTH(created) = 1`): refused, while the `AND` of the two is accepted.
+
+  A `MATCH (city) AGAINST ('…')` on the key is a key filter like `RLIKE` and follows the same
+  rules: it can be combined with an aggregate by `AND`, not by `OR`; a `MATCH` over two grouping
+  keys (`GROUP BY country, city HAVING MATCH (country, city) AGAINST ('x')`) is an `OR` across them
+  and is refused; and a `MATCH` on a column that is not a `GROUP BY` key is refused, as stated
+  above.
 - An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter

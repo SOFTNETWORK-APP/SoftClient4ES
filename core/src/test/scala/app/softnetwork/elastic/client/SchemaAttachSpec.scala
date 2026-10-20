@@ -2,7 +2,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{BucketIncludesExcludes, SingleSearch}
 import app.softnetwork.elastic.sql.schema.{Column, Schema, Table}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.PainlessContext
@@ -185,6 +185,56 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
       script should include("param")
       params should include("LocalDate.parse")
       params should include("!= null")
+    }
+  }
+
+  // -- 3. story IDENT-4: how many times each venue resolves ---------------------------------------
+  "a qualified GROUP BY key" should
+  "reach the client with its metrics on its level -- whether the FROM is resolved twice or once" in {
+    // `events e` is resolved AGAIN against the mapping; `events* e` is NOT -- here. Since #412 a
+    // client that can read a pattern's mappings resolves a pattern twice too
+    // (`IndicesApi.loadPatternSchema`); this double cannot (`NopeClientApi` answers no pattern), so
+    // it stands for every ONE-resolution venue: a remembered schema miss, a failed or denied mapping
+    // read, a client that is not an `IndicesApi`. The body such a venue sends is the PARSE-time one
+    // and must already be right. For the pattern the metric's path used to be `e.code`, the
+    // level's `code`.
+    val client = seeded()
+    val wrong = Seq("events e" -> true, "events* e" -> false).flatMap { case (from, again) =>
+      val parsed = parse(s"SELECT COUNT(*) AS c, MAX(amount) AS mx FROM $from GROUP BY e.code")
+      client.resolveWithSchema(parsed) match {
+        case ElasticSuccess(sent) =>
+          val level = sent.bucketTree.allTrees.flatten.head.bucketPath
+          val metricPaths = sent.select.fields.map(_.identifier.bucketPath).distinct
+          Seq(
+            if ((sent ne parsed) != again) Some(s"[$from] resolved again: ${sent ne parsed}")
+            else None,
+            if (metricPaths != Seq(level)) Some(s"[$from] metric paths $metricPaths, level $level")
+            else None
+          ).flatten
+        case ElasticFailure(error) => Seq(s"[$from] ${error.message}")
+      }
+    }
+    withClue(wrong.mkString("\n")) { wrong shouldBe empty }
+  }
+
+  it should "reach the client with its key filter at both venues" in {
+    val client = seeded()
+    Seq("events e", "events* e").foreach { from =>
+      val parsed =
+        parse(
+          s"SELECT COUNT(*) AS c, MAX(amount) AS mx FROM $from GROUP BY e.code HAVING e.code = 'x'"
+        )
+      client.resolveWithSchema(parsed) match {
+        case ElasticSuccess(sent) =>
+          val level = sent.bucketTree.allTrees.flatten.head.bucket
+          withClue(s"[$from] ") {
+            sent.having
+              .flatMap(_.criteria)
+              .map(_.includes(level, not = false, BucketIncludesExcludes())) shouldBe
+            Some(BucketIncludesExcludes(values = Set("x")))
+          }
+        case ElasticFailure(error) => fail(s"[$from] ${error.message}")
+      }
     }
   }
 }

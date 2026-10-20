@@ -701,7 +701,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    // Story IDENT-4 -- the SAME grouping key, not merely the same display name (`Bucket.sameKeyAs`):
+    // a display name is shared by a self-join's two levels and by two functions of one column.
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         operator match {
           // These feed the ES `terms` include/exclude and its regex form, so they need the value
@@ -1404,8 +1406,12 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // milliseconds -- and [[bucketPipelineCheck]] converts a temporal value to the same unit, so the
     // two are compared as numbers. The `java.time` methods below would be called on a `Double`
     // (`dynamic method [java.lang.Double, isAfter/1] not found`).
+    //
+    // Story IDENT-4 -- NOT "the column is a GROUP BY key" (`hasBucket`): a WHERE comparison reads
+    // documents, never a bucket key, so it took the numeric fallback (a raw `>` on two dates,
+    // which Painless refuses) whenever its column happened to be grouped, and only then.
     val readsMetric =
-      isAggregation || hasBucket || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
+      isAggregation || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
     op match {
       case _: ComparisonOperator =>
         // 🔴 Story BIDC-8 AD-9 — dispatch on the EFFECTIVE operator, i.e. with a `NOT` folded in,
@@ -1857,7 +1863,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       */
     val utcComparison: Boolean =
       context.exists(c => !c.isProcessor && !c.isTransform && c.target.jodaCompatibleDates) &&
-      valueType.isInstanceOf[SQLTemporal] && !isAggregation && !hasBucket &&
+      valueType.isInstanceOf[SQLTemporal] && !isAggregation &&
       comparisonTargetType == SQLTypes.Timestamp
     def instantOperand(rendered: SQLType, readsDocument: Boolean): Boolean =
       utcComparison && readsDocument &&
@@ -2323,7 +2329,7 @@ case class InExpr[R, +T <: Value[R]](
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
           // The VALUE, never its SQL rendering -- the rule `Expression.includes` states on its EQ
@@ -3097,7 +3103,7 @@ case class MatchCriteria(
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
           // The value, not its rendering — see the include/exclude note above.

@@ -437,6 +437,32 @@ package object query {
     def minScore(score: Double): SelectStatement = this.copy(score = Some(score))
   }
 
+  /** Story IDENT-4 -- one bucket as [[SingleSearch.bucketFor]] indexes it.
+    *
+    * A plain class on purpose: it is never compared, only searched, and a case class's structural
+    * `equals` would reach `Identifier.equals` through the bucket -- the collapse this story must
+    * not depend on.
+    *
+    * @param bucket
+    *   the lookup copy -- qualifier-RESOLVED when it is a GROUP BY key
+    * @param keys
+    *   every spelling it is looked up by, in the order `bucketNames` has always used
+    * @param aliasKeys
+    *   the subset of `keys` that are ALIASES (they name the bucket by definition)
+    * @param groupByKey
+    *   a GROUP BY key (`eq` membership), not a window PARTITION BY bucket
+    * @param identity
+    *   (correlation as written, grouped expression) -- `None` for a nameless or a nested key, which
+    *   keeps the spelling lookup
+    */
+  private[query] final class KeyedBucket(
+    val bucket: Bucket,
+    val keys: Seq[String],
+    val aliasKeys: Set[String],
+    val groupByKey: Boolean,
+    val identity: Option[(Option[String], String)]
+  )
+
   case class SingleSearch(
     select: Select = Select(),
     from: From,
@@ -616,9 +642,10 @@ package object query {
       * 🔴 OBLIGATION, not a reassurance: anything that looks a bucket up in this map must speak one
       * of those two key languages. Adding a resolution rule here (the ordinal and alias arms below)
       * without indexing BOTH spellings silently disables one of the two lookups -- which is exactly
-      * how `GROUP BY pays` came to emit `terms { field: "pays" }` on a non-existent field. The
-      * consumers are `sql/.../package.scala` (`Identifier.update`, 6 sites) and
-      * `sql/.../function/aggregate/package.scala` (`WindowFunction.update`, 2 sites).
+      * how `GROUP BY pays` came to emit `terms { field: "pays" }` on a non-existent field. Its
+      * consumers are the `BucketPath` of `Identifier.update` (VALUES) and `WindowFunction.update`
+      * (KEYS). The five attachment sites of `Identifier.update` ask [[bucketFor]] instead, which
+      * reads [[keyedBuckets]], the list this map is derived from.
       *
       * Issue #253's companion defect: ordinal-ness used to be sniffed with `"\\d+".r.findFirstIn`
       * on the RENDERED name, guarded only by "the name contains no space", so ANY name carrying a
@@ -634,47 +661,194 @@ package object query {
       * builds LOOKUP KEYS; `Bucket.update` owns the resolution that reaches the emitted query, and
       * both route through `Bucket.selectItem` / `Bucket.aliasItem` so they cannot disagree.
       */
-    lazy val bucketNames: ListMap[String, Bucket] = ListMap(buckets.flatMap { b =>
+    lazy val bucketNames: ListMap[String, Bucket] =
+      ListMap(keyedBuckets.flatMap(k => k.keys.map(_ -> k.bucket)): _*)
+
+    /** Story IDENT-4 -- every bucket as the lookups index it, in `buckets` order, NEVER collapsed:
+      * one entry per bucket instance. Nothing here is a `Map`, a `Set` or a `distinct` over
+      * buckets, so two buckets that print alike -- a self-join's `o.category` and `p.category`,
+      * both named `category` after one resolution -- stay two entries. (A `ListMap` keyed by name
+      * cannot be the search set: after one resolution it holds one of the two.)
+      *
+      * `keys` / the copy are exactly what [[bucketNames]] held before, with ONE change: a GROUP BY
+      * key's copy is qualifier-RESOLVED ([[tableQualifierOf]], the rule `GenericIdentifier.update`
+      * applies), so a copy made from the parsed spelling (`a.category`) carries the alias and the
+      * column its resolved level carries (`a` / `category`). That is what lets an attachment
+      * recorded at the FIRST resolution be compared with the level it addresses, and what puts a
+      * qualified key's metrics on their level after ONE resolution (the `BucketPath` reads these
+      * copies).
+      *
+      * ⚠️ Still NOT `.update(this)`-d, for the reason [[bucketNames]] gives: `Identifier.update`
+      * forces this very value.
+      */
+    private[query] lazy val keyedBuckets: Seq[KeyedBucket] = buckets.map { b =>
       val name = b.identifier.identifierName
+      val groupByKey = groupBy.exists(_.buckets.exists(_ eq b))
       val resolved: Option[Identifier] =
         (b.ordinal match {
           case Some(position) => Bucket.selectItem(position, this)
           case None           => Bucket.aliasItem(b.identifier, this)
         }).map(_.identifier)
-      resolved match {
+      val (updated, keys, aliasKeys) = resolved match {
         case Some(identifier) =>
           val resolvedName = identifier.identifierName
           // Carry the SELECT alias so this copy's `name` equals the real bucket's -- see the
-          // OBLIGATION above; `Identifier.update` reads the same `fieldAliases` map.
+          // OBLIGATION on `bucketNames`; `Identifier.update` reads the same `fieldAliases` map.
           val display = fieldAliases.get(resolvedName)
           val named = identifier match {
             case g: GenericIdentifier => g.copy(fieldAlias = display.orElse(g.fieldAlias))
             case other                => other
           }
-          val updated = b.copy(identifier = named)
-          ListMap(
-            (Seq(
-              name             -> updated, // the spelling the statement was written with
-              resolvedName     -> updated // the resolved column name
-            ) ++ display.map(_ -> updated)): _* // the OUTPUT name a HAVING or WHERE would use
+          (
+            b.copy(identifier = named),
+            // the spelling the statement was written with, the resolved column name, and the
+            // OUTPUT name a HAVING or WHERE would use
+            (Seq(name, resolvedName) ++ display).distinct,
+            Set(name) ++ display
           )
         case None =>
           // The bucket was NOT substituted -- but it still has to be named the way the real bucket
           // is, or `Expression.includes` (which compares by DISPLAY name) stops matching and a
           // HAVING is silently dropped. `SELECT category AS cat ... GROUP BY category HAVING cat
           // <> 'x'` lost its `exclude` for exactly this reason: the copy was named `category` while
-          // the bucket that reaches Elasticsearch is named `cat`. Broken on main too, but leaving
-          // it made whether a HAVING is honoured depend on whether the GROUP BY spelled the alias
-          // or the column, which is worse than uniformly broken.
+          // the bucket that reaches Elasticsearch is named `cat`.
           val display = fieldAliases.get(name)
           val named = b.identifier match {
             case g: GenericIdentifier => g.copy(fieldAlias = display.orElse(g.fieldAlias))
             case other                => other
           }
-          val updated = b.copy(identifier = named)
-          ListMap((Seq(name -> updated) ++ display.map(_ -> updated)): _*)
+          (b.copy(identifier = named), (Seq(name) ++ display).distinct, display.toSet)
       }
-    }: _*)
+      val bucket = if (groupByKey) withTableQualifierResolved(updated) else updated
+      new KeyedBucket(bucket, keys, aliasKeys, groupByKey, keyIdentityOf(bucket.identifier))
+    }
+
+    /** Story IDENT-4 -- THE decision "which bucket does this identifier name?", asked by every
+      * `GenericIdentifier.update` branch and recorded in its `bucket` attachment: emission holds
+      * only a `Criteria` and a `Bucket` and can decide nothing later.
+      *
+      * It used to be `bucketNames.get(identifierName)`, a lookup by SPELLING, which (1) missed a
+      * qualified key spelled differently from its bucket (`HAVING a.category` against `GROUP BY
+      * category`, or the reverse), so the qualified spelling was refused; and (2) after one
+      * resolution, when a self-join's two buckets are both spelled `category`, answered the LAST
+      * one for either correlation.
+      *
+      * Three rules, in order; each keeps `today` (the spelling lookup) unless it is provably the
+      * wrong column:
+      *   - R-a: `today` stands when the identifier named it by an ALIAS -- which keeps `SELECT
+      *     o.category AS cat ... GROUP BY cat HAVING cat = 'x'` exactly as it is;
+      *   - R-b: otherwise the GROUP BY key with the SAME identity, else the one it is
+      *     main-equivalent to (an unqualified name is the main table's column, as everywhere in
+      *     `update`). GROUP BY keys only: a window PARTITION BY bucket never takes this route;
+      *   - R-c: otherwise `today`, when its identity is absent or compatible; else nothing -- the
+      *     predicate names no grouping key, and the HAVING rules refuse it by name.
+      *
+      * An identifier with no identity (nameless, nested, an UNNEST column) keeps `today`. When
+      * neither the identifier nor any key is qualified, `today` is returned directly: its answer
+      * cannot move, and it costs nothing more.
+      *
+      * Strings and `eq` only -- nothing here reads `Identifier.equals`.
+      */
+    private[sql] def bucketFor(identifier: Identifier): Option[Bucket] =
+      if (keyedBuckets.isEmpty) None
+      else {
+        val spelling = identifier.identifierName
+        // the last entry wins -- exactly what `bucketNames.get(spelling)` answered
+        val today = keyedBuckets.reverseIterator.find(_.keys.contains(spelling))
+        val chosen =
+          if (!carriesQualifier && !isQualified(identifier)) today
+          else
+            keyIdentityOf(identifier) match {
+              case None => today
+              case Some(leaf) =>
+                today
+                  .filter(_.aliasKeys.contains(spelling))
+                  .orElse(identityRoute(leaf))
+                  .orElse(today.filter(_.identity.forall(compatible(_, leaf))))
+            }
+        chosen.map(_.bucket)
+      }
+
+    /** Story IDENT-4 -- the identity of a column reference for the bucket lookup: its CORRELATION
+      * as written (the table alias; `None` when unqualified) and the grouped EXPRESSION spelled
+      * over the bare column. `None` when there is nothing to compare: a nameless carrier (a
+      * constant, a string / math / CASE call) or a nested (UNNEST) column. It reads the parsed
+      * spelling (`a.d`, no alias yet) and the resolved one (`d`, alias `a`) alike -- which is what
+      * makes the two resolutions agree.
+      *
+      * 🔴 The correlation, never the INDEX (`Identifier.table`): both legs of a self-join resolve
+      * to one index, and only the alias tells them apart.
+      */
+    private[query] def keyIdentityOf(identifier: Identifier): Option[(Option[String], String)] =
+      if (identifier.name.isEmpty || identifier.nested) None
+      else
+        identifier.tableAlias match {
+          case Some(alias) => Some(Some(alias) -> identifier.identifierName)
+          case None =>
+            if (unnestQualified(identifier.name)) None
+            else
+              tableQualifierOf(identifier.name) match {
+                case Some((alias, column, _)) => Some(Some(alias) -> identifier.toSQL(column))
+                case None                     => Some(None -> identifier.identifierName)
+              }
+        }
+
+    /** Story IDENT-4 -- `(alias, column, table key)` when a dotted name starts with a correlation
+      * this FROM declares, exactly as `GenericIdentifier.update`'s qualified-plain branch splits it
+      * (first dot; the qualifier looked up in [[aliasesToTable]]; the rest is the column). An
+      * UNNEST alias is excluded: `update` sends that name down its nested branches. A table's own
+      * name is no qualifier once the table is aliased (it is not in `aliasesToTable`).
+      *
+      * ⚠️ A MIRROR of `update`'s rule, which cannot be called from here (it forces
+      * [[bucketNames]]): `QualifiedGroupKeySpec` compares the two over a derived name population.
+      */
+    private[query] def tableQualifierOf(name: String): Option[(String, String, String)] = {
+      val dot = name.indexOf('.')
+      if (dot <= 0 || dot == name.length - 1) None
+      else {
+        val qualifier = name.substring(0, dot)
+        if (unnestAliases.contains(qualifier)) None
+        else aliasesToTable.get(qualifier).map(key => (qualifier, name.substring(dot + 1), key))
+      }
+    }
+
+    private[this] def withTableQualifierResolved(b: Bucket): Bucket =
+      b.identifier match {
+        case g: GenericIdentifier if !g.nested && g.tableAlias.isEmpty =>
+          tableQualifierOf(g.name) match {
+            case Some((alias, column, key)) =>
+              b.copy(identifier =
+                g.copy(name = column, tableAlias = Some(alias), table = Some(key))
+              )
+            case None => b
+          }
+        case _ => b
+      }
+
+    private[this] def identityRoute(leaf: (Option[String], String)): Option[KeyedBucket] = {
+      val keys = keyedBuckets.filter(_.groupByKey)
+      keys
+        .find(_.identity.contains(leaf))
+        .orElse(keys.find(_.identity.exists(compatible(_, leaf))))
+    }
+
+    private[this] def compatible(
+      a: (Option[String], String),
+      b: (Option[String], String)
+    ): Boolean =
+      a._2 == b._2 &&
+      a._1.getOrElse(from.mainTableCorrelation) == b._1.getOrElse(from.mainTableCorrelation)
+
+    private[this] def unnestQualified(name: String): Boolean = {
+      val dot = name.indexOf('.')
+      dot > 0 && unnestAliases.contains(name.substring(0, dot))
+    }
+
+    private[this] def isQualified(identifier: Identifier): Boolean =
+      identifier.tableAlias.isDefined || tableQualifierOf(identifier.name).isDefined
+
+    private[this] lazy val carriesQualifier: Boolean =
+      keyedBuckets.exists(_.identity.exists(_._1.isDefined))
 
     var unnests: scala.collection.mutable.Map[String, Unnest] = {
       val map = from.unnests.map(u => u.alias.map(_.alias).getOrElse(u.name) -> u).toMap
@@ -1344,19 +1518,62 @@ package object query {
     }
 
     private[query] def keyBucketOf(leaf: Identifier): Option[Bucket] = {
-      // 🔴 Resolve through THIS statement's bucket list, never through `Identifier.bucket`, which
-      // is a COPY attached during `update()` and deliberately NOT re-updated (the story-21.3 / #253
-      // desync class) -- MEASURED reporting `nestedElement = None` for a bucket the statement lists
-      // as nested.
-      val byName = buckets.find(b => b.identifier.name.nonEmpty && b.identifier.name == leaf.name)
-      byName.orElse(leaf.bucket.flatMap(attached => buckets.find(_.name == attached.name)))
+      // Story IDENT-4 -- the decision `bucketFor` recorded FIRST (the level the leaf was attached
+      // to, found by `Bucket.sameKeyAs`), then a level with the leaf's name AND correlation. It used
+      // to ask the NAME first, which answered the FIRST of two same-named levels -- a self-join's
+      // `o.category` / `p.category`, or `YEAR(d)` / `MONTH(d)` -- for either leaf.
+      //
+      // 🔴 Resolve through THIS statement's bucket list, never through `Identifier.bucket` itself,
+      // which is a COPY attached during `update()` and deliberately NOT re-updated (the story-21.3
+      // / #253 desync class) -- MEASURED reporting `nestedElement = None` for a bucket the
+      // statement lists as nested.
+      def named(b: Bucket): Boolean = b.identifier.name.nonEmpty && b.identifier.name == leaf.name
+      leaf.bucket
+        .flatMap(attached => buckets.find(_.sameKeyAs(attached)))
+        .orElse(
+          buckets.find(b =>
+            named(b) &&
+            b.identifier.tableAlias.getOrElse(from.mainTableCorrelation) ==
+              leaf.tableAlias.getOrElse(from.mainTableCorrelation)
+          )
+        )
+        // ⚠️ The ONE exception, here so that every reader sees it: an ARGUMENT of a NAMELESS
+        // GROUP BY key (`UPPER(b.category)`, `CONCAT(a.category, b.category)`) keeps the
+        // correlation-free name match it always had. Such a key has no identity to attach its
+        // arguments to, so without it `GROUP BY a.category, UPPER(b.category) HAVING
+        // UPPER(b.category) = 'X'` -- accepted until now and evaluated after the join -- would be
+        // refused as reading neither a key nor an aggregate.
+        .orElse(if (namelessKeyArguments.exists(_ eq leaf)) buckets.find(named) else None)
     }
 
-    private[query] def namedLeavesOf(e: Expression): Seq[Identifier] =
+    /** The column ARGUMENTS of every HAVING expression that is itself a NAMELESS GROUP BY key --
+      * one attached to a GROUP BY level -- the instances [[namedLeavesOf]] hands out (`eq`).
+      */
+    private[this] lazy val namelessKeyArguments: Seq[Identifier] = {
+      val keys = groupBy.map(_.buckets).getOrElse(Nil)
+      having
+        .flatMap(_.criteria)
+        .toSeq
+        .flatMap(_.referencedIdentifiers)
+        .filter(c => c.name.isEmpty && c.bucket.exists(a => keys.exists(_.sameKeyAs(a))))
+        .flatMap(c => FunctionUtils.funIdentifiers(c))
+        .filter(_.name.nonEmpty)
+    }
+
+    /** Every named column a HAVING expression reads, once each.
+      *
+      * Story IDENT-4 -- deduplicated by `(param, tableAlias)`, spelled out: two copies of one
+      * column through two correlations (`o.category`, `p.category`) are TWO leaves, and
+      * [[keyBucketOf]] answers them differently, so a dedup that collapsed them would decide a
+      * verdict.
+      */
+    private[query] def namedLeavesOf(e: Expression): Seq[Identifier] = {
+      val seen = scala.collection.mutable.HashSet.empty[(String, Option[String])]
       e.referencedIdentifiers
         .flatMap(id => FunctionUtils.funIdentifiers(id))
         .filter(_.name.nonEmpty)
-        .distinct
+        .filter(id => seen.add((id.param, id.tableAlias)))
+    }
 
     /** Why a HAVING leaf that QUALIFIES a SELECT-list alias with a table alias (`HAVING
       * d.avg_salary > 1` over `AVG(e.salary) AS avg_salary`) cannot be filtered on, or `None` when
@@ -1423,18 +1640,51 @@ package object query {
     }
 
     private[query] def keyPredicateOutcome(e: Expression): KeyPredicateOutcome =
-      if (keyExpressibleByTerms(e)) KeyPredicateOutcome.TermsFilter
-      else if (readsNestedKey(e))
-        KeyPredicateOutcome.Refused(
-          s"HAVING cannot filter on ${e.sql}: the grouping key is a nested object, and a bucket " +
-          "filter over it is not expressible. Filter it in WHERE, or group by a field of the parent."
-        )
-      else
-        KeyPredicateOutcome.Refused(
-          s"HAVING cannot filter on ${e.sql}: a condition over the GROUP BY key is applied by the " +
-          "terms filter, which can only express a direct comparison of the key (=, <>, LIKE, IN). " +
-          "Compare the key itself, or filter in WHERE."
-        )
+      dateHistogramLevelOf(e) match {
+        case Some(level) => KeyPredicateOutcome.Refused(dateHistogramReason(e, level))
+        case None =>
+          if (keyExpressibleByTerms(e)) KeyPredicateOutcome.TermsFilter
+          else if (readsNestedKey(e))
+            KeyPredicateOutcome.Refused(
+              s"HAVING cannot filter on ${e.sql}: the grouping key is a nested object, and a bucket " +
+              "filter over it is not expressible. Filter it in WHERE, or group by a field of the parent."
+            )
+          else
+            KeyPredicateOutcome.Refused(
+              s"HAVING cannot filter on ${e.sql}: a condition over the GROUP BY key is applied by the " +
+              "terms filter, which can only express a direct comparison of the key (=, <>, LIKE, IN). " +
+              "Compare the key itself, or filter in WHERE."
+            )
+      }
+
+    /** Story IDENT-4 -- the level a key predicate addresses when that level is a `date_histogram`:
+      * asked of the REAL `includes` / `excludes` (as [[keyExpressibleByTerms]] is) and of
+      * [[Bucket.isDateHistogram]] (as both bridges are). A key whose function returns a date
+      * (`DATE_TRUNC(d, MONTH)`) is one with no mapping, so the predicate is refused at parse.
+      *
+      * Structural, not a type rule: the level the bridges EMIT for such a key is a date histogram,
+      * whatever the column's mapping turns out to be, and a date histogram has no include / exclude
+      * -- the key filter has no channel.
+      *
+      * Read only through rule (b), which does not run in a statement the RELATIONAL engine
+      * evaluates ([[relationalClosureRequired]]): no date histogram is built there.
+      */
+    private[query] def dateHistogramLevelOf(e: Expression): Option[Bucket] = {
+      val empty = BucketIncludesExcludes()
+      buckets.find(b =>
+        b.isDateHistogram &&
+        (e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty)
+      )
+    }
+
+    /** The stable phrase leads: `GatewayApi.run` relays a parse refusal as its first 120
+      * characters, an ellipsis and its last 77.
+      */
+    private[query] def dateHistogramReason(e: Expression, level: Bucket): String =
+      s"HAVING cannot filter a DATE grouping level: ${e.sql} addresses the GROUP BY key " +
+      s"${level.sql}, which Elasticsearch groups with a date histogram, and a date histogram has " +
+      "no key filter. Restrict the rows in WHERE instead (for one month of a date column d: " +
+      "WHERE d >= '2024-01-01' AND d < '2024-02-01')."
 
     /** The first `HAVING` combination whose halves cannot BOTH reach the `terms` filter, or `None`
       * when every combination is a union the channel expresses. See rule (b2) in `validate()`.
@@ -1608,8 +1858,12 @@ package object query {
       def leaves(c: Criteria): Seq[Expression] = c match {
         case Predicate(l, _, r, _, _) => leaves(l) ++ leaves(r)
         case _: ElasticRelation       => Nil
-        case e: Expression            => Seq(e).filterNot(_.nested)
-        case _                        => Nil
+        // Story IDENT-4 -- a MATCH is a leaf too: `Criteria.includes` descends it (its `criteria`
+        // is the OR of one `MatchCriteria` per column), so every rule must see what the key filter
+        // applies.
+        case m: MultiMatchCriteria => leaves(m.criteria)
+        case e: Expression         => Seq(e).filterNot(_.nested)
+        case _                     => Nil
       }
       having.flatMap(_.criteria).toSeq.flatMap(leaves)
     }
@@ -1622,6 +1876,7 @@ package object query {
     private[query] def leavesUnder(c: Criteria): Seq[Expression] = c match {
       case Predicate(l, _, r, _, _)  => leavesUnder(l) ++ leavesUnder(r)
       case relation: ElasticRelation => leavesUnder(relation.criteria)
+      case m: MultiMatchCriteria     => leavesUnder(m.criteria)
       case e: Expression             => Seq(e)
       case _                         => Nil
     }
@@ -2142,8 +2397,14 @@ package object query {
         _ <- {
           // (b) ... and a key predicate neither bucket-level mechanism can express is refused by
           // the ONE classifier both emission paths read.
+          //
+          // Story IDENT-4 -- NOT in a statement the RELATIONAL engine evaluates: no terms filter is
+          // built there, and the engine evaluates the condition after the join.
           havingLeaves
-            .filter(e => groupBy.isDefined && havingScopeOf(e) == HavingScope.GroupKey)
+            .filter(e =>
+              groupBy.isDefined && !relationalClosureRequired &&
+              havingScopeOf(e) == HavingScope.GroupKey
+            )
             .map(keyPredicateOutcome)
             .collectFirst { case KeyPredicateOutcome.Refused(reason) => Left(reason) }
             .getOrElse(Right(()))
@@ -2174,7 +2435,10 @@ package object query {
           // written for the include sense only and applied by a method that is also the exclude
           // sense -- so it inverted every `<>`. A rule about these two channels that consults only
           // one of them is wrong by construction.
-          keyChannelConflict.map(Left(_)).getOrElse(Right(()))
+          //
+          // Story IDENT-4 -- not in a statement the RELATIONAL engine evaluates, as rule (b).
+          if (relationalClosureRequired) Right(())
+          else keyChannelConflict.map(Left(_)).getOrElse(Right(()))
         }
         _ <- {
           // (c) 🔴 An OR is honoured by ONE mechanism or by none: a `bucket_selector` script cannot
@@ -2223,9 +2487,16 @@ package object query {
           // symmetry rule is worse than no guard, so the rule is symmetric by construction
           // instead. A leaf that is not a GROUP BY key still has no level, which is what the
           // second half says.
+          //
+          // Story IDENT-4 -- a level is its GROUP BY rendering (`o.category`, `YEAR(d)`, or the
+          // alias of a substituted bucket), not its display name: a self-join's two levels, and two
+          // functions of one column, share a display name and were one "stage", so an OR across
+          // them -- which Elasticsearch NESTS, i.e. runs as an AND -- was accepted. And no level at
+          // all in a statement the RELATIONAL engine evaluates: nothing nests there, and the engine
+          // evaluates the OR after the join -- the level half exists because Elasticsearch nests.
           def levelOf(e: Expression): String =
-            if (havingScopeOf(e) != HavingScope.GroupKey) ""
-            else namedLeavesOf(e).flatMap(keyBucketOf).map(_.name).distinct.sorted.mkString(",")
+            if (relationalClosureRequired || havingScopeOf(e) != HavingScope.GroupKey) ""
+            else namedLeavesOf(e).flatMap(keyBucketOf).map(_.sql).distinct.sorted.mkString(",")
           def firstMixedOr(c: Criteria): Option[(Criteria, Seq[String], Boolean)] = c match {
             case p @ Predicate(l, op, r, _, _) =>
               val here =
@@ -2245,7 +2516,11 @@ package object query {
                 } else None
               here.orElse(firstMixedOr(l)).orElse(firstMixedOr(r))
             case relation: ElasticRelation => firstMixedOr(relation.criteria)
-            case _                         => None
+            case m: MultiMatchCriteria =>
+              firstMixedOr(m.criteria).map { case (_, names, mechanisms) =>
+                (m, names, mechanisms)
+              }
+            case _ => None
           }
           having.flatMap(_.criteria).filter(_ => groupBy.isDefined).flatMap(firstMixedOr) match {
             case Some((p, names, differentMechanisms)) =>
