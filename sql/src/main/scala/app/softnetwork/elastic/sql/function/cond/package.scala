@@ -1144,9 +1144,9 @@ package object cond {
       boxWhenNoDefault(res match {
         case i: Identifier if i.name == name && name.nonEmpty =>
           i.withNullable(false)
-          SQLTypeUtils.coerce(i, out, context)
+          SQLTypeUtils.coerce(i, i.baseType, out, context)
         case _ =>
-          SQLTypeUtils.coerce(res, out, context)
+          SQLTypeUtils.coerce(res, res.baseType, out, context)
       })
     }
 
@@ -1187,6 +1187,10 @@ package object cond {
         .mkString(" : ")
     }
 
+    /** ⚠️ Every conversion below -- results, operand, `WHEN` values, conditions -- is FROM the
+      * converted node's `baseType` (the `SQLTypeUtils.coerce` overload that names it): the CASE
+      * keeps 0.23.0's conversion, and typing a CASE from what its results render is deferred.
+      */
     override def painless(context: Option[PainlessContext] = None): String = {
       context match {
         case Some(ctx) =>
@@ -1198,7 +1202,7 @@ package object cond {
                 // the operand and each value are converted to the type they are COMPARED in; the
                 // results, below, to the CASE's own (`out`)
                 val compared = comparisonType
-                val e = SQLTypeUtils.coerce(expr, compared, context)
+                val e = SQLTypeUtils.coerce(expr, expr.baseType, compared, context)
                 val expParam = ctx.addParam(
                   LiteralParam(e)
                 )
@@ -1237,19 +1241,15 @@ package object cond {
                                     .coerce(_, reading.sqlType, compared, nullable = false, context)
                                 )
                             )
-                            .getOrElse(SQLTypeUtils.coerce(cond, compared, context))
+                            .getOrElse(SQLTypeUtils.coerce(cond, cond.baseType, compared, context))
                         )
                     val r =
                       boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
-                          SQLTypeUtils.coerce(
-                            i,
-                            out,
-                            context
-                          )
+                          SQLTypeUtils.coerce(i, i.baseType, out, context)
                         case _ =>
-                          SQLTypeUtils.coerce(res, out, context)
+                          SQLTypeUtils.coerce(res, res.baseType, out, context)
                       })
                     expParam match {
                       case Some(e) =>
@@ -1290,18 +1290,14 @@ package object cond {
                           i.name
                         case _ => ""
                       }
-                    val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean, context)
+                    val c = SQLTypeUtils.coerce(cond, cond.baseType, SQLTypes.Boolean, context)
                     val r =
                       boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
-                          SQLTypeUtils.coerce(
-                            i,
-                            out,
-                            context
-                          )
+                          SQLTypeUtils.coerce(i, i.baseType, out, context)
                         case _ =>
-                          SQLTypeUtils.coerce(res, out, context)
+                          SQLTypeUtils.coerce(res, res.baseType, out, context)
                       })
                     if (!cond.isInstanceOf[CriteriaWithConditionalFunction[_]] && cond.nullable) {
                       ctx.addParam(LiteralParam(c)) match {
@@ -1322,7 +1318,7 @@ package object cond {
             }
           default match {
             case Some(df) =>
-              val d = SQLTypeUtils.coerce(df, out, context)
+              val d = SQLTypeUtils.coerce(df, df.baseType, out, context)
               if (df.nullable) {
                 ctx.addParam(LiteralParam(d)) match {
                   case Some(d) => cases = s"$cases : $d"

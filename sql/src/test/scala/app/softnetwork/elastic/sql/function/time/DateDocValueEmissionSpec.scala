@@ -10,7 +10,9 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 import java.time.temporal.{ChronoField, IsoFields, TemporalField}
-import java.time.{LocalDate, LocalDateTime, ZonedDateTime}
+import java.time.format.DateTimeFormatter
+import java.time.temporal.{ChronoUnit, TemporalAdjusters}
+import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
 import scala.reflect.runtime.{universe => ru}
 
 /** Issue #368 -- `LAST_DAY` and `EPOCHDAY` called a method that does not exist for the type a
@@ -48,11 +50,11 @@ import scala.reflect.runtime.{universe => ru}
   * LAST_DAY(DATE_TRUNC(d, MONTH))   2025-02-28              2025-02-28   (unchanged)
   * YEAR(d)                          2025                    2025         (control, unchanged)
   * }}}
-  * ⚠️ `LAST_DAY(CAST(d AS DATE))` over a SCHEMA-CARRYING parse still fails, before AND after, with
-  * the same root cause both times -- `dynamic method [java.time.LocalDate, toInstant/0] not found`.
-  * That is a DOUBLE `SQLTypes.Date` -> `SQLTypes.Date` coercion in the conversion layer, a defect
-  * of a different kind that this issue neither caused nor covers; it is recorded here so the next
-  * reader does not mistake it for fallout.
+  * ⚠️ `LAST_DAY(CAST(d AS DATE))` over a SCHEMA-CARRYING parse failed, before AND after this
+  * issue's fix, with `dynamic method [java.time.LocalDate, toInstant/0] not found`: the consuming
+  * function converted the cast's `LocalDate` from the COLUMN's type a second time. That is fixed by
+  * reading the operand's rendered source type (`SQLTypeUtils.renderedSourceType`), pinned in the
+  * "function over a CAST" section below.
   */
 class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
 
@@ -61,7 +63,9 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     columns = List(
       Column("name", SQLTypes.Keyword),
       Column("d", SQLTypes.Date),
-      Column("ts", SQLTypes.Timestamp)
+      Column("ts", SQLTypes.Timestamp),
+      Column("n", SQLTypes.Int),
+      Column("dn", SQLTypes.Any)
     )
   )
 
@@ -131,6 +135,314 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
         }
       }
     }
+  }
+
+  // -- a function over CAST(<date column> AS DATE|TIME) -------------------------------------------
+
+  /** 🔴 The consuming function converted its argument from the COLUMN's type, not from what the
+    * argument renders: a schema-resolved identifier's `baseType` is its column's runtime type
+    * (TIMESTAMP for a `date` field) whatever functions wrap it, so over `CAST(d AS DATE)` the
+    * TIMESTAMP -> DATE conversion ran a second time onto the `LocalDate` the cast had produced, and
+    * `LocalDate` has no `toInstant()`. MEASURED on Elasticsearch 8.18.3 and 6.8.23: the shard
+    * fails, an HTTP 400 at a concrete index and 0 rows with HTTP 200 at a pattern or a list whose
+    * other indices hold no document.
+    */
+  "a function over CAST(<date column> AS DATE)" should "convert its argument once" in {
+    scriptOf("SELECT DATE_FORMAT(CAST(d AS DATE), '%Y-%m') FROM t") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param2 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "def param3 = DateTimeFormatter.ofPattern(\"yyyy-MM\"); " +
+    "(param1 == null) ? null : param3.format(param2)"
+
+    scriptOf("SELECT LAST_DAY(CAST(d AS DATE)) FROM t") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param2 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "(param1 == null) ? null : param2.with(TemporalAdjusters.lastDayOfMonth())"
+  }
+
+  it should "emit exactly ONE conversion of the column, whatever the consumer" in {
+    Seq(
+      "SELECT DATE_FORMAT(CAST(d AS DATE), '%Y-%m') FROM t"     -> ".toLocalDate()",
+      "SELECT LAST_DAY(CAST(d AS DATE)) FROM t"                 -> ".toLocalDate()",
+      "SELECT DATE_FORMAT(CAST(ts AS DATE), '%Y-%m-%d') FROM t" -> ".toLocalDate()",
+      "SELECT DATE_FORMAT(CAST(ts AS TIME), '%H:%i') FROM t"    -> ".toLocalTime()"
+    ).foreach { case (sql, narrowing) =>
+      val emitted = scriptOf(sql)
+      withClue(s"[$sql] $emitted: ") {
+        emitted.sliding(".toInstant()".length).count(_ == ".toInstant()") shouldBe 1
+        emitted.sliding(narrowing.length).count(_ == narrowing) shouldBe 1
+      }
+    }
+  }
+
+  /** The JDK class of what `doc['f'].value` hands a QUERY script for each column of [[schema]]. */
+  private val docValueClass: Map[String, Class[_]] =
+    Map(
+      "d"    -> classOf[ZonedDateTime],
+      "ts"   -> classOf[ZonedDateTime],
+      "name" -> classOf[String],
+      "n"    -> classOf[java.lang.Long]
+    )
+
+  /** What a `date` doc value IS, per major. On Elasticsearch 7+ a `java.time.ZonedDateTime`. On 6.8
+    * an `org.elasticsearch.script.JodaCompatibleZonedDateTime`, which is NOT that class: it lacks
+    * methods `ZonedDateTime` declares, and `toLocalTime()` is the one MEASURED absent on 6.8.23
+    * (see `painlessUtcZonedDateTime`). So 6.8 is modelled as `ZonedDateTime` minus the methods
+    * measured absent -- a method it lacks that was never measured is NOT caught here, which is what
+    * `DateFunctionExecutionSpec` (executed on every major) is for.
+    */
+  private case class ReceiverModel(major: String, dateDocValueLacks: Set[String])
+  private val Es7Plus = ReceiverModel("7+", Set.empty)
+  private val Es68 = ReceiverModel("6.8", Set("toLocalTime"))
+
+  private val staticClass: Map[String, Class[_]] = Map(
+    "DateTimeFormatter" -> classOf[DateTimeFormatter],
+    "ZoneId"            -> classOf[ZoneId],
+    "LocalDate"         -> classOf[LocalDate],
+    "LocalTime"         -> classOf[LocalTime],
+    "LocalDateTime"     -> classOf[LocalDateTime],
+    "ZonedDateTime"     -> classOf[ZonedDateTime],
+    "Instant"           -> classOf[Instant],
+    "TemporalAdjusters" -> classOf[TemporalAdjusters],
+    "ChronoUnit"        -> classOf[ChronoUnit],
+    "ChronoField"       -> classOf[ChronoField],
+    "String"            -> classOf[String]
+  )
+
+  /** Every method call of a query `script` checked against the class of the value it is called ON:
+    * the class of a `def paramN` is that of its longest call chain (a guard's bare `paramN` loses
+    * to the conversion beside it), a doc value's comes from [[docValueClass]] and `model`, a static
+    * receiver's from [[staticClass]]. Answers the calls that do not resolve, and how many did.
+    *
+    * ⚠️ It checks RECEIVERS, not arguments: `DATE_FORMAT(d, …)` passes here on the 6.8 model, and
+    * 6.8 refuses it because the formatter's ARGUMENT is the doc value.
+    */
+  private def receiverCheck(script: String, model: ReceiverModel = Es7Plus): (List[String], Int) = {
+    // the class of a parameter, and whether it is a RAW date doc value (no call applied yet)
+    val env = scala.collection.mutable.Map.empty[String, (Class[_], Boolean)]
+    val unresolved = scala.collection.mutable.ListBuffer.empty[String]
+    var resolved = 0
+
+    def closing(s: String, open: Int): Int = {
+      var depth = 0
+      var i = open
+      var quote: Option[Char] = None
+      while (i < s.length) {
+        val c = s.charAt(i)
+        quote match {
+          case Some(q) => if (c == q) quote = None
+          case None =>
+            if (c == '\'' || c == '"') quote = Some(c)
+            else if (c == '(') depth += 1
+            else if (c == ')') { depth -= 1; if (depth == 0) return i }
+        }
+        i += 1
+      }
+      s.length - 1
+    }
+
+    val receiver = """^(?:doc\['(\w+)'\]\.value|\((param\d+)\)|(param\d+)\b|([A-Z]\w*))""".r
+    val member = """^\.(\w+)""".r
+
+    /** The class of `expr`'s longest call chain at THIS level; call arguments are checked too. */
+    def typeOf(expr: String): Option[(Class[_], Boolean)] = {
+      var best: Option[(Int, Class[_], Boolean)] = None
+      var i = 0
+      while (i < expr.length) {
+        val c = expr.charAt(i)
+        val boundary =
+          i == 0 || !(expr.charAt(i - 1).isLetterOrDigit || expr.charAt(i - 1) == '.' ||
+          expr.charAt(i - 1) == '_')
+        if (c == '\'' || c == '"') {
+          val end = expr.indexOf(c.toInt, i + 1)
+          i = if (end < 0) expr.length else end + 1
+        } else
+          receiver.findFirstMatchIn(expr.substring(i)).filter(_ => boundary) match {
+            case Some(m) =>
+              val start: Option[(Class[_], Boolean)] =
+                Option(m.group(1))
+                  .flatMap(docValueClass.get)
+                  .map(k => (k, k == classOf[ZonedDateTime]))
+                  .orElse(Option(m.group(2)).orElse(Option(m.group(3))).flatMap(env.get))
+                  .orElse(Option(m.group(4)).flatMap(staticClass.get).map(k => (k, false)))
+              var cls: Option[Class[_]] = start.map(_._1)
+              var raw = start.exists(_._2)
+              val static = m.group(4) != null
+              val known = cls.isDefined
+              var calls = 0
+              var j = i + m.end
+              var chaining = known
+              while (chaining && j < expr.length) member.findFirstMatchIn(expr.substring(j)) match {
+                case Some(n) =>
+                  val name = n.group(1)
+                  val after = j + n.end
+                  if (after < expr.length && expr.charAt(after) == '(') {
+                    val end = closing(expr, after)
+                    typeOf(expr.substring(after + 1, end))
+                    cls.foreach { k =>
+                      if (raw && model.dateDocValueLacks.contains(name)) {
+                        unresolved += s"$name on the ${model.major} date doc value"; cls = None
+                      } else
+                        k.getMethods.filter(_.getName == name).toList match {
+                          case Nil =>
+                            unresolved += s"$name on ${k.getName}"; cls = None
+                          case found =>
+                            // a generic interface's BRIDGE (`ChronoLocalDate toLocalDate()`) is
+                            // not the class the call returns
+                            resolved += 1
+                            cls = Some(found.find(!_.isBridge).getOrElse(found.head).getReturnType)
+                        }
+                    }
+                    raw = false
+                    calls += 1
+                    j = end + 1
+                  } else {
+                    cls = cls.flatMap(k => k.getFields.find(_.getName == name).map(_.getType))
+                    raw = false
+                    j = after
+                  }
+                case None => chaining = false
+              }
+              if (known && !(static && calls == 0))
+                cls.foreach(k => if (best.forall(_._1 <= calls)) best = Some((calls, k, raw)))
+              i = math.max(j, i + 1)
+            case None => i += 1
+          }
+      }
+      best.map(b => (b._2, b._3))
+    }
+
+    val statements = scala.collection.mutable.ListBuffer.empty[String]
+    var start = 0
+    var depth = 0
+    script.indices.foreach { k =>
+      script.charAt(k) match {
+        case '('               => depth += 1
+        case ')'               => depth -= 1
+        case ';' if depth == 0 => statements += script.substring(start, k).trim; start = k + 1
+        case _                 =>
+      }
+    }
+    statements += script.substring(start).trim
+    val declaration = """^def (param\d+) = (.*)$""".r
+    statements.foreach {
+      case declaration(name, rhs) => typeOf(rhs).foreach(t => env(name) = t)
+      case other                  => typeOf(other)
+    }
+    (unresolved.toList, resolved)
+  }
+
+  /** 🔴 The MECHANISM: the emitted calls must exist on the class of the value each is called ON --
+    * asked of the JDK, over schema-attached shapes whose function takes a CHAINED argument, on the
+    * receivers of BOTH model majors. The check of every receiver at once (above) cannot see this
+    * defect: `toInstant()` is right on the column's `ZonedDateTime` and wrong on the cast's
+    * `LocalDate`, and only the receiver decides.
+    */
+  it should "emit only calls that resolve on the class of their receiver" in {
+    // the checker sees the defect it exists for: the double conversion emitted before this fix
+    receiverCheck(
+      "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+      "def param2 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+      "def param3 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+      "(param1 == null) ? null : param3.with(TemporalAdjusters.lastDayOfMonth())"
+    )._1 shouldBe List("toInstant on java.time.LocalDate")
+
+    // ...and, on the 6.8 model, a TIME narrowing applied straight to the raw doc value -- through a
+    // parameter or inline -- while the normalised one resolves
+    Seq(
+      "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); param1.toLocalTime()",
+      "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value.toLocalTime()); param1"
+    ).foreach { script =>
+      receiverCheck(script, Es68)._1 shouldBe List("toLocalTime on the 6.8 date doc value")
+      receiverCheck(script, Es7Plus)._1 shouldBe empty
+    }
+    receiverCheck(
+      "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+      "(param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalTime() : null)",
+      Es68
+    )._1 shouldBe empty
+
+    Seq(
+      "DATE_FORMAT(CAST(d AS DATE), '%Y-%m')",
+      "LAST_DAY(CAST(d AS DATE))",
+      "DAY(LAST_DAY(CAST(d AS DATE)))",
+      "DATE_FORMAT(CAST(ts AS DATE), '%Y-%m-%d')",
+      "LAST_DAY(CAST(ts AS DATE))",
+      "DATE_FORMAT(CAST(ts AS TIME), '%H:%i')",
+      "DATE_FORMAT(DATE_TRUNC(CAST(d AS DATE), MONTH), '%Y-%m')",
+      "DATE_FORMAT(DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY), '%Y-%m')",
+      "DATE_FORMAT(CAST(name AS DATE), '%Y')",
+      "DATE_FORMAT(DATE_PARSE(name, '%Y-%m-%d'), '%Y')",
+      // a CASE over casts: DATE, TIME, a literal ELSE, no ELSE
+      "CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE CAST(ts AS DATE) END",
+      "CASE WHEN n > 0 THEN CAST(ts AS TIME) ELSE CAST(d AS TIME) END",
+      "CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE CAST('2024-01-01' AS DATE) END",
+      "CASE WHEN n > 0 THEN CAST(ts AS TIME) ELSE CAST('12:00:00' AS TIME) END",
+      "CASE WHEN n > 0 THEN CAST(d AS DATE) END",
+      "CASE n WHEN 1 THEN CAST(ts AS TIME) END",
+      // controls: right before the fix, and kept right
+      "DATETIME_FORMAT(CAST(ts AS TIME), '%H:%i')",
+      "YEAR(CAST(d AS DATE))",
+      "EPOCHDAY(CAST(d AS DATE))",
+      "DATE_TRUNC(CAST(d AS DATE), MONTH)",
+      "LAST_DAY(DATE_TRUNC(d, MONTH))",
+      "LAST_DAY(d)",
+      "DATE_FORMAT(d, '%Y-%m')"
+    ).foreach { e =>
+      val emitted = scriptOf(s"SELECT $e FROM t")
+      Seq(Es7Plus, Es68).foreach { model =>
+        val (unresolved, resolved) = receiverCheck(emitted, model)
+        withClue(s"[$e] on ${model.major}: $emitted: ") {
+          resolved should be > 0
+          unresolved shouldBe empty
+        }
+      }
+    }
+  }
+
+  /** 🔴 A CASE keeps 0.23.0's conversion of its results: each is converted FROM its `baseType` to
+    * the CASE's `out`, and both read a schema-resolved column's type whatever functions wrap it.
+    * These pins are the bytes a CASE rendered before the fix of a function over a cast, so that fix
+    * cannot move a CASE: a flat CASE over two casts, a CASE beside an unmapped-type column (no
+    * `doc['dn'].value.toLocalDate()`), and a CASE nested in a THEN -- each answers right.
+    *
+    * A CASE beside a DATE literal or a bare timestamp column is deliberately NOT pinned: it still
+    * answers a `LocalDate` in one branch and a `ZonedDateTime` in the other (two classes in one
+    * column), and typing a CASE from what its results render, deferred, is what fixes it.
+    */
+  "a CASE" should "convert its results as before" in {
+    // over two casts
+    scriptOf(
+      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE CAST(ts AS DATE) END FROM t"
+    ) shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = param1 == null ? false : (param1 > 0); " +
+    "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param5 = (param4 != null ? param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5"
+
+    // an unmapped-type ELSE: its doc value is NOT narrowed
+    scriptOf("SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE dn END FROM t") shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = param1 == null ? false : (param1 > 0); " +
+    "def param4 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param4"
+
+    // a CASE nested in a THEN
+    scriptOf(
+      "SELECT CASE WHEN n > 0 THEN CASE WHEN n > 1 THEN CAST(d AS DATE) ELSE CAST(ts AS DATE) END " +
+      "ELSE CAST(ts AS DATE) END FROM t"
+    ) shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = param1 == null ? false : (param1 > 1); " +
+    "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param5 = (param4 != null ? param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "def param6 = param1 == null ? false : (param1 > 0); " +
+    "param6 ? param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : " +
+    "param5 : param5"
   }
 
   // -- EPOCHDAY, and the accessor rule behind it ---------------------------------------------------
