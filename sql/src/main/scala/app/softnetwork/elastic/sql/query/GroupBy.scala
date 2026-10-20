@@ -16,13 +16,16 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.{SQLTemporal, SQLType}
+import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.function.aggregate._
+import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
+import app.softnetwork.elastic.sql.time.TimeUnit
 import scala.util.{DynamicVariable, Try}
 import scala.util.matching.Regex
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
+  renderedTypeOf,
   Expr,
   GenericIdentifier,
   Identifier,
@@ -75,6 +78,20 @@ object Bucket {
     * loudly server-side rather than truncate silently.
     */
   val DefaultSize: Int = 65536
+
+  /** The `DATE_TRUNC` units a `date_histogram` has a calendar interval for. A level is a
+    * `date_histogram` only with one of them: Elasticsearch refuses one without an interval.
+    */
+  val DateHistogramUnits: Set[TimeUnit] = Set(
+    TimeUnit.YEARS,
+    TimeUnit.QUARTERS,
+    TimeUnit.MONTHS,
+    TimeUnit.WEEKS,
+    TimeUnit.DAYS,
+    TimeUnit.HOURS,
+    TimeUnit.MINUTES,
+    TimeUnit.SECONDS
+  )
 
   /** The 1-based SELECT position an identifier names, when it is an ANSI ordinal at all.
     *
@@ -321,12 +338,6 @@ case class Bucket(
 
   override def out: SQLType = identifier.out
 
-  /** Story IDENT-4 -- does this level reach Elasticsearch as a `date_histogram`? The ONE derivation
-    * both bridges' emission AND the HAVING classifier read: a `date_histogram` carries no include /
-    * exclude, so a key filter addressed to this level could not be applied.
-    */
-  def isDateHistogram: Boolean = out.isInstanceOf[SQLTemporal]
-
   /** A bucket with NO FIELD NAME must be scripted, or nothing describes it.
     *
     * An Elasticsearch `terms` aggregation must specify a `field` or a `script`. A bucket resolved
@@ -354,6 +365,72 @@ case class Bucket(
   override def hasAggregation: Boolean = identifier.hasAggregation
 
   def isBucketScript: Boolean = !identifier.isAggregation && hasAggregation
+
+  /** The calendar unit of this level's `date_histogram`: the unit of a key that is ONE `DATE_TRUNC`
+    * of a unit Elasticsearch has an interval for, and `None` for every other key.
+    */
+  lazy val dateHistogramUnit: Option[TimeUnit] =
+    identifier.functions match {
+      case (trunc: DateTrunc) :: Nil if Bucket.DateHistogramUnits.contains(trunc.unit) =>
+        Some(trunc.unit)
+      case _ => None
+    }
+
+  /** Story IDENT-4 -- does this level reach Elasticsearch as a `date_histogram`? The ONE derivation
+    * both bridges' emission AND the HAVING classifier read (#292): a `date_histogram` carries no
+    * include / exclude, so a key filter addressed to this level could not be applied. It is a
+    * `date_histogram` rather than a `terms` aggregation only for a key that has an interval
+    * ([[dateHistogramUnit]]).
+    *
+    * 🔴 It reads the KEY EXPRESSION, never `out`. `out` is the COLUMN's type, so with the mapping
+    * attached every key over a date column read as temporal and was emitted as a `date_histogram`,
+    * with no interval unless the key was one `DATE_TRUNC`: `GROUP BY d`, `GROUP BY YEAR(d)`, `GROUP
+    * BY s, d` all failed with HTTP 400 ("Invalid interval specified" on Elasticsearch 8, "Zero or
+    * negative time interval not supported" on 6.8). A concrete index always resolved the mapping;
+    * since an index pattern does too, the same statements failed there, where 0.23.0 answered them
+    * with a `terms` level.
+    */
+  def isDateHistogram: Boolean = dateHistogramUnit.isDefined
+
+  /** Whether this level's key is the key expression's SCRIPT rather than a field.
+    *
+    * A key with no field name must be scripted ([[shouldBeScripted]]). So must a key that applies a
+    * FUNCTION to a column, unless it is a `date_histogram` (whose interval is the function): a
+    * function whose own `shouldBeScripted` is false (`ISNULL`, `DATE_FORMAT`, `WEEKDAY`,
+    * `LAST_DAY`, ...) left the level a `terms` on the bare field, so the groups were the column's
+    * raw values, with HTTP 200 (`GROUP BY ISNULL(s)` answered one group per value of `s`).
+    *
+    * Scoped to the level: `shouldBeScripted` keeps its meaning for every other reader.
+    */
+  def isScriptedKey: Boolean =
+    !isBucketScript && (shouldBeScripted || (!isDateHistogram && identifier.functions.nonEmpty))
+
+  /** Whether a key filter on this level would compare a DATE, TIME or TIMESTAMP with the
+    * condition's TEXT: a scripted key ([[isScriptedKey]]) whose expression renders a temporal type
+    * (`renderedTypeOf`, the type every rule on the resolved statement reads).
+    *
+    * A scripted `terms` key is a string `terms`: Elasticsearch compares each `include` / `exclude`
+    * value with the text of the value the script returns, which is whatever the Java object prints
+    * -- `"2024-01-31T00:00Z"` for `LAST_DAY(d)` on Elasticsearch 8, never the `'2024-01-31'` the
+    * condition spells (MEASURED: `=` / `IN` kept no group and `<>` kept every group, HTTP 200). No
+    * function of this layer owns that text, so the filter is refused by the key's output type,
+    * never by its rendering.
+    *
+    * 🔴 A different fact from [[isDateHistogram]], the level TYPE both bridges emit: this one is
+    * whether the key filter the HAVING classifier lets through can MATCH. It is read by the
+    * classifier alone (`SingleSearch.temporalScriptLevelOf`), at parse and on the resolved
+    * statement; no bridge reads it.
+    */
+  def isTemporalScriptKey: Boolean = isScriptedKey && renderedTypeOf(identifier).isTemporal
+
+  /** The function of this level's key that formats a date column's RAW doc value (`DATE_FORMAT(d,
+    * '%Y-%m')`, `DATETIME_FORMAT(ts, …)` over a mapped date column), which Elasticsearch 6.8 cannot
+    * run: see [[app.softnetwork.elastic.sql.function.time.FormatsDateDocValue]].
+    */
+  lazy val rawDateDocValueFormat: Option[FormatsDateDocValue] =
+    identifier.functions.collectFirst {
+      case f: FormatsDateDocValue if f.formatsRawDateDocValue => f
+    }
 
   /** Generate painless script for this token
     *

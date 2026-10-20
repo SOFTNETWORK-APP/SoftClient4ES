@@ -32,7 +32,6 @@ import app.softnetwork.elastic.sql.query.{
 }
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.function.time.DateTrunc
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
@@ -465,6 +464,29 @@ object ElasticAggregation {
     else valueCountAgg(aggName, field)
   }
 
+  /** Why a GROUP BY key that formats a date column's raw doc value is refused on Elasticsearch 6,
+    * and what to write instead.
+    *
+    * Elasticsearch 6.8 hands a script a `date` doc value as a `JodaCompatibleZonedDateTime`, which
+    * the date formatter cannot read ("Cannot cast
+    * org.elasticsearch.script.JodaCompatibleZonedDateTime to java.time.temporal.TemporalAccessor"):
+    * every shard holding such a document fails, and the search answers that script error (MEASURED
+    * on 6.8.23, a three-shard index). Truncating the column first answers the groups on 6.8
+    * (MEASURED); 7 and later hand a `ZonedDateTime` and answer.
+    *
+    * The key NAME is quoted; values never are.
+    */
+  def dateFormatOfDocValueUnsupportedOn(
+    major: Int,
+    function: String,
+    column: String,
+    unit: String
+  ): String =
+    s"GROUP BY cannot apply $function to the date column '$column' as stored on Elasticsearch " +
+    s"$major: a script receives its value as a JodaCompatibleZonedDateTime there, which the date " +
+    s"formatter cannot read. Truncate the column first ($function(DATE_TRUNC($column, $unit), " +
+    "...)), or use Elasticsearch 7 or later."
+
   def buildBuckets(
     buckets: Seq[Seq[BucketNode]],
     bucketsDirection: Map[String, SortOrder],
@@ -485,6 +507,21 @@ object ElasticAggregation {
 
           val bucket = node.bucket
 
+          // Elasticsearch 6 only, the major the client module gives the bridge: a key that formats a
+          // date column's raw doc value is refused by name. The level carries the refusal, and
+          // every serializer raises it before any JSON exists (`SearchBodySerializer.refusedLevel`).
+          val refusal: Option[String] =
+            if (!target.jodaCompatibleDates) None
+            else
+              bucket.rawDateDocValueFormat.map { f =>
+                dateFormatOfDocValueUnsupportedOn(
+                  target.elasticsearchMajor.getOrElse(6),
+                  f.sql,
+                  bucket.identifier.name,
+                  f.keepingUnit.sql
+                )
+              }
+
           val aggregations =
             aggs.filter(agg => agg.bucketPath == currentBucketPath).map(_.agg)
 
@@ -492,7 +529,7 @@ object ElasticAggregation {
           val currentBucketNestedPath = bucket.identifier.path
 
           val aggScript =
-            if (!bucket.isBucketScript && bucket.shouldBeScripted) {
+            if (bucket.isScriptedKey) {
               val context = PainlessContext(context = contextType, target = target)
               val painless = bucket.painless(Some(context))
               Some(now(Script(s"$context$painless").lang("painless")))
@@ -503,99 +540,94 @@ object ElasticAggregation {
           var agg: Aggregation = {
             // Story IDENT-4 -- ONE derivation of "this level is a date histogram", shared with the
             // HAVING classifier (`SingleSearch.dateHistogramLevelOf`), which refuses a key filter
-            // this level could not carry.
-            bucket.out match {
-              case _ if bucket.isDateHistogram =>
-                val functions = bucket.identifier.functions
-                val interval: Option[DateHistogramInterval] =
-                  if (functions.size == 1) {
-                    functions.head match {
-                      case trunc: DateTrunc =>
-                        trunc.unit match {
-                          case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
-                          case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
-                          case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
-                          case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
-                          case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
-                          case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
-                          case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
-                          case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
-                          case _                 => None
-                        }
-                      case _ => None
-                    }
-                  } else {
-                    None
+            // this level could not carry. `Bucket.isDateHistogram` alone decides the level type
+            // (#292): a `date_histogram` only for a key that has an interval, a `terms` level for
+            // every other key -- a bare date column on its field, any function of a column on its
+            // script. Whether a key filter on a scripted DATE key can match its values
+            // (`Bucket.isTemporalScriptKey`) is a different fact, asked by that classifier alone:
+            // no bridge reads it.
+            if (bucket.isDateHistogram) {
+              val interval: Option[DateHistogramInterval] =
+                bucket.dateHistogramUnit.flatMap {
+                  case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
+                  case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
+                  case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
+                  case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
+                  case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
+                  case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
+                  case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
+                  case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
+                  case _                 => None
+                }
+
+              aggScript match {
+                case Some(script) =>
+                  // Scripted date histogram
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .script(script)
+                        .minDocCount(1)
                   }
+                case _ =>
+                  // Standard date histogram
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
 
-                aggScript match {
-                  case Some(script) =>
-                    // Scripted date histogram
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .script(script)
-                          .minDocCount(1)
-                          .order(direction match {
-                            case Asc => HistogramOrder("_key", asc = true)
-                            case _   => HistogramOrder("_key", asc = false)
-                          })
-                      case _ =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .script(script)
-                          .minDocCount(1)
-                    }
-                  case _ =>
-                    // Standard date histogram
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .field(currentBucketNestedPath)
-                          .minDocCount(1)
-                          .order(direction match {
-                            case Asc => HistogramOrder("_key", asc = true)
-                            case _   => HistogramOrder("_key", asc = false)
-                          })
-                      case _ =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .field(currentBucketNestedPath)
-                          .minDocCount(1)
-                    }
-                }
-
-              case _ =>
-                aggScript match {
-                  case Some(script) =>
-                    // Scripted terms aggregation
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        TermsAggregation(bucket.name)
-                          .script(script)
-                          .minDocCount(1)
-                          .order(Seq(direction match {
-                            case Asc => TermsOrder("_key", asc = true)
-                            case _   => TermsOrder("_key", asc = false)
-                          }))
-                      case _ =>
-                        TermsAggregation(bucket.name)
-                          .script(script)
-                          .minDocCount(1)
-                    }
-                  case _ =>
-                    // Standard terms aggregation
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        termsAgg(bucket.name, currentBucketNestedPath)
-                          .minDocCount(1)
-                          .order(Seq(direction match {
-                            case Asc => TermsOrder("_key", asc = true)
-                            case _   => TermsOrder("_key", asc = false)
-                          }))
-                      case _ =>
-                        termsAgg(bucket.name, currentBucketNestedPath)
-                          .minDocCount(1)
-                    }
-                }
+            } else {
+              aggScript match {
+                case Some(script) =>
+                  // Scripted terms aggregation
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                  }
+                case _ =>
+                  // Standard terms aggregation
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
             }
           }
           agg match {
@@ -614,6 +646,10 @@ object ElasticAggregation {
                     criteria.excludes(bucket, not = false, BucketIncludesExcludes())
                   )
                 case _ =>
+              }
+              refusal.foreach { message =>
+                terms =
+                  terms.copy(metadata = terms.metadata + (SearchBodySerializer.Refusal -> message))
               }
               agg = terms
             case _ =>

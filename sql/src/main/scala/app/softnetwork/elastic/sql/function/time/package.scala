@@ -1295,6 +1295,27 @@ package object time {
     }
   }
 
+  /** A function that FORMATS a date into text, and can tell whether its operand is a date column's
+    * raw doc value.
+    */
+  sealed trait FormatsDateDocValue extends FunctionWithIdentifier {
+
+    /** Whether the operand is a date column's RAW doc value: no function applied before this one,
+      * and a mapping that types the column temporal. Elasticsearch 6.8 hands a script a `date` doc
+      * value as a `JodaCompatibleZonedDateTime`, which `DateTimeFormatter.format` does not read as
+      * the date it is (`PainlessTarget.jodaCompatibleDates`). Without a mapping the type is unknown
+      * and this is false.
+      */
+    def formatsRawDateDocValue: Boolean =
+      identifier.functions.isEmpty && identifier.name.nonEmpty &&
+      identifier.baseType.isInstanceOf[SQLTemporal]
+
+    /** The unit a `DATE_TRUNC` of the operand keeps this function's output at: truncating first
+      * hands the formatter a value it reads on every major (MEASURED on Elasticsearch 6.8.23).
+      */
+    def keepingUnit: TimeUnit
+  }
+
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".format"
     override lazy val words: List[String] = List(sql, "FORMAT", "DATEFORMAT")
@@ -1304,8 +1325,11 @@ package object time {
       extends DateFunction
       with TransformFunction[SQLDate, SQLVarchar]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with FormatsDateDocValue {
     override def fun: Option[PainlessScript] = Some(DateFormat)
+
+    override def keepingUnit: TimeUnit = TimeUnit.DAYS
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -1516,8 +1540,11 @@ package object time {
       extends DateTimeFunction
       with TransformFunction[SQLDateTime, SQLVarchar]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with FormatsDateDocValue {
     override def fun: Option[PainlessScript] = Some(DateTimeFormat)
+
+    override def keepingUnit: TimeUnit = TimeUnit.SECONDS
 
     override def args: List[PainlessScript] = List(identifier)
 

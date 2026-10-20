@@ -1518,7 +1518,27 @@ package object query {
       case class Refused(reason: String) extends KeyPredicateOutcome
     }
 
-    private[query] def keyBucketOf(leaf: Identifier): Option[Bucket] = {
+    /** How [[keyLevelOf]] reached the level a HAVING leaf addresses. */
+    private[query] sealed trait KeyRoute
+    private[query] object KeyRoute {
+
+      /** Every route that existed before the nameless-parent one: the level the leaf was attached
+        * to, a level with the leaf's name, or -- for an argument of a nameless key -- a level with
+        * the argument's name (a companion level, a JOIN's other correlation).
+        */
+      case object Direct extends KeyRoute
+
+      /** An ARGUMENT of a nameless GROUP BY key (`UPPER(s)`, `LENGTH(s)`, `n + 1`, `COALESCE(s,
+        * 'x')`) that no level is named like: it addresses that key's own level. Gated at the final
+        * seams by [[namelessKeyRouteRefusal]].
+        */
+      case object NamelessParent extends KeyRoute
+    }
+
+    private[query] def keyBucketOf(leaf: Identifier): Option[Bucket] = keyLevelOf(leaf).map(_._1)
+
+    /** The level a HAVING leaf addresses, and how it was reached ([[KeyRoute]]). */
+    private[query] def keyLevelOf(leaf: Identifier): Option[(Bucket, KeyRoute)] = {
       // Story IDENT-4 -- the decision `bucketFor` recorded FIRST (the level the leaf was attached
       // to, found by `Bucket.sameKeyAs`), then a level with the leaf's name AND correlation. It used
       // to ask the NAME first, which answered the FIRST of two same-named levels -- a self-join's
@@ -1544,21 +1564,39 @@ package object query {
         // arguments to, so without it `GROUP BY a.category, UPPER(b.category) HAVING
         // UPPER(b.category) = 'X'` -- accepted until now and evaluated after the join -- would be
         // refused as reading neither a key nor an aggregate.
-        .orElse(if (namelessKeyArguments.exists(_ eq leaf)) buckets.find(named) else None)
+        .orElse(
+          namelessKeyArguments
+            .collectFirst { case (argument, _) if argument eq leaf => () }
+            .flatMap(_ => buckets.find(named))
+        )
+        .map(_ -> (KeyRoute.Direct: KeyRoute))
+        // ... and when no level is named like it, the argument addresses its nameless key's OWN
+        // level: `GROUP BY UPPER(s) HAVING UPPER(s) = 'A'` filters the UPPER level, as it did until
+        // the scope rule (a) read only the arguments' names and refused it as neither a key nor an
+        // aggregate. Appended AFTER the name match, so every answer above is unchanged.
+        .orElse(
+          namelessKeyArguments.collectFirst {
+            case (argument, level) if argument eq leaf =>
+              level -> (KeyRoute.NamelessParent: KeyRoute)
+          }
+        )
     }
 
     /** The column ARGUMENTS of every HAVING expression that is itself a NAMELESS GROUP BY key --
-      * one attached to a GROUP BY level -- the instances [[namedLeavesOf]] hands out (`eq`).
+      * one attached to a GROUP BY level -- the instances [[namedLeavesOf]] hands out (`eq`), each
+      * with the level of the key it is an argument of.
       */
-    private[this] lazy val namelessKeyArguments: Seq[Identifier] = {
+    private[this] lazy val namelessKeyArguments: Seq[(Identifier, Bucket)] = {
       val keys = groupBy.map(_.buckets).getOrElse(Nil)
       having
         .flatMap(_.criteria)
         .toSeq
         .flatMap(_.referencedIdentifiers)
-        .filter(c => c.name.isEmpty && c.bucket.exists(a => keys.exists(_.sameKeyAs(a))))
-        .flatMap(c => FunctionUtils.funIdentifiers(c))
-        .filter(_.name.nonEmpty)
+        .filter(_.name.isEmpty)
+        .flatMap(c => c.bucket.flatMap(a => keys.find(_.sameKeyAs(a))).map(c -> _))
+        .flatMap { case (c, level) =>
+          FunctionUtils.funIdentifiers(c).filter(_.name.nonEmpty).map(_ -> level)
+        }
     }
 
     /** Every named column a HAVING expression reads, once each.
@@ -1641,8 +1679,10 @@ package object query {
     }
 
     private[query] def keyPredicateOutcome(e: Expression): KeyPredicateOutcome =
-      dateHistogramLevelOf(e) match {
-        case Some(level) => KeyPredicateOutcome.Refused(dateHistogramReason(e, level))
+      dateHistogramLevelOf(e)
+        .map(level => dateHistogramReason(e, level))
+        .orElse(temporalScriptLevelOf(e).map(level => temporalScriptReason(e, level))) match {
+        case Some(reason) => KeyPredicateOutcome.Refused(reason)
         case None =>
           if (keyExpressibleByTerms(e)) KeyPredicateOutcome.TermsFilter
           else if (readsNestedKey(e))
@@ -1660,8 +1700,10 @@ package object query {
 
     /** Story IDENT-4 -- the level a key predicate addresses when that level is a `date_histogram`:
       * asked of the REAL `includes` / `excludes` (as [[keyExpressibleByTerms]] is) and of
-      * [[Bucket.isDateHistogram]] (as both bridges are). A key whose function returns a date
-      * (`DATE_TRUNC(d, MONTH)`) is one with no mapping, so the predicate is refused at parse.
+      * [[Bucket.isDateHistogram]] (as both bridges are). Only a `DATE_TRUNC` key is one, at every
+      * resolution, so the predicate is refused at parse. Any other key whose function returns a
+      * date is a `terms` level on its script: its key filter is refused by
+      * [[temporalScriptLevelOf]], for a different reason.
       *
       * Structural, not a type rule: the level the bridges EMIT for such a key is a date histogram,
       * whatever the column's mapping turns out to be, and a date histogram has no include / exclude
@@ -1677,6 +1719,139 @@ package object query {
         (e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty)
       )
     }
+
+    /** The level a key predicate addresses when that level's key is a temporal SCRIPT key
+      * ([[Bucket.isTemporalScriptKey]]): asked of the REAL `includes` / `excludes`, as
+      * [[dateHistogramLevelOf]] is. Such a level is a `terms` aggregation and carries the filter,
+      * but Elasticsearch compares it with the text the script's value prints, which a date literal
+      * does not match: `=` / `IN` would keep no group and `<>` every group, HTTP 200.
+      *
+      * Asked at the two seams that see the key's type: at parse, through rule (b)
+      * ([[keyPredicateOutcome]]), where a function's own output type is known (`LAST_DAY`,
+      * `DATE_ADD`, `TO_DATE`, `CAST(… AS DATE)`); and on the resolved statement
+      * ([[validateResolved]]), for a key whose type only the mapping gives (`COALESCE(d, d)`, `CASE
+      * … THEN d …`).
+      */
+    private[query] def temporalScriptLevelOf(e: Expression): Option[Bucket] = {
+      val empty = BucketIncludesExcludes()
+      buckets.find(b =>
+        b.isTemporalScriptKey &&
+        (e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty)
+      )
+    }
+
+    /** Why a key filter on a temporal script key is refused, with the same stable lead as
+      * [[dateHistogramReason]]. The remedy names the level's KEY EXPRESSION, never the HAVING
+      * spelling: a SELECT alias written in HAVING is no column in WHERE.
+      */
+    private[query] def temporalScriptReason(e: Expression, level: Bucket): String =
+      s"HAVING cannot filter a DATE grouping level: ${e.sql} addresses the GROUP BY key " +
+      s"${level.identifier}, which Elasticsearch computes with a script and compares with the " +
+      "condition as text, and a date literal does not match that text. Restrict the rows in " +
+      s"WHERE instead, with the same condition on ${level.identifier}."
+
+    /** Every flat HAVING leaf that reads only GROUP BY keys, in a statement whose key filters
+      * Elasticsearch applies: the population of rule (b) in `validate()` and of the key-filter
+      * rules [[validateResolved]] asks again.
+      */
+    private[query] def keyFilterLeaves: Seq[Expression] =
+      havingLeaves.filter(e =>
+        groupBy.isDefined && !relationalClosureRequired &&
+        havingScopeOf(e) == HavingScope.GroupKey
+      )
+
+    /** The first key filter [[temporalScriptLevelOf]] refuses on the RESOLVED statement, as its
+      * reason. See [[validateResolved]].
+      */
+    private[query] def temporalScriptKeyFilter: Option[String] =
+      keyFilterLeaves.view
+        .flatMap(e => temporalScriptLevelOf(e).map(level => temporalScriptReason(e, level)))
+        .headOption
+
+    /** Is the [[KeyRoute.NamelessParent]] route open at a FINAL seam? The first key filter it
+      * carries that is not, as the reason -- or `None`.
+      *
+      * A nameless key is a scripted `terms` level, a string `terms`: Elasticsearch compares each
+      * `include` / `exclude` value with the TEXT of the value the script returns, and that text is
+      * whatever the Java object prints. The route is open only where that text is known to be the
+      * condition's spelling, read on THIS statement:
+      *   - every column the key reads has a known type, and it is not a date (the column's own
+      *     `baseType`): with no mapping every column is `Any`, and a date prints in its own form
+      *     (`"2024-01-03T00:00Z"`);
+      *   - the key renders a string, a BOOLEAN, or a whole number whose every whole value the
+      *     filter sends is written as the integer it prints as (`1`, never `1.0`). A decimal key
+      *     (`ABS(n)`, `SQRT(n)`, `n * 1.5`) prints `1.0` or `1` depending on the column's Java
+      *     type, so it is closed.
+      *
+      * Asked by [[validateResolved]] and [[validateUnresolved]], never at parse: there the route is
+      * open, and rules (a), (b), (b2) and (c) of `validate()` apply to it as to any key. The named
+      * and companion routes ([[KeyRoute.Direct]]) are not gated.
+      */
+    private[query] def namelessKeyRouteRefusal: Option[String] =
+      keyFilterLeaves.view.flatMap { e =>
+        namedLeavesOf(e)
+          .flatMap(keyLevelOf)
+          .collect { case (level, KeyRoute.NamelessParent) => level }
+          .distinct
+          .flatMap(level => namelessKeyRouteReason(e, level))
+      }.headOption
+
+    private[query] def namelessKeyRouteReason(e: Expression, level: Bucket): Option[String] = {
+      val key = level.identifier
+      val lead = s"HAVING cannot filter the GROUP BY key $key: "
+      val asText =
+        "Elasticsearch compares this key with the condition as the text of the value its script " +
+        "returns"
+      val columns = (FunctionUtils.funIdentifiers(key) ++
+        Case
+          .conditionsOf(key)
+          .flatMap(_.referencedIdentifiers)
+          .flatMap(FunctionUtils.funIdentifiers(_)))
+        .filter(_.name.nonEmpty)
+      def ownType(column: Identifier): SQLType = column.withFunctions(Nil).baseType
+      columns
+        .find(c => ownType(c).isUnknown)
+        .map(c =>
+          lead + s"the type of its column ${c.name} is not known, because no mapping of the " +
+          s"source could be read for it, and $asText."
+        )
+        .orElse(
+          columns
+            .find(c => ownType(c).isTemporal)
+            .map(c =>
+              lead + s"it reads the date column ${c.name}, and $asText, which spells a date in " +
+              "its own form."
+            )
+        )
+        .orElse {
+          val rendered = renderedTypeOf(key)
+          if (rendered.isText || rendered.isBoolean) None
+          else if (NumericReducer.wholeNumber(rendered)) {
+            val empty = BucketIncludesExcludes()
+            (e.includes(level, not = false, empty).values ++
+            e.excludes(level, not = false, empty).values).toSeq.sorted.view
+              .flatMap(v => SingleSearch.wholeNumberRespelling(v).map(v -> _))
+              .headOption
+              .map { case (value, whole) =>
+                lead + s"$asText, and a whole number is written $whole there, never $value. " +
+                  s"Compare it with $whole."
+              }
+          } else if (rendered.isNumber)
+            Some(
+              lead + s"it is a $rendered value, and $asText, which writes such a number as 1 or " +
+              "as 1.0 depending on the column's type."
+            )
+          else Some(lead + s"its type ($rendered) has no text a condition is known to spell.")
+        }
+    }
+
+    /** The rules a statement sent WITHOUT a resolved schema must still pass: the gate on the
+      * nameless-key route ([[namelessKeyRouteRefusal]]) alone, where every column is `Any`. No type
+      * rule runs here (the lead's ruling of 2026-10-05). `SearchApi.resolveWithSchema` calls it at
+      * every exit that sends the statement unresolved.
+      */
+    def validateUnresolved(): Either[String, Unit] =
+      namelessKeyRouteRefusal.map(Left(_)).getOrElse(Right(()))
 
     /** The stable phrase leads: `GatewayApi.run` relays a parse refusal as its first 120
       * characters, an ellipsis and its last 77.
@@ -2151,9 +2326,15 @@ package object query {
       // `IllegalStateException` escape into the bridge) would surface a 500 with no clause named,
       // which is issue #250's family. That throw stays as the last-resort invariant; this is what
       // makes it unreachable in practice.
+      //
+      // A key filter on a temporal SCRIPT key is asked again here too: a key whose type only the
+      // mapping gives (`COALESCE(d, d)`, `CASE … THEN d …`) is `Any` at parse and a TIMESTAMP once
+      // resolved, and rule (b) could not see it (`temporalScriptLevelOf`).
       having.map(_.unrepresentable).getOrElse(Nil).headOption.map(u => Left(u.message)).getOrElse {
         typeErrors.headOption
           .orElse(fractionalIntegerKeyComparison)
+          .orElse(temporalScriptKeyFilter)
+          .orElse(namelessKeyRouteRefusal)
           .map(Left(_))
           .getOrElse(Right(()))
       }
@@ -2401,11 +2582,7 @@ package object query {
           //
           // Story IDENT-4 -- NOT in a statement the RELATIONAL engine evaluates: no terms filter is
           // built there, and the engine evaluates the condition after the join.
-          havingLeaves
-            .filter(e =>
-              groupBy.isDefined && !relationalClosureRequired &&
-              havingScopeOf(e) == HavingScope.GroupKey
-            )
+          keyFilterLeaves
             .map(keyPredicateOutcome)
             .collectFirst { case KeyPredicateOutcome.Refused(reason) => Left(reason) }
             .getOrElse(Right(()))
@@ -2750,6 +2927,19 @@ package object query {
             Try(java.lang.Double.parseDouble(value)).toOption
               .filter(d => d.isNaN || d.isInfinite || d != math.floor(d))
         }
+
+    /** The integer a text that spells a WHOLE number prints as, when the text is not already that
+      * spelling (`"1.0"`, `"1e0"`, `"+1"` -> `"1"`) -- or `None`: the text is the integer itself, a
+      * fraction, or no number at all. Read by `namelessKeyRouteReason`: a whole-number script key
+      * prints as the integer, and the key filter compares texts.
+      */
+    private[query] def wholeNumberRespelling(value: String): Option[String] =
+      if (!maySpellNumber(value)) None
+      else
+        Try(BigDecimal(value.trim)).toOption
+          .filter(_.isWhole)
+          .map(_.toBigInt.toString)
+          .filter(_ != value)
 
     /** Can `s` spell a number `Double.parseDouble` reads? Every such text holds a digit, or is NaN
       * or an infinity -- a text with neither is not worth a parse that would throw.

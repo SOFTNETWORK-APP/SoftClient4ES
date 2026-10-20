@@ -676,9 +676,11 @@ class QualifiedGroupKeySpec extends AnyFlatSpec with Matchers {
 
   // A nameless key over one correlation's column ---------------------------------------------
   "a NAMELESS GROUP BY key over one correlation's column" should
-  "keep the verdict it always had beside another correlation's same-named key, at both resolutions" in {
+  "be accepted beside another correlation's same-named key and without it, at both resolutions" in {
     // At R1 and R2 (`updateAll`): accepted beside a grouping of `a.category` (the argument matches
-    // that key by name), refused by rule (a) without it.
+    // that key by name), and without it (the argument addresses its nameless key's own level).
+    // Without the companion it used to be refused by rule (a), which read only the argument's
+    // name: the relational engine evaluates such a condition after the join.
     val cells = for {
       shape <- Seq(TwoIndices, SelfJoin)
       key   <- Seq("UPPER(b.category)", "CONCAT(a.category, b.category)")
@@ -686,7 +688,7 @@ class QualifiedGroupKeySpec extends AnyFlatSpec with Matchers {
       groupBy = if (withX) s"a.category, $key" else key
     } yield (
       s"SELECT COUNT(*) AS c ${shape.from} GROUP BY $groupBy HAVING $key = 'X'",
-      if (withX) "accepted" else "(a)"
+      "accepted"
     )
     val second = (s: SingleSearch) => s.updateAll(joinSchemas)
     val wrong = cells.flatMap { case (sql, expected) =>
@@ -697,11 +699,11 @@ class QualifiedGroupKeySpec extends AnyFlatSpec with Matchers {
         if (once.toOption == twice.toOption) None else Some(s"[$sql] R1 $once, R2 $twice")
       ).flatten
     }
-    // the sibling with no same-named key keeps its refusal
+    // the sibling with no same-named key, likewise
     val sibling =
       "SELECT COUNT(*) AS c FROM orders a JOIN depts p ON a.did = p.id GROUP BY UPPER(p.category) " +
       "HAVING UPPER(p.category) = 'X'"
-    verdictFamily(sibling) shouldBe "(a)"
+    verdictFamily(sibling) shouldBe "accepted"
     withClue(s"${wrong.size} of ${cells.size} wrong:\n${wrong.mkString("\n")}\n") {
       wrong shouldBe empty
     }
