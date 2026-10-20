@@ -254,18 +254,41 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(phaseOne)
+                unresolved(phaseOne, Some(source))
               case Failure(e) =>
                 logger.debug(
                   s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(phaseOne)
+                unresolved(phaseOne, Some(source))
             }
-          case None => ElasticResult.success(phaseOne)
+          case None => unresolved(phaseOne, Some(source))
         }
-      case _ => ElasticResult.success(phaseOne)
+      case _ => unresolved(phaseOne, None)
     }
   }
+
+  /** The ONE exit of [[resolveWithSchema]] that sends a statement WITHOUT a resolved schema: a
+    * mapping that could not be read, a remembered miss, a client that is not an [[IndicesApi]], no
+    * index source. Every column is `Any` there, and the rules a statement must still pass are
+    * `SingleSearch.validateUnresolved`'s -- refused with the 400 the resolved branch gives.
+    */
+  private def unresolved(
+    statement: SingleSearch,
+    source: Option[String]
+  ): ElasticResult[SingleSearch] =
+    statement.validateUnresolved() match {
+      case Left(reason) =>
+        logger.error(s"❌ $reason")
+        ElasticResult.failure(
+          ElasticError(
+            message = reason,
+            statusCode = Some(400),
+            index = source,
+            operation = Some("search")
+          )
+        )
+      case Right(_) => ElasticResult.success(statement)
+    }
 
   /** THE schema lookup for a statement's sources, for every consumer -- the attach
     * ([[resolveWithSchema]]) and the scope of a subquery ([[resolvedSchema]]) alike (#292): ONE

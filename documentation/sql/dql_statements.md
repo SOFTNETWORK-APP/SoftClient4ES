@@ -1131,7 +1131,18 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 ```
 
-- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE`.
+- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — whether the key
+  is a column or a function of columns written as in `GROUP BY`
+  (`GROUP BY UPPER(city) HAVING UPPER(city) = 'PARIS'`, `GROUP BY LENGTH(code) HAVING LENGTH(code)
+  IN (2, 3)`). Elasticsearch compares a function key with the condition as the text of its value,
+  so such a condition is applied where that text is known: the type of every column the function
+  reads comes from the index mapping, no column is a date, and the function returns text, a
+  boolean or a whole number written as an integer (`LENGTH(code) = 2`, not `2.0`). Otherwise it is
+  refused by name — a function over a date column (`CONCAT(created, '')`), a function whose result
+  is a decimal number or of a precision not known in advance (`ABS(amount)`, `SQRT(x)`,
+  `price * 1.5`), a whole number written with a decimal part (`LENGTH(code) = 2.0`), or any such
+  condition where no mapping of the source can be read (an index that did not exist when it was
+  last queried, a client that reads no mapping).
   On a `keyword`, `integer`, `long`, `double` or `boolean` key, `=`, `<>`, `IN` and `NOT IN` keep or
   remove **exactly** the values written, on every supported release: a `.`, `*`, `(`, `\` or `'` in a
   value is an ordinary character, and a numeric or boolean key is compared as a number or a boolean.
@@ -1187,9 +1198,9 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 
   The refused rows previously returned a plausible-looking but WRONG set of groups. Otherwise:
   split the query, or restate the condition as an `OR` of equalities or an `AND` of inequalities.
-- ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
-  `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
-  alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
+- ⚠️ **A FUNCTION of the key is refused when the `GROUP BY` key is the column itself**
+  (`GROUP BY city HAVING UPPER(city) = 'PARIS'`, `GROUP BY status HAVING LENGTH(status) = 1`). The
+  terms filter can only express a direct comparison, and the alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
   WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
   the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
   `WHERE`.

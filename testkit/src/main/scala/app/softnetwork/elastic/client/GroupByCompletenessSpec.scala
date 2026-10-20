@@ -4100,4 +4100,28 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     withClue(s"${all.size} wrong:\n${all.mkString("\n")}\n") { all shouldBe empty }
   }
 
+  "a HAVING repeating a nameless GROUP BY key" should "filter that key's level, as 0.23.0 did" in {
+    // `GROUP BY UPPER(s) HAVING UPPER(s) = 'A'`: the scope rule read only the argument `s`, which
+    // no level is named like, and refused the statement as reading "neither a GROUP BY key nor an
+    // aggregate". The argument addresses its nameless key's own level.
+    val upper = countsOf(x => Seq(x._5.toUpperCase))
+    val length = countsOf(x => Seq(x._5.length.toString))
+    val outcomes = for {
+      v <- Seq(dateKeyIndex, dateKeyPattern)
+      (key, condition, expected) <- Seq(
+        ("UPPER(s)", "= 'A'", upper.filter(_.head == "A")),
+        ("UPPER(s)", "IN ('A', 'BB')", upper.filter(g => Set("A", "BB")(g.head))),
+        ("UPPER(s)", "<> 'A'", upper.filterNot(_.head == "A")),
+        ("LENGTH(s)", "= 1", length.filter(_.head == "1"))
+      )
+      outcome <- {
+        val sql = s"SELECT $key AS k, COUNT(*) AS c FROM $v GROUP BY $key HAVING $key $condition"
+        dateKeyRows(sql, Seq("k", "c")) match {
+          case Right(rows) if rows == expected => None
+          case other                           => Some(s"[$sql] expected $expected, got $other")
+        }
+      }
+    } yield outcome
+    withClue(s"${outcomes.size} wrong:\n${outcomes.mkString("\n")}\n") { outcomes shouldBe empty }
+  }
 }
