@@ -33,6 +33,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.implicitConversions
+import scala.util.Try
 
 /** Regression test for issue #197: a paged extraction with no `ORDER BY` must return every row
   * exactly once on a MULTI-SHARD index.
@@ -157,5 +158,32 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     rows should have size totalDocs.toLong
     rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
     rows.head._2.slices shouldBe 1
+  }
+
+  // GATE-024 REST page error
+  it should "fail with Elasticsearch's status and reason on a page Elasticsearch rejects (GATE-024 REST page error)" in {
+    // un-LIMITed, over a pattern: every page is a search Elasticsearch refuses with a 400. `id` is
+    // a keyword whose values are not dates, so the script that reads it as a TIMESTAMP fails on
+    // every shard: Elasticsearch 6.8 refuses to compile it, later majors fail it at run time, and
+    // both are a 400 `search_phase_execution_exception`
+    val source = client.scroll(
+      SelectStatement(s"SELECT id FROM ${index}* WHERE EPOCHDAY(CAST(id AS TIMESTAMP)) < 20087"),
+      ScrollConfig(scrollSize = 100)
+    )
+
+    val failure = Try(Await.result(source.runWith(Sink.seq), 5.minutes)).failed
+      .getOrElse(fail("the stream did not fail: Elasticsearch accepted every page"))
+
+    withClue(s"${failure.getClass.getName} ${failure.getMessage}: ") {
+      // a handled failure: Elasticsearch's own status, read by the client module
+      client.statusOf(failure) shouldBe Some(400)
+      // Elasticsearch's reason, not the HTTP client's wrapper
+      failure.getMessage should include("all shards failed")
+      failure should not be an[IllegalStateException]
+      // the HTTP client's wrapper is `method [<VERB>], host [...], URI [...]`; Elasticsearch's own
+      // reason may say `method [...]` (a Painless method), so only the wrapper's form is refused
+      failure.getMessage should not include regex("""method \[[A-Z]+\], host \[""")
+      failure.getMessage should not include "URI ["
+    }
   }
 }

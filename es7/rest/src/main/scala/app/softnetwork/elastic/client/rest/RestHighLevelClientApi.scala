@@ -1523,15 +1523,15 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     * Error statuses surface as [[org.elasticsearch.client.ResponseException]] — an `IOException`,
     * which `retryWithBackoff` would retry. The typed path never retried an error status
     * (`ElasticsearchStatusException` is not retriable), so permanent client errors (4xx except
-    * 408/429) are rethrown as non-retriable to keep failing fast; retrying 408/429/5xx is a
-    * deliberate resilience gain on transient cluster conditions.
+    * 408/429) fail fast, as [[pageRejection]]: Elasticsearch's status and reason; retrying
+    * 408/429/5xx is a deliberate resilience gain on transient cluster conditions.
     */
   private def executeSearchPage(request: Request): JsonNode =
     try {
       readResponseTree(apply().getLowLevelClient.performRequest(request))
     } catch {
       case ex: ResponseException if isNonRetriable4xx(ex) =>
-        throw new IllegalStateException(ex.getMessage, ex)
+        throw pageRejection(ex)
     }
 
   /** Asynchronous sibling of [[executeSearchPage]] for the PIT paging path (#238): the request
@@ -1556,18 +1556,21 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       .map(readResponseTree)
       .recoverWith {
         case re: ResponseException if isNonRetriable4xx(re) =>
-          Future.failed(new IllegalStateException(re.getMessage, re))
+          Future.failed(pageRejection(re))
         case jp: com.fasterxml.jackson.core.JsonProcessingException =>
-          // an unparseable page body is an IOException subclass: a retry cannot help
-          Future.failed(new IllegalStateException(s"Unparseable page: ${jp.getMessage}", jp))
+          // an unparseable page body is an IOException subclass: a retry cannot help. Jackson's
+          // original message, without the location that names the input stream's class
+          Future.failed(
+            new RestHighLevelClientHelpers.SearchPageFailure(
+              result.ElasticError(
+                message = s"Unparseable page: ${jp.getOriginalMessage}",
+                cause = Some(jp),
+                operation = Some("search")
+              )
+            )
+          )
       }
   }
-
-  /** 4xx except 408 / 429: a permanent client error that must fail fast rather than be retried
-    * (`ResponseException` is an `IOException`, which `retryWithBackoff` would otherwise retry).
-    */
-  private def isNonRetriable4xx(re: ResponseException): Boolean =
-    statusOf(re).exists(status => status >= 400 && status < 500 && status != 408 && status != 429)
 
   /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
     * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
