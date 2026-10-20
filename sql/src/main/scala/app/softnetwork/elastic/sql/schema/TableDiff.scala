@@ -185,6 +185,32 @@ case class ProcessorChanged(
   override def processor: IngestProcessor = to
 }
 
+/** What an ALTER TABLE does to one live pipeline. See [[IngestPipeline.rewrite]].
+  *
+  * @param diff
+  *   the changes to the processors the table declares; a processor it does not declare never
+  *   appears here
+  * @param written
+  *   the pipeline to install when `diff` is non-empty: the declared processors, with the undeclared
+  *   ones kept verbatim before or after them
+  * @param undeclared
+  *   the live processors the table did not declare before the statement, as stored, in live order
+  * @param stored
+  *   the live pipeline document as Elasticsearch returned it: what a rewrite keeps besides the
+  *   processors (`on_failure`, `version`, `_meta`, `description`)
+  * @param previous
+  *   what elasticsql may last have written as this pipeline: the previous declaration, the same
+  *   with the kept processors in place, and the pipeline as read. A stored `description` equal to
+  *   the one elasticsql renders for one of them is elasticsql's own, and is rewritten
+  */
+final case class PipelineRewrite(
+  diff: List[PipelineDiff],
+  written: IngestPipeline,
+  undeclared: Seq[IngestProcessor],
+  stored: String,
+  previous: Seq[IngestPipeline]
+)
+
 case class TableDiff(
   columns: List[ColumnDiff],
   mappings: List[MappingDiff],
