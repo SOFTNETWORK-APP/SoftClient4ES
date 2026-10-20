@@ -25,7 +25,7 @@ import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.parser.Validator
 import app.softnetwork.elastic.sql.query.NestedElement
 
-import scala.util.Try
+import scala.util.{DynamicVariable, Try}
 
 case class ArithmeticExpression(
   left: PainlessScript,
@@ -60,12 +60,90 @@ case class ArithmeticExpression(
     */
   override def cast(targetType: SQLType): SQLType = out
 
-  override def sql: String = {
+  /** Core's syntax -- except for date arithmetic while the relational engine's SQL is being
+    * rendered ([[ArithmeticExpression.renderingRelational]]), which is [[relationalSql]]. A NULL
+    * operand, a refusal and any other arithmetic keep core's syntax in the scope too, their
+    * operands rendered in the same scope.
+    */
+  override def sql: String =
+    if (ArithmeticExpression.rendersRelational)
+      dateArithmetic match {
+        case Some(computed: ArithmeticExpression.Computed) => relationalSql(computed)
+        case _                                             => coreSql
+      }
+    else coreSql
+
+  private def coreSql: String = {
     val expr = s"${left.sql}$operator${right.sql}"
     if (group)
       s"($expr)"
     else
       expr
+  }
+
+  /** Date arithmetic in the relational engine's SQL (DuckDB, which runs a JOIN): the rule
+    * [[dateArithmetic]] classified, with the readings [[dateArithmeticPainless]] makes of its
+    * operands, for an engine whose temporals are typed values rather than epoch milliseconds.
+    *
+    *   - DATE - DATE: `(CAST(l AS DATE) - CAST(r AS DATE))`, the days between, a BIGINT;
+    *   - an instant on one side at least: `((epoch_ms(l) - epoch_ms(r)) / 86400000.0)`, a DOUBLE;
+    *   - a DATE moved by a whole number: `(CAST(t AS DATE) ± CAST(n AS INTEGER))`, a DATE;
+    *   - any other move: `epoch_ms(CAST(epoch_ms(t) ± <n days in ms> AS BIGINT))`, a TIMESTAMP, a
+    *     fractional number of days rounded half up to the millisecond as Java's `Math.round` does
+    *     (DuckDB's own `round` rounds half away from zero); the number of days is multiplied as a
+    *     DOUBLE, as Painless does (DuckDB keeps a REAL times a constant in single precision, a few
+    *     milliseconds off).
+    *
+    * A string literal is read as core reads it: one that spells a temporal beside the other operand
+    * is that temporal -- a DATE its UTC day, an instant its epoch milliseconds -- and one that
+    * spells a number is that number of days. Every form is self-delimiting, so `group` adds nothing
+    * to it.
+    */
+  private def relationalSql(shape: ArithmeticExpression.Computed): String = {
+    import ArithmeticExpression.{
+      DaysBetween,
+      DaysShift,
+      FractionalDayMillis,
+      FractionalDaysBetween,
+      RelationalDayMillis
+    }
+
+    def calendarDay(operand: PainlessScript): String =
+      literalTemporal(operand) match {
+        case Some(t) =>
+          s"CAST('${java.time.LocalDate.ofEpochDay(Math.floorDiv(t.epochMillis, 86400000L))}' AS DATE)"
+        case None => s"CAST(${operand.sql} AS DATE)"
+      }
+
+    def instant(operand: PainlessScript): String =
+      literalTemporal(operand) match {
+        case Some(t) => t.epochMillis.toString
+        case None    => s"epoch_ms(${operand.sql})"
+      }
+
+    // a string literal that is a number is that number (`d + '1'`), without the Painless suffix
+    def days(operand: PainlessScript): String =
+      ArithmeticExpression.numericString(operand) match {
+        case Some((number, _)) => number.stripSuffix("L")
+        case None              => operand.sql
+      }
+
+    shape match {
+      case DaysBetween => s"(${calendarDay(left)} - ${calendarDay(right)})"
+      case FractionalDaysBetween =>
+        s"((${instant(left)} - ${instant(right)}) / $FractionalDayMillis)"
+      case DaysShift(temporalLeft, calendarDate, fractional) =>
+        val (temporal, n) = if (temporalLeft) (left, right) else (right, left)
+        if (calendarDate && !fractional)
+          s"(${calendarDay(temporal)} ${operator.sql} CAST(${days(n)} AS INTEGER))"
+        else {
+          val shift =
+            if (fractional)
+              s"CAST(floor(CAST(${days(n)} AS DOUBLE) * $FractionalDayMillis + 0.5) AS BIGINT)"
+            else s"CAST(${days(n)} AS BIGINT) * $RelationalDayMillis"
+          s"epoch_ms(CAST(${instant(temporal)} ${operator.sql} $shift AS BIGINT))"
+        }
+    }
   }
 
   override def args: List[PainlessScript] = List(left, right)
@@ -937,6 +1015,44 @@ object ArithmeticExpression {
   /** The same, as a floating-point number, for a fraction of a day. */
   private val FractionalDayMillis = "86400000.0"
 
+  /** One day, in milliseconds, as the relational engine's SQL spells a whole number. */
+  private val RelationalDayMillis = "86400000"
+
+  /** `true` while [[renderingRelational]] renders -- and nothing else.
+    *
+    * A thread-scoped carrier, as `Having.aliasScope` and `GroupBy.groupFilter`, for the same
+    * reason: a date arithmetic sits at any depth of an expression and of every clause, and is
+    * reached only through the `.sql` of every node of the dialect, which takes no argument.
+    * Rendering is synchronous.
+    */
+  private[this] val relational: DynamicVariable[Boolean] = new DynamicVariable[Boolean](false)
+
+  /** `body`, with every date arithmetic it renders through `.sql` in the relational engine's SQL
+    * (DuckDB, which runs a JOIN) rather than in core's: the days between two dates, the fractional
+    * days between two instants, a date moved by days -- core's rules, classified by core
+    * (`dateArithmetic`), answered by the engine.
+    *
+    * Only date arithmetic changes: a NULL operand, a refusal and every other node keep core's
+    * syntax. The operand types are those of the statement it renders, so its schemas must be
+    * attached (`SingleSearch.updateAll`); an operand whose type is unknown leaves the expression as
+    * it is written. A statement's own rendering (`SingleSearch.sql`, a subquery's or a derived
+    * table's body) is core's in the scope too, so a leg sent back to core is never rendered here,
+    * and what a statement memoises is the same in and out of the scope.
+    *
+    * Ask only `.sql` in this scope: `identifierName`, `Field.sourceField`, `fieldAliases`,
+    * `metricName`, `FieldSort.name`, `sorts` and `bucketNames` memoise what they first render. A
+    * thread spawned inside the scope inherits it (`DynamicVariable` is an inheritable
+    * thread-local).
+    */
+  private[elastic] def renderingRelational[T](body: => T): T = relational.withValue(true)(body)
+
+  /** `body` in core's syntax, whatever scope it is asked in. */
+  private[sql] def outsideRelational[T](body: => T): T =
+    if (relational.value) relational.withValue(false)(body) else body
+
+  /** Is the relational engine's SQL being rendered ([[renderingRelational]])? */
+  private[math] def rendersRelational: Boolean = relational.value
+
   /** What the date-arithmetic rules make of an expression. */
   private[sql] sealed trait DateArithmetic {
 
@@ -1230,11 +1346,13 @@ object ArithmeticExpression {
   private def typeName(o: PainlessScript): String =
     if (bareNull(o)) SQLTypes.Null.typeId else declaredType(o).typeId
 
+  // the expression in core's syntax, whatever scope the classification is first asked in: it is
+  // memoised with it (`dateArithmetic`)
   private def refused(e: ArithmeticExpression): Refused =
     Refused(
       s"Type mismatch: operator ${e.operator.sql} cannot be applied to ${typeName(e.left)} and " +
-      s"${typeName(e.right)} in expression: ${e.sql.trim}; subtract two dates for the days between " +
-      "them, or add or subtract a number of days"
+      s"${typeName(e.right)} in expression: ${outsideRelational(e.sql.trim)}; subtract two dates " +
+      "for the days between them, or add or subtract a number of days"
     )
 
   /** Every date-arithmetic type error in an expression, wherever an arithmetic sits in it.
