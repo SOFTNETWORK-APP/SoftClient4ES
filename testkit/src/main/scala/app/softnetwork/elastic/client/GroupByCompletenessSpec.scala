@@ -136,6 +136,8 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(oneResolutionIndex)
     client.deleteIndex(oneResolutionDates)
     client.deleteIndex(im10OneResolution)
+    client.deleteIndex(dateKeyIndex)
+    client.deleteIndex(dateKeyEmptyIndex)
     super.afterAll()
   }
 
@@ -3743,5 +3745,287 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     withClue(s"${wrong.size} wrong ($matrixSize matrix cells):\n${wrong.mkString("\n")}\n") {
       wrong shouldBe empty
     }
+  }
+
+  // ---- GROUP BY over a date column, or over a function of a column ----------------------------
+  //
+  // A level is a `date_histogram` only for a `DATE_TRUNC` key; every other key is a `terms` level
+  // -- a bare column on its field, a function of a column on its script. Before, the level followed
+  // the COLUMN's type: with the mapping attached (a concrete index, and since #412 an index pattern
+  // or list as well) every key over a date column was a `date_histogram` with no interval, which
+  // Elasticsearch refuses (HTTP 400). And a function that does not script itself (`ISNULL`,
+  // `WEEKDAY`, `DATE_FORMAT`) was a `terms` on the bare FIELD: one group per raw value, HTTP 200.
+  //
+  // Every expected value is computed HERE, from the fixture, as DuckDB 1.5.5 answers it (MEASURED).
+  // Keys are compared by a class-agnostic normalised value: a numeric script key reads back as text
+  // today, and a DATE column's key as a timestamp at midnight -- the values are what is asserted.
+  // No row orders by a numeric script key (it sorts as text) and no row asserts an ORDER BY on an
+  // inner key or a LIMIT over several keys (each level is ordered and sized inside its parent).
+
+  private val dateKeyIndex = "group_by_date_keys"
+
+  /** A second index with the same mapping and no documents: the index list's second member. */
+  private val dateKeyEmptyIndex = "group_by_date_keys_empty"
+
+  private val dateKeyPattern = "group_by_date_key*"
+
+  private val dateKeyList = s"$dateKeyIndex,$dateKeyEmptyIndex"
+
+  /** (id, d, ts, n, s) */
+  private val dateKeyDocs: Seq[(String, LocalDate, java.time.Instant, Int, String)] = Seq(
+    ("r1", "2024-01-03", "2024-01-03T10:15:00Z", 1, "a"),
+    ("r2", "2024-01-03", "2024-01-03T10:45:00Z", -1, "b"),
+    ("r3", "2024-01-20", "2024-01-20T23:59:59Z", 2, "a"),
+    ("r4", "2024-02-05", "2024-02-05T00:00:01Z", -2, "b"),
+    ("r5", "2024-03-11", "2024-03-11T10:15:00Z", 3, "A"),
+    ("r6", "2024-03-11", "2025-03-11T11:00:00Z", 3, "A"),
+    ("r7", "2025-03-31", "2025-03-31T10:20:00Z", 5, "bb")
+  ).map { case (id, d, ts, n, s) => (id, LocalDate.parse(d), java.time.Instant.parse(ts), n, s) }
+
+  private lazy val dateKeysLoaded: Unit = {
+    val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
+    val mapping =
+      """{"properties":{"id":{"type":"keyword"},"d":{"type":"date"},"ts":{"type":"date"},""" +
+      """"n":{"type":"integer"},"s":{"type":"keyword"}}}"""
+    Seq(dateKeyIndex, dateKeyEmptyIndex).foreach { target =>
+      client.createIndex(target, settings = settings).get shouldBe true
+      client.setMapping(target, mapping).get shouldBe true
+    }
+    val docs = dateKeyDocs.map { case (id, d, ts, n, s) =>
+      s"""{"id":"$id","d":"$d","ts":"$ts","n":$n,"s":"$s"}"""
+    }.toList
+    implicit val dateKeyBulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = dateKeyIndex, logEvery = 1000)
+    implicit def dateKeyListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) =>
+        client.refresh(dateKeyIndex)
+        client.refresh(dateKeyEmptyIndex)
+      case ElasticFailure(error) => fail(s"Bulk indexing $dateKeyIndex failed: ${error.message}")
+    }
+  }
+
+  /** A value as the oracle and the client answer are compared, whatever class the client reads it
+    * as: a number as one spelling, a temporal at UTC (its date alone at midnight).
+    */
+  private def dateKeyText(v: Any): String = {
+    def local(t: java.time.LocalDateTime): String =
+      if (t.toLocalTime == java.time.LocalTime.MIDNIGHT) t.toLocalDate.toString else t.toString
+    v match {
+      case null => "<null>"
+      case z: java.time.ZonedDateTime =>
+        local(z.withZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDateTime)
+      case o: java.time.OffsetDateTime =>
+        local(o.atZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDateTime)
+      case i: java.time.Instant       => local(i.atZone(java.time.ZoneOffset.UTC).toLocalDateTime)
+      case t: java.time.LocalDateTime => local(t)
+      case d: LocalDate               => d.toString
+      case n: java.lang.Number        => numericText(n)
+      case Seq(one)                   => dateKeyText(one) // the row path's computed-column wrap
+      case other                      => Try(numericText(other)).getOrElse(other.toString)
+    }
+  }
+
+  private def utc(i: java.time.Instant): String = dateKeyText(i)
+
+  /** The rows a statement answers, each its `columns` in order, sorted; `Left` is a failure. */
+  private def dateKeyRows(sql: String, columns: Seq[String]): Either[String, Seq[Seq[String]]] = {
+    dateKeysLoaded
+    gatewayRows(sql).map(
+      _.map(row => columns.map(c => row.get(c).map(dateKeyText).getOrElse("<absent>")))
+        .sortBy(_.mkString("|"))
+    )
+  }
+
+  /** The oracle: the documents grouped by `key`, each group with its document count. */
+  private def countsOf(
+    key: ((String, LocalDate, java.time.Instant, Int, String)) => Seq[String]
+  ): Seq[Seq[String]] =
+    dateKeyDocs
+      .groupBy(key)
+      .map { case (k, docs) => k :+ docs.size.toString }
+      .toSeq
+      .sortBy(_.mkString("|"))
+
+  private def d(doc: (String, LocalDate, java.time.Instant, Int, String)): String = doc._2.toString
+
+  /** The statements whose answer is the same at every venue, with their oracle. */
+  private def dateKeyStatements(venue: String): Seq[(String, Seq[String], Seq[Seq[String]])] =
+    Seq(
+      (
+        s"SELECT d, COUNT(*) AS c FROM $venue GROUP BY d",
+        Seq("d", "c"),
+        countsOf(x => Seq(d(x)))
+      ),
+      (
+        s"SELECT ts, COUNT(*) AS c FROM $venue GROUP BY ts",
+        Seq("ts", "c"),
+        countsOf(x => Seq(utc(x._3)))
+      ),
+      (
+        s"SELECT YEAR(d) AS k, COUNT(*) AS c FROM $venue GROUP BY YEAR(d)",
+        Seq("k", "c"),
+        countsOf(x => Seq(x._2.getYear.toString))
+      ),
+      (
+        s"SELECT MONTH(d) AS k, COUNT(*) AS c FROM $venue GROUP BY MONTH(d)",
+        Seq("k", "c"),
+        countsOf(x => Seq(x._2.getMonthValue.toString))
+      ),
+      (
+        s"SELECT s, d, COUNT(*) AS c FROM $venue GROUP BY s, d",
+        Seq("s", "d", "c"),
+        countsOf(x => Seq(x._5, d(x)))
+      )
+    )
+
+  private def wrongDateKeyRows(
+    statements: Seq[(String, Seq[String], Seq[Seq[String]])]
+  ): Seq[String] =
+    statements.flatMap { case (sql, columns, expected) =>
+      val actual = dateKeyRows(sql, columns)
+      if (actual == Right(expected)) None
+      else Some(s"[$sql] expected $expected, got ${actual.toString.take(400)}")
+    }
+
+  "a GROUP BY over a date column or a function of one, FROM an index pattern or an index list" should
+  "answer as 0.23.0 did" in {
+    // Since #412 a pattern or a list resolves its merged mapping, and these statements failed with
+    // HTTP 400 there ("Invalid interval specified" on Elasticsearch 8, "Zero or negative time
+    // interval not supported" on 6.8), where 0.23.0 answered them.
+    val wrong =
+      Seq(dateKeyPattern, dateKeyList).flatMap(v => wrongDateKeyRows(dateKeyStatements(v)))
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  "a GROUP BY over a date column or a function of one, FROM a concrete index" should
+  "answer instead of failing with HTTP 400" in {
+    val v = dateKeyIndex
+    val extra = Seq(
+      (
+        s"SELECT DAY(d) AS k, COUNT(*) AS c FROM $v GROUP BY DAY(d)",
+        Seq("k", "c"),
+        countsOf(x => Seq(x._2.getDayOfMonth.toString))
+      ),
+      (
+        s"SELECT YEAR(ts) AS k, COUNT(*) AS c FROM $v GROUP BY YEAR(ts)",
+        Seq("k", "c"),
+        countsOf(x => Seq(x._3.atZone(java.time.ZoneOffset.UTC).getYear.toString))
+      ),
+      (
+        s"SELECT LAST_DAY(d) AS k, COUNT(*) AS c FROM $v GROUP BY LAST_DAY(d)",
+        Seq("k", "c"),
+        countsOf(x => Seq(x._2.withDayOfMonth(x._2.lengthOfMonth).toString))
+      ),
+      (
+        s"SELECT d, s, COUNT(*) AS c FROM $v GROUP BY d, s",
+        Seq("d", "s", "c"),
+        countsOf(x => Seq(d(x), x._5))
+      ),
+      (
+        s"SELECT d, MIN(n) AS mn FROM $v GROUP BY d",
+        Seq("d", "mn"),
+        dateKeyDocs
+          .groupBy(d)
+          .map { case (k, docs) => Seq(k, docs.map(_._4).min.toString) }
+          .toSeq
+          .sortBy(_.mkString("|"))
+      ),
+      (
+        s"SELECT d, COUNT(*) AS c FROM $v GROUP BY d HAVING COUNT(*) > 1",
+        Seq("d", "c"),
+        countsOf(x => Seq(d(x))).filter(_.last.toInt > 1)
+      )
+    )
+    val wrong = wrongDateKeyRows(dateKeyStatements(v) ++ extra)
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+  }
+
+  "a GROUP BY over a function of a column" should
+  "group by the function's value, never by the column's raw values" in {
+    // These functions do not script themselves, and the level used to be a `terms` on the bare
+    // field: `GROUP BY ISNULL(s)` answered one group per value of `s`, with HTTP 200.
+    val statements = Seq(dateKeyIndex, dateKeyPattern).flatMap { v =>
+      Seq(
+        (
+          s"SELECT ISNULL(s) AS k, COUNT(*) AS c FROM $v GROUP BY ISNULL(s)",
+          Seq("k", "c"),
+          countsOf(_ => Seq("false"))
+        ),
+        (
+          s"SELECT ISNULL(n) AS k, COUNT(*) AS c FROM $v GROUP BY ISNULL(n)",
+          Seq("k", "c"),
+          countsOf(_ => Seq("false"))
+        )
+      ) ++ (if (esMajor >= 7)
+              Seq(
+                (
+                  s"SELECT DATE_FORMAT(d, '%Y-%m') AS k, COUNT(*) AS c FROM $v " +
+                  "GROUP BY DATE_FORMAT(d, '%Y-%m')",
+                  Seq("k", "c"),
+                  countsOf(x => Seq(f"${x._2.getYear}%04d-${x._2.getMonthValue}%02d"))
+                )
+              )
+            else Nil)
+    }
+    val wrong = wrongDateKeyRows(statements)
+    // WEEKDAY: the groups are the function's own values, as its SELECT answers them per document
+    // (the numbering is not this row's subject).
+    val weekday = Seq(dateKeyIndex, dateKeyPattern).flatMap { v =>
+      val perDocument = dateKeyRows(s"SELECT id, WEEKDAY(d) AS w FROM $v", Seq("id", "w"))
+      val expected = perDocument.map(
+        _.groupBy(_(1))
+          .map { case (w, docs) => Seq(w, docs.size.toString) }
+          .toSeq
+          .sortBy(_.mkString("|"))
+      )
+      val sql = s"SELECT WEEKDAY(d) AS k, COUNT(*) AS c FROM $v GROUP BY WEEKDAY(d)"
+      val actual = dateKeyRows(sql, Seq("k", "c"))
+      if (expected.isRight && actual == expected && actual.exists(_.size == 3)) None
+      else Some(s"[$sql] expected $expected (3 weekdays), got $actual")
+    }
+    val all = wrong ++ weekday
+    withClue(s"${all.size} wrong:\n${all.mkString("\n")}\n") { all shouldBe empty }
+  }
+
+  "a HAVING key filter on a GROUP BY key whose script returns a date" should
+  "be refused by name, and the same condition in WHERE answer" in {
+    // Such a level is a `terms` aggregation on the key's script, and Elasticsearch compares the
+    // filter with the text the script's date prints ("2024-01-31T00:00Z"), which a date literal
+    // does not match: `=` / `IN` answered no group and `<>` every group, HTTP 200.
+    def lastDay(x: (String, LocalDate, java.time.Instant, Int, String)): String =
+      x._2.withDayOfMonth(x._2.lengthOfMonth).toString
+    val groups = countsOf(x => Seq(lastDay(x)))
+    val outcomes = Seq(dateKeyIndex, dateKeyPattern).flatMap { v =>
+      Seq(
+        ("= '2024-01-31'", groups.filter(_.head == "2024-01-31")),
+        (
+          "IN ('2024-01-31', '2024-03-31')",
+          groups.filter(g => Set("2024-01-31", "2024-03-31")(g.head))
+        ),
+        ("<> '2024-01-31'", groups.filterNot(_.head == "2024-01-31"))
+      ).flatMap { case (condition, expected) =>
+        val having =
+          s"SELECT LAST_DAY(d) AS k, COUNT(*) AS c FROM $v GROUP BY LAST_DAY(d) " +
+          s"HAVING LAST_DAY(d) $condition"
+        val where =
+          s"SELECT LAST_DAY(d) AS k, COUNT(*) AS c FROM $v WHERE LAST_DAY(d) $condition " +
+          "GROUP BY LAST_DAY(d)"
+        val refused = dateKeyRows(having, Seq("k", "c")) match {
+          case Left(message)
+              if message.contains("HAVING cannot filter a DATE grouping level") &&
+                message.contains("with the same condition on LAST_DAY(d).") =>
+            None
+          case other => Some(s"[$having] expected the refusal, got ${other.toString.take(400)}")
+        }
+        val remedied = dateKeyRows(where, Seq("k", "c")) match {
+          case Right(rows) if rows == expected => None
+          case other                           => Some(s"[$where] expected $expected, got $other")
+        }
+        refused.toSeq ++ remedied
+      }
+    }
+    withClue(s"${outcomes.size} wrong:\n${outcomes.mkString("\n")}\n") { outcomes shouldBe empty }
   }
 }

@@ -1640,8 +1640,10 @@ package object query {
     }
 
     private[query] def keyPredicateOutcome(e: Expression): KeyPredicateOutcome =
-      dateHistogramLevelOf(e) match {
-        case Some(level) => KeyPredicateOutcome.Refused(dateHistogramReason(e, level))
+      dateHistogramLevelOf(e)
+        .map(level => dateHistogramReason(e, level))
+        .orElse(temporalScriptLevelOf(e).map(level => temporalScriptReason(e, level))) match {
+        case Some(reason) => KeyPredicateOutcome.Refused(reason)
         case None =>
           if (keyExpressibleByTerms(e)) KeyPredicateOutcome.TermsFilter
           else if (readsNestedKey(e))
@@ -1659,8 +1661,10 @@ package object query {
 
     /** Story IDENT-4 -- the level a key predicate addresses when that level is a `date_histogram`:
       * asked of the REAL `includes` / `excludes` (as [[keyExpressibleByTerms]] is) and of
-      * [[Bucket.isDateHistogram]] (as both bridges are). A key whose function returns a date
-      * (`DATE_TRUNC(d, MONTH)`) is one with no mapping, so the predicate is refused at parse.
+      * [[Bucket.isDateHistogram]] (as both bridges are). Only a `DATE_TRUNC` key is one, at every
+      * resolution, so the predicate is refused at parse. Any other key whose function returns a
+      * date is a `terms` level on its script: its key filter is refused by
+      * [[temporalScriptLevelOf]], for a different reason.
       *
       * Structural, not a type rule: the level the bridges EMIT for such a key is a date histogram,
       * whatever the column's mapping turns out to be, and a date histogram has no include / exclude
@@ -1676,6 +1680,54 @@ package object query {
         (e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty)
       )
     }
+
+    /** The level a key predicate addresses when that level's key is a temporal SCRIPT key
+      * ([[Bucket.isTemporalScriptKey]]): asked of the REAL `includes` / `excludes`, as
+      * [[dateHistogramLevelOf]] is. Such a level is a `terms` aggregation and carries the filter,
+      * but Elasticsearch compares it with the text the script's value prints, which a date literal
+      * does not match: `=` / `IN` would keep no group and `<>` every group, HTTP 200.
+      *
+      * Asked at the two seams that see the key's type: at parse, through rule (b)
+      * ([[keyPredicateOutcome]]), where a function's own output type is known (`LAST_DAY`,
+      * `DATE_ADD`, `TO_DATE`, `CAST(… AS DATE)`); and on the resolved statement
+      * ([[validateResolved]]), for a key whose type only the mapping gives (`COALESCE(d, d)`, `CASE
+      * … THEN d …`).
+      */
+    private[query] def temporalScriptLevelOf(e: Expression): Option[Bucket] = {
+      val empty = BucketIncludesExcludes()
+      buckets.find(b =>
+        b.isTemporalScriptKey &&
+        (e.includes(b, not = false, empty) != empty || e.excludes(b, not = false, empty) != empty)
+      )
+    }
+
+    /** Why a key filter on a temporal script key is refused, with the same stable lead as
+      * [[dateHistogramReason]]. The remedy names the level's KEY EXPRESSION, never the HAVING
+      * spelling: a SELECT alias written in HAVING is no column in WHERE.
+      */
+    private[query] def temporalScriptReason(e: Expression, level: Bucket): String =
+      s"HAVING cannot filter a DATE grouping level: ${e.sql} addresses the GROUP BY key " +
+      s"${level.identifier}, which Elasticsearch computes with a script and compares with the " +
+      "condition as text, and a date literal does not match that text. Restrict the rows in " +
+      s"WHERE instead, with the same condition on ${level.identifier}."
+
+    /** Every flat HAVING leaf that reads only GROUP BY keys, in a statement whose key filters
+      * Elasticsearch applies: the population of rule (b) in `validate()` and of the key-filter
+      * rules [[validateResolved]] asks again.
+      */
+    private[query] def keyFilterLeaves: Seq[Expression] =
+      havingLeaves.filter(e =>
+        groupBy.isDefined && !relationalClosureRequired &&
+        havingScopeOf(e) == HavingScope.GroupKey
+      )
+
+    /** The first key filter [[temporalScriptLevelOf]] refuses on the RESOLVED statement, as its
+      * reason. See [[validateResolved]].
+      */
+    private[query] def temporalScriptKeyFilter: Option[String] =
+      keyFilterLeaves.view
+        .flatMap(e => temporalScriptLevelOf(e).map(level => temporalScriptReason(e, level)))
+        .headOption
 
     /** The stable phrase leads: `GatewayApi.run` relays a parse refusal as its first 120
       * characters, an ellipsis and its last 77.
@@ -2150,9 +2202,14 @@ package object query {
       // `IllegalStateException` escape into the bridge) would surface a 500 with no clause named,
       // which is issue #250's family. That throw stays as the last-resort invariant; this is what
       // makes it unreachable in practice.
+      //
+      // A key filter on a temporal SCRIPT key is asked again here too: a key whose type only the
+      // mapping gives (`COALESCE(d, d)`, `CASE … THEN d …`) is `Any` at parse and a TIMESTAMP once
+      // resolved, and rule (b) could not see it (`temporalScriptLevelOf`).
       having.map(_.unrepresentable).getOrElse(Nil).headOption.map(u => Left(u.message)).getOrElse {
         typeErrors.headOption
           .orElse(fractionalIntegerKeyComparison)
+          .orElse(temporalScriptKeyFilter)
           .map(Left(_))
           .getOrElse(Right(()))
       }
@@ -2400,11 +2457,7 @@ package object query {
           //
           // Story IDENT-4 -- NOT in a statement the RELATIONAL engine evaluates: no terms filter is
           // built there, and the engine evaluates the condition after the join.
-          havingLeaves
-            .filter(e =>
-              groupBy.isDefined && !relationalClosureRequired &&
-              havingScopeOf(e) == HavingScope.GroupKey
-            )
+          keyFilterLeaves
             .map(keyPredicateOutcome)
             .collectFirst { case KeyPredicateOutcome.Refused(reason) => Left(reason) }
             .getOrElse(Right(()))

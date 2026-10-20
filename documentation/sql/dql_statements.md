@@ -1035,6 +1035,19 @@ ORDER BY COUNT(*) DESC;
 ```
 
 - `GROUP BY` supports nested fields (`profile.city`).
+- A key over a date column, or over a function of any column, groups by the key's own value from
+  a single index, an index pattern or a list of indices:
+  - `DATE_TRUNC(created_at, MONTH)` is one Elasticsearch `date_histogram` level with that calendar
+    interval;
+  - a bare date column (`GROUP BY created_at`) is a `terms` level on the field: one group per
+    stored value;
+  - any other function of a column (`YEAR(created_at)`, `LAST_DAY(created_at)`,
+    `WEEKDAY(created_at)`, `DATE_FORMAT(created_at, '%Y-%m')`, `ISNULL(city)`, `UPPER(city)`) is a
+    `terms` level on the function's script: one group per value of the function.
+
+  The key of such a function reads back as text (`YEAR(created_at)` answers `'2024'`), and a
+  numeric one is ordered as text: `ORDER BY DAY(created_at) DESC` answers `5, 31, 3, 20, 11`. A bare
+  `DATE` column's key reads back as a timestamp at midnight UTC.
 - `HAVING` filters groups based on aggregate conditions.
 - Translated to Elasticsearch aggregations.
 - An aggregate referenced only in `HAVING` or `ORDER BY` needs no alias and no `SELECT` item: it is
@@ -1177,12 +1190,20 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
   the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
   `WHERE`.
-- ⚠️ **A condition on a date grouping key is refused** when the key is a `DATE_TRUNC` key or a key
-  whose function returns a date
-  (`GROUP BY DATE_TRUNC(created, MONTH) HAVING DATE_TRUNC(created, MONTH) = '2024-01-01'`):
-  Elasticsearch groups such a key with a date histogram, and a date histogram has no key filter.
-  Restrict the rows in `WHERE` instead:
+- ⚠️ **A condition on a date grouping key is refused** when the key is computed:
+  - a `DATE_TRUNC` key
+    (`GROUP BY DATE_TRUNC(created, MONTH) HAVING DATE_TRUNC(created, MONTH) = '2024-01-01'`):
+    Elasticsearch groups it with a date histogram, and a date histogram has no key filter;
+  - any other key whose function returns a date, a time or a timestamp (`LAST_DAY`, `DATE_ADD`,
+    `DATETIME_ADD`, `TIMESTAMPADD`, `TO_DATE`, `CAST(… AS DATE)`, `COALESCE` over a date column):
+    Elasticsearch computes such a key with a script and compares the condition with the text of its
+    value, which a date literal does not match.
+
+  Restrict the rows in `WHERE` instead, with the same condition:
+  `WHERE LAST_DAY(created) = '2024-01-31' GROUP BY LAST_DAY(created)`, or for a `DATE_TRUNC` key
   `WHERE created >= '2024-01-01' AND created < '2024-02-01' GROUP BY DATE_TRUNC(created, MONTH)`.
+  A bare date or timestamp column key **is** filtered: `GROUP BY created HAVING created =
+  '2024-01-03'`.
 - A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
   (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
 - ⚠️ An `OR` whose branches need **different stages** is refused, because Elasticsearch applies
@@ -1239,6 +1260,10 @@ GROUP BY profile.city;
 - `LIMIT` on a `GROUP BY` bounds the number of **groups**, not the number of rows — it is pushed
   down as the Elasticsearch `terms` size. On a multi-column `GROUP BY` it bounds **each level**, so
   the row count can exceed it.
+- ⚠️ On a multi-column `GROUP BY`, `ORDER BY` a key other than the first sorts the rows **within
+  each group of the keys before it**, not across the whole result: `GROUP BY city, created_at
+  ORDER BY created_at DESC` orders the dates inside each city. To sort the whole result by a key,
+  list that key first: `GROUP BY created_at, city ORDER BY created_at DESC`.
 - `OFFSET` is **not supported** with `GROUP BY` and is rejected: group results are not paginated.
 - With no `LIMIT`, every level is sized at Elasticsearch's `search.max_buckets` ceiling (65,536):
   a grouping wider than that fails loudly rather than truncating silently.

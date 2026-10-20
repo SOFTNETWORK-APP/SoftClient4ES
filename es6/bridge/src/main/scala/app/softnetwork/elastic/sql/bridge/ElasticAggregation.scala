@@ -32,7 +32,6 @@ import app.softnetwork.elastic.sql.query.{
 }
 import app.softnetwork.elastic.sql.function._
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.function.time.DateTrunc
 import app.softnetwork.elastic.sql.time.TimeUnit
 import com.sksamuel.elastic4s.ElasticApi.{
   avgAgg,
@@ -492,7 +491,7 @@ object ElasticAggregation {
           val currentBucketNestedPath = bucket.identifier.path
 
           val aggScript =
-            if (!bucket.isBucketScript && bucket.shouldBeScripted) {
+            if (bucket.isScriptedKey) {
               val context = PainlessContext(context = contextType, target = target)
               val painless = bucket.painless(Some(context))
               Some(now(Script(s"$context$painless").lang("painless")))
@@ -503,99 +502,94 @@ object ElasticAggregation {
           var agg: Aggregation = {
             // Story IDENT-4 -- ONE derivation of "this level is a date histogram", shared with the
             // HAVING classifier (`SingleSearch.dateHistogramLevelOf`), which refuses a key filter
-            // this level could not carry.
-            bucket.out match {
-              case _ if bucket.isDateHistogram =>
-                val functions = bucket.identifier.functions
-                val interval: Option[DateHistogramInterval] =
-                  if (functions.size == 1) {
-                    functions.head match {
-                      case trunc: DateTrunc =>
-                        trunc.unit match {
-                          case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
-                          case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
-                          case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
-                          case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
-                          case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
-                          case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
-                          case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
-                          case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
-                          case _                 => None
-                        }
-                      case _ => None
-                    }
-                  } else {
-                    None
+            // this level could not carry. `Bucket.isDateHistogram` alone decides the level type
+            // (#292): a `date_histogram` only for a key that has an interval, a `terms` level for
+            // every other key -- a bare date column on its field, any function of a column on its
+            // script. Whether a key filter on a scripted DATE key can match its values
+            // (`Bucket.isTemporalScriptKey`) is a different fact, asked by that classifier alone:
+            // no bridge reads it.
+            if (bucket.isDateHistogram) {
+              val interval: Option[DateHistogramInterval] =
+                bucket.dateHistogramUnit.flatMap {
+                  case TimeUnit.YEARS    => Option(DateHistogramInterval.Year)
+                  case TimeUnit.QUARTERS => Option(DateHistogramInterval.Quarter)
+                  case TimeUnit.MONTHS   => Option(DateHistogramInterval.Month)
+                  case TimeUnit.WEEKS    => Option(DateHistogramInterval.Week)
+                  case TimeUnit.DAYS     => Option(DateHistogramInterval.Day)
+                  case TimeUnit.HOURS    => Option(DateHistogramInterval.Hour)
+                  case TimeUnit.MINUTES  => Option(DateHistogramInterval.Minute)
+                  case TimeUnit.SECONDS  => Option(DateHistogramInterval.Second)
+                  case _                 => None
+                }
+
+              aggScript match {
+                case Some(script) =>
+                  // Scripted date histogram
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .script(script)
+                        .minDocCount(1)
                   }
+                case _ =>
+                  // Standard date histogram
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(direction match {
+                          case Asc => HistogramOrder("_key", asc = true)
+                          case _   => HistogramOrder("_key", asc = false)
+                        })
+                    case _ =>
+                      DateHistogramAggregation(bucket.name, interval = interval)
+                        .field(currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
 
-                aggScript match {
-                  case Some(script) =>
-                    // Scripted date histogram
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .script(script)
-                          .minDocCount(1)
-                          .order(direction match {
-                            case Asc => HistogramOrder("_key", asc = true)
-                            case _   => HistogramOrder("_key", asc = false)
-                          })
-                      case _ =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .script(script)
-                          .minDocCount(1)
-                    }
-                  case _ =>
-                    // Standard date histogram
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .field(currentBucketNestedPath)
-                          .minDocCount(1)
-                          .order(direction match {
-                            case Asc => HistogramOrder("_key", asc = true)
-                            case _   => HistogramOrder("_key", asc = false)
-                          })
-                      case _ =>
-                        DateHistogramAggregation(bucket.name, interval = interval)
-                          .field(currentBucketNestedPath)
-                          .minDocCount(1)
-                    }
-                }
-
-              case _ =>
-                aggScript match {
-                  case Some(script) =>
-                    // Scripted terms aggregation
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        TermsAggregation(bucket.name)
-                          .script(script)
-                          .minDocCount(1)
-                          .order(Seq(direction match {
-                            case Asc => TermsOrder("_key", asc = true)
-                            case _   => TermsOrder("_key", asc = false)
-                          }))
-                      case _ =>
-                        TermsAggregation(bucket.name)
-                          .script(script)
-                          .minDocCount(1)
-                    }
-                  case _ =>
-                    // Standard terms aggregation
-                    BucketOrder(bucketsDirection, bucket) match {
-                      case Some(direction) =>
-                        termsAgg(bucket.name, currentBucketNestedPath)
-                          .minDocCount(1)
-                          .order(Seq(direction match {
-                            case Asc => TermsOrder("_key", asc = true)
-                            case _   => TermsOrder("_key", asc = false)
-                          }))
-                      case _ =>
-                        termsAgg(bucket.name, currentBucketNestedPath)
-                          .minDocCount(1)
-                    }
-                }
+            } else {
+              aggScript match {
+                case Some(script) =>
+                  // Scripted terms aggregation
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      TermsAggregation(bucket.name)
+                        .script(script)
+                        .minDocCount(1)
+                  }
+                case _ =>
+                  // Standard terms aggregation
+                  BucketOrder(bucketsDirection, bucket) match {
+                    case Some(direction) =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                        .order(Seq(direction match {
+                          case Asc => TermsOrder("_key", asc = true)
+                          case _   => TermsOrder("_key", asc = false)
+                        }))
+                    case _ =>
+                      termsAgg(bucket.name, currentBucketNestedPath)
+                        .minDocCount(1)
+                  }
+              }
             }
           }
           agg match {
