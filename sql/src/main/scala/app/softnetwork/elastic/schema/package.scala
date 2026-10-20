@@ -286,6 +286,23 @@ package object schema {
         val docNode = root.path("_doc")
         return apply(docNode)
       }
+      // Elasticsearch 6 wraps the mapping in its single TYPE, whatever its name: `doc` for the
+      // indices Logstash and Beats 6.x create. Without this such an index loaded ZERO columns, so
+      // every statement over it ran untyped. Unwrapped only when the root has no `properties` and
+      // exactly one object-valued key that is not a `_` metadata key nor the 7+ `runtime` section,
+      // and that key holds a mapping (`properties` or `_meta`): a typeless root (7+) holding only
+      // `_meta` / `dynamic` / `runtime` is not one.
+      if (!root.has("properties")) {
+        root
+          .properties()
+          .asScala
+          .filter(e => !e.getKey.startsWith("_") && e.getKey != "runtime" && e.getValue.isObject)
+          .toList match {
+          case single :: Nil if single.getValue.has("properties") || single.getValue.has("_meta") =>
+            return apply(single.getValue)
+          case _ =>
+        }
+      }
       val options = extractObject(root, ignoredKeys = Set("properties"))
       val meta = options.get("_meta")
       val columns = meta.flatMap {
