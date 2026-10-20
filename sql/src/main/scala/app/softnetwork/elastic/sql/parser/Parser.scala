@@ -470,25 +470,32 @@ object Parser
   lazy val storedScript: PackratParser[(PainlessScript, Boolean)] =
     script ~ opt(keyword("STORED")) ^^ { case s ~ stored => (s, stored.isDefined) }
 
+  /** A column definition: its sub-fields, then its script, each optional.
+    *
+    * 🔴 The order is the one `Column.sql` renders (`FIELDS (…)` then `SCRIPT AS (…)`), so a
+    * rendered column always re-parses. A column used to declare a script OR sub-fields, never both,
+    * while `Column.sql` renders both: `c VARCHAR FIELDS (raw KEYWORD) SCRIPT AS (UPPER(k))` was
+    * refused with `')' expected but 'S' found`. A materialized view renders exactly that for a
+    * string GROUP BY key, and re-parses it when it deploys.
+    */
   lazy val column: PackratParser[Column] =
-    identName ~ extension_type ~ (storedScript | optionalMultiFields) ~ defaultVal ~ notNull ~ comment ~ (options | success(
+    identName ~ extension_type ~ optionalMultiFields ~ opt(
+      storedScript
+    ) ~ defaultVal ~ notNull ~ comment ~ (options | success(
       ListMap.empty[String, Value[_]]
-    )) ^^ { case name ~ dt ~ mfs ~ dv ~ nn ~ ct ~ opts =>
-      mfs match {
-        case (script: PainlessScript, stored: Boolean) =>
-          Column(
-            name,
-            dt,
-            Some(ScriptProcessor.fromScript(name, script, Some(dt), materialized = stored)),
-            Nil,
-            dv,
-            nn,
-            ct,
-            opts
-          )
-        case cols: List[_] =>
-          Column(name, dt, None, cols.asInstanceOf[List[Column]], dv, nn, ct, opts)
-      }
+    )) ^^ { case name ~ dt ~ cols ~ sc ~ dv ~ nn ~ ct ~ opts =>
+      Column(
+        name,
+        dt,
+        sc.map { case (script, stored) =>
+          ScriptProcessor.fromScript(name, script, Some(dt), materialized = stored)
+        },
+        cols,
+        dv,
+        nn,
+        ct,
+        opts
+      )
     }
 
   lazy val columns: PackratParser[List[Column]] =
