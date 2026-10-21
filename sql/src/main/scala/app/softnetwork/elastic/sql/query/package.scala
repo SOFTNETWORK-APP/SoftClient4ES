@@ -497,16 +497,22 @@ package object query {
       * parse, because a set-operation branch is a `single` and `single` has no `WITH`. ONE
       * derivation — [[sql]] is `ctePrefix + sqlWithoutCtes`.
       */
-    lazy val ctePrefix: String =
+    lazy val ctePrefix: String = ArithmeticExpression.outsideRelational {
       if (ctes.isEmpty) "" else ctes.map(_.sql).mkString("WITH ", ", ", " ")
+    }
 
     /** This statement rendered WITHOUT its `WITH` prefix — the body a parenthesised set-operation
       * branch renders as. Identical to [[sql]] whenever `ctes` is empty.
+      *
+      * Memoised, so always in core's syntax (`ArithmeticExpression.outsideRelational`): a
+      * subquery's or a derived table's body first rendered inside a relational fragment is still
+      * the statement core runs.
       */
-    lazy val sqlWithoutCtes: String =
+    lazy val sqlWithoutCtes: String = ArithmeticExpression.outsideRelational {
       s"$select$from${asString(where)}${asString(groupBy)}${asString(having)}${asString(
         orderBy
       )}${asString(limit)}${asString(onConflict)}"
+    }
 
     override def sql: String = ctePrefix + sqlWithoutCtes
 
@@ -2363,6 +2369,23 @@ package object query {
         groupBy.toSeq.flatMap(_.buckets.flatMap(b => Case.conditionsOf(b.identifier))))
           .flatMap(_.typeErrors(scripted = true)) ++
         scriptedExpressions.flatMap(chainTypeErrors)).distinct
+
+    /** The DATE-ARITHMETIC refusals of this RESOLVED statement, by name, in clause order -- core's
+      * messages -- and no other type rule: [[ArithmeticExpression.typeErrorsOf]] over the surface
+      * [[typeErrors]] walks -- [[scriptedExpressions]], and the operands of every `CASE` condition
+      * among them, at any depth (`Case.conditionsOf`).
+      *
+      * For an engine that renders core's date arithmetic in its own SQL
+      * (`ArithmeticExpression.renderingRelational`) and answers every other shape itself: the rest
+      * of [[typeErrors]] is not its rule, and would refuse shapes it answers.
+      */
+    private[elastic] def dateArithmeticErrors: Seq[String] = {
+      // a CASE condition's operands too, at any depth, as `typeErrors` walks them
+      def of(chain: FunctionChain): Seq[String] =
+        ArithmeticExpression.typeErrorsOf(chain) ++
+        Case.conditionsOf(chain).flatMap(_.referencedIdentifiers).flatMap(of)
+      scriptedExpressions.flatMap(of).distinct
+    }
 
     /** Every expression of this statement that can be emitted as Painless, as the chain it is.
       *
