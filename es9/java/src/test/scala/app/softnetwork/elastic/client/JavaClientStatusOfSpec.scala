@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.java.{JavaClientCompanion, JavaClientHelpers}
 import co.elastic.clients.elasticsearch._types.{ElasticsearchException, ErrorCause, ErrorResponse}
+import co.elastic.clients.json.jackson.JacksonJsonpMapper
 import com.typesafe.config.ConfigFactory
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
@@ -76,6 +77,43 @@ class JavaClientStatusOfSpec extends AnyWordSpec with Matchers {
       probe.statusOf(
         app.softnetwork.elastic.client.result.ElasticError("boom", statusCode = Some(403))
       ) shouldBe Some(403)
+    }
+  }
+
+  /** An error read by the client's own deserializer, as the transport reads it: `failed_shards` is
+    * not a typed field of `ErrorCause`, so it lands in its raw metadata.
+    */
+  private def readException(json: String): ElasticsearchException = {
+    val mapper = new JacksonJsonpMapper()
+    val parser = mapper.jsonProvider().createParser(new _root_.java.io.StringReader(json))
+    new ElasticsearchException("es/search", ErrorResponse._DESERIALIZER.deserialize(parser, mapper))
+  }
+
+  /** The shape Elasticsearch answers when a Painless script throws on every shard: the reason of
+    * the throw is in the failed shard's `caused_by` only.
+    */
+  private def allShardsFailed(shardCause: String, rootCause: String): String =
+    s"""{"error":{"root_cause":[{"type":"script_exception","reason":"$rootCause",""" +
+    """"lang":"painless"}],"type":"search_phase_execution_exception",""" +
+    """"reason":"all shards failed","phase":"query","grouped":true,"failed_shards":[{"shard":0,""" +
+    """"index":"idx","node":"n1","reason":{"type":"script_exception","reason":"runtime error",""" +
+    """"lang":"painless","caused_by":{"type":"number_format_exception",""" +
+    s""""reason":"$shardCause"}}}]},"status":400}"""
+
+  "elasticsearchErrorMessage" should {
+
+    "carry the failed shard's reason, once" in {
+      val ex = readException(allShardsFailed("For input string: \\\"x\\\"", "runtime error"))
+      probe.elasticsearchErrorMessage("search", ex) shouldBe
+      "Elasticsearch error during search: search_phase_execution_exception - all shards failed; " +
+      "runtime error: For input string: \"x\""
+      probe.statusOf(ex) shouldBe Some(400)
+      // a reason the message already says is not said twice
+      probe.elasticsearchErrorMessage(
+        "search",
+        readException(allShardsFailed("boom", "boom"))
+      ) shouldBe
+      "Elasticsearch error during search: search_phase_execution_exception - all shards failed; boom"
     }
   }
 }

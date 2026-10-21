@@ -257,6 +257,28 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
     assertShardFailure(unionSql, result, resultsOf(result))
   }
 
+  /** A search on which EVERY shard fails answers Elasticsearch's reason, not only its wrapper.
+    *
+    * No `id` is a number, so `CAST(id AS INT)` throws on every document, and each of the 3 shards
+    * holds some: Elasticsearch answers HTTP 400 "all shards failed", and WHY (`For input string`)
+    * is in each failed shard's `caused_by` only. Before the fix the ES 8 / 9 Java client answered
+    * no more than `search_phase_execution_exception - all shards failed; runtime error` (MEASURED
+    * on 8.18.3 for a Painless script that throws).
+    */
+  "a search whose every shard fails" should "answer Elasticsearch's reason" in {
+    shardFixture
+    val sql =
+      s"SELECT CAST(id AS INT) AS n, COUNT(*) AS c FROM $shardIndex GROUP BY CAST(id AS INT)"
+    client.search(SelectStatement(sql)) match {
+      case ElasticFailure(error) =>
+        withClue(s"$sql -> ${error.message}") {
+          error.message should include("For input string")
+        }
+      case ElasticSuccess(response) =>
+        fail(s"a search on which every shard failed answered ${response.results.size} row(s): $sql")
+    }
+  }
+
   // -- the same search read page by page ----------------------------------------------------------
 
   /** Without a LIMIT a row query is read page by page, through the client's paging door: PIT (ES
