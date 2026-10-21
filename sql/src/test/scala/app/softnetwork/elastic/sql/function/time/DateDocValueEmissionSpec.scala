@@ -84,15 +84,21 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
   // -- LAST_DAY -----------------------------------------------------------------------------------
 
   "LAST_DAY over a date column" should "adjust the receiver instead of calling a LocalDate-only method" in {
+    // The doc value is made the DATE LAST_DAY answers first, through the UTC normalisation
+    // (Elasticsearch 6.8's `JodaCompatibleZonedDateTime` needs it), then adjusted.
     scriptOf("SELECT LAST_DAY(d) FROM t") shouldBe
     "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
-    "(param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth())"
+    "(param1 == null) ? null : " +
+    "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(TemporalAdjusters.lastDayOfMonth())"
   }
 
   it should "emit the same adjuster for a timestamp column" in {
+    // ...and over a TIMESTAMP too: LAST_DAY is a DATE whatever its operand, so the time of day is
+    // dropped, where the adjuster alone kept it (`2024-02-29T12:00:00Z` for a DATE column).
     scriptOf("SELECT LAST_DAY(ts) FROM t") shouldBe
     "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
-    "(param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth())"
+    "(param1 == null) ? null : " +
+    "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(TemporalAdjusters.lastDayOfMonth())"
   }
 
   it should "keep working where the operand is already a LocalDate" in {
@@ -105,14 +111,45 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     )
   }
 
+  /** LAST_DAY is a DATE whatever its operand, as DuckDB types `last_day(TIMESTAMP)`: it reports
+    * DATE and renders a `LocalDate`, so a CASE beside a cast to DATE is a DATE too.
+    */
+  it should "report the DATE it renders" in {
+    val resolved = Parser("SELECT LAST_DAY(ts) FROM t") match {
+      case Right(ss: SingleSearch) => ss.update(Some(schema)).select.fields.head.identifier
+      case other                   => fail(s"expected a SingleSearch, got $other")
+    }
+    resolved.reportedType shouldBe SQLTypes.Date
+    resolved.renderedType shouldBe SQLTypes.Date
+  }
+
+  it should "leave a date_nanos operand as it is, whose type is unknown" in {
+    // `date_nanos` types `Any` (BIDC-4): its receiver is not guessed, as before (by-name residual)
+    scriptOf("SELECT LAST_DAY(dn) FROM t") shouldBe
+    "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    "(param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth())"
+  }
+
   /** 🔴 The MECHANISM, not the bytes: the reason `lengthOfMonth()` shipped broken is that nobody
     * asked whether the receiver has it. The pipeline hands this call a `ZonedDateTime`, a
-    * `LocalDate` or a `LocalDateTime` depending on which coercions ran, so the method LAST_DAY
+    * `LocalDate` or a `LocalDateTime` depending on which coercions ran, so the adjuster LAST_DAY
     * emits must resolve on ALL THREE -- asked of the JDK, which is the only authority on that.
     * Restoring `withDayOfMonth`/`lengthOfMonth` reddens this test on `ZonedDateTime`.
+    *
+    * Over a bare column the receiver is now the doc value made a DATE, so the methods called on the
+    * parameter are the conversion's (`toInstant`, on the doc value) and the adjuster's (`with`);
+    * both are asked of the JDK, the conversion of the doc value's class alone.
     */
   it should "emit only methods that exist on every receiver type the pipeline can produce" in {
     val emitted = scriptOf("SELECT LAST_DAY(d) FROM t")
+    withClue(s"the doc value is converted before the adjuster: $emitted ") {
+      emitted should include(".toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(")
+    }
+    Seq(classOf[ZonedDateTime], classOf[LocalDate], classOf[LocalDateTime]).foreach { receiver =>
+      withClue(s"with is not declared on ${receiver.getName}: ") {
+        receiver.getMethods.exists(_.getName == "with") shouldBe true
+      }
+    }
 
     // 🔴 EVERY call on EVERY bound operand, not the first one on the first. The defect was in the
     // INNER call -- `param1.withDayOfMonth(param1.lengthOfMonth())` -- whose outer `withDayOfMonth`
@@ -128,7 +165,7 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     val methods = """param\d+\.(\w+)\(""".r.findAllMatchIn(emitted).map(_.group(1)).toList
     withClue(s"no method call on the operand in: $emitted") { methods should not be empty }
 
-    Seq(classOf[ZonedDateTime], classOf[LocalDate], classOf[LocalDateTime]).foreach { receiver =>
+    Seq(classOf[ZonedDateTime]).foreach { receiver =>
       methods.foreach { method =>
         withClue(s"$method is not declared on ${receiver.getName} (emitted: $emitted): ") {
           receiver.getMethods.exists(_.getName == method) shouldBe true

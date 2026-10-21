@@ -543,10 +543,13 @@ package object time {
       * one broken receiver for another.
       *
       * `with(TemporalAdjusters.lastDayOfMonth())` is defined on `Temporal`, so it needs no
-      * knowledge of the receiver at all and returns the receiver's own type. Executed on real
-      * Elasticsearch 6.8.23, 7.17.29, 8.18.3 and 9.0.3 over `ZonedDateTime`, `LocalDate` and
-      * `LocalDateTime` receivers -- see `DateDocValueEmissionSpec` for what the emission is pinned
-      * against.
+      * knowledge of the receiver at all. Executed on real Elasticsearch 6.8.23, 7.17.29, 8.18.3 and
+      * 9.0.3 over `ZonedDateTime`, `LocalDate` and `LocalDateTime` receivers -- see
+      * `DateDocValueEmissionSpec` for what the emission is pinned against.
+      *
+      * 🔴 It returns the RECEIVER's own type, so in a query the receiver is first made a DATE
+      * (`LastDayOfMonth.toPainlessCall`): over a timestamp the adjuster kept the time of day, a
+      * `ZonedDateTime`, where `LAST_DAY` is a DATE.
       */
     override def painless(context: Option[PainlessContext]): String = ".with"
     override lazy val words: List[String] = List(sql, "LASTDAY")
@@ -563,19 +566,54 @@ package object time {
     override def inputType: SQLDate = SQLTypes.Date
     override def outputType: SQLDate = SQLTypes.Date
 
+    /** `LAST_DAY` is a DATE whatever its operand, as DuckDB types `last_day(TIMESTAMP)`: in a query
+      * its receiver is converted to a DATE before the adjuster ([[toPainlessCall]]), so it renders
+      * a `LocalDate`. It PRODUCES its type rather than preserving its receiver's (#384), which is
+      * what `Identifier.renderedType` -- and so a consumer's conversion and a conditional's arm --
+      * reads. Reporting the receiver's TIMESTAMP typed `CASE … THEN CAST(d AS DATE) ELSE
+      * LAST_DAY(ts) END` a TIMESTAMP, where DuckDB answers a DATE. While an ingest processor
+      * renders, where the receiver is not converted, it preserves its receiver's type, as it did
+      * (`SQLTypeUtils.rendersOutsideQuery`).
+      */
+    override def producesOutputJavaType: Boolean = !SQLTypeUtils.rendersOutsideQuery
+
+    override def reportedType: SQLType = SQLTypes.Date
+
     override def sql: String = LastDayOfMonth.sql
 
     override def toSQL(base: String): String = {
       s"$sql($base)"
     }
 
+    /** 🔴 The receiver is converted to a DATE FROM what it renders, through the one arm conversion
+      * (`SQLTypeUtils.convertArm`): a date doc value through the UTC normalisation
+      * (`….toInstant().atZone(ZoneId.of('Z')).toLocalDate()`), a receiver that already renders a
+      * `LocalDate` (a cast to DATE, `CURRENT_DATE`, a narrowed parameter) as it is. Without it the
+      * adjuster answered the receiver's class: `LAST_DAY(ts)` kept `ts`'s time of day, a
+      * `ZonedDateTime` in a DATE column, and a CASE mixing it with a DATE arm answered two classes.
+      *
+      * ⚠️ Only a BARE column is converted here. A function-wrapped column arrives converted
+      * already: `FunctionN.painless` converts it to this function's input type, DATE, from what it
+      * renders (`SQLTypeUtils.renderedSourceType`) -- which is why `LAST_DAY(CAST(ts AS
+      * TIMESTAMP))` always answered a DATE. A bare column arrives as its doc value: the conversion
+      * `FunctionN` attempts for it is a method appended to the column's parameter object, which
+      * lands on whichever copy of the column the script registered first -- not this one (MEASURED:
+      * `LAST_DAY(ts)` rendered `param1.with(…)` over the raw doc value).
+      *
+      * The argument is guarded by the call (`(param1 == null) ? null : …`), so it is not NULL here.
+      * An ingest processor keeps its bytes: its receiver is parsed from the raw `ctx.<field>`.
+      */
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
         case arg :: Nil =>
-          s"$arg${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
+          val receiver =
+            if (SQLTypeUtils.convertsArms(context) && identifier.functions.isEmpty)
+              SQLTypeUtils.convertArm(identifier, arg, SQLTypes.Date, nullable = false, context)
+            else arg
+          s"$receiver${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
         case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
       }
     }

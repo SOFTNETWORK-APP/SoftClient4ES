@@ -1244,7 +1244,7 @@ package object schema {
       // 🔴 The body is rendered FIRST and bound: rendering is what REGISTERS the parameters and the
       // hoisted locals, so `ctx` is only complete afterwards. An inline `s"$ctx${script.painless…}"`
       // would print an EMPTY prologue (the same trap `PainlessResidualsSpec.fieldOf` records).
-      val expression = script.painless(Some(ctx))
+      val expression = SQLTypeUtils.renderingIn(Some(ctx))(script.painless(Some(ctx)))
       val prologue = ctx.toString
       // 🔴 The old assembly had a `case Array(single) if single.trim.startsWith("return ")` arm
       // that stripped a leading `return `. It is gone because it was DEAD, and #293's lesson is

@@ -115,6 +115,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
   override def afterAll(): Unit = {
     client.deleteIndex(index)
     if (diffIndexCreated) client.deleteIndex(diffIndex)
+    if (typedNanosCreated) client.deleteIndex(typedNanos)
     createdTables.foreach(t =>
       Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds))
     )
@@ -1168,6 +1169,230 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       wrong.mkString("\n") + "\n"
     ) {
       wrong shouldBe empty
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // GATE-024 typed-path values: what a schema-typed query answers, against DuckDB 1.5.5's answer
+  // over the same documents. On the plain SELECT path a script field comes back with the response
+  // parser's class, so a DATE is asserted as its `yyyy-MM-dd` text and a TIMESTAMP as the instant
+  // its text denotes: a timestamp under a DATE label, a date under a TIMESTAMP one, reddens.
+  // ---------------------------------------------------------------------------------------------
+
+  private val typedTable = "gate024_typed"
+
+  private val typedNanos = "gate024_typed_nanos"
+
+  @volatile private var typedNanosCreated = false
+
+  /** t1 / t2 / t4 hold a value in every column, t3 none: a NULL row. t2's timestamp is late on a
+    * leap 29 February, so a LAST_DAY that keeps the time of day reads differently.
+    */
+  private lazy val typedFixture: Boolean = {
+    Await.result(
+      client.run(
+        s"CREATE TABLE $typedTable (id KEYWORD, n INT, d DATE, ts TIMESTAMP, kd KEYWORD, " +
+        "PRIMARY KEY (id))"
+      ),
+      120.seconds
+    ) match {
+      case ElasticSuccess(_)     => createdTables = typedTable :: createdTables
+      case ElasticFailure(error) => fail(s"CREATE TABLE $typedTable failed: ${error.message}")
+    }
+    implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    val docs = List(
+      """{"id":"t1","n":1,"d":"2024-01-15","ts":"2024-04-10T14:17:00Z","kd":"2024-01-03"}""",
+      """{"id":"t2","n":-1,"d":"2024-03-31","ts":"2024-02-29T23:30:00Z","kd":"2024-03-05 10:00:00"}""",
+      """{"id":"t3"}""",
+      """{"id":"t4","n":2,"d":"2023-12-31","ts":"2023-12-31T08:00:00Z","kd":"2024-12-31"}"""
+    )
+    locally {
+      implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = typedTable, logEvery = 10)
+      client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+        case ElasticSuccess(_) =>
+        case ElasticFailure(error) =>
+          fail(s"Bulk indexing into $typedTable failed: ${error.message}")
+      }
+    }
+    client.refresh(typedTable)
+    // a `date_nanos` column where the major has one (7 and up; 6.8 maps a plain `date`), and a
+    // date column no table declared
+    val nanos = if (elasticVersion.takeWhile(_ != '.').toInt >= 7) "date_nanos" else "date"
+    client
+      .createIndex(typedNanos, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    typedNanosCreated = true
+    client
+      .setMapping(
+        typedNanos,
+        s"""{"properties": {"id": {"type": "keyword"}, "dn": {"type": "$nanos"}, "dz": {"type": "date"}}}"""
+      )
+      .get shouldBe true
+    locally {
+      implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = typedNanos, logEvery = 10)
+      client.bulk[String](
+        List(
+          """{"id":"n1","dn":"2024-01-15T10:00:00Z","dz":"2024-02-10T12:00:00Z"}""",
+          """{"id":"n2"}"""
+        ),
+        identity,
+        idKey = Some(Set("id"))
+      ) match {
+        case ElasticSuccess(_) =>
+        case ElasticFailure(error) =>
+          fail(s"Bulk indexing into $typedNanos failed: ${error.message}")
+      }
+    }
+    client.refresh(typedNanos)
+    true
+  }
+
+  private val isoDate = "\\d{4}-\\d{2}-\\d{2}".r
+
+  /** DuckDB's value, as this path answers it: a DATE its `yyyy-MM-dd` text, a TIMESTAMP the instant
+    * its text denotes, anything else its text.
+    */
+  private sealed trait Expected
+  private case class ADate(text: String) extends Expected
+  private case class AnInstant(iso: String) extends Expected
+  private case class AText(text: String) extends Expected
+  private case object ANull extends Expected
+
+  private def matches(expected: Expected, got: String): Boolean = expected match {
+    case ANull       => got == "null"
+    case ADate(text) => got == text && isoDate.pattern.matcher(got).matches()
+    case AText(text) => got == text
+    case AnInstant(iso) =>
+      got.contains("T") && Try(java.time.OffsetDateTime.parse(got).toInstant)
+        .orElse(Try(Instant.parse(got)))
+        .toOption
+        .contains(Instant.parse(iso))
+  }
+
+  /** Every row that differs from DuckDB's value, or the failure of the statement. */
+  private def typedDiff(sql: String, expected: Map[String, Expected]): Seq[String] = {
+    typedFixture shouldBe true
+    Try(byId(sql, "v")).toEither match {
+      case Left(error) => Seq(s"[$sql] failed: ${error.getMessage.take(300)}")
+      case Right(got) =>
+        info(s"[$sql] $got")
+        if (got.keySet != expected.keySet) Seq(s"[$sql] ids ${got.keySet}")
+        else
+          expected.toSeq.sortBy(_._1).collect {
+            case (id, want) if !matches(want, got(id)) =>
+              s"[$sql] $id: got ${got(id)}, DuckDB $want"
+          }
+    }
+  }
+
+  private def typedRow(sql: String, expected: Map[String, Expected]): Unit = {
+    val wrong = typedDiff(sql, expected)
+    withClue(s"${wrong.mkString("\n")}\n")(wrong shouldBe empty)
+  }
+
+  private def onTyped(expr: String): String = s"SELECT id, $expr AS v FROM $typedTable"
+
+  behavior of "GATE-024 typed-path values"
+
+  it should "answer a DATE for LAST_DAY over a TIMESTAMP" in {
+    typedRow(
+      onTyped("LAST_DAY(ts)"),
+      Map(
+        "t1" -> ADate("2024-04-30"),
+        "t2" -> ADate("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      )
+    )
+  }
+
+  it should "answer a DATE for LAST_DAY over a date column no table declared" in {
+    typedRow(
+      s"SELECT id, LAST_DAY(dz) AS v FROM $typedNanos",
+      Map("n1" -> ADate("2024-02-29"), "n2" -> ANull)
+    )
+  }
+
+  it should "keep answering what it answered where it was right" in {
+    (Seq(
+      onTyped("LEAST(CAST(d AS DATE), CAST(d AS DATE))") -> Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      ),
+      onTyped("GREATEST(CAST('2024-01-01' AS DATE), CAST(d AS DATE))") -> Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ADate("2024-01-01"),
+        "t4" -> ADate("2024-01-01")
+      ),
+      onTyped("CASE WHEN n > 0 THEN d ELSE d END") -> Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      ),
+      onTyped("COALESCE(CAST(d AS DATE), CAST(d AS TIMESTAMP))") -> Map(
+        "t1" -> AnInstant("2024-01-15T00:00:00Z"),
+        "t2" -> AnInstant("2024-03-31T00:00:00Z"),
+        "t3" -> ANull,
+        "t4" -> AnInstant("2023-12-31T00:00:00Z")
+      ),
+      onTyped("DATE_FORMAT(LAST_DAY(ts), '%Y-%m-%d')") -> Map(
+        "t1" -> AText("2024-04-30"),
+        "t2" -> AText("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> AText("2023-12-31")
+      ),
+      onTyped("DAY(LAST_DAY(ts))") -> Map(
+        "t1" -> AText("30"),
+        "t2" -> AText("29"),
+        "t3" -> ANull,
+        "t4" -> AText("31")
+      ),
+      onTyped("CONVERT(COALESCE(n, 0), VARCHAR)") -> Map(
+        "t1" -> AText("1"),
+        "t2" -> AText("-1"),
+        "t3" -> AText("0"),
+        "t4" -> AText("2")
+      ),
+      onTyped("ISNULL(COALESCE(n, 0))") -> Map(
+        "t1" -> AText("false"),
+        "t2" -> AText("false"),
+        "t3" -> AText("false"),
+        "t4" -> AText("false")
+      ),
+      onTyped("LAST_DAY(LEAST(CAST(ts AS DATE), CAST('2024-01-01' AS DATE)))") -> Map(
+        "t1" -> ADate("2024-01-31"),
+        "t2" -> ADate("2024-01-31"),
+        "t3" -> ADate("2024-01-31"),
+        "t4" -> ADate("2023-12-31")
+      ),
+      onTyped("CASE n WHEN 1 THEN YEAR(d) ELSE n END") -> Map(
+        "t1" -> AText("2024"),
+        "t2" -> AText("-1"),
+        "t3" -> ANull,
+        "t4" -> AText("2")
+      )
+    ) ++ (
+      // RIGHT on 7 and up only: on 6.8 a cast to DATETIME leaves the doc value the
+      // `JodaCompatibleZonedDateTime` it is, which has no `get(ChronoField)` (an error before and
+      // after this fix)
+      if (elasticVersion.takeWhile(_ != '.').toInt < 7) Nil
+      else
+        Seq(
+          onTyped("EXTRACT(MONTH FROM COALESCE(CAST(d AS DATETIME), CAST(ts AS DATE)))") -> Map(
+            "t1" -> AText("1"),
+            "t2" -> AText("3"),
+            "t3" -> ANull,
+            "t4" -> AText("12")
+          )
+        )
+    )).flatMap { case (sql, expected) => typedDiff(sql, expected) } match {
+      case Seq() => // every one still answers DuckDB's value
+      case wrong => fail(wrong.mkString("\n"))
     }
   }
 }

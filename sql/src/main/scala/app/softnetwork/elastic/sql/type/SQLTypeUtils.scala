@@ -357,6 +357,111 @@ object SQLTypeUtils {
       case _ => in.baseType
     }
 
+  /** Is `context` a QUERY script, the one context the arm conversion ([[convertArm]]) applies in?
+    *
+    * 🔴 An INGEST processor's source is persisted (SCRIPT AS columns, CTAS pipelines, materialized
+    * view computed fields) and diffed by `ALTER`, so its bytes do not move: rendering it
+    * differently re-creates a processor nobody changed. Its operand is the raw `ctx.<field>`, which
+    * a processor reads by its runtime class already. A TRANSFORM script computes per group, where a
+    * value is the number its metric is. Neither renders a `doc[...]` value's class, so neither is
+    * converted.
+    */
+  def convertsArms(context: Option[PainlessContext]): Boolean =
+    context.exists(c => !c.isProcessor && !c.isTransform)
+
+  /** Is a script OTHER than a query rendering on this thread -- an ingest processor or a transform
+    * ([[convertsArms]])? Set for the duration of that rendering by [[renderingIn]].
+    *
+    * 🔴 A type is a context-free answer, and an expression may render one type in a query and
+    * another in an ingest processor, whose bytes do not move (the ALTER-churn rule): `LAST_DAY` is
+    * a DATE in a query, where its receiver is converted to one, and keeps its receiver's TIMESTAMP
+    * in a processor, where it is not. Every consumer reads the type (date arithmetic and `GREATEST`
+    * / `LEAST` floor a DATE operand to its day): answering DATE there moved 188 processor renders
+    * of a 13,000-statement corpus. While such a script renders, `LAST_DAY` answers the type it
+    * rendered before, and every consumer of the rendering reads it.
+    */
+  private[this] val outsideQuery = new scala.util.DynamicVariable[Boolean](false)
+
+  def rendersOutsideQuery: Boolean = outsideQuery.value
+
+  /** Renders `body` in the scope of `context`: a processor or a transform script sets
+    * [[rendersOutsideQuery]] for its whole rendering. The entry points of a rendering call it
+    * (`Identifier.painless`, `FunctionN.painless`, `ScriptProcessor.fromScript`).
+    */
+  def renderingIn[T](context: Option[PainlessContext])(body: => T): T =
+    if (!outsideQuery.value && context.exists(c => c.isProcessor || c.isTransform))
+      outsideQuery.withValue(true)(body)
+    else body
+
+  /** What an ARM renders -- the receiver of `LAST_DAY` -- once it has rendered as `rendered`.
+    *
+    *   - A parameter whose methods have already narrowed it to a `LocalDate` / `LocalTime` (a
+    *     comparison against a DATE literal narrows it) renders that: converting it again from its
+    *     column's type would call `toInstant()` on a `LocalDate`.
+    *   - An expression renders what its chain renders ([[Identifier.renderedType]]): a cast its
+    *     target, `CAST(d AS DATE)` a `LocalDate` over a TIMESTAMP-typed column.
+    *     [[renderedSourceType]] answers the column's type there for everything but a temporal
+    *     producer, which is right for the consumers that read it and wrong for an arm, whose class
+    *     is the question.
+    *   - A bare column renders its doc value: its column's runtime type (TIMESTAMP for every
+    *     `date`), or `Any` when no schema says.
+    *
+    * An aggregate keeps its `baseType`: per group it is the metric Elasticsearch computed.
+    */
+  def armSourceType(
+    arm: PainlessScript,
+    rendered: String,
+    context: Option[PainlessContext]
+  ): SQLType = {
+    val param = context.flatMap(_.find(rendered.trim))
+    if (param.exists(_.rendersLocalDate)) SQLTypes.Date
+    else if (param.exists(_.rendersLocalTime)) SQLTypes.Time
+    else
+      arm match {
+        case i: Identifier if i.functions.nonEmpty && !i.isAggregation => i.renderedType
+        case other                                                     => other.baseType
+      }
+  }
+
+  /** The ONE conversion of an arm to the type its node REPORTS (#292): FROM what the arm renders
+    * ([[armSourceType]]), TO `to`, exactly once, in a QUERY script ([[convertsArms]]). `LAST_DAY`'s
+    * receiver converts through it.
+    *
+    * 🔴 FROM what the arm RENDERS, never from its column's type: a schema-resolved identifier's
+    * `baseType` is its column's runtime type whatever function it wears.
+    *
+    * 🔴 The string overload of [[coerce]], NOT the one over a [[PainlessScript]]: that one appends
+    * `.toLocalDate()` to any named column's parameter OBJECT on its way to a DATE (the no-schema
+    * rule, "an untyped column is a `ZonedDateTime`") before the conversion from a TIMESTAMP appends
+    * `.toInstant()…toLocalDate()` onto that `LocalDate` -- two conversions, and the shard fails. It
+    * also drops the UTC normalisation Elasticsearch 6.8's `JodaCompatibleZonedDateTime` needs,
+    * which the TIMESTAMP -> DATE arm keeps (`painlessUtcLocalDate`). An arm whose type is still
+    * unknown is left as it renders.
+    *
+    * `rendered` is the arm's rendering (a function's argument); `nullable` is whether that
+    * rendering can be NULL where it is converted.
+    */
+  def convertArm(
+    arm: PainlessScript,
+    rendered: String,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String =
+    convertRendered(rendered, armSourceType(arm, rendered, context), to, nullable, context)
+
+  /** [[convertArm]] for a rendering whose type the caller knows. A rendering of unknown type is
+    * left as it is.
+    */
+  def convertRendered(
+    rendered: String,
+    from: SQLType,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String =
+    if (from.isUnknown) rendered else coerce(rendered, from, to, nullable, context)
+
   def coerce(
     expr: String,
     from: SQLType,

@@ -338,7 +338,10 @@ package object function {
     ): Option[String] =
       None
 
-    override def painless(context: Option[PainlessContext]): String = {
+    override def painless(context: Option[PainlessContext]): String =
+      SQLTypeUtils.renderingIn(context)(functionPainless(context))
+
+    private[this] def functionPainless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
           args.foreach(arg => ctx.addParam(arg)) // ensure all args are added to the context

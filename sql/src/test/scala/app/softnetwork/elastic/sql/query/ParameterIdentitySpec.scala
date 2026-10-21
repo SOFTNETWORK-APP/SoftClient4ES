@@ -406,9 +406,13 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
   }
 
   "an expression-rendering function compared with its column" should "keep one parameter" in {
+    // ONE parameter for `d`, both sides; LAST_DAY is a DATE (its receiver is made one), so its
+    // `LocalDate` is promoted to meet the raw column.
     predicateOf("SELECT name FROM t WHERE LAST_DAY(d) = d") shouldBe
     s"def param1 = $guardedDoc); " +
-    "def left1 = (param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth()); " +
+    "def param2 = (param1 == null) ? null : " +
+    "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(TemporalAdjusters.lastDayOfMonth()); " +
+    "def left1 = (param2 != null ? param2.atStartOfDay(ZoneId.of('Z')) : null); " +
     "(left1 == null || param1 == null ? false : ((left1.isEqual(param1))))"
     predicateOf("SELECT name FROM t WHERE UPPER(name) = name") shouldBe
     "def param1 = (doc['name'].size() == 0 ? null : doc['name'].value); " +

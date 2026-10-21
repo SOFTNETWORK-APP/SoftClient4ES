@@ -2309,7 +2309,10 @@ package object sql {
         case _ => reportedLeafType
       }
 
-    override def painless(context: Option[PainlessContext]): String = {
+    override def painless(context: Option[PainlessContext]): String =
+      SQLTypeUtils.renderingIn(context)(identifierPainless(context))
+
+    private[this] def identifierPainless(context: Option[PainlessContext]): String = {
       // A context-free rendering of an AGGREGATE is a bucket-pipeline rendering (`bucket_selector`
       // for HAVING, `bucket_script` for arithmetic over aggregates): there is no document to read,
       // only the metric Elasticsearch already computed, published under `buckets_path`. The

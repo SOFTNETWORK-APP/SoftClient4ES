@@ -113,6 +113,10 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
         (
           "SELECT name FROM t WHERE CAST(d AS DATE) < ts",
           "the ordering twin"
+        ),
+        (
+          "SELECT name FROM t WHERE LAST_DAY(d) = d",
+          "LAST_DAY is a DATE whatever its operand: its LocalDate meets the raw column"
         )
       )
     ) { (sql, why) =>
@@ -142,7 +146,6 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
         ("SELECT name FROM t WHERE DATE_TRUNC(d, QUARTER) < d", "the binding variant of the same"),
         ("SELECT name FROM t WHERE d > ts", "no chain at all"),
         ("SELECT name FROM t WHERE YEAR(d) = 2025", "an extraction leaves a number"),
-        ("SELECT name FROM t WHERE LAST_DAY(d) = d", "an adjuster preserves the type"),
         // 🔴 These four carry a `Conversion` and must still NOT promote. They do NOT bind the
         // `targetType == Date` clause, and saying otherwise would be false: relaxing it to
         // `case _: Conversion => true` leaves them -- and the whole suite -- green. That is
@@ -173,6 +176,12 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
     withClue(s"$emitted\n") {
       emitted should not include "atStartOfDay"
       emitted should include("isEqual")
+    }
+    // LAST_DAY is a DATE whatever its operand, so against a cast to DATE neither side moves
+    val lastDay = predicateOf("SELECT name FROM t WHERE LAST_DAY(d) > CAST(ts AS DATE)")
+    withClue(s"$lastDay\n") {
+      lastDay should not include "atStartOfDay"
+      lastDay should include("isAfter")
     }
   }
 
@@ -240,11 +249,7 @@ class MixedTemporalComparisonSpec extends AnyFlatSpec with Matchers with TableDr
           "the reversed order of the row already covered above"
         ),
         ("SELECT name FROM t WHERE ts = CAST(d AS DATE)", "the `=` spelling"),
-        ("SELECT name FROM t WHERE d = CAST(ts AS DATE)", "the columns swapped as well"),
-        (
-          "SELECT name FROM t WHERE LAST_DAY(d) > CAST(ts AS DATE)",
-          "an adjuster on the left keeps the ZonedDateTime, so the right is the one to move"
-        )
+        ("SELECT name FROM t WHERE d = CAST(ts AS DATE)", "the columns swapped as well")
       )
     ) { (sql, why) =>
       val emitted = predicateOf(sql)
