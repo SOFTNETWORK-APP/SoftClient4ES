@@ -1409,6 +1409,34 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
+  /** `date_nanos` types `Any`: LAST_DAY makes its receiver a DATE from its runtime class. Over an
+    * index, a pattern and as a GROUP BY key. On 6.8 `dn` is a plain `date`, and answers the same.
+    * n2 has no `dn`: DuckDB 1.5.5 answers NULL for it (`last_day(NULL::TIMESTAMP_NS)`).
+    *
+    * The key is asserted as the DATE text it must be. The count is compared by value, not by class:
+    * on this path an aggregate answers the class the response parser gives it (`1.0` on ES 8), not
+    * its declared BIGINT, a recorded gap this row does not pin.
+    */
+  it should "answer a DATE for LAST_DAY over a date_nanos column" in {
+    typedRows(
+      s"SELECT id, LAST_DAY(dn) AS v FROM $typedNanos" -> Map(
+        "n1" -> ADate("2024-01-31"),
+        "n2" -> ANull
+      ),
+      s"SELECT id, LAST_DAY(dn) AS v FROM $typedNanos* LIMIT 100" -> Map(
+        "n1" -> ADate("2024-01-31"),
+        "n2" -> ANull
+      )
+    )
+    val groups = rowsOf(
+      s"SELECT LAST_DAY(dn) AS k, COUNT(*) AS c FROM $typedNanos* GROUP BY LAST_DAY(dn)"
+    ).map(r =>
+      scalar(r.getOrElse("k", null)) -> Try(BigDecimal(scalar(r.getOrElse("c", null)))).toOption
+    )
+    info(s"GROUP BY LAST_DAY(dn): $groups")
+    groups should contain("2024-01-31" -> Some(BigDecimal(1)))
+  }
+
   /** A DATE cast to BIGINT answers the epoch milliseconds of its UTC midnight, and to TIME that
     * midnight, whatever renders the DATE. DuckDB refuses both casts (`Unimplemented type for cast
     * (DATE -> BIGINT)`), so these values are the rule's, not DuckDB's: before, a DATE conditional

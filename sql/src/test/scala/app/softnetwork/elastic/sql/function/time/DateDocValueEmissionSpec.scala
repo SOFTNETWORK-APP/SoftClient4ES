@@ -123,11 +123,27 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     resolved.renderedType shouldBe SQLTypes.Date
   }
 
-  it should "leave a date_nanos operand as it is, whose type is unknown" in {
-    // `date_nanos` types `Any` (BIDC-4): its receiver is not guessed, as before (by-name residual)
+  it should "make a date_nanos operand, whose type is unknown, a DATE from its runtime class" in {
+    // `date_nanos` types `Any` (BIDC-4): the arm conversion leaves its receiver as it renders, and
+    // the adjuster kept its class and time of day. LAST_DAY reads the class once per row instead
+    val dateOf =
+      "(param1 instanceof LocalDate ? param1 : param1 instanceof LocalDateTime ? " +
+      "param1.toLocalDate() : param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate())"
     scriptOf("SELECT LAST_DAY(dn) FROM t") shouldBe
     "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
-    "(param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth())"
+    s"(param1 == null) ? null : $dateOf.with(TemporalAdjusters.lastDayOfMonth())"
+    // a nameless operand of unknown type is bound once and read by the dispatch
+    scriptOf("SELECT LAST_DAY(CASE WHEN n > 1 THEN dn ELSE dn END) FROM t") should endWith(
+      "def param4 = (param3 ? param2 : param2); (param4 == null) ? null : " +
+      "(param4 instanceof LocalDate ? param4 : param4 instanceof LocalDateTime ? " +
+      "param4.toLocalDate() : param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate())" +
+      ".with(TemporalAdjusters.lastDayOfMonth())"
+    )
+    // a typed receiver is converted as before: no class read per row
+    Seq("LAST_DAY(d)", "LAST_DAY(ts)", "LAST_DAY(CAST(ts AS DATE))", "LAST_DAY(CURRENT_DATE)")
+      .foreach { expr =>
+        scriptOf(s"SELECT $expr FROM t") should not include "instanceof"
+      }
   }
 
   /** 🔴 The MECHANISM, not the bytes: the reason `lengthOfMonth()` shipped broken is that nobody

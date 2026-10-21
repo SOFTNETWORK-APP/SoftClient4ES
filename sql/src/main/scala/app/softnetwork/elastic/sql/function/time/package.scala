@@ -19,6 +19,7 @@ package app.softnetwork.elastic.sql.function
 import app.softnetwork.elastic.sql.{
   escapePainlessString,
   escapeStringLiteral,
+  painlessUtcLocalDate,
   query,
   DateMathRounding,
   DateMathScript,
@@ -643,6 +644,16 @@ package object time {
       */
     override def painless(context: Option[PainlessContext]): String = ".with"
     override lazy val words: List[String] = List(sql, "LASTDAY")
+
+    /** The DATE of a receiver whose type is unknown (`Any`: a `date_nanos` column), from its
+      * runtime class: a `LocalDate` as it is, a `LocalDateTime` its date, any other temporal (a
+      * zoned doc value) its UTC date. The arm conversion leaves such a receiver as it renders, and
+      * the adjuster kept its class and its time of day. One `instanceof` per row, for this receiver
+      * only: a typed receiver is converted as before. `receiver` is ONE value, read three times.
+      */
+    def dateOf(receiver: String): String =
+      s"($receiver instanceof LocalDate ? $receiver : $receiver instanceof LocalDateTime ? " +
+      s"$receiver.toLocalDate() : $receiver$painlessUtcLocalDate)"
   }
 
   case class LastDayOfMonth(identifier: Identifier)
@@ -678,9 +689,11 @@ package object time {
     /** 🔴 The receiver is converted to a DATE FROM what it renders, through the one arm conversion
       * (`SQLTypeUtils.convertArm`): a date doc value through the UTC normalisation
       * (`….toInstant().atZone(ZoneId.of('Z')).toLocalDate()`), a receiver that already renders a
-      * `LocalDate` (a cast to DATE, `CURRENT_DATE`, a narrowed parameter) as it is. Without it the
-      * adjuster answered the receiver's class: `LAST_DAY(ts)` kept `ts`'s time of day, a
-      * `ZonedDateTime` in a DATE column, and a CASE mixing it with a DATE arm answered two classes.
+      * `LocalDate` (a cast to DATE, `CURRENT_DATE`, a narrowed parameter) as it is, and a receiver
+      * whose type is unknown (a `date_nanos` column), which that conversion leaves as it renders,
+      * from its runtime class ([[LastDayOfMonth.dateOf]]). Without it the adjuster answered the
+      * receiver's class: `LAST_DAY(ts)` kept `ts`'s time of day, a `ZonedDateTime` in a DATE
+      * column, and a CASE mixing it with a DATE arm answered two classes.
       *
       * ⚠️ Only an operand the call has not converted is converted here. A function-wrapped column
       * arrives converted already: `FunctionN.painless` converts it to this function's input type,
@@ -715,8 +728,17 @@ package object time {
             ) context.flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(arg))))
             else None
           val operand = guarded.getOrElse(arg)
+          val converts = SQLTypeUtils.convertsArms(context) && !convertedByCall
           val receiver =
-            if (SQLTypeUtils.convertsArms(context) && !convertedByCall)
+            if (converts && SQLTypeUtils.armSourceType(identifier, operand, context).isUnknown)
+              LastDayOfMonth.dateOf(
+                if (FunctionN.isName(operand.trim)) operand.trim
+                else
+                  context
+                    .flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(operand))))
+                    .getOrElse(SQLTypeUtils.asOneValue(operand))
+              )
+            else if (converts)
               SQLTypeUtils.convertArm(identifier, operand, SQLTypes.Date, nullable = false, context)
             else operand
           // the adjuster applies to the whole receiver, not to the last branch of a conditional one
