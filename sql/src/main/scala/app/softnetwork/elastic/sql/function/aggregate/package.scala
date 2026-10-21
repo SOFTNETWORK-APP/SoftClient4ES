@@ -49,7 +49,10 @@ package object aggregate {
       * number, never a date), the coercion a per-group calculation applies to a metric
       * (`params.count_d` is a count, so it is never read as an instant), and the type rules that
       * compare a metric once the column types are known (`HAVING COUNT(d) > 1`). Reading the
-      * column's type instead is what rendered `params.count_d.toInstant()`.
+      * column's type instead is what rendered `params.count_d.toInstant()`. It is also what an
+      * aggregate identifier's `reportedType` answers, so a `CREATE TABLE … AS SELECT` or
+      * materialized-view column over an aggregate, and a function over one (`COALESCE(VAR_POP(x),
+      * 0)`), declare this type as well.
       *
       *   - `COUNT` counts: BIGINT, whatever it counts.
       *   - `AVG` averages: DOUBLE.

@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.elastic.sql.schema.mapper
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.typesafe.config.ConfigFactory
 
@@ -393,6 +394,243 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       // … and the TIMESTAMP one stays a TIMESTAMP, so this is narrowing and not a blanket collapse
       ddl should include("eff_ts TIMESTAMP")
     }
+  }
+
+  /** The source of the CTAS-over-aggregate rows: a BOOLEAN to count, an INTEGER to average, and a
+    * key to group by. Created once, by whichever of those rows runs first.
+    */
+  private lazy val ctasAggregateSource: String = {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run("CREATE TABLE IF NOT EXISTS ctas_agg_src (id INT, g KEYWORD, b BOOLEAN, n INT);")
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO ctas_agg_src (id, g, b, n) VALUES " +
+          "(1, 'x', true, 1), (2, 'x', false, 2), (3, 'y', true, 3);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+    "ctas_agg_src"
+  }
+
+  /** `(_meta.columns.<c>.data_type, properties.<c>.type)` of each column, read from the index's own
+    * mapping. ES 6.8 nests both under the mapping type, so the node is found by its `_meta`.
+    */
+  private def declaredAndMapped(index: String, columns: String*): Map[String, (String, String)] =
+    client.asInstanceOf[MappingApi].getMapping(index) match {
+      case ElasticSuccess(json) =>
+        val mapping = JacksonConfig.objectMapper.readTree(json).findParent("_meta")
+        withClue(s"[$json] ") { mapping should not be null }
+        columns.map { c =>
+          c -> (
+            mapping.path("_meta").path("columns").path(c).path("data_type").asText(),
+            mapping.path("properties").path(c).path("type").asText()
+          )
+        }.toMap
+      case other => fail(s"getMapping($index) failed: $other")
+    }
+
+  /** A CTAS column over an aggregate is declared, and mapped, with the type the aggregate PRODUCES.
+    *
+    * 🔴 Since #395 it took the type of the column the aggregate reads: `COUNT(DISTINCT b)` was
+    * declared BOOLEAN and mapped `boolean`, and `VAR_POP(n)` / `AVG(n)` INT and `integer`. On ES
+    * 6.8 every row of such a CTAS then failed to index. The values these rows write are not
+    * asserted here: the CTAS reads its SELECT through the hits path, which is a separate, older
+    * defect.
+    */
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (global)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_global AS SELECT COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_global", "c", "vp", "av") shouldBe Map(
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
+  }
+
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (grouped)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_grouped AS SELECT g, COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src GROUP BY g"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_grouped", "g", "c", "vp", "av") shouldBe Map(
+      "g"  -> ("KEYWORD", "keyword"),
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
+  }
+
+  /** A CTAS column over a date part is declared BIGINT and mapped `long`, the whole number it
+    * produces.
+    *
+    * 🔴 It was declared NUMERIC, which a CTAS maps to a `scaled_float` without a `scaling_factor`,
+    * so the target index could not be created (400 `Field [scaling_factor] is required`). The
+    * values are DuckDB's: `year(DATE '2024-03-15')` is 2024 and `month` 3.
+    */
+  it should "declare and map a CTAS date-part column BIGINT, the whole number it produces" in {
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS ctas_datepart_src (id INT, d DATE);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO ctas_datepart_src (id, d) VALUES (1, '2024-03-15'), (2, '2019-07-04');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE ctas_datepart AS SELECT id, YEAR(d) AS y, MONTH(d) AS mo " +
+          "FROM ctas_datepart_src"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    declaredAndMapped("ctas_datepart", "y", "mo") shouldBe Map(
+      "y"  -> ("BIGINT", "long"),
+      "mo" -> ("BIGINT", "long")
+    )
+    intsById("SELECT id, y FROM ctas_datepart", "y") shouldBe Map(1L -> 2024L, 2L -> 2019L)
+    intsById("SELECT id, mo FROM ctas_datepart", "mo") shouldBe Map(1L -> 3L, 2L -> 7L)
+  }
+
+  /** A set operation over a date part answers BIGINT, every value a Long, as DuckDB does.
+    *
+    * 🔴 A set operation types each leg with the type it reports, and a date part reported NUMERIC,
+    * a type read as it comes: `YEAR(d) UNION ALL n` was a NUMERIC column whose values kept the
+    * class they arrived with. DuckDB 1.5.5 types `year(d)` BIGINT and the column BIGINT, which a
+    * leg's INTEGER widens to, so the values are 2024, 2019, 7 and 42, each a BIGINT.
+    */
+  it should "answer a set operation over a date part as BIGINT, every value a Long" in {
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS setop_datepart_d (id INT, d DATE);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO setop_datepart_d (id, d) VALUES (1, '2024-03-15'), (2, '2019-07-04');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS setop_datepart_n (id INT, n INT);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO setop_datepart_n (id, n) VALUES (1, 7), (2, 42);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val sql = "SELECT YEAR(d) AS y FROM setop_datepart_d UNION ALL SELECT n FROM setop_datepart_n"
+    val values = collectRows(System.nanoTime(), client.run(sql).futureValue).map(scalarOf(_, "y"))
+    withClue(s"[$sql] ${values.map(v => s"$v: ${Option(v).map(_.getClass.getSimpleName)}")} ") {
+      values.filter(_ != null).map(_.getClass).distinct shouldBe Seq(classOf[java.lang.Long])
+      values.sortBy(String.valueOf(_).toLong) shouldBe Seq(7L, 42L, 2019L, 2024L)
+    }
+  }
+
+  /** The source of the GREATEST / LEAST rows over a date part: an INT and a REAL beside a date.
+    * Created once, by whichever of those rows runs first.
+    */
+  private lazy val greatestDatePartSource: String = {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run("CREATE TABLE IF NOT EXISTS gl_datepart (id INT, d DATE, n INT, r REAL);")
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO gl_datepart (id, d, n, r) VALUES " +
+          "(1, '2024-03-15', 7, 2030.5), (2, '2019-07-04', 2021, 1.25);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    "gl_datepart"
+  }
+
+  /** id -> the numeric value of each of `columns`, compared by value whatever its class. */
+  private def numbersById(sql: String, columns: String*): Map[Long, Seq[BigDecimal]] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      columns.map(c => BigDecimal(String.valueOf(scalarOf(row, c))))
+    }.toMap
+
+  /** GREATEST / LEAST take the common type of what their arguments REPORT, so a date part, a
+    * BIGINT, makes them BIGINT beside an INT and REAL beside a REAL, and they render the cast of
+    * that type. These rows prove that the cast RUNS and answers DuckDB's values. DuckDB 1.5.5:
+    * `typeof(greatest(n, year(d)))` is BIGINT, `typeof(greatest(r, year(d)))` FLOAT, and the values
+    * below. Before, a date part was NUMERIC and they cast to `(double)`.
+    *
+    * ⚠️ The values are compared by value, not by class. On this path (a SELECT read through its
+    * hits) a script field answers the class the response parser gives it, a whole number an Integer
+    * and a decimal a Double, not its declared type's, whatever the cast: a pre-existing gap,
+    * recorded, that these rows do not pin.
+    */
+  it should "answer GREATEST / LEAST of a date part and an INT with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(n, YEAR(d)) AS g, LEAST(YEAR(d), n) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal(2024), BigDecimal(7)),
+      2L -> Seq(BigDecimal(2021), BigDecimal(2019))
+    )
+  }
+
+  it should "answer GREATEST / LEAST of a date part and a REAL with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(r, YEAR(d)) AS g, LEAST(YEAR(d), r) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal("2030.5"), BigDecimal(2024)),
+      2L -> Seq(BigDecimal(2019), BigDecimal("1.25"))
+    )
+  }
+
+  it should "answer GREATEST / LEAST of a date part and a literal with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(YEAR(d), 2020) AS g, LEAST(YEAR(d), 2020) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal(2024), BigDecimal(2020)),
+      2L -> Seq(BigDecimal(2020), BigDecimal(2019))
+    )
   }
 
   it should "keep the script, and keep it WORKING, when the projection carries the operand (#385)" in {

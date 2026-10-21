@@ -437,6 +437,23 @@ package object time {
     override def inputType: SQLTemporal = SQLTypes.Temporal
     override def outputType: SQLNumeric = SQLTypes.Numeric
 
+    /** A date part is a whole number, so it REPORTS a BIGINT: the type DuckDB answers for every
+      * member of the family (`year`, `month`, `day`, `quarter`, `week`, `dayofweek`, `dayofyear`,
+      * `hour`, `minute`, `second`, the sub-second parts and `extract(… FROM …)`).
+      *
+      * 🔴 `outputType` stays NUMERIC: it is what `coerce` and the date part's own Painless read.
+      * `reportedType` is what a consumer that DECLARES a column reads (`CREATE TABLE … AS SELECT`,
+      * a materialized view), and NUMERIC there was a column no index could be created with (a
+      * `scaled_float` without a `scaling_factor`). Set operations, comparisons and GREATEST / LEAST
+      * type an operand with it too (one derivation): a `UNION` over a date part is BIGINT, a quoted
+      * number beside one is read as a whole number, and GREATEST / LEAST, which take the common
+      * type of their arguments, render the cast of that type (`(long)` beside an INT, `(float)`
+      * beside a REAL), the one Painless that follows this type. This is the override
+      * `Identifier.reportedType` is built for: only a function that actually says something
+      * different gets to override.
+      */
+    override def reportedType: SQLType = SQLTypes.BigInt
+
     override def toSQL(base: String): String = s"$sql(${field.sql} FROM $base)"
 
     override def update(request: query.SingleSearch): Extract = this
