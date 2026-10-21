@@ -2815,7 +2815,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |          "script": {
         |            "script": {
         |              "lang": "painless",
-        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def left1 = (param1 == null) ? null : Double.valueOf(Math.sqrt(param1)); (left1 == null ? false : ((left1 > 100.0)))"
+        |              "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def left1 = (param1 == null) ? null : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take square root of a negative number')).toString()) : Double.valueOf(Math.sqrt(param1))); (left1 == null ? false : ((left1 > 100.0)))"
         |            }
         |          }
         |        }
@@ -2844,7 +2844,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "__c5": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.sqrt(param1))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take square root of a negative number')).toString()) : Double.valueOf(Math.sqrt(param1)))"
         |      }
         |    },
         |    "__c6": {
@@ -2856,13 +2856,13 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "__c7": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log(param1))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of zero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of a negative number')).toString()) : Double.valueOf(Math.log(param1))))"
         |      }
         |    },
         |    "__c8": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.log10(param1))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of zero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of a negative number')).toString()) : Double.valueOf(Math.log10(param1))))"
         |      }
         |    },
         |    "__c9": {
@@ -2898,7 +2898,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "__c14": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.acos(param1))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('ACOS is undefined outside [-1,1]')).toString()) : Double.valueOf(Math.acos(param1)))"
         |      }
         |    },
         |    "__c15": {
@@ -2910,7 +2910,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "__c16": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : Double.valueOf(Math.asin(param1))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); (param1 == null) ? null : (param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('ASIN is undefined outside [-1,1]')).toString()) : Double.valueOf(Math.asin(param1)))"
         |      }
         |    },
         |    "__c17": {
@@ -2974,6 +2974,26 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll("\\(double\\)(\\d)", "(double) $1")
+      .replace(
+        "(param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakesquarerootofanegativenumber')).toString()):Double.valueOf(Math.sqrt(param1)))",
+        "(param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take square root of a negative number')).toString()) : Double.valueOf(Math.sqrt(param1)))"
+      )
+      .replace(
+        "(param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakelogarithmofzero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakelogarithmofanegativenumber')).toString()):Double.valueOf(Math.log(param1))))",
+        "(param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of zero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of a negative number')).toString()) : Double.valueOf(Math.log(param1))))"
+      )
+      .replace(
+        "(param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakelogarithmofzero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakelogarithmofanegativenumber')).toString()):Double.valueOf(Math.log10(param1))))",
+        "(param1 != null && param1 == 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of zero')).toString()) : (param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take logarithm of a negative number')).toString()) : Double.valueOf(Math.log10(param1))))"
+      )
+      .replace(
+        "(param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('ASINisundefinedoutside[-1, 1]')).toString()):Double.valueOf(Math.asin(param1)))",
+        "(param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('ASIN is undefined outside [-1,1]')).toString()) : Double.valueOf(Math.asin(param1)))"
+      )
+      .replace(
+        "(param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('ACOSisundefinedoutside[-1, 1]')).toString()):Double.valueOf(Math.acos(param1)))",
+        "(param1 != null && (param1 < -1 || param1 > 1) ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('ACOS is undefined outside [-1,1]')).toString()) : Double.valueOf(Math.acos(param1)))"
+      )
   }
 
   it should "handle string function as script field and condition" in { // 45

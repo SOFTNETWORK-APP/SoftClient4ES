@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.{
   renderedTypeOf,
   Expr,
   IntValue,
+  LiteralParam,
   PainlessContext,
   PainlessParam,
   PainlessScript,
@@ -34,6 +35,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLSmallInt,
   SQLTinyInt,
   SQLType,
+  SQLTypeUtils,
   SQLTypes
 }
 
@@ -142,8 +144,43 @@ package object math {
             if context.exists(!_.isTransform) =>
           val x = s"(${a.trim})"
           s"($x < 0 ? -$x : $x)"
+        case (op, _, List(a)) if SQLTypeUtils.convertsArms(context) && domain(op).nonEmpty =>
+          // the argument, bound once: it is read by the domain test and by the call
+          val one = SQLTypeUtils.asOneValue(a)
+          val x = context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+          // both branches are a Double: the throw is spelled as one, and the call is the one it was
+          val call = super.toPainlessCall(List(x), context)
+          domain(op).foldRight(call) { case ((outside, reason), rest) =>
+            s"($x != null && ${outside(x)} ? " +
+              s"Double.valueOf(Optional.empty().orElseThrow(() -> " +
+              s"new IllegalArgumentException('$reason')).toString()) : $rest)"
+          }
         case _ => super.toPainlessCall(callArgs, context)
       }
+
+    /** 🔴 A value outside the function's DOMAIN fails the statement, as DuckDB 1.5.5 fails it --
+      * `ASIN is undefined outside [-1,1]`, `cannot take logarithm of zero`, `cannot take square
+      * root of a negative number` (measured) -- where Java's `Math` answered `NaN` or `-Infinity`
+      * for that document and the column read the text `"NaN"`. Painless has no `throw` expression:
+      * `Optional.empty().orElseThrow(() -> new IllegalArgumentException(<reason>))` throws, with
+      * DuckDB's reason, so Elasticsearch answers the search with an error. An
+      * `IllegalArgumentException`, not the `NullPointerException` `Objects.requireNonNull` throws:
+      * Elasticsearch answers a script's error with its cause's status, a bad request (400) for an
+      * illegal argument, where Elasticsearch 6.8 answered 500 for the null pointer. In a query
+      * only: an ingest processor and a transform keep their bytes. Each pair is the test of a value
+      * outside, and the reason; a NULL argument is not tested, and answers as it did.
+      */
+    private def domain(op: MathOp): List[(String => String, String)] = op match {
+      case Asin => List((x => s"($x < -1 || $x > 1)", "ASIN is undefined outside [-1,1]"))
+      case Acos => List((x => s"($x < -1 || $x > 1)", "ACOS is undefined outside [-1,1]"))
+      case Log | Log10 =>
+        List(
+          (x => s"$x == 0", "cannot take logarithm of zero"),
+          (x => s"$x < 0", "cannot take logarithm of a negative number")
+        )
+      case Sqrt => List((x => s"$x < 0", "cannot take square root of a negative number"))
+      case _    => Nil
+    }
 
     override def update(request: query.SingleSearch): MathematicalFunctionWithOp = {
       arg match {

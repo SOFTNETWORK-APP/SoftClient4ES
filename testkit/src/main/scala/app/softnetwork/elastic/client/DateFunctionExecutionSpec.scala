@@ -1676,4 +1676,102 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       }
     }
   }
+
+  /** How `GatewayApi.run` fails `sql`: `run` when it answers an ElasticFailure, `consumed` when the
+    * rows it answered fail once they are read (a `QueryStream` reads its pages only then), each
+    * with what failed. Right: the rows, when neither fails.
+    */
+  private def runFailure(sql: String): Either[(String, Throwable), Seq[ListMap[String, Any]]] =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticFailure(error) => Left("run" -> error)
+      case ElasticSuccess(result) =>
+        Try(result match {
+          case QueryRows(rows, _)           => rows
+          case QueryStructured(response, _) => response.results
+          case QueryStream(stream, _) =>
+            Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+          case other => throw new IllegalStateException(s"Unexpected result: $other")
+        }).toEither.left.map("consumed" -> _)
+    }
+
+  /** A failure and its causes, outermost first. */
+  private def causes(failure: Throwable): Seq[Throwable] =
+    Iterator.iterate(failure)(_.getCause).takeWhile(_ != null).take(16).toList
+
+  /** Whether `text` carries `reason` as Elasticsearch's reason for the failure, not only as the
+    * script's own literal (`IllegalArgumentException('<reason>')`), which a script error echoes.
+    */
+  private def carriesReason(text: String, reason: String): Boolean =
+    text.replace(s"'$reason'", "").contains(reason)
+
+  it should "fail a function outside its domain, as DuckDB does" in {
+    typedFixture shouldBe true
+    // t4's n = 2 is outside [-1, 1]; t2's n = -1 is negative. The script throws an illegal
+    // argument with DuckDB's reason, and the statement fails. Without a LIMIT it is streamed (the
+    // Community quota caps it at 10,000 rows), so it fails when its rows are read; with one it is a
+    // search, and `run` answers an ElasticFailure.
+    //
+    // What the failure carries, measured on ES 6.8.23 (REST client) and ES 8.18.3 (Java client):
+    // - the status is the server's: ES 6.8 answers this script error 500, ES 8 400;
+    // - Elasticsearch gives the illegal argument's reason as the `caused_by` of each shard failure.
+    //   The REST client's message carries the whole response, so the reason. The Java client's
+    //   (ES 8 and 9) names the `search_phase_execution_exception` and the script's "runtime error"
+    //   only: the reason is MISSING there, a client gap, alerted and not asserted;
+    // - streamed, neither client fails the stream with an ElasticError but with its own exception,
+    //   so no status is carried: a gap, alerted. A status that is carried is asserted.
+    val major = elasticVersion.takeWhile(_ != '.').toInt
+    val status = if (major < 7) 500 else 400
+    val reasonCarried = major < 8
+    Seq(
+      "ASIN(n)"  -> "ASIN is undefined outside [-1,1]",
+      "ACOS(n)"  -> "ACOS is undefined outside [-1,1]",
+      "SQRT(n)"  -> "cannot take square root of a negative number",
+      "LOG(n)"   -> "cannot take logarithm of a negative number",
+      "LOG10(n)" -> "cannot take logarithm of a negative number"
+    ).flatMap { case (expr, reason) =>
+      Seq(onTyped(expr) -> false, s"${onTyped(expr)} LIMIT 10" -> true).flatMap {
+        case (sql, searched) =>
+          runFailure(sql) match {
+            case Right(rows)            => Seq(s"[$sql] answered $rows, DuckDB fails it: $reason")
+            case Left((venue, failure)) =>
+              // the ElasticError the failure is, or carries among its causes
+              val error = causes(failure).collectFirst { case e: ElasticError => e }
+              val chain = causes(failure)
+                .map(t => s"${t.getClass.getName}: ${String.valueOf(t.getMessage)}")
+                .mkString(" <- ")
+              info(
+                s"[$sql] fails ($venue): status ${error.flatMap(_.statusCode)}; ${chain.take(400)}"
+              )
+              if (error.isEmpty)
+                alert(s"[$sql] fails ($venue) with no ElasticError: no status is carried")
+              if (!reasonCarried)
+                alert(s"[$sql] the failure does not carry the reason: $reason")
+              // the search answers the reason in its ElasticError; a stream, in its failure
+              val texts =
+                if (searched) error.map(_.message).toSeq
+                else causes(failure).map(t => String.valueOf(t.getMessage))
+              Seq(
+                (searched && venue != "run") -> s"fails ($venue), not as the search's ElasticFailure",
+                (searched && error.isEmpty) -> "carries no ElasticError",
+                error.exists(!_.statusCode.contains(status)) ->
+                s"status ${error.flatMap(_.statusCode)}, ES $major answers $status",
+                (reasonCarried && !texts.exists(carriesReason(_, reason))) ->
+                s"does not carry the reason: $reason"
+              ).collect { case (true, what) => s"[$sql] $what; $chain" }
+          }
+      }
+    } match {
+      case Seq() => // every one fails, with the status and the reason its client carries
+      case wrong => fail(wrong.mkString("\n"))
+    }
+    // inside the domain, the values
+    typedRows(
+      onTyped("SQRT(ABS(COALESCE(n, 4)))") -> Map(
+        "t1" -> AText("1.0"),
+        "t2" -> AText("1.0"),
+        "t3" -> AText("2.0"),
+        "t4" -> AText(java.lang.Math.sqrt(2.0).toString)
+      )
+    )
+  }
 }
