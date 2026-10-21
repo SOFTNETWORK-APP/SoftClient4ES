@@ -89,12 +89,16 @@ package object schema {
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
       override val name: String = n
     }
+
+    /** The case object named `n`, else [[apply]]: the type a stored processor's key names. */
+    def named(n: String): IngestProcessorType =
+      Seq(Script, Rename, Remove, Set, DateIndexName, Enrich).find(_.name == n).getOrElse(apply(n))
   }
 
   sealed trait IngestProcessor extends DdlToken {
     def column: String
     def ignoreFailure: Boolean
-    final def node: ObjectNode = {
+    def node: ObjectNode = {
       val node = mapper.createObjectNode()
       node.set(processorType.name, properties)
       node
@@ -436,6 +440,36 @@ package object schema {
 
       }
     }
+  }
+
+  /** A processor exactly as Elasticsearch returned it: `stored` is its `{"<type>": {...}}` node.
+    * [[IngestPipeline.rewrite]] writes the processors a table does not declare as these.
+    *
+    * 🔴 `node` IS the stored node. Rebuilding it from `properties` would go through a Scala map and
+    * the shared mapper, whose `NON_NULL` inclusion drops null entries (`"params": {"d": null}` came
+    * back as `{}`), and `PipelineApi` sends it untouched on every major: the per-major key
+    * stripping is for the processors elasticsql renders, and the cluster already accepted this one.
+    *
+    * Its `sql` is TOTAL, never thrown: it serves only the `description` of the pipeline it is
+    * written in and log lines, never a statement shown to be re-run, so a property the value model
+    * cannot render (a list starting with `null`) is rendered as JSON text there.
+    */
+  final case class VerbatimProcessor(pipelineType: IngestPipelineType, stored: ObjectNode)
+      extends IngestProcessor {
+    override val processorType: IngestProcessorType =
+      IngestProcessorType.named(stored.fieldNames().next())
+    override lazy val properties: ListMap[String, Any] = stored.get(processorType.name)
+    private lazy val generic = GenericProcessor(pipelineType, processorType, properties)
+    override def column: String = generic.column
+    override def ignoreFailure: Boolean = generic.ignoreFailure
+    override def description: Option[String] = generic.description
+    override def node: ObjectNode = stored.deepCopy()
+    override def ddl: String = scala.util
+      .Try(generic.ddl)
+      .getOrElse(
+        s"${processorType.name.toUpperCase}(${mapper.writeValueAsString(stored.get(processorType.name))})"
+      )
+    override def sql: String = ddl
   }
 
   case class GenericProcessor(
@@ -1763,9 +1797,102 @@ package object schema {
     }
 
     def describe: Seq[ListMap[String, Any]] = processors.map(_.describe)
+
+    /** What ALTER TABLE does to this pipeline, read live from Elasticsearch: change the processors
+      * the table declares, and keep every other one, unchanged and in place.
+      *
+      * A live processor is OWNED when the table declared it BEFORE the statement (`before`, the
+      * loaded table, not the merged one): the statement may change or remove only what the table
+      * already had. Ownership is decided by [[diff]] 's own key (type plus identity, with the
+      * script target recovery and the collision fallback), so this consumer of that key reads it
+      * through the same function as every other one (#292).
+      *
+      * One fallback on content: a live processor the key does not match, whose content equals
+      * (`IngestProcessor.diff` is empty) a declared processor no live one matched, is owned too;
+      * pairs are 1:1. Elasticsearch 6.8 needs it: it keeps no processor `description`, so a
+      * generated script reads back anonymous, and next to a user script assigning the same column
+      * the two collide and fall back to their content ids. Without the pairing the generated script
+      * is taken for a user one: every ALTER writes it twice, and DROP COLUMN keeps it.
+      *
+      * Every other live processor is UNDECLARED. The comparison puts them where they are, so they
+      * never produce a diff entry and the diff on the owned processors is exactly the one against
+      * `after` alone. The written pipeline is `after`'s processors, with the undeclared ones:
+      *   - LEADING (before every owned processor) kept first, so a normalising processor still runs
+      *     before the computed columns that read its output;
+      *   - TRAILING (all the others) after them, in live order. An undeclared processor placed
+      *     between two owned ones therefore moves after them when an owned processor changes;
+      *   - written as Elasticsearch returned them ([[VerbatimProcessor]], from `verbatim`), never
+      *     re-rendered through the typed model, which drops keys it does not model (`tag` and
+      *     `on_failure` of a `set`, `ignore_missing` of a `rename`), nor through a Scala map: a
+      *     re-rendered processor would be silently changed.
+      *
+      * @param before
+      *   the pipeline the table declared before the statement
+      * @param after
+      *   the pipeline the table declares after it
+      * @param stored
+      *   the JSON this pipeline was read from, as Elasticsearch returned it; it is read again with
+      *   [[IngestPipeline.verbatim]], position for position
+      */
+    def rewrite(
+      before: IngestPipeline,
+      after: IngestPipeline,
+      stored: String
+    ): PipelineRewrite = {
+      val verbatim = IngestPipeline.verbatim(name, stored, pipelineType)
+      require(
+        verbatim.processors.size == processors.size,
+        s"pipeline $name: the verbatim read holds ${verbatim.processors.size} processor(s), " +
+        s"the typed read ${processors.size}"
+      )
+      def position(p: IngestProcessor): Int = processors.indexWhere(_ eq p)
+
+      val declared = diff(before)
+      val unpaired = scala.collection.mutable.ListBuffer[IngestProcessor]()
+      unpaired ++= declared.collect { case ProcessorAdded(p) => p }
+      val undeclared = declared
+        .collect { case ProcessorRemoved(p) => p }
+        .sortBy(position)
+        .filterNot { p =>
+          unpaired.indexWhere(q => p.diff(q).isEmpty) match {
+            case -1 => false
+            case i =>
+              unpaired.remove(i)
+              true
+          }
+        }
+      val positions = undeclared.map(position)
+      val leading = processors.indices.takeWhile(positions.contains)
+      val trailing = positions.drop(leading.size)
+
+      val compared = after.copy(processors =
+        leading.map(processors) ++ after.processors ++ trailing.map(processors)
+      )
+      val written = after.copy(processors =
+        leading.map(verbatim.processors) ++ after.processors ++ trailing.map(verbatim.processors)
+      )
+      val kept = before.copy(processors =
+        leading.map(verbatim.processors) ++ before.processors ++ trailing.map(verbatim.processors)
+      )
+      val previous = Seq(before, kept).map(_.copy(name = name)) :+ this
+      PipelineRewrite(diff(compared), written, positions.map(verbatim.processors), stored, previous)
+    }
   }
 
   object IngestPipeline {
+
+    /** The pipeline `json` holds, read WITHOUT the typed model: each processor, in order, is a
+      * [[VerbatimProcessor]] carrying its stored node, so writing it back writes what Elasticsearch
+      * returned. [[IngestPipeline.rewrite]] writes the processors a table does not declare from
+      * this read.
+      */
+    def verbatim(name: String, json: String, pipelineType: IngestPipelineType): IngestPipeline = {
+      val processors = mapper.readTree(json).get("processors").elements().asScala.toList.map {
+        processor => VerbatimProcessor(pipelineType, processor.deepCopy[ObjectNode]())
+      }
+      IngestPipeline(name = name, pipelineType = pipelineType, processors = processors)
+    }
+
     def apply(
       name: String,
       json: String,

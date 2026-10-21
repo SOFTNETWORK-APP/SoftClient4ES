@@ -29,7 +29,13 @@ import app.softnetwork.elastic.sql.query.{
   DropPipeline,
   PipelineStatement
 }
-import app.softnetwork.elastic.sql.schema.{GenericProcessor, IngestPipeline}
+import app.softnetwork.elastic.sql.schema.{
+  mapper,
+  GenericProcessor,
+  IngestPipeline,
+  VerbatimProcessor
+}
+import com.fasterxml.jackson.databind.JsonNode
 
 trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
 
@@ -88,43 +94,91 @@ trait PipelineApi extends ElasticClientHelpers { _: VersionApi =>
     }
   }
 
+  /** `pipeline` as this major's CREATE PIPELINE sends it. Elasticsearch 6 and 7 refuse keys newer
+    * majors accept, so the processors elasticsql renders lose `separator` (and, on 6, `description`
+    * and `ignore_empty_value`); a [[VerbatimProcessor]] is sent as Elasticsearch returned it, since
+    * that cluster already accepted it.
+    */
+  private def forThisMajor(pipeline: IngestPipeline): ElasticResult[IngestPipeline] = {
+    val elasticVersion = {
+      this.version match {
+        case ElasticSuccess(v) => v
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
+          return ElasticResult.failure(error)
+      }
+    }
+    if (ElasticsearchVersion.isEs6(elasticVersion))
+      ElasticSuccess(
+        pipeline.copy(processors = pipeline.processors.map {
+          case stored: VerbatimProcessor => stored
+          case processor =>
+            GenericProcessor(
+              processorType = processor.processorType,
+              properties = processor.properties
+                .filterNot(_._1 == "description")
+                .filterNot(_._1 == "separator")
+                .filterNot(_._1 == "ignore_empty_value")
+            )
+        })
+      )
+    else if (ElasticsearchVersion.isEs7(elasticVersion))
+      ElasticSuccess(
+        pipeline.copy(processors = pipeline.processors.map {
+          case stored: VerbatimProcessor => stored
+          case processor =>
+            GenericProcessor(
+              processorType = processor.processorType,
+              properties = processor.properties
+                .filterNot(_._1 == "separator")
+            )
+        })
+      )
+    else ElasticSuccess(pipeline)
+  }
+
+  /** CREATE OR REPLACE `pipeline` over the pipeline Elasticsearch `stored`: its processors as this
+    * major's CREATE PIPELINE sends them, and every other key of the stored document (`on_failure`,
+    * `version`, `_meta`, ...) as Elasticsearch returned it. The stored `description` is kept unless
+    * it is the one this same rendering gives one of the `previous` pipelines, i.e. elasticsql's
+    * own: then the one CREATE PIPELINE writes replaces it.
+    */
+  private[client] def replacePipeline(
+    pipeline: IngestPipeline,
+    stored: String,
+    previous: Seq[IngestPipeline]
+  ): ElasticResult[Boolean] =
+    forThisMajor(pipeline) match {
+      case ElasticSuccess(major) =>
+        val description = Option(mapper.readTree(stored).get("description")).map(_.asText())
+        val replaceDescription = description.exists { d =>
+          previous.exists(p =>
+            forThisMajor(p).toOption.flatMap(m => scala.util.Try(m.sql).toOption).contains(d)
+          )
+        }
+        val document = major.node
+        if (!replaceDescription) document.remove("description")
+        val fields = mapper.readTree(stored).fields()
+        while (fields.hasNext) {
+          val field = fields.next()
+          if (
+            field.getKey != "processors" && !(replaceDescription && field.getKey == "description")
+          )
+            document.set[JsonNode](field.getKey, field.getValue)
+        }
+        createPipeline(pipeline.name, mapper.writeValueAsString(document))
+      case failure @ ElasticFailure(_) => failure
+    }
+
   private[client] def pipeline(statement: PipelineStatement): ElasticResult[Boolean] = {
     statement match {
       case ddl: CreatePipeline =>
-        val elasticVersion = {
-          this.version match {
-            case ElasticSuccess(v) => v
-            case ElasticFailure(error) =>
-              logger.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
-              return ElasticResult.failure(error)
-          }
+        // a match, not `flatMap`: `flatMap` turns an exception into a failure, and this path throws
+        // as it always did
+        forThisMajor(ddl.ddlPipeline) match {
+          case ElasticSuccess(pipeline)    => createPipeline(ddl.name, pipeline.json)
+          case failure @ ElasticFailure(_) => failure
         }
-        if (ElasticsearchVersion.isEs6(elasticVersion)) {
-          val pipeline = ddl.ddlPipeline.copy(
-            processors = ddl.ddlPipeline.processors.map { processor =>
-              GenericProcessor(
-                processorType = processor.processorType,
-                properties = processor.properties
-                  .filterNot(_._1 == "description")
-                  .filterNot(_._1 == "separator")
-                  .filterNot(_._1 == "ignore_empty_value")
-              )
-            }
-          )
-          createPipeline(ddl.name, pipeline.json)
-        } else if (ElasticsearchVersion.isEs7(elasticVersion)) {
-          val pipeline = ddl.ddlPipeline.copy(
-            processors = ddl.ddlPipeline.processors.map { processor =>
-              GenericProcessor(
-                processorType = processor.processorType,
-                properties = processor.properties
-                  .filterNot(_._1 == "separator")
-              )
-            }
-          )
-          createPipeline(ddl.name, pipeline.json)
-        } else
-          createPipeline(ddl.name, ddl.ddlPipeline.json)
       case ddl: DropPipeline =>
         deletePipeline(ddl.name, ifExists = ddl.ifExists)
       case ddl: AlterPipeline =>

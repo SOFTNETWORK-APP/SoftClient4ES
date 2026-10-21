@@ -413,10 +413,10 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     *
     * ⚠️ NOT covered by a test, and it cannot be from outside: the divergent state exists only
     * between that `put` and `compute` installing the entry, and every seam a test can override
-    * (`executeGetIndex`, `getIndex`, `getTemplate`, `getPipeline`) runs BEFORE the `put`. Adding a
-    * hook that exists only to be parked in would be worse than the finding. The structural cure is
-    * to carry the target ON the cache entry so there is no second map to keep in sync — worth
-    * doing, deliberately not done here (it rewrites #276's invalidation path).
+    * (`executeGetIndex`, `getIndex`, `getTemplate`) runs BEFORE the `put`. Adding a hook that
+    * exists only to be parked in would be worse than the finding. The structural cure is to carry
+    * the target ON the cache entry so there is no second map to keep in sync — worth doing,
+    * deliberately not done here (it rewrites #276's invalidation path).
     *
     * Above four times the threshold the whole cache is dropped instead: values here are entire
     * `Table`s, not the `Int` of #238's shard counts, and expiry alone bounds nothing when an index
@@ -639,71 +639,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         return ElasticSuccess(None)
       }
     }
-    var tempIndex = Index(index, root)
-    tempIndex.defaultIngestPipelineName match {
-      case Some(pipeline) =>
-        logger.info(
-          s"Index '$index' has default ingest pipeline '$pipeline'"
-        )
-        getPipeline(pipeline) match {
-          case ElasticSuccess(Some(json)) =>
-            logger.info(
-              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-            )
-            tempIndex = tempIndex.copy(defaultPipeline = Some(json))
-          case ElasticSuccess(None) =>
-            logger.warn(
-              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-            )
-            return ElasticFailure(
-              ElasticError(
-                message = s"Default ingest pipeline '$pipeline' for index '$index' does not exist",
-                cause = None,
-                statusCode = Some(404),
-                index = Some(index),
-                operation = Some("getIndex")
-              )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-            )
-            return ElasticFailure(error.copy(operation = Some("getIndex")))
-        }
-      case None => // No default ingest pipeline
-    }
-    tempIndex.finalIngestPipelineName match {
-      case Some(pipeline) =>
-        logger.info(
-          s"Index '$index' has final ingest pipeline '$pipeline'"
-        )
-        getPipeline(pipeline) match {
-          case ElasticSuccess(Some(json)) =>
-            logger.info(
-              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-            )
-            tempIndex = tempIndex.copy(finalPipeline = Some(json))
-          case ElasticSuccess(None) =>
-            logger.warn(
-              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-            )
-            return ElasticFailure(
-              ElasticError(
-                message = s"Final ingest pipeline '$pipeline' for index '$index' does not exist",
-                cause = None,
-                statusCode = Some(404),
-                index = Some(index),
-                operation = Some("getIndex")
-              )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-            )
-            return ElasticFailure(error.copy(operation = Some("getIndex")))
-        }
-      case None => // No default ingest pipeline
-    }
+    val tempIndex = Index(index, root)
     ElasticSuccess(Some(tempIndex))
   }
 

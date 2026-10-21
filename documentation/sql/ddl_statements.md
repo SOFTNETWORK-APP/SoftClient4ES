@@ -371,8 +371,9 @@ The gateway:
 >
 > The same applies to a pipeline processor the source table declares: one that **writes** — or,
 > where the processor's operands are determinable, **reads** — a column the projection does not
-> carry is not copied either. A processor read back from Elasticsearch that this engine does not
-> recognise is checked on its target field only, because its other operands cannot be identified.
+> carry is not copied either.
+> A processor the source's pipeline holds without the source table declaring it (one added with
+> `ALTER PIPELINE … ADD PROCESSOR`, say) is not copied.
 >
 > If the copied script would otherwise be invalid in the new table — an operand whose declared
 > type the function cannot take, say — the statement is **rejected**, and the reason is worded
@@ -588,6 +589,35 @@ of the document.
 - `DROP ALIAS alias_name`
 - `SET SCHEMA CACHE TTL [=] 'duration'`
 - `DROP SCHEMA CACHE TTL`
+
+> **`ALTER TABLE` changes only the ingest processors the table declares**: those of its computed
+> columns, defaults, primary key and partitioning. A processor its pipeline holds otherwise (added
+> with `ALTER PIPELINE … ADD PROCESSOR`, through the Elasticsearch API, or in a pipeline named by
+> `default_pipeline` / `final_pipeline`) is not changed or removed by `ALTER TABLE` (one exception
+> closes this note):
+>
+> - When no declared processor changes, the pipeline is not written.
+> - When one does, the pipeline is written again, with each such processor as Elasticsearch
+>   returned it (the same JSON values; a number or a string escape may be spelled differently,
+>   `1.50` as `1.5`, `\/` as `/`). One placed before every declared processor stays first; every
+>   other one, including one placed between two declared processors, follows the declared ones.
+>   The pipeline's own `on_failure`, `version` and `_meta` are kept as Elasticsearch returned them,
+>   and so is its `description`, unless it is one elasticsql wrote for the table with this
+>   Elasticsearch major's rendering, whatever the pipeline is named: that one is written again for
+>   the new declaration. A description written under another major, or by an older release, is kept.
+> - When the statement reindexes, the documents are migrated through a pipeline holding only the
+>   declared processors, or with no pipeline (`_none`) when the table declares none; the index then
+>   gets its pipeline back. When the table declares no processor for a pipeline and that pipeline
+>   holds nothing else, the index is left with `_none`.
+>
+> `SHOW CREATE TABLE` shows the declaration; `SHOW CREATE PIPELINE` shows every processor.
+>
+> elasticsql treats a change to `default_pipeline` or `final_pipeline` as requiring a reindex
+> (Elasticsearch documents both settings as dynamic), and that reindex keeps the table's current
+> pipelines: `ALTER TABLE … SET SETTING default_pipeline = '…'` does not rename the table's pipeline.
+> In such a statement the current pipeline is compared against the one named, so the processors it
+> holds without the table declaring them are not protected: a declared change rewrites it with the
+> declared processors only.
 
 ### Table-level clauses take no parentheses
 
