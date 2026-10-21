@@ -1038,15 +1038,33 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   "a pattern meeting a value list on the same key" should "be REFUSED, not half-applied" in {
     // 🔴 MEASURED on ES 8.18.3 over a three-bucket fixture: `= 'a' OR LIKE 'b%'` emitted
     // `include:"b.*"` and returned only the pattern's bucket -- the value list is DISCARDED by the
-    // emission when a pattern is present, and a second pattern is lost to `orElse`.
+    // emission when a pattern is present, and a second pattern is lost to `orElse`. `cat_01` does
+    // not match `cat_3%`, so dropping it would lose that group: the combination is refused.
     // ⚠️ the client caps a relayed parse message at 200 characters (#262), so the assertion
     // anchors on the TAIL of the reason, not its middle.
     categoryRefusal(
-      "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+      "HAVING category = 'cat_01' OR category LIKE 'cat_3%'"
     ) should include("Use a single RLIKE")
     // ... and the pattern ALONE still works: cat_30 .. cat_37.
     categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe
     (30 to 37).map(c => f"cat_$c%02d")
+  }
+
+  it should "be ANSWERED when the pattern alone keeps exactly SQL's groups" in {
+    // An exact key-filter combination, answered (lead ruling): `cat_37` matches `LIKE 'cat_3%'`,
+    // so the condition equals the LIKE alone, and `include:"cat.3.*"` keeps exactly SQL's groups.
+    // DuckDB 1.5.5 over this fixture answers (cat_30, 30) .. (cat_37, 37) (MEASURED).
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+      )
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(r => r.category -> r.cnt).sorted shouldBe
+          (30 to 37).map(c => f"cat_$c%02d" -> c.toLong)
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
   }
 
   "a LIKE pattern on the key" should "treat _ as a wildcard, like every other LIKE" in {
