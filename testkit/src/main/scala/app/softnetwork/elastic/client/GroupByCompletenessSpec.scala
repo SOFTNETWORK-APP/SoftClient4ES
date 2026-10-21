@@ -3521,12 +3521,14 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   // ---- the ONE-resolution venue: a remembered schema miss -------------------------------------
   //
   // Every one-update path of `resolveWithSchema` sends the same unresolved statement -- a failed or
-  // denied mapping read, a remembered 404, a client that is not an `IndicesApi` -- so a FROM queried
-  // BEFORE its index exists runs, while the miss is remembered (`schema-cache.ttl`, at most five
-  // minutes), the bytes a user without the mapping privilege runs. Each index below is armed that
-  // way, then created with the mapping and documents of its twin above; that the rows ran at ONE
-  // resolution is proven by the MECHANISM, before and after them: the statement comes back out of
-  // the resolution as the SAME instance (no mapping was attached).
+  // denied mapping read, a remembered 404, a client that is not an `IndicesApi` -- so a FROM whose
+  // miss is remembered runs, while it stands (`schema-cache.ttl`, at most five minutes), the bytes a
+  // user without the mapping privilege runs. Each index below is created with the mapping and
+  // documents of its twin above, THEN armed: a miss is remembered on it explicitly on the base
+  // client (`rememberSchemaMiss`). Querying it before it exists no longer arms it, since creating
+  // the fixture through the same client forgets the miss (`forgetSchemaMissesOf`). That the rows ran
+  // at ONE resolution is proven by the MECHANISM, before and after them: the statement comes back
+  // out of the resolution as the SAME instance (no mapping was attached).
 
   private val oneResolutionIndex = "group_by_one_resolution"
 
@@ -3551,15 +3553,11 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       case _ => false
     }
 
-  private def armSchemaMiss(index: String): Unit = {
-    implicit val armCtx: ConversionContext = NativeContext
-    // the index does not exist yet: the lookup answers 404 and the miss is remembered
-    client.search(SelectStatement(s"SELECT COUNT(*) AS c FROM $index g")) match {
-      case ElasticSuccess(response) =>
-        fail(s"[$index] exists already: ${response.results.size} rows")
-      case ElasticFailure(_) => ()
-    }
-  }
+  /** Remember a miss on `index`, which exists: its fixture is indexed, so no later DDL through the
+    * client forgets it. On the BASE client, whose map the resolution reads.
+    */
+  private def armSchemaMiss(index: String): Unit =
+    baseClientOf(client).rememberSchemaMiss(index)
 
   private def indexCategoriesFixture(target: String): Unit = {
     val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
@@ -3595,10 +3593,10 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   "IDENT-4 at a ONE-resolution venue (a remembered schema miss)" should
   "answer every qualified row as the bare spelling does" in {
     val armed = Seq(oneResolutionIndex, oneResolutionDates, im10OneResolution)
-    armed.foreach(armSchemaMiss)
     indexCategoriesFixture(oneResolutionIndex)
     indexDatesFixture(oneResolutionDates)
     indexIm10Fixture(im10OneResolution)
+    armed.foreach(armSchemaMiss)
     val started = System.currentTimeMillis()
     def witnesses: Seq[(String, Boolean)] =
       armed.map(i => i -> resolvedOnce(s"SELECT COUNT(*) AS c FROM $i g"))

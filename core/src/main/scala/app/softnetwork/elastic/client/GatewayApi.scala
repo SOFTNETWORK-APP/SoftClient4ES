@@ -665,7 +665,7 @@ class TableExecutor(
             // UPPER(d) AS d, c FROM src` -- a statement that succeeded before the rule existed.
             // The check is pure and cheap; nothing about it belongs downstream of a destructive
             // call.
-            ctasTargetTable(indexName, create, single) match {
+            ctasTargetTable(indexName, create, single, replacing = true) match {
               case Left(error)  => Future.successful(ElasticFailure(error))
               case Right(table) =>
                 // proceed with replacement
@@ -675,7 +675,7 @@ class TableExecutor(
 
           // 4) Index not exists → creation
           case ElasticSuccess(false) =>
-            ctasTargetTable(indexName, create, single) match {
+            ctasTargetTable(indexName, create, single, replacing = false) match {
               case Left(error)  => Future.successful(ElasticFailure(error))
               case Right(table) =>
                 // proceed with creation
@@ -1027,7 +1027,8 @@ class TableExecutor(
   private def ctasTargetTable(
     indexName: String,
     create: CreateTable,
-    single: Option[SingleSearch]
+    single: Option[SingleSearch],
+    replacing: Boolean
   ): Either[ElasticError, Table] = {
     // 🔴 A self-referential CTAS must FAIL, and this guard is what keeps it failing now that the
     // target table is built BEFORE `replaceExistingIndex` deletes the index. On `main`
@@ -1036,17 +1037,38 @@ class TableExecutor(
     // hoisted above the delete it would instead find the schema, survive the delete, recreate an
     // EMPTY index and answer 200 (`0 documents indexed`). Restoring the failure is the whole job.
     //
-    // Exact match against every name the statement READS -- `sources` (the FROM tables) plus every
-    // standard JOIN leg, because `SELECT o.c FROM other o JOIN src s ON ...` empties `src` just as
-    // surely and `sources` alone does not see it. Nothing is RESOLVED: an Elasticsearch ALIAS, a
-    // wildcard or comma-list source, and a qualified reference spelled differently are all
-    // UNCOVERED, deliberately -- reading them needs the round trip this check runs before, and
-    // each behaves as it does on `main`.
+    // Every FROM the statement READS, at any depth: its own sources -- which Elasticsearch reads as
+    // ONE expression, `a, b` and `logs_*,-logs_1` alike -- every standard JOIN leg (`SELECT o.c
+    // FROM other o JOIN src s ON ...` empties `src` just as surely), and the same for every WHERE
+    // subquery body, each branch of a UNION body included: `... FROM other WHERE id IN (SELECT id
+    // FROM src)` reads `src` AFTER the OR REPLACE route has emptied it. (A derived table is refused
+    // before this method runs.) Quoted names arrive unquoted from the parser.
+    //
+    // An expression reads the target when it names it exactly, or -- when the statement REPLACES
+    // the target -- when it is a wildcard or comma-list expression that matches it by THE pattern
+    // rule the schema cache and the remembered misses use (`IndicesApi.patternKeysReading`) and
+    // does not EXCLUDE it (`logs_*,-logs_1`). `CREATE OR REPLACE TABLE logs_1 AS SELECT ... FROM
+    // logs_*` would delete `logs_1` and refill it from the pattern without its own rows, behind a
+    // 200. The rule ignores exclusions, which is right for invalidation and too wide for a
+    // refusal, so the exclusion is read here, within the same expression. A CTAS into a NEW name
+    // the pattern matches destroys nothing and runs. Nothing is RESOLVED: an Elasticsearch ALIAS
+    // and a qualified reference spelled differently are UNCOVERED, deliberately -- reading them
+    // needs the round trip this check runs before, and each behaves as it does on `main`.
+    def readExpressions(s: SingleSearch): Seq[Seq[String]] =
+      (s.sources +: s.from.joins.collect { case sj: StandardJoin => Seq(sj.source.name) }) ++
+      s.whereSubqueries.flatMap(_.query match {
+        case inner: SingleSearch => readExpressions(inner)
+        case union: MultiSearch  => union.requests.flatMap(readExpressions)
+        case _                   => Nil
+      })
+    def readsTarget(expression: Seq[String]): Boolean =
+      expression.contains(indexName) || (replacing && {
+        val parts = expression.flatMap(_.split(",")).map(_.trim).filter(_.nonEmpty)
+        IndicesApi.patternKeysReading(Seq(parts.mkString(",")), indexName).nonEmpty &&
+        !parts.exists(p => p.startsWith("-") && IndicesApi.patternMatches(p.drop(1), indexName))
+      })
     single
-      .filter { s =>
-        val read = s.sources ++ s.from.joins.collect { case sj: StandardJoin => sj.source.name }
-        read.contains(indexName)
-      }
+      .filter(s => readExpressions(s).exists(readsTarget))
       .foreach { _ =>
         val error = ElasticError(
           // ASCII only: customer-facing, and the lint job sets no `-encoding`.
@@ -1272,6 +1294,12 @@ class TableExecutor(
       // create index template
       api.createTemplate(indexName, table.indexTemplate) match {
         case success @ ElasticSuccess(true) =>
+          // the table's name now answers a schema lookup through its template: a 404 remembered
+          // for it, or for a pattern or list it matches, must not outlive this statement
+          api match {
+            case search: SearchApi => search.forgetSchemaMissesOf(indexName)
+            case _                 => ()
+          }
           logger.info(s"✅ Template $indexName created successfully.")
           success
         case ElasticSuccess(_) =>

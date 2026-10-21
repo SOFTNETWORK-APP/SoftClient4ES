@@ -1586,8 +1586,13 @@ cost of a drop is one re-read per index.
 
 The **primary shard-count cache** used by sliced paging follows the same clock (see
 [scroll](scroll.md)). The negative cache that remembers a 404 follows it only downwards: a *miss*
-has no metadata to read a per-index TTL from, and nothing invalidates it — so lowering
-`elastic.schema-cache.ttl` shortens it, while raising the setting leaves it at five minutes.
+has no metadata to read a per-index TTL from — so lowering `elastic.schema-cache.ttl` shortens it,
+while raising the setting leaves it at five minutes. A statement through the same client that
+creates, alters or drops a table (`CREATE TABLE`, a partitioned `CREATE TABLE`'s template, `ALTER
+TABLE`, `DROP TABLE`, `createIndex`, `deleteIndex`, the REPL `refresh`) forgets the misses it makes
+stale at once — the table's own and those of every pattern or list it matches — so a table created
+after a query found it missing is typed by the next statement. An index created any other way
+(another client, a raw `PUT`, an ingest that creates it) is seen when the miss expires.
 
 
 ## Performance Optimization
