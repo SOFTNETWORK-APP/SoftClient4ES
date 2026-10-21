@@ -576,4 +576,37 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     keyLists(group + "status LIKE 'a%' OR status LIKE 'a%' AND status NOT IN ('x', 'b')") shouldBe
     ((Seq("a.*"), Seq("b", "x")))
   }
+
+  "a HAVING key IS NOT NULL" should "send no key filter: a level builds no NULL group" in {
+    keyLists(group + "status IS NOT NULL") shouldBe ((Nil, Nil))
+    valuesOf(mapper.readTree(queryOf(group + "status IS NOT NULL")), "bucket_selector") shouldBe
+    empty
+    // TRUE AND status = 'a' is status = 'a'
+    keyLists(group + "status IS NOT NULL AND status = 'a'") shouldBe ((Seq("a"), Nil))
+    // the aggregate alone reaches the group filter
+    val withCount = mapper.readTree(queryOf(group + "status IS NOT NULL AND COUNT(*) > 1"))
+    keyLists(group + "status IS NOT NULL AND COUNT(*) > 1") shouldBe ((Nil, Nil))
+    valuesOf(withCount, "bucket_selector") should have size 1
+  }
+
+  "a GROUP BY level" should "be emitted without a NULL group, as Bucket.hasNullBucket states" in {
+    // `HAVING <key> IS NOT NULL` is answered as TRUE on every group, with no key filter, because
+    // a level builds no bucket for a NULL key (`Bucket.hasNullBucket` = false). A fix that emits
+    // the NULL group (`missing` on the level) must flip that premise: this row fails first.
+    Seq(
+      "SELECT status, COUNT(*) AS c FROM t GROUP BY status",
+      "SELECT UPPER(status) AS k, COUNT(*) AS c FROM t GROUP BY UPPER(status)",
+      "SELECT status, COUNT(*) AS c FROM t GROUP BY status HAVING status IS NOT NULL"
+    ).foreach { sql =>
+      withClue(sql) {
+        val ss = Parser(sql) match {
+          case Right(s: SingleSearch) => s
+          case other                  => fail(s"expected a SingleSearch, got $other")
+        }
+        val levels = valuesOf(mapper.readTree(queryOf(sql)), "terms")
+        levels should not be empty
+        levels.foreach(_.has("missing") shouldBe ss.buckets.head.hasNullBucket)
+      }
+    }
+  }
 }

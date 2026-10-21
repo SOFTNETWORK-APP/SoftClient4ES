@@ -482,6 +482,17 @@ case class Bucket(
   def isScriptedKey: Boolean =
     !isBucketScript && (shouldBeScripted || (!isDateHistogram && identifier.functions.nonEmpty))
 
+  /** Whether this level builds a bucket for the documents whose key is NULL. It does not: no bridge
+    * sets the `missing` option of a `terms` or `date_histogram` level (the only `missing` either
+    * bridge writes is a SORT option), so a document with no key value -- or whose key script
+    * returns null -- falls in no bucket of the level. So on every bucket it builds, `<key> IS NOT
+    * NULL` is TRUE, and `<key> IS NULL` has no bucket to keep.
+    *
+    * The ONE statement of that premise: the HAVING rule that reads it
+    * (`SingleSearch.keepsEveryGroup`) follows it if a level ever emits the NULL group.
+    */
+  def hasNullBucket: Boolean = false
+
   /** Whether a key filter on this level would compare a DATE, TIME or TIMESTAMP with the
     * condition's TEXT: a scripted key ([[isScriptedKey]]) whose expression renders a temporal type
     * (`renderedTypeOf`, the type every rule on the resolved statement reads).
@@ -519,8 +530,9 @@ case class Bucket(
   /** Is this level's key of a kind whose key filter Elasticsearch is PROVEN to match exactly as the
     * HAVING rules model it -- the ONE predicate that says so (#292), read by the exact decider
     * (`SingleSearch.keyFilterExactly`), the nameless-key gate
-    * (`SingleSearch.namelessKeyRouteReason`), [[keyFilterTexts]] and [[keyOf]]. A level of any
-    * other kind is judged as before: by the shape rules and their texts.
+    * (`SingleSearch.namelessKeyRouteReason`), the `<key> IS NOT NULL` rule
+    * (`SingleSearch.keepsEveryGroup`), [[keyFilterTexts]] and [[keyOf]]. A level of any other kind
+    * is judged as before: by the shape rules and their texts.
     *
     * A FIELD level, of a mapped type whose include / exclude values Elasticsearch 8.18.3 parses as
     * [[keyOf]] does (`TermsAggregatorFactory`, `IncludeExclude`, `DocValueFormat`):

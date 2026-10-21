@@ -145,6 +145,68 @@ class HavingKeyFilterDeciderSpec extends AnyFlatSpec with Matchers {
       .foreach { p => withClue(p) { SingleSearch.keyPatternAsJava(p).isDefined shouldBe true } }
   }
 
+  // --------------------------------------------------------------------- a key IS NOT NULL
+
+  private val keyed = "SELECT k AS g, COUNT(*) AS c FROM t GROUP BY k HAVING "
+
+  "a key IS NOT NULL" should "keep every group, as a level builds no NULL group" in {
+    // DuckDB keeps every non-NULL group; Elasticsearch builds no bucket for a NULL key
+    Seq(
+      keyed + "k IS NOT NULL",
+      keyed + "ISNOTNULL(k)",
+      "SELECT k AS g, COUNT(*) AS c FROM t GROUP BY g HAVING g IS NOT NULL",
+      "SELECT UPPER(k) AS g, COUNT(*) AS c FROM t GROUP BY UPPER(k) HAVING ISNOTNULL(UPPER(k))"
+    ).foreach { sql =>
+      withClue(sql) {
+        val ss = parsed(sql).fold(reason => fail(s"refused: $reason"), identity)
+        lists(ss) shouldBe ((none, none))
+      }
+    }
+  }
+
+  it should "combine as TRUE, and be refused where the lists cannot keep every group" in {
+    // TRUE AND k = 'a' is k = 'a'
+    lists(parsed(keyed + "k IS NOT NULL AND k = 'a'").fold(fail(_), identity)) shouldBe
+    ((values("a"), none))
+    // NOT ISNULL(k) is k IS NOT NULL, where the grammar reads it (after an operator)
+    lists(parsed(keyed + "k = 'a' AND NOT ISNULL(k)").fold(fail(_), identity)) shouldBe
+    ((values("a"), none))
+    lists(parsed(keyed + "k = 'a' AND NOT k IS NULL").fold(fail(_), identity)) shouldBe
+    ((values("a"), none))
+    // TRUE OR k = 'a' keeps every group, and the list would keep `a` alone
+    decided(keyed + "k IS NOT NULL OR k = 'a'") shouldBe Some(false)
+    parsed(keyed + "k IS NOT NULL OR k = 'a'").left.getOrElse("") should startWith(
+      "HAVING cannot combine the conditions in k IS NOT NULL OR k = 'a' on one GROUP BY key"
+    )
+    // undecided beside it, it is refused: the pattern alone would be sent
+    parsed(keyed + "k IS NOT NULL OR k RLIKE 'a.*'").isLeft shouldBe true
+  }
+
+  it should "leave the aggregate to the group filter, and an OR with it refused" in {
+    val and = parsed(keyed + "k IS NOT NULL AND COUNT(*) > 1").fold(fail(_), identity)
+    lists(and) shouldBe ((none, none))
+    parsed(keyed + "k IS NOT NULL OR COUNT(*) > 1").left.getOrElse("") should startWith(
+      "HAVING cannot OR conditions that Elasticsearch applies with different mechanisms"
+    )
+  }
+
+  "a key IS NULL" should "stay refused: it keeps only the NULL group, which no level builds" in {
+    Seq(
+      keyed + "k IS NULL",
+      keyed + "ISNULL(k)",
+      // NOT ISNOTNULL(k) is k IS NULL
+      keyed + "k <> 'a' OR NOT ISNOTNULL(k)",
+      // a function of the key is no test of the key
+      "SELECT k AS g, COUNT(*) AS c FROM t GROUP BY k HAVING ISNOTNULL(UPPER(k))"
+    ).foreach { sql =>
+      withClue(sql) {
+        parsed(sql).left.getOrElse("") should startWith("HAVING cannot filter on ")
+      }
+    }
+    // a NOT at the start of a HAVING is not read before ISNULL
+    parsed(keyed + "NOT ISNULL(k)").isLeft shouldBe true
+  }
+
   // ------------------------------------------- a numeric FIELD level: values name numbers
 
   private val numeric = app.softnetwork.elastic.sql.schema.Table(
@@ -163,11 +225,17 @@ class HavingKeyFilterDeciderSpec extends AnyFlatSpec with Matchers {
     parsed(sql).flatMap(_.update(Some(numeric)).validateResolved())
 
   "a numeric field level" should "read 5 and 5.0 as ONE key, as Elasticsearch parses them" in {
-    // include ["5"], exclude ["7","5.0"]: Elasticsearch removes the group 5, and DuckDB 1.5.5
-    // keeps (5, n). Refused once the mapping says n is a number.
-    resolved(
-      "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5 AND (n <> 7 OR NOT n = 5.0)"
-    ).left.getOrElse("") should startWith("HAVING cannot combine the conditions in")
+    // include ["5"], exclude ["5.0"]: Elasticsearch removes the group 5, and DuckDB 1.5.5 keeps
+    // (5, n) for both statements. Refused once the mapping says n is a number.
+    Seq(
+      "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5 AND (n IS NOT NULL OR NOT n = 5.0)",
+      "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5 AND (n <> 7 OR NOT n = 5.0)",
+      "SELECT x AS g, COUNT(*) AS c FROM t GROUP BY x HAVING x IN (1.0, 5.0) AND (x NOT IN (1, 5) OR x IS NOT NULL)"
+    ).foreach { sql =>
+      withClue(sql) {
+        resolved(sql).left.getOrElse("") should startWith("HAVING cannot combine the conditions in")
+      }
+    }
     // the same spellings are distinct keys on a keyword level, where the lists are exact
     resolved(
       "SELECT k AS g, COUNT(*) AS c FROM t GROUP BY k HAVING k = '5' AND (k <> '7' OR NOT k = '5.0')"
@@ -176,6 +244,20 @@ class HavingKeyFilterDeciderSpec extends AnyFlatSpec with Matchers {
     resolved(
       "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5 OR n = 7 AND NOT n = 3.0"
     ) shouldBe Right(())
+    resolved(
+      "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n IS NOT NULL AND n = 5.0"
+    ) shouldBe
+    Right(())
+  }
+
+  "an undecided or inexact combination beside a key IS NOT NULL" should
+  "be refused with a reason that names its leaf" in {
+    parsed(keyed + "k IS NOT NULL AND k RLIKE 'a.*'").left.getOrElse("") should include(
+      "k RLIKE 'a.*' is a regular expression the key filter matches against the whole key"
+    )
+    parsed(keyed + "k IS NOT NULL OR k = 'a'").left.getOrElse("") should include(
+      "k IS NOT NULL holds for every group"
+    )
   }
 
   // ------------------------------------- the key kinds whose key filter is proven, and the others
@@ -194,8 +276,52 @@ class HavingKeyFilterDeciderSpec extends AnyFlatSpec with Matchers {
   private def onKinds(sql: String): Either[String, Unit] =
     parsed(sql).flatMap(_.update(Some(kinds)).validateResolved())
 
+  private def unmapped(sql: String): Either[String, Unit] =
+    parsed(sql).flatMap(_.validateUnresolved())
+
+  private def ruleB(leaf: String): String =
+    s"HAVING cannot filter on $leaf: a condition over the GROUP BY key is applied by the terms " +
+    "filter, which can only express a direct comparison of the key (=, <>, LIKE, IN). Compare " +
+    "the key itself, or filter in WHERE."
+
   private def grouped(key: String, having: String): String =
     s"SELECT $key AS g, COUNT(*) AS c FROM hk GROUP BY $key HAVING $having"
+
+  "a key IS NOT NULL beside values of a level whose kind is not proven" should
+  "be refused as before, with rule (b)'s reason" in {
+    // Elasticsearch parses these levels' values its own way: 5 and 5.0 (or two spellings of one
+    // date, one address) name one key, two in the lists. MEASURED on 8.18.3 for the 26124b9b
+    // emission: no group where DuckDB 1.5.5 keeps (5, 1), and an error on unsigned_long.
+    Seq("hf", "sf", "ul", "r").foreach { c =>
+      val sql = grouped(c, s"$c = 5 AND ($c IS NOT NULL OR NOT $c = 5.0)")
+      withClue(sql) { onKinds(sql) shouldBe Left(ruleB(s"$c IS NOT NULL")) }
+    }
+    val date =
+      grouped("d", "d = '2024-01-01' AND (d IS NOT NULL OR NOT d = '2024-01-01T00:00:00Z')")
+    onKinds(date) shouldBe Left(ruleB("d IS NOT NULL"))
+    val ip = grouped("ip", "ip = '10.0.0.1' AND (ip IS NOT NULL OR NOT ip = '::ffff:10.0.0.1')")
+    onKinds(ip) shouldBe Left(ruleB("ip IS NOT NULL"))
+    onKinds(grouped("r", "r = 0.1 AND r IS NOT NULL")) shouldBe Left(ruleB("r IS NOT NULL"))
+    // with no mapping no kind is proven: refused at the seam that sends the statement unresolved
+    val noMapping =
+      "SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5 AND (n IS NOT NULL OR NOT n = 5.0)"
+    parsed(noMapping).isRight shouldBe true
+    unmapped(noMapping) shouldBe Left(ruleB("n IS NOT NULL"))
+  }
+
+  "a key IS NOT NULL alone" should "keep every group on a level of any kind, as it sends no list" in {
+    // DuckDB 1.5.5 keeps every non-NULL group, and a level builds no bucket for a NULL key
+    Seq(
+      grouped("d", "d IS NOT NULL"),
+      grouped("d", "ISNOTNULL(d)"),
+      grouped("hf", "hf IS NOT NULL AND COUNT(*) > 1"),
+      grouped("ip", "ip IS NOT NULL"),
+      grouped("r", "r IS NOT NULL")
+    ).foreach { sql => withClue(sql) { onKinds(sql) shouldBe Right(()) } }
+    unmapped("SELECT n AS g, COUNT(*) AS c FROM t GROUP BY n HAVING n IS NOT NULL") shouldBe Right(
+      ()
+    )
+  }
 
   "a combination on a level whose kind is not proven" should "be decided as before" in {
     // the equalities of the bare key joined by AND and OR: decided on their texts, as before

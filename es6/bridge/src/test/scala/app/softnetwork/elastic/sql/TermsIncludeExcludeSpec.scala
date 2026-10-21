@@ -247,6 +247,24 @@ class TermsIncludeExcludeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  "a key IS NOT NULL beside a key value" should "keep on Elasticsearch 6.8 that value alone" in {
+    val terms = termsBody(queryOf(keyed("sval", "sval IS NOT NULL AND sval = 'a.b'")), "sval")
+    keptBy(terms, KeywordKey, Seq("a.b", "axb", "a")) shouldBe Kept(Set("a.b"))
+  }
+
+  "a GROUP BY level" should "be emitted without a NULL group, as Bucket.hasNullBucket states" in {
+    // `HAVING <key> IS NOT NULL` is answered as TRUE on every group, with no key filter, because
+    // a level builds no bucket for a NULL key (`Bucket.hasNullBucket` = false). A fix that emits
+    // the NULL group (`missing` on the level) must flip that premise: this row fails first.
+    Seq(keyed("sval", "sval IS NOT NULL"), keyed("sval", "sval = 'a'")).foreach { sql =>
+      withClue(sql) {
+        termsBody(queryOf(sql), "sval").has("missing") shouldBe single(
+          sql
+        ).buckets.head.hasNullBucket
+      }
+    }
+  }
+
   // ============================================ PART B: the refusal and the one writing site
 
   "the Default serializer" should "refuse, by name, exactly the pairs 6.8 rejects -- at any grouping level" in {
