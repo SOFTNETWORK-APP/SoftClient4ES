@@ -574,6 +574,17 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
         Option(ex.status()).map(_.getStatus)
       case ex: org.elasticsearch.client.ResponseException =>
         Try(ex.getResponse.getStatusLine.getStatusCode).toOption
+      // the wrapper `executeSearchPage` throws on a 4xx so that no retry takes it: the status is
+      // its cause's
+      case ex: IllegalStateException
+          if ex.getCause.isInstanceOf[org.elasticsearch.client.ResponseException] =>
+        Try(
+          ex.getCause
+            .asInstanceOf[org.elasticsearch.client.ResponseException]
+            .getResponse
+            .getStatusLine
+            .getStatusCode
+        ).toOption
       case other => super.statusOf(other)
     }
 }
