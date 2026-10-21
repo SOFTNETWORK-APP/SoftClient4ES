@@ -537,11 +537,15 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
   // ---------------------------------------------------------------------------------------------
   // A HAVING key filter: the lists the level's `terms` carries
 
-  /** The include and exclude values of the statement's first `terms` level, sorted. */
+  /** The include and exclude of the statement's first `terms` level: its values sorted, or its
+    * pattern.
+    */
   private def keyLists(sql: String): (Seq[String], Seq[String]) = {
     val level = valuesOf(mapper.readTree(queryOf(sql)), "terms").head
     def side(name: String): Seq[String] =
-      Option(level.get(name)).toSeq.flatMap(n => n.elements().asScala.map(_.asText())).sorted
+      Option(level.get(name)).toSeq.flatMap { n =>
+        if (n.isTextual) Seq(n.asText()) else n.elements().asScala.map(_.asText()).toSeq.sorted
+      }
     (side("include"), side("exclude"))
   }
 
@@ -558,5 +562,18 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
     ) shouldBe ((Nil, Seq("3", "3.0")))
     // a FIELD level keeps the literal's own text: Elasticsearch parses it numerically
     keyLists("SELECT n, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5") shouldBe ((Seq("5"), Nil))
+  }
+
+  "a HAVING key combination whose lists keep exactly SQL's groups" should
+  "be emitted with the lists 0.23.0 sent" in {
+    // the conjunction holds for no key: the pattern that replaces the values is SQL's answer
+    keyLists(group + "status = 'axb' AND status IN ('a', 'b') OR status LIKE 'a%'") shouldBe
+    ((Seq("a.*"), Nil))
+    // one kept value beside the removed ones
+    keyLists(group + "status = 'axb' AND status NOT IN ('x', 'b') AND status = 'axb'") shouldBe
+    ((Seq("axb"), Seq("b", "x")))
+    // no removed value matches the pattern
+    keyLists(group + "status LIKE 'a%' OR status LIKE 'a%' AND status NOT IN ('x', 'b')") shouldBe
+    ((Seq("a.*"), Seq("b", "x")))
   }
 }

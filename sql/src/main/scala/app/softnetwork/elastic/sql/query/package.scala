@@ -17,7 +17,19 @@
 package app.softnetwork.elastic.sql
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
-import app.softnetwork.elastic.sql.operator.{AND, OR, SetOperator, UNION, UNION_DISTINCT}
+import app.softnetwork.elastic.sql.operator.{
+  AND,
+  DIFF,
+  EQ,
+  IN,
+  LIKE,
+  NE,
+  OR,
+  RLIKE,
+  SetOperator,
+  UNION,
+  UNION_DISTINCT
+}
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.schema.{
   sqlConfig,
@@ -1679,6 +1691,15 @@ package object query {
       )
     }
 
+    /** Is `level` read as a key of a proven kind ([[Bucket.isExactKeyKind]])? With `kindsKnown`, at
+      * a FINAL seam ([[validateResolved]], [[validateUnresolved]]), the kind is the one the mapping
+      * gives, and with no mapping no kind is proven. At parse, where no column has a type yet,
+      * every level is read so PROVISIONALLY: the final seams ask the same rules again on the kinds
+      * ([[keyKindRefusal]]), and a level of another kind is judged there as before.
+      */
+    private[query] def exactKeyKind(level: Bucket, kindsKnown: Boolean): Boolean =
+      !kindsKnown || level.isExactKeyKind
+
     private[query] def keyPredicateOutcome(e: Expression): KeyPredicateOutcome =
       dateHistogramLevelOf(e)
         .map(level => dateHistogramReason(e, level))
@@ -1857,12 +1878,24 @@ package object query {
     }
 
     /** The rules a statement sent WITHOUT a resolved schema must still pass: the gate on the
-      * nameless-key route ([[namelessKeyRouteRefusal]]) alone, where every column is `Any`. No type
-      * rule runs here (the lead's ruling of 2026-10-05). `SearchApi.resolveWithSchema` calls it at
-      * every exit that sends the statement unresolved.
+      * nameless-key route ([[namelessKeyRouteRefusal]]), where every column is `Any`, and the key
+      * filter rules asked on the levels' kinds ([[keyKindRefusal]]): with no mapping no key kind is
+      * proven, so they judge every level as before. No type rule runs here (the lead's ruling of
+      * 2026-10-05). `SearchApi.resolveWithSchema` calls it at every exit that sends the statement
+      * unresolved.
       */
     def validateUnresolved(): Either[String, Unit] =
-      namelessKeyRouteRefusal.map(Left(_)).getOrElse(Right(()))
+      namelessKeyRouteRefusal.orElse(keyKindRefusal).map(Left(_)).getOrElse(Right(()))
+
+    /** Rule (b2) of `validate()`, asked again at a FINAL seam on the levels' KINDS
+      * ([[Bucket.isExactKeyKind]]), which parse cannot read: at parse every level is read
+      * provisionally as a proven kind ([[exactKeyKind]]). On a level of another kind -- one the
+      * mapping types as `float`, `half_float`, a date, `ip`…, or any level of a statement sent
+      * without a mapping -- a combination is judged as before; on a numeric field level a value
+      * names a number (`Bucket.keyOf`).
+      */
+    private[query] def keyKindRefusal: Option[String] =
+      if (relationalClosureRequired) None else keyChannelConflict(kindsKnown = true)
 
     /** The stable phrase leads: `GatewayApi.run` relays a parse refusal as its first 120
       * characters, an ellipsis and its last 77.
@@ -1886,8 +1919,14 @@ package object query {
       *
       * The polarity is still threaded, because a `NOT` before a LEAF decides which channel that
       * leaf feeds -- `= 'a' AND NOT = 'b'` is an include and an exclude, and expressible.
+      *
+      * These are rules on the SHAPE, and a shape does not say whether the emitted lists keep the
+      * groups SQL keeps for THESE values. So [[keyFilterExactly]] decides that first, per level: a
+      * combination it proves exact is accepted whatever its shape, one it proves inexact is refused
+      * (with the reason of the shape rule it trips, else the union reason), and only a tree it
+      * cannot decide is left to the shape rules.
       */
-    private[query] def keyChannelConflict: Option[String] = {
+    private[query] def keyChannelConflict(kindsKnown: Boolean = false): Option[String] = {
       val empty = BucketIncludesExcludes()
       def unionOnlyReason(c: Criteria): String =
         s"HAVING cannot combine the conditions in ${c.sql} on one GROUP BY key: Elasticsearch " +
@@ -1949,80 +1988,222 @@ package object query {
           case _                         => None
         }
       having.flatMap(_.criteria).flatMap { criteria =>
-        buckets.view
-          .filterNot(bucket => keyEqualitiesAnsweredExactly(criteria, bucket))
-          .flatMap(bucket => conflict(criteria, bucket, not = false))
-          .headOption
-          .map { case (_, reason) => reason }
+        buckets.view.flatMap { bucket =>
+          keyFilterExactly(criteria, bucket, kindsKnown = kindsKnown) match {
+            case Some(true) => None
+            case Some(false) =>
+              conflict(criteria, bucket, not = false)
+                .map { case (_, reason) => reason }
+                .orElse(Some(unionOnlyReason(criteria)))
+            case None => conflict(criteria, bucket, not = false).map { case (_, reason) => reason }
+          }
+        }.headOption
       }
     }
 
-    /** Rule (b2)'s one exception: a `HAVING` whose every condition compares ONE key with values
-      * (`=`, `<>`, `!=`, `IN`, each possibly negated), joined by AND and OR together, and whose two
-      * lists keep exactly the buckets SQL's reading keeps. The per-node walk of
-      * [[keyChannelConflict]] refuses such a combination as soon as a removed value sits under an
-      * OR, yet `k = 'v1' OR k = 'v2' AND NOT k = 'v3'` -- `k = 'v1' OR (k = 'v2' AND k <> 'v3')` --
-      * keeps `v1` and `v2` through `include:["v1","v2"]` and `exclude:["v3"]`, which is SQL's
-      * answer.
+    /** Rule (b2)'s EXACT decision for one level: do the two lists both bridges send for `bucket` --
+      * `Criteria.includes` / `excludes` of the whole HAVING, the very calls the emission makes --
+      * keep exactly the groups SQL's reading of the condition keeps? `Some(true)` they do, for
+      * every key; `Some(false)` some key is kept by one and not by the other; `None` the decision
+      * is not taken here, and the shape rules of [[keyChannelConflict]] judge the tree.
       *
-      * Decided EXACTLY, never by shape. A bucket holds ONE key value, so the condition's truth
-      * depends only on which of the named values the key is, if any: each named value, plus one
-      * value none of the conditions names, is evaluated both ways -- the tree as SQL reads it, and
-      * the two lists as Elasticsearch applies them (kept if the include list is empty or holds it,
-      * and the exclude list does not). The values and the sense of each condition are those
-      * `Criteria.includes` / `excludes` give -- the functions the emission calls -- so the lists
-      * judged are the lists emitted. A rule on the shape could not do: `k = 'v3' OR k = 'v2' AND
-      * NOT k = 'v3'` has the very shape of the example above, and its lists (`include:["v3","v2"]`,
-      * `exclude:["v3"]`) drop `v3`, which SQL keeps -- so it stays refused.
+      * A top-level AND conjunct that reads only this level is applied by its two lists. A conjunct
+      * on another level or on an aggregate is another stage of the request, ANDed with this one
+      * (rule (c) refuses an OR across stages), so the decision is taken on the conjuncts that read
+      * this level alone; it is `None` when a conjunct mixes this level with anything else.
+      *
+      * A bucket holds ONE key, and each condition on it compares the key with values (`=`, `<>`,
+      * `IN`, each possibly negated) or with a LIKE pattern. So the truth of the condition depends
+      * only on which named value the key is, if any, and on which patterns it matches. Both
+      * readings are evaluated on one key of every such region:
+      *   - each value a list holds, its pattern memberships computed by matching it;
+      *   - every membership vector over the distinct patterns -- the conditions' and the lists' --
+      *     for a key no condition names. SQL's reading is the tree, with each condition's sense
+      *     taken from its own `includes` / `excludes`. Elasticsearch's reading is the lists' as
+      *     both bridges send them: each list is its pattern when it holds one (the pattern replaces
+      *     the values, and a second pattern is lost), else its values, and an empty kept list keeps
+      *     every key; a key is kept when the kept list holds it and the removed list does not.
+      *     MEASURED: `s = 'axb' AND s IN ('a','b') OR s LIKE 'a%'` is sent as `include:"a.*"` --
+      *     the values are dropped -- and that is exactly SQL's answer, since the conjunction holds
+      *     for no key; `s = 'a' OR s LIKE 'b%'` is sent the same way and drops `a`, so it stays
+      *     refused.
+      *
+      * A key is a value as Elasticsearch reads it on the level (`Bucket.keyOf`): its text, except
+      * on a numeric FIELD level, where `5` and `5.0` are one number.
+      *
+      * Decided so only on a level of a PROVEN kind ([[Bucket.isExactKeyKind]], read through
+      * [[exactKeyKind]]: provisionally at parse, on the mapping's kinds at the final seams). On a
+      * level of any other kind the decision is the one taken before, and only that one: equalities
+      * of the bare key (`=`, `<>`, `IN`, each possibly negated) joined by AND and OR together, read
+      * as texts, are accepted when their lists keep exactly SQL's groups; every other tree is
+      * `None`, and the shape rules judge it.
+      *
+      * SOUND, NOT COMPLETE. A region no key falls in can only make it refuse. More than
+      * [[SingleSearch.MaxDecidedKeyPatterns]] patterns, a MATCH, a relation, or an RLIKE (whether
+      * it matches the whole key or part of it is not settled: see
+      * [[SingleSearch.HavingRLikeIsFullMatch]]) is `None`.
       */
-    private[query] def keyEqualitiesAnsweredExactly(criteria: Criteria, bucket: Bucket): Boolean = {
+    private[query] def keyFilterExactly(
+      criteria: Criteria,
+      bucket: Bucket,
+      rlikeFullMatch: Boolean = SingleSearch.HavingRLikeIsFullMatch,
+      kindsKnown: Boolean = false
+    ): Option[Boolean] = {
+      val exact = exactKeyKind(bucket, kindsKnown)
       val empty = BucketIncludesExcludes()
-      // A condition's truth for a key value, `None` standing for a value no condition names; `None`
-      // for the whole tree when one condition is not such an equality of this key.
-      def truth(c: Criteria): Option[Option[String] => Boolean] = c match {
-        case p @ Predicate(left, op, right, _, _) =>
-          // the predicate's NOT, on its RIGHT operand, as the lists themselves read it
-          val negatedRight = p.includePolarityOfRight(not = false)
-          for { l <- truth(left); r <- truth(right) } yield { (key: Option[String]) =>
-            val rightHolds = r(key) != negatedRight
-            if (op == AND) l(key) && rightHolds else l(key) || rightHolds
+      def kept(c: Criteria): BucketIncludesExcludes = c.includes(bucket, not = false, empty)
+      def removed(c: Criteria): BucketIncludesExcludes = c.excludes(bucket, not = false, empty)
+      // `own`: the conjuncts that read this level alone, each with its NOT
+      def decide(own: Seq[(Criteria, Boolean)]): Option[Boolean] = {
+        val ownLeaves = own.flatMap { case (c, _) => leavesUnder(c) }
+        val (keptList, removedList) = (kept(criteria), removed(criteria))
+        val patterns = (ownLeaves.flatMap(e => kept(e).regex.toSeq ++ removed(e).regex.toSeq) ++
+          keptList.regex.toSeq ++ removedList.regex.toSeq).distinct
+        val compiled = patterns.map(SingleSearch.keyPatternAsJava)
+        // a numeric field level compares numbers, not texts (`Bucket.keyOf`): no pattern there;
+        // nor on a level of another kind
+        if (
+          patterns.size > SingleSearch.MaxDecidedKeyPatterns || compiled.exists(_.isEmpty) ||
+          ((bucket.comparesNumbers || !exact) && patterns.nonEmpty)
+        ) None
+        else {
+          val bit = patterns.zipWithIndex.toMap
+          // each value as the key Elasticsearch reads it on this level
+          def keys(values: Set[String]): Set[String] = values.map(bucket.keyOf)
+          // a key: the value a list names (`None`: one no condition names), and the patterns it
+          // matches, one bit each
+          type Key = (Option[String], Int)
+          def matches(key: Key, pattern: String): Boolean = ((key._2 >> bit(pattern)) & 1) == 1
+          def comparisonTruth(e: Expression): Option[Key => Boolean] = {
+            val decided = e.operator match {
+              case EQ | NE | DIFF | IN | LIKE => true
+              case RLIKE                      => rlikeFullMatch
+              case _                          => false
+            }
+            if (!decided) None
+            else
+              (kept(e), removed(e)) match {
+                case (BucketIncludesExcludes(values, None), `empty`) if values.nonEmpty =>
+                  val named = keys(values)
+                  Some(key => key._1.exists(named))
+                case (`empty`, BucketIncludesExcludes(values, None)) if values.nonEmpty =>
+                  val named = keys(values)
+                  Some(key => !key._1.exists(named))
+                case (BucketIncludesExcludes(values, Some(pattern)), `empty`) if values.isEmpty =>
+                  Some(key => matches(key, pattern))
+                case (`empty`, BucketIncludesExcludes(values, Some(pattern))) if values.isEmpty =>
+                  Some(key => !matches(key, pattern))
+                case _ => None
+              }
           }
-        case e: Expression if e.identifier.functions.isEmpty =>
-          (e.includes(bucket, not = false, empty), e.excludes(bucket, not = false, empty)) match {
-            case (kept, BucketIncludesExcludes(removed, None))
-                if kept == empty && removed.nonEmpty =>
-              Some((key: Option[String]) => !key.exists(removed.contains))
-            case (BucketIncludesExcludes(values, None), removed)
-                if removed == empty && values.nonEmpty =>
-              Some((key: Option[String]) => key.exists(values.contains))
-            case _ => None
+          def truth(c: Criteria): Option[Key => Boolean] = c match {
+            case p @ Predicate(left, op, right, _, _) =>
+              // the predicate's NOT, on its RIGHT operand, as the lists themselves read it
+              val negatedRight = p.includePolarityOfRight(not = false)
+              for { l <- truth(left); r <- truth(right) } yield { (key: Key) =>
+                val rightHolds = r(key) != negatedRight
+                if (op == AND) l(key) && rightHolds else l(key) || rightHolds
+              }
+            case e: Expression => comparisonTruth(e)
+            case _             => None
           }
-        case _ => None
-      }
-      // the operators joining the conditions, AND as `true`
-      def joins(c: Criteria): List[Boolean] = c match {
-        case Predicate(left, op, right, _, _) => (op == AND) :: joins(left) ::: joins(right)
-        case _                                => Nil
-      }
-      def named(c: Criteria): Set[String] = c match {
-        case Predicate(left, _, right, _, _) => named(left) ++ named(right)
-        case e: Expression =>
-          e.includes(bucket, not = false, empty).values ++ e
-            .excludes(bucket, not = false, empty)
-            .values
-        case _ => Set.empty
-      }
-      val ops = joins(criteria)
-      ops.contains(true) && ops.contains(false) && truth(criteria).exists { holds =>
-        val kept = criteria.includes(bucket, not = false, empty)
-        val removed = criteria.excludes(bucket, not = false, empty)
-        def emitted(key: Option[String]): Boolean = key match {
-          case Some(v) => (kept.values.isEmpty || kept.values.contains(v)) && !removed.values(v)
-          case None    => kept.values.isEmpty
+          val holds = own.map { case (c, negated) =>
+            truth(c).map(t => (key: Key) => t(key) != negated)
+          }
+          if (holds.exists(_.isEmpty)) None
+          else {
+            val conditions = holds.flatten
+            val regexes = compiled.flatten.zipWithIndex
+            val (keptKeys, removedKeys) = (keys(keptList.values), keys(removedList.values))
+            val named: Seq[Key] =
+              keys(
+                (ownLeaves.flatMap(e => kept(e).values ++ removed(e).values) ++ keptList.values ++
+                removedList.values).toSet
+              ).toSeq.map { value =>
+                Some(value) -> regexes.foldLeft(0) { case (bits, (regex, i)) =>
+                  if (regex.matcher(value).matches()) bits | (1 << i) else bits
+                }
+              }
+            val unnamed: Seq[Key] = (0 until (1 << patterns.size)).map(bits => (None, bits))
+            def keptByElasticsearch(key: Key): Boolean = {
+              val in = keptList.regex
+                .filter(_.nonEmpty)
+                .map(matches(key, _))
+                .getOrElse(keptList.values.isEmpty || key._1.exists(keptKeys))
+              val out = removedList.regex
+                .filter(_.nonEmpty)
+                .map(matches(key, _))
+                .getOrElse(key._1.exists(removedKeys))
+              in && !out
+            }
+            Some(
+              (named ++ unnamed).forall(key =>
+                conditions.forall(_(key)) == keptByElasticsearch(key)
+              )
+            )
+          }
         }
-        kept.regex.isEmpty && removed.regex.isEmpty &&
-        (named(criteria).map(Option(_)) + None).forall(key => emitted(key) == holds(key))
       }
+      val decision =
+        levelConjuncts(criteria, bucket).flatMap(own =>
+          if (own.isEmpty) Some(true) else decide(own)
+        )
+      if (exact) decision
+      else {
+        // the decision taken on a level of another kind: equalities of the bare key, joined by AND
+        // and OR together, every one of them on this level
+        def equality(c: Criteria): Boolean = c match {
+          case Predicate(left, _, right, _, _) => equality(left) && equality(right)
+          case e: Expression =>
+            e.identifier.functions.isEmpty && ((kept(e), removed(e)) match {
+              case (BucketIncludesExcludes(values, None), `empty`) => values.nonEmpty
+              case (`empty`, BucketIncludesExcludes(values, None)) => values.nonEmpty
+              case _                                               => false
+            })
+          case _ => false
+        }
+        def joins(c: Criteria): List[Boolean] = c match {
+          case Predicate(left, op, right, _, _) => (op == AND) :: joins(left) ::: joins(right)
+          case _                                => Nil
+        }
+        val ops = joins(criteria)
+        if (ops.contains(true) && ops.contains(false) && equality(criteria))
+          decision.filter(identity)
+        else None
+      }
+    }
+
+    /** The top-level AND conjuncts of `criteria` that read `bucket` alone, each with the NOT its
+      * predicate puts on it -- the scope of [[keyFilterExactly]]. A conjunct that reads no key of
+      * this level is another stage of the request and is left out; `None` when a conjunct reads
+      * this level AND something else (an OR across stages, which rule (c) refuses).
+      *
+      * A conjunct reads the level when one of its leaves feeds the level's lists.
+      */
+    private[query] def levelConjuncts(
+      criteria: Criteria,
+      bucket: Bucket
+    ): Option[Seq[(Criteria, Boolean)]] = {
+      val empty = BucketIncludesExcludes()
+      def readsLevel(e: Expression): Boolean =
+        e.includes(bucket, not = false, empty) != empty ||
+        e.excludes(bucket, not = false, empty) != empty
+      def conjuncts(c: Criteria, negated: Boolean): Seq[(Criteria, Boolean)] = c match {
+        case p @ Predicate(left, AND, right, _, _) if !negated =>
+          conjuncts(left, negated = false) ++
+            conjuncts(right, negated = p.includePolarityOfRight(not = false))
+        case other => Seq(other -> negated)
+      }
+      val reading = conjuncts(criteria, negated = false).map { case (c, negated) =>
+        val leaves = leavesUnder(c)
+        val count = leaves.count(readsLevel)
+        (
+          c -> negated,
+          if (count == 0) Some(false) else if (count == leaves.size) Some(true) else None
+        )
+      }
+      if (reading.exists(_._2.isEmpty)) None
+      else Some(reading.collect { case (conjunct, Some(true)) => conjunct })
     }
 
     /** Does this key predicate read a NESTED bucket? Asked of the bucket the leaf RESOLVES to. */
@@ -2346,6 +2527,10 @@ package object query {
           .orElse(fractionalIntegerKeyComparison)
           .orElse(temporalScriptKeyFilter)
           .orElse(namelessKeyRouteRefusal)
+          // Rule (b2) again, on the levels' kinds, which only the mapping gives: a level of
+          // another kind is judged as before, and a key-filter value names a NUMBER on a numeric
+          // field level (`Bucket.keyOf`).
+          .orElse(keyKindRefusal)
           .map(Left(_))
           .getOrElse(Right(()))
       }
@@ -2615,9 +2800,8 @@ package object query {
           //      answer: the include list means `a OR b`, the SQL means no bucket at all.
           //   `HAVING city = 'a' OR city = 'b'` -> `include:["a","b"]`, CORRECT.
           //
-          // One exception, decided exactly and never by shape: equalities of one key joined by
-          // AND and OR together, when the two lists keep the buckets SQL keeps
-          // (`keyEqualitiesAnsweredExactly`).
+          // Decided exactly first, never by shape: a combination whose two lists keep exactly the
+          // groups SQL keeps is accepted, whatever its shape (`keyFilterExactly`).
           //
           // 🔴 This rule is ONE derivation that asks BOTH methods about BOTH sides. The defect it
           // replaces (a round-5 regression, reverted with the rest of that work) was a rule
@@ -2627,7 +2811,7 @@ package object query {
           //
           // Story IDENT-4 -- not in a statement the RELATIONAL engine evaluates, as rule (b).
           if (relationalClosureRequired) Right(())
-          else keyChannelConflict.map(Left(_)).getOrElse(Right(()))
+          else keyChannelConflict().map(Left(_)).getOrElse(Right(()))
         }
         _ <- {
           // (c) 🔴 An OR is honoured by ONE mechanism or by none: a `bucket_selector` script cannot
@@ -2922,6 +3106,57 @@ package object query {
   }
 
   object SingleSearch {
+
+    /** Whether an RLIKE in a HAVING key filter is read as a match of the WHOLE key. The engine
+      * applies it so everywhere (a `regexp` query in WHERE, a Lucene pattern in the key filter),
+      * while DuckDB, MySQL and PostgreSQL match part of the string. Until that reading is settled,
+      * `false`: [[keyFilterExactly]] does not decide a combination holding an RLIKE, and the shape
+      * rules judge it as before.
+      */
+    private[query] val HavingRLikeIsFullMatch: Boolean = false
+
+    /** The most patterns [[keyFilterExactly]] decides a combination over: it evaluates one key per
+      * membership vector, `2^n` of them.
+      */
+    private[query] val MaxDecidedKeyPatterns: Int = 8
+
+    /** A key-filter pattern as the `java.util.regex` pattern that full-matches the keys Lucene's
+      * reading of it full-matches, or `None` where the two engines may read it differently:
+      *   - a character Lucene reads as an operator and Java as a literal, or the reverse, written
+      *     unescaped: `@ & ~ # < > " ^ $`;
+      *   - a backslash before a letter or a digit (`\d` is a digit class in Java, `d` in Lucene);
+      *   - `(?`, a Java group construct;
+      *   - a quantifier followed by `?` or `+` (lazy or possessive in Java, another quantifier in
+      *     Lucene). A LIKE pattern always passes: the shared `toRegex` escapes every one of those
+      *     characters. `.` matches any character in Lucene, so the pattern is compiled with
+      *     `DOTALL`.
+      */
+    private[query] def keyPatternAsJava(pattern: String): Option[java.util.regex.Pattern] = {
+      var i = 0
+      var portable = true
+      var afterQuantifier = false
+      while (portable && i < pattern.length) {
+        val c = pattern.charAt(i)
+        if (c == '\\') {
+          portable = i + 1 < pattern.length && !pattern.charAt(i + 1).isLetterOrDigit
+          afterQuantifier = false
+          i += 2
+        } else {
+          portable = LuceneOnlyOperators.indexOf(c.toInt) < 0 &&
+            !(c == '(' && i + 1 < pattern.length && pattern.charAt(i + 1) == '?') &&
+            !(afterQuantifier && (c == '?' || c == '+'))
+          afterQuantifier = "*+?}".indexOf(c.toInt) >= 0
+          i += 1
+        }
+      }
+      if (!portable) None
+      else
+        Try(
+          java.util.regex.Pattern.compile(pattern, java.util.regex.Pattern.DOTALL)
+        ).toOption
+    }
+
+    private val LuceneOnlyOperators: String = "@&~#<>\"^$"
 
     /** The number a `terms` key-filter value spells, when it has a fractional part, read the way
       * Elasticsearch's `DocValueFormat.RAW.parseLong` reads it: `Long.parseLong` first (a whole

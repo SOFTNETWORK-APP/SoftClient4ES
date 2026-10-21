@@ -228,6 +228,25 @@ class TermsIncludeExcludeSpec extends AnyFlatSpec with Matchers {
     keptBy(one, KeywordKey, Seq("3", "3.0", "30", "3x0", "4")) shouldBe Kept(Set("30", "3x0", "4"))
   }
 
+  "a key combination whose lists keep exactly SQL's groups" should
+  "keep on Elasticsearch 6.8 what SQL keeps -- or be refused by name beside several values" in {
+    val keys = Seq("a", "axb", "a.b", "ab", "b", "x", "ba")
+    // a pattern alone: kept are the keys it matches
+    val alone = termsBody(
+      queryOf(keyed("sval", "sval = 'axb' AND sval IN ('a','b') OR sval LIKE 'a%'")),
+      "sval"
+    )
+    keptBy(alone, KeywordKey, keys) shouldBe Kept(Set("a", "axb", "a.b", "ab"))
+    // a pattern beside several removed values: 6.8 cannot apply them together, and the default
+    // serializer refuses the request by name (the REST and Jest serializers with an HTTP 400)
+    val beside = keyed("sval", "sval LIKE 'a%' OR sval LIKE 'a%' AND sval NOT IN ('x','b')")
+    Try(queryOf(beside)) match {
+      case scala.util.Failure(e: UnsupportedOperationException) =>
+        e.getMessage shouldBe SearchBodySerializer.unmixableTermsFilterUnsupported("sval")
+      case other => fail(s"[$beside] expected the named refusal, got $other")
+    }
+  }
+
   // ============================================ PART B: the refusal and the one writing site
 
   "the Default serializer" should "refuse, by name, exactly the pairs 6.8 rejects -- at any grouping level" in {

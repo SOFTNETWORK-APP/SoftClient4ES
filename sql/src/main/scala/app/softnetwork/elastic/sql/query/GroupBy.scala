@@ -517,12 +517,13 @@ case class Bucket(
   def keyTypesKnown: Boolean = keyColumns.forall(c => !Bucket.columnType(c).isUnknown)
 
   /** Is this level's key of a kind whose key filter Elasticsearch is PROVEN to match exactly as the
-    * HAVING rules model it -- the ONE predicate that says so (#292), read by the nameless-key gate
-    * (`SingleSearch.namelessKeyRouteReason`) and [[keyFilterTexts]]. A level of any other kind is
-    * judged as before.
+    * HAVING rules model it -- the ONE predicate that says so (#292), read by the exact decider
+    * (`SingleSearch.keyFilterExactly`), the nameless-key gate
+    * (`SingleSearch.namelessKeyRouteReason`), [[keyFilterTexts]] and [[keyOf]]. A level of any
+    * other kind is judged as before: by the shape rules and their texts.
     *
-    * A FIELD level, of a mapped type whose include / exclude values Elasticsearch 8.18.3 reads as
-    * follows (`TermsAggregatorFactory`, `IncludeExclude`, `DocValueFormat`):
+    * A FIELD level, of a mapped type whose include / exclude values Elasticsearch 8.18.3 parses as
+    * [[keyOf]] does (`TermsAggregatorFactory`, `IncludeExclude`, `DocValueFormat`):
     *   - `keyword`: a values source of bytes in the RAW format, whose values are compared as the
     *     bytes they are;
     *   - `byte`, `short`, `integer`, `long`: a numeric source that is not floating-point, read
@@ -629,6 +630,34 @@ case class Bucket(
             .getOrElse(Set(quoted))
         case other => Set(other.toString)
       }
+
+  /** The KEY a key-filter value names on this level, as Elasticsearch reads it -- the ONE
+    * numeric-identity function of key-filter values, read by `SingleSearch.keyFilterExactly`. It
+    * reads the type knowledge [[isExactKeyKind]] proves.
+    *
+    * A numeric FIELD level of a proven kind is a numeric `terms` aggregation: Elasticsearch parses
+    * each include / exclude value as a number, so `"5"` and `"5.0"` name ONE key, the number 5. An
+    * integer field reads a value with `DocValueFormat.RAW.parseLong` (`Long.parseLong`, else the
+    * floor of `Double.parseDouble`), a `double` field with `Double.parseDouble`. Every other level
+    * is read as texts: a value is its own key. A value no parse reads is its own key too
+    * (Elasticsearch fails on it).
+    */
+  def keyOf(value: String): String =
+    if (!comparesNumbers) value
+    else if (NumericReducer.wholeNumber(Bucket.columnType(identifier)))
+      Try(java.lang.Long.parseLong(value))
+        .orElse(
+          Try(java.lang.Math.round(java.lang.Math.floor(java.lang.Double.parseDouble(value))))
+        )
+        .map(_.toString)
+        .getOrElse(value)
+    else Try(java.lang.Double.toString(java.lang.Double.parseDouble(value))).getOrElse(value)
+
+  /** Whether this level is a numeric FIELD level of a proven kind, whose key filter values name
+    * numbers ([[keyOf]]).
+    */
+  def comparesNumbers: Boolean =
+    !isScriptedKey && isExactKeyKind && Bucket.columnType(identifier).isNumber
 
   /** The function of this level's key that formats a date column's RAW doc value (`DATE_FORMAT(d,
     * '%Y-%m')`, `DATETIME_FORMAT(ts, …)` over a mapped date column), which Elasticsearch 6.8 cannot
