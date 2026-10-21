@@ -60,10 +60,13 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
 
   /** The WHERE criterion rendered as one script; the body first, since it registers the parameters.
     */
-  private def whereOf(sql: String): String = Parser(sql) match {
+  private def whereOf(
+    sql: String,
+    contextType: PainlessContextType = PainlessContextType.Query
+  ): String = Parser(sql) match {
     case Right(ss: SingleSearch) =>
       val criteria = ss.update(Some(schema)).where.flatMap(_.criteria).getOrElse(fail(sql))
-      val ctx = PainlessContext(PainlessContextType.Query)
+      val ctx = PainlessContext(contextType)
       val body = criteria.painless(Some(ctx))
       s"$ctx$body"
     case other => fail(s"[$sql] expected a SingleSearch, got $other")
@@ -402,5 +405,237 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
     "def param1 = ctx.ts; " +
     "def param2 = (param1 instanceof String ? ZonedDateTime.parse((param1).replace(\" \", \"T\"), DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z'))) : Instant.ofEpochMilli(param1).atZone(ZoneId.of('Z'))); " +
     "(param1 == null) ? null : param2.with(TemporalAdjusters.lastDayOfMonth())"
+  }
+
+  /** One TIMESTAMP-vs-DATE-conditional shape: the Painless every operator shares, its NULL guard,
+    * and the two operands the operator compares.
+    */
+  private final case class Shape(
+    conditional: String,
+    tsOnTheLeft: Boolean,
+    prologue: String,
+    guard: String,
+    left: String,
+    right: String
+  )
+
+  /** How a comparison of two `java.time` values renders each operator. */
+  private def compared(op: String, left: String, right: String): String = op match {
+    case "<"  => s"$left.isBefore($right)"
+    case "<=" => s"$left.isAfter($right) == false"
+    case ">"  => s"$left.isAfter($right)"
+    case ">=" => s"$left.isBefore($right) == false"
+    case "="  => s"$left.isEqual($right)"
+    case _    => s"$left.isEqual($right) == false"
+  }
+
+  "a TIMESTAMP compared with a DATE conditional" should "compare instants, the DATE taken at its UTC midnight, on either side" in {
+    // DuckDB casts the DATE to a TIMESTAMP: `2024-01-31T10:30Z > DATE '2024-01-31'` is TRUE. The
+    // TIMESTAMP is never narrowed to its day (`doc['ts'].value.toLocalDate()`), which answered FALSE.
+    val shapes = Seq(
+      Shape(
+        "CASE WHEN n > 0 THEN d ELSE d2 END",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+        "def param3 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param4 = param2 == null ? false : (param2 > 0); " +
+        "def param5 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param6 = (param5 != null ? param5.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+        "def left1 = param1; " +
+        "def right2 = param4 ? (param3 != null ? param3.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param6; ",
+        "left1 == null || right2 == null",
+        "left1",
+        "right2.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "CASE WHEN n > 0 THEN d ELSE d2 END",
+        false,
+        "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = param1 == null ? false : (param1 > 0); " +
+        "def param4 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param5 = (param4 != null ? param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+        "def param6 = param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5; " +
+        "def param7 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left1 = (param6 != null ? param6.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left1 == null || param7 == null",
+        "left1",
+        "param7"
+      ),
+      Shape(
+        "COALESCE(d, d2)",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def left1 = param1; " +
+        "def right2 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : (param3 != null ? param3.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null)); ",
+        "left1 == null || right2 == null",
+        "left1",
+        "right2.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "COALESCE(d, d2)",
+        false,
+        "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param3 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null)); " +
+        "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left1 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left1 == null || param4 == null",
+        "left1",
+        "param4"
+      ),
+      Shape(
+        "NULLIF(d, d2)",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param4 = param2 == null || (param3 != null && param2.isEqual(param3)) ? null : param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate(); " +
+        "def left1 = param1; ",
+        "left1 == null || param4 == null",
+        "left1",
+        "param4.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "NULLIF(d, d2)",
+        false,
+        "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param3 = param1 == null || (param2 != null && param1.isEqual(param2)) ? null : param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate(); " +
+        "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left1 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left1 == null || param4 == null",
+        "left1",
+        "param4"
+      ),
+      Shape(
+        "GREATEST(d, d2)",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def lv1 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv2 = (param3 == null ? null : (def)(Math.floor(param3.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.max(lv1, lv2))); " +
+        "def left4 = param1; " +
+        "def right5 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); ",
+        "left4 == null || right5 == null",
+        "left4",
+        "right5.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "GREATEST(d, d2)",
+        false,
+        "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def lv1 = (param1 == null ? null : (def)(Math.floor(param1.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv2 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.max(lv1, lv2))); " +
+        "def param3 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); " +
+        "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left4 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left4 == null || param4 == null",
+        "left4",
+        "param4"
+      ),
+      Shape(
+        "LEAST(d, d2)",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def lv1 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv2 = (param3 == null ? null : (def)(Math.floor(param3.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.min(lv1, lv2))); " +
+        "def left4 = param1; " +
+        "def right5 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); ",
+        "left4 == null || right5 == null",
+        "left4",
+        "right5.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "LEAST(d, d2)",
+        false,
+        "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def lv1 = (param1 == null ? null : (def)(Math.floor(param1.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv2 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+        "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.min(lv1, lv2))); " +
+        "def param3 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); " +
+        "def param4 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left4 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left4 == null || param4 == null",
+        "left4",
+        "param4"
+      ),
+      Shape(
+        "LAST_DAY(COALESCE(d, d2))",
+        true,
+        "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param4 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : (param3 != null ? param3.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null)); " +
+        "def left1 = param1; " +
+        "def right2 = (param4 == null) ? null : param4.with(TemporalAdjusters.lastDayOfMonth()); ",
+        "left1 == null || right2 == null",
+        "left1",
+        "right2.atStartOfDay(ZoneId.of('Z'))"
+      ),
+      Shape(
+        "LAST_DAY(COALESCE(d, d2))",
+        false,
+        "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+        "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+        "def param3 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null)); " +
+        "def param4 = (param3 == null) ? null : param3.with(TemporalAdjusters.lastDayOfMonth()); " +
+        "def param5 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+        "def left1 = (param4 != null ? param4.atStartOfDay(ZoneId.of('Z')) : null); ",
+        "left1 == null || param5 == null",
+        "left1",
+        "param5"
+      )
+    )
+    for (shape <- shapes; op <- Seq("<", "<=", ">", ">=", "=", "<>")) {
+      val comparison =
+        if (shape.tsOnTheLeft) s"ts $op ${shape.conditional}" else s"${shape.conditional} $op ts"
+      withClue(comparison) {
+        val script = whereOf(s"SELECT name FROM t WHERE $comparison")
+        script should not include "doc['ts'].value.toLocalDate()"
+        script shouldBe
+        s"${shape.prologue}(${shape.guard} ? false : ((${compared(op, shape.left, shape.right)})))"
+      }
+    }
+  }
+
+  "a TIMESTAMP compared with a DATE literal" should "compare instants, the DATE taken at its UTC midnight" in {
+    whereOf("SELECT name FROM t WHERE ts > CAST('2024-01-31' AS DATE)") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param2 = LocalDate.parse((\"2024-01-31\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); " +
+    "param1 == null ? false : (param1.isAfter(param2.atStartOfDay(ZoneId.of('Z'))))"
+  }
+
+  "a comparison in a transform" should "read the types its operands render there" in {
+    // a transform renders a conditional's arms as their doc values, so neither side is converted
+    whereOf("SELECT name FROM t WHERE COALESCE(d2, d) > ts", PainlessContextType.Transform) shouldBe
+    "def param1 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def left1 = (param1 != null ? param1 : param2); " +
+    "(left1 == null || param3 == null ? false : ((left1.isAfter(param3))))"
+    whereOf(
+      "SELECT name FROM t WHERE ts > CASE WHEN n > 0 THEN d ELSE d2 END",
+      PainlessContextType.Transform
+    ) shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param2 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param3 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param4 = param2 == null ? false : (param2 > 0); " +
+    "def param5 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def left1 = param1; " +
+    "def right2 = param4 ? param3 : param5; " +
+    "(left1 == null || right2 == null ? false : ((left1.isAfter(right2))))"
   }
 }
