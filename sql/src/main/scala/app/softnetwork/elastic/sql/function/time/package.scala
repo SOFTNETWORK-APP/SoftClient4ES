@@ -592,16 +592,22 @@ package object time {
       * adjuster answered the receiver's class: `LAST_DAY(ts)` kept `ts`'s time of day, a
       * `ZonedDateTime` in a DATE column, and a CASE mixing it with a DATE arm answered two classes.
       *
-      * ⚠️ Only a BARE column is converted here. A function-wrapped column arrives converted
-      * already: `FunctionN.painless` converts it to this function's input type, DATE, from what it
-      * renders (`SQLTypeUtils.renderedSourceType`) -- which is why `LAST_DAY(CAST(ts AS
-      * TIMESTAMP))` always answered a DATE. A bare column arrives as its doc value: the conversion
-      * `FunctionN` attempts for it is a method appended to the column's parameter object, which
-      * lands on whichever copy of the column the script registered first -- not this one (MEASURED:
-      * `LAST_DAY(ts)` rendered `param1.with(…)` over the raw doc value).
+      * ⚠️ Only an operand the call has not converted is converted here. A function-wrapped column
+      * arrives converted already: `FunctionN.painless` converts it to this function's input type,
+      * DATE, from what it renders (`SQLTypeUtils.renderedSourceType`) -- which is why
+      * `LAST_DAY(CAST(ts AS TIMESTAMP))` always answered a DATE. A bare column arrives as its doc
+      * value: the conversion `FunctionN` attempts for it is a method appended to the column's
+      * parameter object, which lands on whichever copy of the column the script registered first --
+      * not this one (MEASURED: `LAST_DAY(ts)` rendered `param1.with(…)` over the raw doc value). A
+      * nameless operand (a CASE, a COALESCE) has no parameter, and arrives as it renders: the type
+      * it reports.
       *
-      * The argument is guarded by the call (`(param1 == null) ? null : …`), so it is not NULL here.
-      * An ingest processor keeps its bytes: its receiver is parsed from the raw `ctx.<field>`.
+      * A receiver that is a NAME is guarded by the call (`(param1 == null) ? null : …`), so it is
+      * not NULL here. A nameless receiver that can be NULL renders its OWN guard (`(param4 == null)
+      * ? null : (def)(…)`, a `DATE_TRUNC` over a CASE): in a query it is bound once, and the
+      * conversion and the adjuster apply INSIDE a guard on it. Appended to the guarded expression,
+      * they ran on its NULL (`cannot access method/field [with] from a null def reference`). An
+      * ingest processor keeps its bytes: its receiver is parsed from the raw `ctx.<field>`.
       */
     override def toPainlessCall(
       callArgs: List[String],
@@ -609,11 +615,26 @@ package object time {
     ): String = {
       callArgs match {
         case arg :: Nil =>
+          val convertedByCall =
+            identifier.functions.nonEmpty && context.exists(_.get(identifier).isDefined)
+          // a nameless receiver that can be NULL, bound once to be guarded (in a query)
+          val guarded =
+            if (
+              SQLTypeUtils.convertsArms(context) && !FunctionN.isName(arg.trim) &&
+              (identifier.nullable || identifier.functions.headOption.exists(_.nullable))
+            ) context.flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(arg))))
+            else None
+          val operand = guarded.getOrElse(arg)
           val receiver =
-            if (SQLTypeUtils.convertsArms(context) && identifier.functions.isEmpty)
-              SQLTypeUtils.convertArm(identifier, arg, SQLTypes.Date, nullable = false, context)
-            else arg
-          s"$receiver${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
+            if (SQLTypeUtils.convertsArms(context) && !convertedByCall)
+              SQLTypeUtils.convertArm(identifier, operand, SQLTypes.Date, nullable = false, context)
+            else operand
+          // the adjuster applies to the whole receiver, not to the last branch of a conditional one
+          val adjusted =
+            if (SQLTypeUtils.convertsArms(context)) SQLTypeUtils.asOneValue(receiver) else receiver
+          val call =
+            s"$adjusted${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
+          guarded.fold(call)(bound => s"($bound == null) ? null : $call")
         case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
       }
     }

@@ -1261,7 +1261,8 @@ package object schema {
         pipelineType = pipelineType,
         script = script.sql,
         column = column,
-        dataType = dataType.getOrElse(script.out),
+        // the type THIS script writes, read in its scope like its render (#292)
+        dataType = dataType.getOrElse(SQLTypeUtils.processorType(script)),
         source = source,
         materialized = materialized,
         expr = Some(script)

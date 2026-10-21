@@ -437,15 +437,12 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  /** 🔴 A CASE keeps 0.23.0's conversion of its results: each is converted FROM its `baseType` to
-    * the CASE's `out`, and both read a schema-resolved column's type whatever functions wrap it.
-    * These pins are the bytes a CASE rendered before the fix of a function over a cast, so that fix
-    * cannot move a CASE: a flat CASE over two casts, a CASE beside an unmapped-type column (no
-    * `doc['dn'].value.toLocalDate()`), and a CASE nested in a THEN -- each answers right.
-    *
-    * A CASE beside a DATE literal or a bare timestamp column is deliberately NOT pinned: it still
-    * answers a `LocalDate` in one branch and a `ZonedDateTime` in the other (two classes in one
-    * column), and typing a CASE from what its results render, deferred, is what fixes it.
+  /** A CASE converts each result FROM what it renders TO the type the CASE reports. These pins are
+    * bytes a CASE rendered before that fix too: a flat CASE over two casts (both already
+    * `LocalDate`s, nothing to convert), a CASE beside an unmapped-type column (an arm whose type is
+    * unknown keeps its conversion: no `doc['dn'].value.toLocalDate()`), and a CASE nested in a THEN
+    * -- each answers right. A CASE beside a DATE literal or a bare timestamp column now answers one
+    * class too: `ConditionalArmClassSpec`.
     */
   "a CASE" should "convert its results as before" in {
     // over two casts

@@ -1295,6 +1295,62 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
 
   behavior of "GATE-024 typed-path values"
 
+  it should "answer a DATE for a CASE of a cast to DATE and LAST_DAY" in {
+    typedRow(
+      onTyped("CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE LAST_DAY(ts) END"),
+      Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      )
+    )
+  }
+
+  it should "keep a DATE literal a DATE beside a cast to DATE" in {
+    typedRow(
+      onTyped("CASE n WHEN 1 THEN CAST(d AS DATE) ELSE CAST('2024-01-01' AS DATE) END"),
+      Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-01-01"),
+        "t3" -> ADate("2024-01-01"),
+        "t4" -> ADate("2024-01-01")
+      )
+    )
+  }
+
+  it should "convert a bare DATE column beside a cast to DATE" in {
+    typedRow(
+      onTyped("CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE d END"),
+      Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      )
+    )
+  }
+
+  it should "truncate a CASE of a TIMESTAMP and a DATE as the TIMESTAMP it is" in {
+    typedRow(
+      onTyped("DATE_TRUNC(CASE WHEN n > 1 THEN ts ELSE CAST(ts AS DATE) END, MONTH)"),
+      Map(
+        "t1" -> AnInstant("2024-04-01T00:00:00Z"),
+        "t2" -> AnInstant("2024-02-01T00:00:00Z"),
+        "t3" -> ANull,
+        "t4" -> AnInstant("2023-12-01T00:00:00Z")
+      )
+    )
+  }
+
+  it should "answer a DOUBLE for every arm of a COALESCE" in {
+    // a DOUBLE is a decimal in the JSON the path parses: `2` where DuckDB answers 2.0 reddens
+    typedRow(
+      onTyped("COALESCE(CAST(n AS DOUBLE), 2)"),
+      Map("t1" -> AText("1.0"), "t2" -> AText("-1.0"), "t3" -> AText("2.0"), "t4" -> AText("2.0"))
+    )
+  }
+
   it should "answer a DATE for LAST_DAY over a TIMESTAMP" in {
     typedRow(
       onTyped("LAST_DAY(ts)"),
@@ -1314,6 +1370,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
+  /** Statements RIGHT on main whose script this fix changes: they stay RIGHT. */
   it should "keep answering what it answered where it was right" in {
     (Seq(
       onTyped("LEAST(CAST(d AS DATE), CAST(d AS DATE))") -> Map(

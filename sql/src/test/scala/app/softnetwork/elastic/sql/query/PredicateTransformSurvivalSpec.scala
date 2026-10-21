@@ -553,8 +553,12 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
 
   "a one-argument COALESCE" should "render as its argument" in {
     // It folded over zero arguments and emitted `String.valueOf( : param1))`.
+    // `COALESCE(d)` is `d` and answers its DATE: the doc value is converted to it, then stringified.
     val emitted = predicateOf("SELECT id FROM t WHERE COALESCE(d) = 'x'")
-    emitted should include("def left1 = String.valueOf(param1);")
+    emitted should include(
+      "def left1 = String.valueOf((param1 != null ? " +
+      "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null));"
+    )
     emitted.count(_ == '(') shouldBe emitted.count(_ == ')')
   }
 
