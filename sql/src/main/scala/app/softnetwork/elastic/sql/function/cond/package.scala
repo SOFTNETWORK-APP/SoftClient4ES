@@ -385,7 +385,13 @@ package object cond {
       ) rendered
       else {
         val converted =
-          SQLTypeUtils.convertArm(value, rendered, baseType, last && value.nullable, context)
+          SQLTypeUtils.convertArm(
+            value,
+            rendered,
+            baseType,
+            last && SQLTypeUtils.mayRenderNull(value, context),
+            context
+          )
         // a primitive (`((double) x)`) opposite a branch that can be NULL is boxed, as every
         // conversion behind a NULL guard is (`SQLTypeUtils.coerce`)
         if (last || converted == rendered || !baseType.isNumber) converted
@@ -879,7 +885,13 @@ package object cond {
           if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr2))
             return bound(
               if (typedAnswer)
-                SQLTypeUtils.convertArm(expr1, arg0, baseType, expr1.nullable, context)
+                SQLTypeUtils.convertArm(
+                  expr1,
+                  arg0,
+                  baseType,
+                  SQLTypeUtils.mayRenderNull(expr1, context),
+                  context
+                )
               else arg0,
               context
             )
@@ -975,7 +987,11 @@ package object cond {
                     s".isEqual(${SQLTypeUtils.processorInstant(arg1)})"
                   )
                 case _: SQLTemporal => nullIf(s"$arg0.isEqual($arg1)")
-                // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard.
+                // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard --
+                // but a CONVERTED answer does: `NULLIF(d, 2)` rendered `p1 == 2 ? null :
+                // p1.toInstant()…`, which ran on the NULL of every document missing `d`.
+                case _ if answer != arg0 && SQLTypeUtils.mayRenderNull(expr1, context) =>
+                  s"$arg0 == null || $arg0 == $arg1 ? null : $answer"
                 case _ => s"$arg0 == $arg1 ? null : $answer"
               }
           bound(expr, context)
@@ -1809,9 +1825,15 @@ package object cond {
       * Asked of the group filter alone ([[query.MetricSelectorScript.rendersGroupFilter]]): the
       * SELECT list's `bucket_script` renders this same function context-free, and its gap policy
       * never hands it a NULL metric, so its script does not move.
+      *
+      * Per document in a query, a conditional argument is asked through
+      * `SQLTypeUtils.mayRenderNull`: its nameless identifier answers `false`, and
+      * `GREATEST(COALESCE(d, d2), ts)` converted the COALESCE to epoch milliseconds unguarded, on
+      * its NULL.
       */
     private def nullableArgument(argument: PainlessScript, context: Option[PainlessContext]) =
-      argument.nullable || (context.isEmpty && query.MetricSelectorScript.rendersGroupFilter &&
+      SQLTypeUtils.mayRenderNull(argument, context) ||
+      (context.isEmpty && query.MetricSelectorScript.rendersGroupFilter &&
       (argument match {
         case id: Identifier => id.bucketMetrics.nonEmpty
         case _              => false

@@ -58,6 +58,17 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
     s"$ctx$body"
   }
 
+  /** The WHERE criterion rendered as one script; the body first, since it registers the parameters.
+    */
+  private def whereOf(sql: String): String = Parser(sql) match {
+    case Right(ss: SingleSearch) =>
+      val criteria = ss.update(Some(schema)).where.flatMap(_.criteria).getOrElse(fail(sql))
+      val ctx = PainlessContext(PainlessContextType.Query)
+      val body = criteria.painless(Some(ctx))
+      s"$ctx$body"
+    case other => fail(s"[$sql] expected a SingleSearch, got $other")
+  }
+
   private def typeOf(sql: String): (SQLType, SQLType) = {
     val f = field(sql)
     (f.identifier.baseType, f.identifier.reportedType)
@@ -231,6 +242,87 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
     "def param3 = param1 == null ? false : (param1 > 0); " +
     "def param4 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
     "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param4"
+  }
+
+  /** A conditional's nameless identifier answers `nullable = false`, so a conversion of what it
+    * renders was appended to its own NULL guard -- and ran on its NULL -- instead of being placed
+    * inside one. `GREATEST(d, d2) > d` failed the statement on every document missing both dates
+    * (MEASURED on Elasticsearch 8.18.3 and 9.0.3). Each consumer that converts it now reads
+    * `SQLTypeUtils.mayRenderNull`, and the operand is bound once and converted inside its guard.
+    */
+  "a DATE conditional compared with a timestamp" should "be promoted to its midnight inside its NULL guard" in {
+    whereOf("SELECT name FROM t WHERE GREATEST(d, d2) > d") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param2 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def lv1 = (param1 == null ? null : (def)(Math.floor(param1.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv2 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.max(lv1, lv2))); " +
+    "def param3 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); " +
+    "def left4 = (param3 != null ? param3.atStartOfDay(ZoneId.of('Z')) : null); " +
+    "(left4 == null || param1 == null ? false : ((left4.isAfter(param1))))"
+    // the whole CASE is converted, not its last branch, and inside its guard
+    whereOf("SELECT name FROM t WHERE CASE WHEN n > 0 THEN d ELSE d2 END > ts") shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = param1 == null ? false : (param1 > 0); " +
+    "def param4 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def param5 = (param4 != null ? param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "def param6 = param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5; " +
+    "def param7 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def left1 = (param6 != null ? param6.atStartOfDay(ZoneId.of('Z')) : null); " +
+    "(left1 == null || param7 == null ? false : ((left1.isAfter(param7))))"
+    // a CASE that cannot be NULL is converted as ONE value too
+    whereOf(
+      "SELECT name FROM t WHERE " +
+      "CASE WHEN n > 0 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-02-01' AS DATE) END > ts"
+    ) shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = LocalDate.parse((\"2024-01-01\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); " +
+    "def param3 = param1 == null ? false : (param1 > 0); " +
+    "def param4 = LocalDate.parse((\"2024-02-01\").replace(\"/\", \"-\"), DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); " +
+    "def param5 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "(param5 == null ? false : (((param3 ? param2 : param4).atStartOfDay(ZoneId.of('Z')).isAfter(param5))))"
+  }
+
+  "a conditional arm that can be NULL" should "be converted inside its NULL guard" in {
+    // a CASE arm
+    scriptOf("SELECT CASE WHEN n > 0 THEN GREATEST(d, d2) ELSE ts END FROM t") shouldBe
+    "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def lv1 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv2 = (param3 == null ? null : (def)(Math.floor(param3.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.max(lv1, lv2))); " +
+    "def param4 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); " +
+    "def param5 = param1 == null ? false : (param1 > 0); " +
+    "def param6 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "param5 ? (param4 != null ? param4.atStartOfDay(ZoneId.of('Z')) : null) : param6"
+    // the last COALESCE arm
+    scriptOf("SELECT COALESCE(ts, GREATEST(d, d2)) FROM t") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def lv1 = (param2 == null ? null : (def)(Math.floor(param2.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv2 = (param3 == null ? null : (def)(Math.floor(param3.toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv3 = (lv1 == null ? lv2 : (lv2 == null ? lv1 : Math.max(lv1, lv2))); " +
+    "def param4 = (lv3 == null ? null : Instant.ofEpochMilli((long) lv3).atZone(ZoneId.of('Z')).toInstant().atZone(ZoneId.of('Z')).toLocalDate()); " +
+    "(param1 != null ? param1 : (param4 != null ? param4.atStartOfDay(ZoneId.of('Z')) : null))"
+    // a GREATEST argument, converted to its epoch milliseconds
+    scriptOf("SELECT GREATEST(COALESCE(d, d2), ts) FROM t") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = (doc['d2'].size() == 0 ? null : doc['d2'].value); " +
+    "def lv1 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : (param3 != null ? param3.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null)); " +
+    "def lv2 = (lv1 == null ? null : (def)(Math.floor((lv1 == null ? null : lv1 instanceof LocalDate ? lv1.atStartOfDay(ZoneId.of('Z')) : lv1 instanceof LocalDateTime ? lv1.atZone(ZoneId.of('Z')) : lv1.withZoneSameInstant(ZoneId.of('Z'))).toInstant().toEpochMilli() / 86400000.0) * 86400000.0)); " +
+    "def lv3 = (param1 == null ? null : (def)(param1.toInstant().toEpochMilli())); " +
+    "def lv4 = (lv2 == null ? lv3 : (lv3 == null ? lv2 : Math.max(lv2, lv3))); " +
+    "(lv4 == null ? null : Instant.ofEpochMilli((long) lv4).atZone(ZoneId.of('Z')))"
+    // a NULLIF's converted answer beside a numeric comparison
+    scriptOf("SELECT NULLIF(d, n) FROM t") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param2 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
+    "def param3 = param1 == null || param1 == param2 ? null : param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate(); " +
+    "param3"
   }
 
   /** 🔴 The ALTER-churn rule: an ingest processor's source is persisted and compared, so its bytes

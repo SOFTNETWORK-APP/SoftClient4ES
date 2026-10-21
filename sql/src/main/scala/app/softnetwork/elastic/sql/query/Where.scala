@@ -1373,8 +1373,20 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         // reason: there the same operand was parsed TWICE).
         case Some(ctx) if ctx.isProcessor && identifier.chainType.isInstanceOf[SQLTemporal] =>
           chain
+        // 🔴 The conversion applies to the WHOLE operand, inside its NULL guard. A conditional's
+        // nameless identifier answers `nullable = false`, so `GREATEST(d, d2) > d` appended its
+        // DATE's midnight to the GREATEST's own guard -- `(lv3 == null ? null : …).atStartOfDay(…)`
+        // -- and a document missing both dates failed the statement (MEASURED on Elasticsearch
+        // 8.18.3 and 9.0.3); appended to a CASE (`p3 ? a : b`), it converted the last branch only.
+        // `mayRenderNull` is the one answer every converting consumer reads: `coerce` binds an
+        // operand that can be NULL once, and guards it; one that cannot is converted as ONE value. A
+        // rendering the conversion leaves alone keeps its bytes.
         case _ =>
-          SQLTypeUtils.coerce(chain, operandType, targetedType, identifier.nullable, context)
+          val nullable = SQLTypeUtils.mayRenderNull(identifier, context)
+          val operand = if (nullable) chain else SQLTypeUtils.asOneValue(chain)
+          val converted =
+            SQLTypeUtils.coerce(operand, operandType, targetedType, nullable, context)
+          if (converted == operand) chain else converted
       }
     (chain, coerced)
   }

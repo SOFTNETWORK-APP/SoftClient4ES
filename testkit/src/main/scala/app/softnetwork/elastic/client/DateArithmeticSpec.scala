@@ -654,6 +654,22 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
             yield daysBetween(a, utcDay(m))
         )
     ),
+    // a DATE conditional converted to a TIMESTAMP inside its NULL guard: r4 has no date at all
+    RowForm(
+      "CASE WHEN n > 0 THEN GREATEST(d, d2) ELSE ts END",
+      r =>
+        expect(
+          (if (r.n.exists(_ > 0)) latest(r.d.map(start), r.d2.map(start)) else r.ts).map(At)
+        )
+    ),
+    RowForm(
+      "COALESCE(ts2, GREATEST(d, d2))",
+      r => expect(r.ts2.orElse(latest(r.d.map(start), r.d2.map(start))).map(At))
+    ),
+    RowForm(
+      "GREATEST(COALESCE(d, d2), ts)",
+      r => expect(latest(r.d.orElse(r.d2).map(start), r.ts).map(At))
+    ),
     // a number cast to a TIMESTAMP: the instant that many milliseconds from the epoch
     RowForm("CAST(n AS TIMESTAMP)", r => expect(r.n.map(n => epochMillis(n.toDouble)))),
     RowForm("CAST(x AS TIMESTAMP)", r => expect(r.x.map(epochMillis)))
@@ -1053,6 +1069,19 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     WhereForm(
       "LEAST(d, ts) < ts",
       r => for (t <- r.ts; m <- earliest(r.d.map(start), r.ts)) yield m.isBefore(t)
+    ),
+    // a DATE conditional is its UTC midnight beside a TIMESTAMP, and NULL where it is
+    WhereForm(
+      "COALESCE(d, d2) < ts",
+      r => for (m <- r.d.orElse(r.d2); t <- r.ts) yield start(m).isBefore(t)
+    ),
+    WhereForm(
+      "NULLIF(d, d2) > ts2",
+      r => for (m <- nullIf(r.d, r.d2); t <- r.ts2) yield start(m).isAfter(t)
+    ),
+    WhereForm(
+      "CASE WHEN n > 0 THEN d ELSE d2 END < ts",
+      r => for (m <- if (r.n.exists(_ > 0)) r.d else r.d2; t <- r.ts) yield start(m).isBefore(t)
     ),
     // the comparisons that already worked, on every major
     WhereForm("d = CAST('2024-01-31' AS DATE)", r => r.d.map(_ == on("2024-01-31"))),

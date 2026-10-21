@@ -568,8 +568,35 @@ object SQLTypeUtils {
     */
   def convertArm(arm: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
     val rendered = arm.painless(context)
-    convertRendered(rendered, armSourceType(arm, rendered, context), to, arm.nullable, context)
+    convertRendered(
+      rendered,
+      armSourceType(arm, rendered, context),
+      to,
+      mayRenderNull(arm, context),
+      context
+    )
   }
+
+  /** Can what `operand` renders be NULL where a conversion is applied to it?
+    *
+    * Its own nullability, or -- in a query ([[convertsArms]]) -- its function's: the nameless
+    * identifier the parser wraps a `CASE`, a `COALESCE`, a `NULLIF`, a `GREATEST` or a `LEAST` in
+    * answers `nullable = false` whatever its arguments hold. Read off that identifier alone, a
+    * conversion was appended to the conditional's own NULL guard rather than placed inside one, and
+    * ran on its NULL: `GREATEST(d, d2) > d` rendered `(lv3 == null ? null :
+    * …toLocalDate()).atStartOfDay(…)` and every document missing both dates failed the statement
+    * (MEASURED on Elasticsearch 8.18.3 and 9.0.3). Told the truth, [[coerce]] binds the operand
+    * once and converts it inside its guard.
+    *
+    * The ONE answer every converting consumer reads -- a comparison's operand, an arm, a NULLIF's
+    * answer, a reducer's argument, `LAST_DAY`'s receiver. An ingest processor and a transform keep
+    * their bytes.
+    */
+  def mayRenderNull(operand: PainlessScript, context: Option[PainlessContext]): Boolean =
+    operand.nullable || (convertsArms(context) && (operand match {
+      case identifier: Identifier => identifier.functions.headOption.exists(_.nullable)
+      case _                      => false
+    }))
 
   /** Is what `arm` renders still unknown (`Any`: no schema attached, a `date_nanos` or unmapped
     * column)? Such an arm is NOT converted ([[convertArm]] leaves it as it renders): converting it

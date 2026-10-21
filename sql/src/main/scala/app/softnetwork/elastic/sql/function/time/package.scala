@@ -724,7 +724,7 @@ package object time {
           val guarded =
             if (
               SQLTypeUtils.convertsArms(context) && !FunctionN.isName(arg.trim) &&
-              (identifier.nullable || identifier.functions.headOption.exists(_.nullable))
+              SQLTypeUtils.mayRenderNull(identifier, context)
             ) context.flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(arg))))
             else None
           val operand = guarded.getOrElse(arg)
