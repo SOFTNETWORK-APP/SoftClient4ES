@@ -92,7 +92,14 @@ package object time {
           // THEN swapped it folded onto the boolean CONDITION (compile error); and
           // `CAST(d AS DATE) - INTERVAL 3 DAY > d` read `x > x`. Measured on the control.
           ctx.find(base) match {
-            case Some(param) =>
+            // 🔴 A BOUND expression that can be NULL -- `COALESCE(CAST(d AS DATE), NULL)` folds to
+            // the cast's parameter, `(param1 != null ? … : null)` -- is guarded like an expression
+            // below: the interval appended to it landed OUTSIDE the guard inside it, and `.plus`
+            // ran on the NULL of every document missing `d`. A column's parameter guards an
+            // appended method itself (`checkNotNull`). In a query.
+            case Some(param)
+                if !param.isInstanceOf[LiteralParam] || !nullable ||
+                  !SQLTypeUtils.convertsArms(context) =>
               param.addPainlessMethod(painless(context))
               return base
             case _ if nullable =>

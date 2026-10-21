@@ -593,6 +593,12 @@ package object function {
           val p = painless(context)
           if (p.startsWith(".") && base.nonEmpty) { // method call
             ctx.find(base) match {
+              // 🔴 A BOUND expression that can be NULL (`COALESCE(CAST(d AS DATE), NULL)` folds to
+              // the cast's parameter, `(param1 != null ? … : null)`): a method appended to it lands
+              // OUTSIDE the guard inside it, so it is guarded here, as a compound operand is below.
+              // A column's parameter guards an appended method itself (`checkNotNull`). In a query.
+              case Some(_: LiteralParam) if nullable && SQLTypeUtils.convertsArms(context) =>
+                s"($base == null) ? null : (def)($base$p)"
               case Some(param) =>
                 param.addPainlessMethod(p)
                 base

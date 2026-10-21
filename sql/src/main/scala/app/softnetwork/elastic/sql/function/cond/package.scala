@@ -264,6 +264,22 @@ package object cond {
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case Nil => throw new IllegalArgumentException("COALESCE requires at least one argument")
+        // 🔴 In a query a NULL literal arm is FOLDED away: it can never be the first
+        // non-NULL value, and rendered it is a NULL constant -- `(param2 != null ? param2 : null)`,
+        // on which `DATE_ADD` called `.plus` (a NullPointerException on every NULL row). The arms
+        // left are what COALESCE answers, and with none left it answers NULL. The statement, its
+        // `.sql` and an ingest processor's bytes are unchanged.
+        case _
+            if SQLTypeUtils.convertsArms(context) &&
+              values.exists(ArithmeticExpression.nullLiteral) =>
+          callArgs
+            .map(_.trim)
+            .zip(values)
+            .filterNot(a => ArithmeticExpression.nullLiteral(a._2)) match {
+            case Nil                    => "null"
+            case (single, value) :: Nil => arm(single, value, last = true, context)
+            case args                   => folded(args, context)
+          }
         // 🔴 `COALESCE(x)` IS `x`. Without this arm the fold below took `values.length - 1 = 0`
         // arguments, so the `" : "` join produced nothing and the tail appended a closing paren that
         // opened nowhere: `String.valueOf( : param1))`, which Painless cannot parse. Degenerate SQL,
@@ -312,7 +328,15 @@ package object cond {
         else s"(def)($converted)"
       }
 
-    override def nullable: Boolean = values.forall(_.nullable)
+    /** NULL where every arm is: a NULL literal arm is NULL, and in a query it is folded away
+      * ([[toPainlessCall]]), so COALESCE is NULL where the arms left are. `COALESCE(x, NULL)` is
+      * `x`, which a consumer must guard (`DATE_ADD(COALESCE(CAST(d AS DATE), NULL), …)` called
+      * `.plus` on the NULL of every document missing `d`). An ingest processor renders it as
+      * before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) values.forall(_.nullable)
+      else values.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
 
     override def update(request: query.SingleSearch): Coalesce = {
       this.copy(values = values.map {
@@ -699,6 +723,17 @@ package object cond {
     override def checkIfNullable: Boolean =
       false //checkIfExpressionNullable(expr1) || checkIfExpressionNullable(expr2)
 
+    /** NULLIF answers NULL where its arguments are equal, so a consumer must guard it:
+      * `CAST(NULLIF(ts, NULL) AS TIME)` called `.toInstant()` on the NULL of every document missing
+      * `ts`. Folded (`NULLIF(x, NULL)`, [[toPainlessCall]]) it is `x`, as NULL as `x` is: a number
+      * literal is never NULL, and `0 != null` does not compile. An ingest processor renders it as
+      * before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) super.nullable
+      else if (ArithmeticExpression.nullLiteral(expr2)) expr1.nullable
+      else true
+
     /** Bind an argument's rendering to a prologue local unless it is already a simple operand.
       *
       * 🔴 Issue #382. `arg0` appears THREE times in the guarded template and `arg1` twice, both
@@ -757,6 +792,14 @@ package object cond {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
+        // 🔴 In a query a NULL literal argument is FOLDED: `NULLIF(NULL, x)` is NULL and
+        // `NULLIF(x, NULL)` is `x` (a comparison with NULL is unknown, so never equal). Rendered,
+        // it was a comparison of NULL constants (`null != null && param1.isEqual(null)`), which
+        // Painless refuses to compile: the whole statement failed. The statement, its `.sql` and an
+        // ingest processor's bytes are unchanged.
+        case List(_, _)
+            if SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr1) =>
+          bound("null", context)
         case List(rendered0, rendered1) =>
           // A string literal argument is the value the other argument READS it as -- the number
           // or the boolean it spells, rendered as one (`secondReading` / `firstReading`).
@@ -766,6 +809,13 @@ package object cond {
           val typedAnswer =
             SQLTypeUtils.convertsArms(context) && firstReading.isEmpty &&
             SQLTypeUtils.armsType(List(expr1), reportedType).isDefined
+          if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr2))
+            return bound(
+              if (typedAnswer)
+                SQLTypeUtils.convertArm(expr1, arg0, baseType, expr1.nullable, context)
+              else arg0,
+              context
+            )
           // A second argument READ as a temporal is compared as the instant it denotes
           // (`comparedMillis`) and is never the answer, so its value is not bound: it would be
           // evaluated on every document for nothing.
@@ -861,18 +911,16 @@ package object cond {
                 // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard.
                 case _ => s"$arg0 == $arg1 ? null : $answer"
               }
-          context match {
-            case Some(ctx) =>
-              ctx.addParam(LiteralParam(expr)) match {
-                case Some(e) => return e
-                case _       =>
-              }
-            case _ =>
-          }
-          expr
+          bound(expr, context)
         case _ => throw new IllegalArgumentException("NULLIF requires exactly two arguments")
       }
     }
+
+    /** The answer bound to a parameter of its own, the name a consumer reads -- a literal answer
+      * too, which a consumer's NULL guard could not test (`0 != null` does not compile).
+      */
+    private[this] def bound(expr: String, context: Option[PainlessContext]): String =
+      context.flatMap(_.addParam(LiteralParam(expr))).getOrElse(expr)
 
     override def validate(): Either[String, Unit] = {
       for {
@@ -1592,10 +1640,25 @@ package object cond {
         (if (SQLTypeUtils.rendersOutsideQuery) None
          else SQLTypeUtils.armsType(values, reportedType)).getOrElse(SQLTypes.Timestamp)
       else
-        numericType.getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes) match {
-          case n: SQLNumeric => n
-          case _             => outputType
+        numericType.getOrElse(foldedArgument.getOrElse {
+          SQLTypeUtils.leastCommonSuperType(argTypes) match {
+            case n: SQLNumeric => n
+            case _             => outputType
+          }
         })
+
+    /** The type of the one argument a query renders once NULL literals are folded away
+      * ([[toPainlessCall]]), when exactly one is left -- what it renders
+      * (`SQLTypeUtils.armSourceType`): the reducer IS that argument (`LEAST(NULL, x)` is `x`). An
+      * ingest processor renders the reducer as it did, and keeps its type.
+      */
+    private def foldedArgument: Option[SQLType] =
+      if (SQLTypeUtils.rendersOutsideQuery) None
+      else
+        values.filterNot(ArithmeticExpression.nullLiteral) match {
+          case only :: Nil if values.size > 1 => Some(SQLTypeUtils.armSourceType(only, "", None))
+          case _                              => None
+        }
 
     override def sql: String = s"$operator(${values.map(_.sql).mkString(", ")})"
 
@@ -1651,7 +1714,12 @@ package object cond {
     override def reportedType: SQLType =
       numericType.getOrElse(SQLTypeUtils.leastCommonSuperType(reportedArgTypes))
 
-    override def nullable: Boolean = values.forall(_.nullable)
+    /** NULL where every argument is; a NULL literal argument is NULL, and folded away in a query
+      * ([[toPainlessCall]]): `LEAST(NULL, x)` is `x`. An ingest processor renders it as before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) values.forall(_.nullable)
+      else values.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
 
     /** Can this argument's rendering be NULL here?
       *
@@ -1727,10 +1795,11 @@ package object cond {
       */
     private def overWholeNumbers(
       callArgs: List[String],
+      arguments: List[PainlessScript],
       context: Option[PainlessContext]
     ): Boolean =
       context.exists(!_.isTransform) && numericType.exists(NumericReducer.wholeNumber) &&
-      !values.exists(ArithmeticExpression.bareNull) &&
+      !arguments.exists(ArithmeticExpression.bareNull) &&
       callArgs.forall(a => NumericReducer.oneValue(a.trim))
 
     /** The value converted to [[numericType]], per document: ONE conversion every path goes through
@@ -1800,8 +1869,17 @@ package object cond {
     ): String =
       if (overDates) overDatesPainless(callArgs, context)
       else {
+        // 🔴 In a query a NULL literal argument is FOLDED away, as it is over dates: DuckDB
+        // and PostgreSQL skip a NULL, and rendered it was `Math.min(null, param1)`, which Painless
+        // refuses to compile. With none left the reducer is NULL. An ingest processor keeps its
+        // bytes.
+        val arguments =
+          callArgs.zip(values).filterNot { case (_, argument) =>
+            SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(argument)
+          }
+        if (arguments.isEmpty && callArgs.nonEmpty) return "null"
         val typedArgs =
-          callArgs.zip(values).map { case (rendered, argument) =>
+          arguments.map { case (rendered, argument) =>
             typedArgument(rendered, argument, context)
           }
         typedResult(
@@ -1811,8 +1889,8 @@ package object cond {
             case x :: Nil => x
             case _ =>
               fold(
-                typedArgs.zip(values.map(nullableArgument(_, context))),
-                overWholeNumbers(typedArgs, context)
+                typedArgs.zip(arguments.map(a => nullableArgument(a._2, context))),
+                overWholeNumbers(typedArgs, arguments.map(_._2), context)
               )._1
           },
           context

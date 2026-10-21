@@ -29,7 +29,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.function.cond.functionsOf
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, Coalesce, NullIf, NumericReducer}
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 
 package object convert {
@@ -117,7 +117,17 @@ package object convert {
         case _ => // do nothing
       }
       if (perGroupTemporal(context)) return perGroupTemporalOf(base)
-      val ret = SQLTypeUtils.coerce(base, sourceType, targetType, sourceNullable, context)
+      val ret =
+        if (caseOperand(context)) {
+          // 🔴 A CASE renders an unparenthesised `p ? a : b`: the conversion appended to it
+          // converted the ELSE branch only, and `String.valueOf(…)` around it answered the text
+          // "null" for its NULL rows. In a query it is converted as ONE value, bound once and
+          // guarded, every branch alike; a conversion that leaves it alone keeps its bytes.
+          val operand = SQLTypeUtils.asOneValue(base)
+          val converted =
+            SQLTypeUtils.coerce(operand, sourceType, targetType, nullable = true, context)
+          if (converted == operand) base else converted
+        } else SQLTypeUtils.coerce(base, sourceType, targetType, sourceNullable, context)
       val bloc = ret.startsWith("{") && ret.endsWith("}")
       val retWithBrackets = if (bloc) ret else s"{ $ret }"
       if (!safe) ret
@@ -208,12 +218,28 @@ package object convert {
       * answered TRUE. Guarded, the value is bound once and the conversion applies to it when it is
       * not NULL (`SQLTypeUtils.coerce`'s nullable form): `(v == null ? null : conversion)`.
       */
+    /** Is the operand a CASE, converted in a query as one value under one NULL guard
+      * ([[toPainless]])? A CASE answers NULL without being `nullable` (`CASE WHEN … THEN NULL ELSE
+      * CAST(d AS DATE) END`, a CASE with no ELSE), so the guard does not ask.
+      */
+    private def caseOperand(context: Option[PainlessContext]): Boolean =
+      SQLTypeUtils.convertsArms(context) && (value match {
+        case i: Identifier if i.name.trim.isEmpty =>
+          i.functions.headOption.exists(_.isInstanceOf[Case])
+        case _ => false
+      })
+
     private def sourceNullable: Boolean =
       value.nullable || (value match {
         case i: Identifier if i.name.trim.isEmpty =>
           i.functions.lastOption.exists {
             case a: ArithmeticExpression => a.nullable
-            case _                       => false
+            // a conditional answers NULL, and it renders as a name or an expression of its own
+            // (`NULLIF(ts, NULL)` is `ts`), which the conversion must guard -- in a query
+            case c @ (_: Coalesce | _: NullIf | _: NumericReducer)
+                if !SQLTypeUtils.rendersOutsideQuery =>
+              c.nullable
+            case _ => false
           }
         case a: ArithmeticExpression => a.nullable
         case _                       => false

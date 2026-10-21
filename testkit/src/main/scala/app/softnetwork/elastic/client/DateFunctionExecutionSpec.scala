@@ -1351,6 +1351,25 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
+  it should "fold a NULL literal argument of NULLIF" in {
+    typedRow(
+      onTyped("NULLIF(d, NULL)"),
+      Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      )
+    )
+  }
+
+  it should "fold a NULL literal argument of LEAST" in {
+    typedRow(
+      s"SELECT id, DATETIME_ADD(LEAST(NULL, dn), INTERVAL 1 HOUR) AS v FROM $typedNanos",
+      Map("n1" -> AnInstant("2024-01-15T11:00:00Z"), "n2" -> ANull)
+    )
+  }
+
   it should "answer a DATE for LAST_DAY over a TIMESTAMP" in {
     typedRow(
       onTyped("LAST_DAY(ts)"),
