@@ -166,6 +166,54 @@ package object cond {
   trait AnswersArms extends Function {
     def answeredArms: List[PainlessScript]
   }
+
+  /** 🔴 DuckDB 1.5.5's refusal of a conditional whose arms have NO common type, asked once the
+    * column types are known: a date (DATE, TIMESTAMP) or a TIME beside a number, a date beside a
+    * TIME, text beside a number or a date, a BOOLEAN beside a date (`Cannot mix values of type
+    * INTEGER and DATE in CASE expression - an explicit cast is required`, measured). Rendered, such
+    * a node answered two classes in one column, or failed in Painless.
+    *
+    * Read on what each arm REPORTS. A BOOLEAN beside a number is accepted, as DuckDB types it an
+    * INTEGER. Left out, as DuckDB reads them by the other arms: a NULL, a string literal (read as
+    * the type beside it), an arm of a type still unknown (no schema, `date_nanos`); and an
+    * aggregate arm, whose per-group value Elasticsearch computes. `expression` names the node as
+    * DuckDB does (`CASE expression`, `COALESCE operator`); DuckDB names the newer arm first in a
+    * CASE and the earlier one first in a COALESCE.
+    */
+  private[cond] def mixedArmsError(
+    arms: List[PainlessScript],
+    expression: String,
+    newerFirst: Boolean
+  ): Option[String] = {
+    def family(t: SQLType): Int =
+      if (t.isNumber) 0
+      else if (t == SQLTypes.Boolean) 1
+      else if (
+        t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp ||
+        t == SQLTypes.Temporal
+      ) 2
+      else if (t == SQLTypes.Time) 3
+      else if (t.isText) 4
+      else -1
+    // a BOOLEAN and a number have a common type, INTEGER
+    def common(a: Int, b: Int): Boolean = a == b || Set(a, b) == Set(0, 1)
+    if (arms.exists(_.hasAggregation)) None
+    else {
+      val typed = arms
+        .filterNot(a => ComparisonRule.stringLiteral(a).isDefined)
+        .map(_.reportedType)
+        .filterNot(t => t == SQLTypes.Null || t.isUnknown)
+        .filter(family(_) >= 0)
+      typed.headOption.flatMap { first =>
+        typed.tail.find(t => !common(family(first), family(t))).map { other =>
+          val (a, b) = if (newerFirst) (other, first) else (first, other)
+          s"Cannot mix values of type ${a.typeId} and ${b.typeId} in $expression - an explicit " +
+          "cast is required"
+        }
+      }
+    }
+  }
+
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]
       with FunctionWithIdentifier {
@@ -270,6 +318,10 @@ package object cond {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
       else Right(())
     }
+
+    /** Arms with no common type are refused, as DuckDB refuses them ([[mixedArmsError]]). */
+    override def typeError: Option[String] =
+      mixedArmsError(answeredArms, "COALESCE operator", newerFirst = false)
 
     override def checkIfNullable: Boolean = false
 
@@ -1101,6 +1153,9 @@ package object cond {
       * type that is still unknown is accepted: Elasticsearch answers.
       */
     override def typeError: Option[String] =
+      conditionsTypeError.orElse(mixedArmsError(answeredArms, "CASE expression", newerFirst = true))
+
+    private[this] def conditionsTypeError: Option[String] =
       expression match {
         case None if conditions.exists { case (cond, _) =>
               val t = renderedTypeOf(cond)

@@ -1572,6 +1572,13 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       case wrong => fail(wrong.mkString("\n"))
     }
 
+  /** The message the statement fails with, or the rows it answered. */
+  private def failureOf(sql: String): Either[String, Seq[ListMap[String, Any]]] =
+    client.search(SelectStatement(sql)) match {
+      case ElasticSuccess(response) => Right(response.results)
+      case ElasticFailure(error)    => Left(error.message)
+    }
+
   private val zeroOrNull: Map[String, Expected] =
     Map("t1" -> AText("0"), "t2" -> AText("0"), "t3" -> ANull, "t4" -> AText("0"))
 
@@ -1653,5 +1660,20 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
         "t4" -> ADate("2024-01-01")
       )
     )
+  }
+
+  it should "refuse a conditional whose arms have no common type, as DuckDB does" in {
+    typedFixture shouldBe true
+    Seq(
+      onTyped("CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE n END") ->
+      "Cannot mix values of type INT and DATE in CASE expression",
+      onTyped("COALESCE(ts, 1.5)") ->
+      "Cannot mix values of type TIMESTAMP and DOUBLE in COALESCE operator"
+    ).foreach { case (sql, reason) =>
+      failureOf(sql) match {
+        case Left(message) => withClue(s"[$sql] ")(message should include(reason))
+        case Right(rows)   => fail(s"[$sql] answered $rows, DuckDB refuses it: $reason")
+      }
+    }
   }
 }
