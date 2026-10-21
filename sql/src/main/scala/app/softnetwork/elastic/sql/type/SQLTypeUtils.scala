@@ -487,6 +487,18 @@ object SQLTypeUtils {
     case f :: _ => f.baseType
     case Nil    => SQLTypes.Any
   }
+
+  /** The functions under `f` in its chain, outermost first: its operand's chain. */
+  private def operandChain(f: Function): List[Function] = f.expr match {
+    case _: Identifier => Nil
+    case g: Function   => g :: operandChain(g)
+    case _             => Nil
+  }
+
+  /** Does the OPERAND of `f` render a DATE, a `java.time.LocalDate` ([[chainRendered]])? */
+  def operandRendersDate(f: Function): Boolean =
+    chainRendered(operandChain(f)) == SQLTypes.Date
+
   /** What an ARM renders -- a `THEN` / `ELSE` result of a `CASE`, an argument of `COALESCE`, the
     * value `NULLIF` answers, the date `GREATEST` / `LEAST` choose, the receiver of `LAST_DAY` --
     * once it has rendered as `rendered`.

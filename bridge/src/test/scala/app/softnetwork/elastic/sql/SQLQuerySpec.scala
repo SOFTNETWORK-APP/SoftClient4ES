@@ -2359,7 +2359,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "c": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || (param2 != null && param1.isEqual(param2)) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate().minus(2, ChronoUnit.HOURS); def safe1 = null; try { safe1 = (param3 != null ? param3 : param4); } catch (Exception e) {} safe1",
+        |        "source": "def param1 = (doc['createdAt'].size() == 0 ? null : doc['createdAt'].value); def param2 = LocalDate.parse(\"2025-09-11\", DateTimeFormatter.ofPattern(\"yyyy-MM-dd\")); def param3 = param1 == null || (param2 != null && param1.isEqual(param2)) ? null : param1; def param4 = ZonedDateTime.ofInstant(Instant.ofEpochMilli(params.__now__), ZoneId.of('Z')).toLocalDate(); def safe1 = null; try { safe1 = (param3 != null ? param3 : param4.atStartOfDay(ZoneId.of('Z')).minus(2, ChronoUnit.HOURS)).toInstant().toEpochMilli(); } catch (Exception e) {} safe1",
         |        "params": {
         |          "__now__": 1767139200000
         |        }

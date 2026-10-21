@@ -1572,6 +1572,26 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       case wrong => fail(wrong.mkString("\n"))
     }
 
+  private val zeroOrNull: Map[String, Expected] =
+    Map("t1" -> AText("0"), "t2" -> AText("0"), "t3" -> ANull, "t4" -> AText("0"))
+
+  it should "read a time of day of a DATE at its UTC midnight" in {
+    typedRows(
+      onTyped("HOUR(COALESCE(d, CAST(ts AS DATE)))")   -> zeroOrNull,
+      onTyped("MINUTE(GREATEST(d, CAST(ts AS DATE)))") -> zeroOrNull,
+      onTyped("OFFSET_SECONDS(LAST_DAY(ts))")          -> zeroOrNull,
+      onTyped("HOUR(CAST(d AS DATE))")                 -> zeroOrNull,
+      // t4's d is its ts's day: NULLIF answers NULL there
+      onTyped("EXTRACT(HOUR FROM NULLIF(d, CAST(ts AS DATE)))") -> (zeroOrNull + ("t4" -> ANull)),
+      onTyped("DATETIME_ADD(COALESCE(d, CAST(ts AS DATE)), INTERVAL 1 HOUR)") -> Map(
+        "t1" -> AnInstant("2024-01-15T01:00:00Z"),
+        "t2" -> AnInstant("2024-03-31T01:00:00Z"),
+        "t3" -> ANull,
+        "t4" -> AnInstant("2023-12-31T01:00:00Z")
+      )
+    )
+  }
+
   it should "apply LAST_DAY inside the NULL guard of its operand" in {
     typedRows(
       onTyped("LAST_DAY(DATE_TRUNC(CASE WHEN n > 1 THEN ts ELSE NULL END, MONTH))") -> Map(
@@ -1616,5 +1636,22 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       got.get("t2").map(String.valueOf) shouldBe Some("2024-03-31")
       got.get("t4").map(String.valueOf) shouldBe Some("2024-12-31")
     }
+  }
+
+  it should "answer a DATE for a COALESCE beside a DATE plus whole days" in {
+    typedRows(
+      onTyped("COALESCE(CAST(d AS DATE), DATE_ADD(d, INTERVAL 1 DAY))") -> Map(
+        "t1" -> ADate("2024-01-15"),
+        "t2" -> ADate("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      ),
+      onTyped("COALESCE(DATE_ADD(d, INTERVAL 1 DAY), CAST(ts AS DATE))") -> Map(
+        "t1" -> ADate("2024-01-16"),
+        "t2" -> ADate("2024-04-01"),
+        "t3" -> ANull,
+        "t4" -> ADate("2024-01-01")
+      )
+    )
   }
 }

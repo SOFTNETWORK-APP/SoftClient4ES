@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.function.aggregate.{
   WindowFunction
 }
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
-import app.softnetwork.elastic.sql.function.time.CurrentFunction
+import app.softnetwork.elastic.sql.function.time.{CurrentFunction, IntervalFunction}
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{Column, Table => Schema}
@@ -2291,6 +2291,11 @@ package object sql {
       */
     override def reportedType: SQLType =
       functions.headOption match {
+        // 🔴 An interval over an operand that REPORTS a DATE says so itself, even where that is
+        // also its `out` (a DATE plus whole days is a DATE): the column's runtime TIMESTAMP the
+        // fallback below reads is not what it reports (`IntervalFunction.reportedOverDate`).
+        case Some(f: IntervalFunction[_]) if !isAggregation && f.reportedOverDate.isDefined =>
+          f.reportedOverDate.get
         case Some(f) if !isAggregation =>
           // 🔴 A function that has NOT refined the question answers `out`, and taking that verbatim
           // would be a LOSS: the outermost function's own `out` is coarser than the chain's for the

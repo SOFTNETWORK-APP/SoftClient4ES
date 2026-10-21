@@ -74,6 +74,56 @@ package object time {
       }
     }
 
+    /** A TIMESTAMP over an operand that renders a DATE when the interval is shorter than a day
+      * ([[promotesDate]]): the type the operand is converted to before the interval applies.
+      */
+    override def out: SQLType = if (promotesDate) SQLTypes.Timestamp else super.out
+
+    /** Is the interval shorter than a day (`HOUR`, `MINUTE`, `SECOND`)? */
+    private def subDay: Boolean = interval.unit match {
+      case TimeUnit.HOURS | TimeUnit.MINUTES | TimeUnit.SECONDS => true
+      case _                                                    => false
+    }
+
+    /** 🔴 A sub-day interval over an operand that renders a DATE
+      * (`SQLTypeUtils.operandRendersDate`: a cast to DATE, `LAST_DAY`, a conditional that answers a
+      * DATE) is a TIMESTAMP, as DuckDB types `DATE + INTERVAL 1 HOUR`: the date is its UTC
+      * midnight, then the hours are added. `LocalDate.plus(1, ChronoUnit.HOURS)` threw `Unsupported
+      * unit: Hours` and failed the statement once a `GREATEST` / `COALESCE` over dates answered its
+      * DATE, while the same call over `CAST(ts AS DATE)` was promoted: the consumer decided from
+      * another derivation than the one its operand answers with (#292). In a query: an ingest
+      * processor keeps its bytes.
+      */
+    private def promotesDate: Boolean =
+      subDay && !SQLTypeUtils.rendersOutsideQuery && SQLTypeUtils.operandRendersDate(this)
+
+    /** The type the operand is converted FROM before the interval applies. */
+    private def operandType(context: Option[PainlessContext]): SQLType =
+      if (promotes(context)) SQLTypes.Date else expr.baseType
+
+    /** Is the operand promoted to its UTC midnight before the interval applies, in this script? */
+    private def promotes(context: Option[PainlessContext]): Boolean =
+      SQLTypeUtils.convertsArms(context) && promotesDate
+
+    /** 🔴 The type `DATE_ADD` / `DATE_SUB` / `DATETIME_ADD` / `DATETIME_SUB` REPORT over an operand
+      * that REPORTS a DATE: a DATE for a whole number of days (`DAY`, `WEEK`, `MONTH`, `QUARTER`,
+      * `YEAR`), the lead's date-arithmetic ruling (a date plus whole days is a date) and the gate
+      * oracle's `CAST(d + INTERVAL 1 DAY AS DATE)`; a TIMESTAMP for a sub-day interval, as DuckDB
+      * types it. Over a bare DATE column it reported the column's runtime TIMESTAMP, while over a
+      * DATE `COALESCE` it reported DATE: two answers for two DATE operands. Any other operand
+      * reports as before, and so does every operand while an ingest processor or a transform
+      * renders, whose bytes read this type (`GREATEST` / `LEAST` over it) and do not move
+      * (`SQLTypeUtils.rendersOutsideQuery`).
+      */
+    def reportedOverDate: Option[SQLType] = this match {
+      case f: FunctionWithIdentifier
+          if !SQLTypeUtils.rendersOutsideQuery && f.identifier.reportedType == SQLTypes.Date =>
+        interval.checkType(SQLTypes.Date).toOption
+      case _ => None
+    }
+
+    override def reportedType: SQLType = reportedOverDate.getOrElse(super.reportedType)
+
     /** The interval's unit against the type it applies to, asked once the column types are known
       * (the lead's ruling of 2026-10-05), never when the statement is parsed.
       */
@@ -98,8 +148,8 @@ package object time {
             // ran on the NULL of every document missing `d`. A column's parameter guards an
             // appended method itself (`checkNotNull`). In a query.
             case Some(param)
-                if !param.isInstanceOf[LiteralParam] || !nullable ||
-                  !SQLTypeUtils.convertsArms(context) =>
+                if (!param.isInstanceOf[LiteralParam] || !nullable ||
+                !SQLTypeUtils.convertsArms(context)) && !promotes(context) =>
               param.addPainlessMethod(painless(context))
               return base
             case _ if nullable =>
@@ -109,18 +159,20 @@ package object time {
               ctx.addParam(LiteralParam(base)) match {
                 case Some(bound) =>
                   return s"($bound == null) ? null : (def)(${SQLTypeUtils
-                    .coerce(bound, expr.baseType, out, nullable = false, context)}${painless(context)})"
+                    .coerce(bound, operandType(context), out, nullable = false, context)}${painless(context)})"
                 case None =>
               }
             case _ =>
           }
         case _ =>
       }
+      val from = operandType(context)
+      val operand = if (promotes(context)) SQLTypeUtils.asOneValue(base) else base
       if (nullable) {
         // ensure unique variable names
-        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
+        s"(def e$idx = $operand; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", from, out, nullable = false, context)}${painless(context)} : null)"
       } else
-        s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable, context)}${painless(context)}"
+        s"${SQLTypeUtils.coerce(operand, from, out, nullable = expr.nullable, context)}${painless(context)}"
     }
   }
 
@@ -417,7 +469,18 @@ package object time {
     * (issue #368). A `.get` here would be a second, silently divergent copy of that decision --
     * which is the shape of the defect, not a leftover.
     */
-  case object Extract extends Expr("EXTRACT") with TokenRegex
+  case object Extract extends Expr("EXTRACT") with TokenRegex {
+
+    /** Is `field` a part of the time of day, or the offset -- a field a `LocalDate` does not have?
+      */
+    def timeOfDay(field: TimeField): Boolean = field match {
+      case TimeField.HOUR_OF_DAY | TimeField.MINUTE_OF_HOUR | TimeField.SECOND_OF_MINUTE |
+          TimeField.NANO_OF_SECOND | TimeField.MICRO_OF_SECOND | TimeField.MILLI_OF_SECOND |
+          TimeField.OFFSET_SECONDS =>
+        true
+      case _ => false
+    }
+  }
 
   /** The Painless accessor an `Extract` reads its field with.
     *
@@ -460,6 +523,26 @@ package object time {
       * different gets to override.
       */
     override def reportedType: SQLType = SQLTypes.BigInt
+
+    /** A part of the TIME of day (or the offset) of an operand that renders a DATE -- a
+      * `LocalDate`, which has no time: a cast to DATE, `LAST_DAY`, a conditional that answers a
+      * DATE (`SQLTypeUtils.operandRendersDate`) -- reads it at its UTC midnight, as DuckDB reads
+      * `hour(DATE)` (0). On the `LocalDate` itself `get(ChronoField.HOUR_OF_DAY)` threw
+      * `UnsupportedTemporalTypeException` and failed the statement: `HOUR(CAST(d AS DATE))` on
+      * `main` already, and `OFFSET_SECONDS(LAST_DAY(ts))` once `LAST_DAY` answered its DATE. The
+      * operand is bound once and guarded. In a query only: an ingest processor keeps its bytes.
+      */
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String =
+      context match {
+        case Some(ctx)
+            if base.nonEmpty && SQLTypeUtils.convertsArms(context) &&
+              Extract.timeOfDay(field) && SQLTypeUtils.operandRendersDate(this) =>
+          val p = painless(context)
+          val one = SQLTypeUtils.asOneValue(base)
+          val operand = ctx.addParam(LiteralParam(one)).getOrElse(one)
+          s"($operand == null) ? null : (def)($operand.atStartOfDay(ZoneId.of('Z'))$p)"
+        case _ => super.toPainless(base, idx, context)
+      }
 
     override def toSQL(base: String): String = s"$sql(${field.sql} FROM $base)"
 
