@@ -192,6 +192,46 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     assertDdl(System.nanoTime(), client.run(sql).futureValue) // second call should succeed
   }
 
+  /** A column declares its sub-fields and its script together, `FIELDS (…)` then `SCRIPT AS (…)`,
+    * the order `Column.sql` renders them in.
+    *
+    * 🔴 The grammar read a script OR sub-fields, so this statement was refused with `')' expected
+    * but 'S' found`, while a materialized view renders exactly this column for a string GROUP BY
+    * key. The row asks the cluster both halves: the pipeline computes the script, and the mapping
+    * carries the sub-field.
+    */
+  it should "create a column with sub-fields and a script together, as it renders them" in {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE IF NOT EXISTS col_fields_script " +
+          "(id INT, k KEYWORD, c VARCHAR FIELDS (raw KEYWORD) SCRIPT AS (UPPER(k)));"
+        )
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO col_fields_script (id, k) VALUES (1, 'ab');").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    rawById("SELECT id, c FROM col_fields_script", "c") shouldBe Map(1L -> "AB")
+
+    // ES 6.8 nests the mapping under its type, so the node is found by its `_meta`
+    client.asInstanceOf[MappingApi].getMapping("col_fields_script") match {
+      case ElasticSuccess(json) =>
+        val mapping = JacksonConfig.objectMapper.readTree(json).findParent("_meta")
+        withClue(s"[$json] ") {
+          mapping should not be null
+          val c = mapping.path("properties").path("c")
+          c.path("type").asText() shouldBe "text"
+          c.path("fields").path("raw").path("type").asText() shouldBe "keyword"
+        }
+      case other => fail(s"getMapping(col_fields_script) failed: $other")
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // CREATE OR REPLACE TABLE AS SELECT
   // ---------------------------------------------------------------------------
