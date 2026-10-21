@@ -1478,19 +1478,15 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     * Error statuses surface as [[org.elasticsearch.client.ResponseException]] — an `IOException`,
     * which `retryWithBackoff` would retry. The typed path never retried an error status
     * (`ElasticsearchStatusException` is not retriable), so permanent client errors (4xx except
-    * 408/429) are rethrown as non-retriable to keep failing fast; retrying 408/429/5xx is a
-    * deliberate resilience gain on transient cluster conditions.
+    * 408/429) fail fast, as [[pageRejection]]: Elasticsearch's status and reason; retrying
+    * 408/429/5xx is a deliberate resilience gain on transient cluster conditions.
     */
   private def executeSearchPage(request: Request): JsonNode =
     try {
       readResponseTree(apply().getLowLevelClient.performRequest(request))
     } catch {
-      case ex: org.elasticsearch.client.ResponseException =>
-        val status = Try(ex.getResponse.getStatusLine.getStatusCode).getOrElse(0)
-        if (status >= 400 && status < 500 && status != 408 && status != 429) {
-          throw new IllegalStateException(ex.getMessage, ex)
-        }
-        throw ex
+      case ex: org.elasticsearch.client.ResponseException if isNonRetriable4xx(ex) =>
+        throw pageRejection(ex)
     }
 
   /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
