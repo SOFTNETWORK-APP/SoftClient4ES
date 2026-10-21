@@ -711,12 +711,14 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           // itself, never its SQL rendering: `.sql` carries the quote delimiters (which used to be
           // stripped for EQ/NE but not for LIKE/RLIKE, embedding `'` in the regex) and, since
           // string literals are escaped, would also carry `\\` for a value holding one backslash.
+          // A value is written by `Bucket.keyFilterTexts`, the one writer of a key-filter value: a
+          // number on a scripted key is sent in every text the key may print it as.
           case EQ =>
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
                 case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.value.toString)
+                    bucketIncludesExcludes.values ++ bucket.keyFilterTexts(v.value)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -726,7 +728,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               maybeValue match {
                 case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.value.toString)
+                    bucketIncludesExcludes.values ++ bucket.keyFilterTexts(v.value)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -2337,9 +2339,12 @@ case class InExpr[R, +T <: Value[R]](
           // arm. `.sql` escapes a backslash and an apostrophe, and stripping only the quote
           // delimiters left both escapes behind: `IN ('a\b')` sent `a\\b` and `IN ('it''s')` sent
           // `it\s`, which keep no group. The IN grammar admits string, long and double literals
-          // only, so no element is null.
+          // only, so no element is null. Each value in every text the level's key may print it
+          // as (`Bucket.keyFilterTexts`).
           bucketIncludesExcludes.copy(values =
-            bucketIncludesExcludes.values ++ values.values.map(_.value.toString).toSet
+            bucketIncludesExcludes.values ++ values.values.flatMap(v =>
+              bucket.keyFilterTexts(v.value)
+            )
           )
         else bucketIncludesExcludes
       case _ => bucketIncludesExcludes

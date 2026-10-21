@@ -138,6 +138,7 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     client.deleteIndex(im10OneResolution)
     client.deleteIndex(dateKeyIndex)
     client.deleteIndex(dateKeyEmptyIndex)
+    client.deleteIndex(havingKeyIndex)
     super.afterAll()
   }
 
@@ -1037,15 +1038,33 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   "a pattern meeting a value list on the same key" should "be REFUSED, not half-applied" in {
     // 🔴 MEASURED on ES 8.18.3 over a three-bucket fixture: `= 'a' OR LIKE 'b%'` emitted
     // `include:"b.*"` and returned only the pattern's bucket -- the value list is DISCARDED by the
-    // emission when a pattern is present, and a second pattern is lost to `orElse`.
+    // emission when a pattern is present, and a second pattern is lost to `orElse`. `cat_01` does
+    // not match `cat_3%`, so dropping it would lose that group: the combination is refused.
     // ⚠️ the client caps a relayed parse message at 200 characters (#262), so the assertion
     // anchors on the TAIL of the reason, not its middle.
     categoryRefusal(
-      "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+      "HAVING category = 'cat_01' OR category LIKE 'cat_3%'"
     ) should include("Use a single RLIKE")
     // ... and the pattern ALONE still works: cat_30 .. cat_37.
     categoriesOf("HAVING category LIKE 'cat_3%'") shouldBe
     (30 to 37).map(c => f"cat_$c%02d")
+  }
+
+  it should "be ANSWERED when the pattern alone keeps exactly SQL's groups" in {
+    // An exact key-filter combination, answered (lead ruling): `cat_37` matches `LIKE 'cat_3%'`,
+    // so the condition equals the LIKE alone, and `include:"cat.3.*"` keeps exactly SQL's groups.
+    // DuckDB 1.5.5 over this fixture answers (cat_30, 30) .. (cat_37, 37) (MEASURED).
+    client.searchAsUnchecked[CategoryCount](
+      SelectStatement(
+        "SELECT category, COUNT(*) AS cnt FROM group_by_completeness GROUP BY category " +
+        "HAVING category = 'cat_37' OR category LIKE 'cat_3%'"
+      )
+    ) match {
+      case ElasticSuccess(rows) =>
+        rows.map(r => r.category -> r.cnt).sorted shouldBe
+          (30 to 37).map(c => f"cat_$c%02d" -> c.toLong)
+      case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
+    }
   }
 
   "a LIKE pattern on the key" should "treat _ as a wildcard, like every other LIKE" in {
@@ -4121,5 +4140,259 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       }
     } yield outcome
     withClue(s"${outcomes.size} wrong:\n${outcomes.mkString("\n")}\n") { outcomes shouldBe empty }
+  }
+
+  // GATE-024 HAVING key filter. A HAVING over a GROUP BY key is sent as the `terms` level's
+  // include / exclude lists. Each row below is one mechanism: a combination whose lists keep
+  // exactly SQL's groups is answered, one whose lists keep other groups is refused by name, a key
+  // IS NOT NULL keeps every group (a level has no NULL group), and a numeric key filter matches the
+  // key whatever Java text its script prints (`5`, `5.0`). Every expected row is DuckDB 1.5.5's
+  // answer over the same documents (MEASURED).
+
+  private val havingKeyIndex = "group_by_having_keys"
+
+  private val havingKeyPattern = "group_by_having_key*"
+
+  /** (id, s, n, x, d); `None` leaves the field out of the document. */
+  private val havingKeyDocs: Seq[(String, String, Option[Int], Option[Double], String)] = Seq(
+    ("h1", "a", Some(1), Some(1.0), "2024-01-03"),
+    ("h2", "a", Some(5), Some(5.0), "2024-03-11"),
+    ("h3", "b", Some(-3), Some(2.5), "2024-02-05"),
+    ("h4", "axb", Some(3), Some(5.0), "2024-03-20"),
+    ("h5", "a.b", Some(4), Some(-1.0), "2024-01-31"),
+    ("h6", "bb", None, None, "2024-05-01"),
+    ("h7", "ba", Some(0), Some(0.0), "2024-03-01")
+  )
+
+  /** The `float` column `r`, by document (absent elsewhere). */
+  private val havingKeyFloats: Map[String, Double] = Map("h1" -> 0.1, "h2" -> 0.1, "h3" -> 2.5)
+
+  /** The columns of the kinds whose key filter is not proven exact, by document: `half_float`,
+    * `scaled_float`, `unsigned_long` (Elasticsearch 7 and later) and `ip`.
+    */
+  private lazy val havingKeyOtherKinds: Map[String, Seq[String]] = Map(
+    "h1" -> Seq(""""ip":"10.0.0.1""""),
+    "h2" -> (Seq(""""hf":5""", """"sf":5""") ++ (if (esMajor >= 7) Seq(""""ul":5""") else Nil))
+  )
+
+  private lazy val havingKeysLoaded: Unit = {
+    val settings = """{"number_of_shards": 3, "number_of_replicas": 0}"""
+    val mapping =
+      """{"properties":{"id":{"type":"keyword"},"s":{"type":"keyword"},""" +
+      """"n":{"type":"integer"},"x":{"type":"double"},"d":{"type":"date"},""" +
+      """"r":{"type":"float"},"hf":{"type":"half_float"},""" +
+      """"sf":{"type":"scaled_float","scaling_factor":100},"ip":{"type":"ip"}""" +
+      (if (esMajor >= 7) ""","ul":{"type":"unsigned_long"}""" else "") + "}}"
+    client.createIndex(havingKeyIndex, settings = settings).get shouldBe true
+    client.setMapping(havingKeyIndex, mapping).get shouldBe true
+    val docs = havingKeyDocs.map { case (id, s, n, x, d) =>
+      (Seq(s""""id":"$id"""", s""""s":"$s"""", s""""d":"$d"""") ++
+      n.map(v => s""""n":$v""") ++ x.map(v => s""""x":$v""") ++
+      havingKeyFloats.get(id).map(v => s""""r":$v""") ++
+      havingKeyOtherKinds.getOrElse(id, Nil)).mkString("{", ",", "}")
+    }.toList
+    implicit val havingKeyBulkOptions: BulkOptions =
+      BulkOptions(defaultIndex = havingKeyIndex, logEvery = 1000)
+    implicit def havingKeyListToSource[T](list: List[T]): Source[T, NotUsed] =
+      Source.fromIterator(() => list.iterator)
+    client.bulk[String](docs, identity, idKey = Some(Set("id"))) match {
+      case ElasticSuccess(_) => client.refresh(havingKeyIndex)
+      case ElasticFailure(error) =>
+        fail(s"Bulk indexing $havingKeyIndex failed: ${error.message}")
+    }
+  }
+
+  /** The rows a statement answers over the HAVING-key fixture, as [[dateKeyRows]] reads them. */
+  private def havingKeyRows(sql: String, columns: Seq[String]): Either[String, Seq[Seq[String]]] = {
+    havingKeysLoaded
+    gatewayRows(sql).map(
+      _.map(row => columns.map(c => row.get(c).map(dateKeyText).getOrElse("<absent>")))
+        .sortBy(_.mkString("|"))
+    )
+  }
+
+  "GATE-024 HAVING key filter" should
+  "answer a combination whose key lists keep exactly SQL's groups, and refuse the others by name" in {
+    def rows(expected: (String, Int)*): Seq[Seq[String]] =
+      expected.map { case (k, c) => Seq(k, c.toString) }.sortBy(_.mkString("|"))
+    val answered: Seq[(String, Seq[Seq[String]])] = Seq(
+      // a value list beside a pattern that covers it: the pattern alone keeps SQL's groups
+      (
+        "SELECT s AS k, COUNT(*) AS c FROM VENUE GROUP BY s " +
+        "HAVING s = 'axb' AND s IN ('a', 'b') OR s LIKE 'a%'",
+        rows("a" -> 2, "a.b" -> 1, "axb" -> 1)
+      ),
+      // two kept values that are one value: the union is the intersection
+      (
+        "SELECT s AS k, COUNT(*) AS c FROM VENUE GROUP BY s " +
+        "HAVING s = 'axb' AND s NOT IN ('x', 'b') AND s = 'axb'",
+        rows("axb" -> 1)
+      ),
+      // a key IS NOT NULL keeps every group, in both spellings
+      (
+        "SELECT n AS k, COUNT(*) AS c FROM VENUE GROUP BY n HAVING n IS NOT NULL",
+        rows("-3" -> 1, "0" -> 1, "1" -> 1, "3" -> 1, "4" -> 1, "5" -> 1)
+      ),
+      (
+        "SELECT n AS k, COUNT(*) AS c FROM VENUE GROUP BY n HAVING ISNOTNULL(n)",
+        rows("-3" -> 1, "0" -> 1, "1" -> 1, "3" -> 1, "4" -> 1, "5" -> 1)
+      ),
+      (
+        "SELECT s AS k, COUNT(*) AS c FROM VENUE GROUP BY s HAVING s IS NOT NULL AND s = 'a'",
+        rows("a" -> 2)
+      ),
+      // a numeric key filter matches the key however its script prints it
+      (
+        "SELECT CONVERT(n, DOUBLE) AS k, COUNT(*) AS c FROM VENUE GROUP BY CONVERT(n, DOUBLE) " +
+        "HAVING CONVERT(n, DOUBLE) IN (5, 1)",
+        rows("1" -> 1, "5" -> 1)
+      ),
+      (
+        "SELECT ABS(n) AS k, COUNT(*) AS c FROM VENUE GROUP BY k HAVING k = 3.0 OR k = 1.0",
+        rows("1" -> 1, "3" -> 2)
+      ),
+      (
+        "SELECT MONTH(d) AS k, COUNT(*) AS c FROM VENUE GROUP BY MONTH(d) " +
+        "HAVING MONTH(d) IN (1.0, 3.0)",
+        rows("1" -> 2, "3" -> 3)
+      ),
+      (
+        "SELECT CAST(x AS DOUBLE) AS k, COUNT(*) AS c FROM VENUE GROUP BY CAST(x AS DOUBLE) " +
+        "HAVING CAST(x AS DOUBLE) IN (5, 1)",
+        rows("1" -> 1, "5" -> 2)
+      ),
+      // a computed key with no column of its own (the nameless route)
+      (
+        "SELECT SQRT(n) AS k, COUNT(*) AS c FROM VENUE WHERE n >= 0 GROUP BY SQRT(n) " +
+        "HAVING SQRT(n) = 2",
+        rows("2" -> 1)
+      ),
+      // a QUOTED number: DuckDB casts it to the key's type, and the key prints 5.0
+      (
+        "SELECT ABS(x) AS k, COUNT(*) AS c FROM VENUE GROUP BY ABS(x) HAVING ABS(x) = '5'",
+        rows("5" -> 2)
+      ),
+      // a string computed from a string: the script's text is compared as a keyword's is
+      (
+        "SELECT UPPER(s) AS k, COUNT(*) AS c FROM VENUE GROUP BY UPPER(s) " +
+        "HAVING UPPER(s) = 'AXB' AND UPPER(s) IN ('A', 'B') OR UPPER(s) LIKE 'A%'",
+        rows("A" -> 2, "A.B" -> 1, "AXB" -> 1)
+      )
+    )
+    // a key IS NOT NULL alone keeps every group on a level of any kind (a date here): it sends
+    // no list (DuckDB: the 7 dates, one document each)
+    val everyGroup: Seq[String] = Seq(
+      "SELECT d AS k, COUNT(*) AS c FROM VENUE GROUP BY d HAVING d IS NOT NULL",
+      "SELECT d AS k, COUNT(*) AS c FROM VENUE GROUP BY d HAVING ISNOTNULL(d)"
+    )
+    // (statement, the stable lead and tail of its refusal)
+    val refused: Seq[(String, String, String)] = Seq(
+      // the emitted lists keep `b%` alone, and SQL also keeps `a`
+      (
+        "SELECT s AS k, COUNT(*) AS c FROM VENUE GROUP BY s HAVING s = 'a' OR s LIKE 'b%'",
+        "HAVING cannot combine the conditions in",
+        "Use a single RLIKE that covers both, or split the query."
+      ),
+      // SQL keeps every group, and the emitted list keeps `a` alone
+      (
+        "SELECT s AS k, COUNT(*) AS c FROM VENUE GROUP BY s HAVING s IS NOT NULL OR s = 'a'",
+        "HAVING cannot combine the conditions in",
+        "otherwise split the query."
+      ),
+      // a key over a REAL column is not proven: Painless computes it in double, DuckDB in REAL
+      // (DuckDB: (0.1, 2) for ABS(r) = 0.1, (0.2, 2) for r * 2 = 0.2, (1.0, 2) for r * 10 = 1),
+      // and so is a REAL produced by a cast. Refused as before.
+      (
+        "SELECT ABS(r) AS k, COUNT(*) AS c FROM VENUE GROUP BY ABS(r) HAVING ABS(r) = 0.1",
+        "HAVING cannot filter the GROUP BY key ABS(r)",
+        "which writes such a number as 1 or as 1.0 depending on the column's type."
+      ),
+      (
+        "SELECT r * 2 AS k, COUNT(*) AS c FROM VENUE GROUP BY r * 2 HAVING r * 2 = 0.2",
+        "HAVING cannot filter the GROUP BY key ",
+        "which writes such a number as 1 or as 1.0 depending on the column's type."
+      ),
+      (
+        "SELECT r * 10 AS k, COUNT(*) AS c FROM VENUE GROUP BY r * 10 HAVING r * 10 = 1",
+        "HAVING cannot filter the GROUP BY key ",
+        "which writes such a number as 1 or as 1.0 depending on the column's type."
+      ),
+      (
+        "SELECT ABS(CAST(x AS REAL)) AS k, COUNT(*) AS c FROM VENUE " +
+        "GROUP BY ABS(CAST(x AS REAL)) HAVING ABS(CAST(x AS REAL)) = 0.1",
+        "HAVING cannot filter the GROUP BY key ",
+        "which writes such a number as 1 or as 1.0 depending on the column's type."
+      ),
+      // the script rounds to a whole number (DuckDB: (2.5, 1)); refused as before
+      (
+        "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM VENUE GROUP BY ROUND(x, 1) " +
+        "HAVING ROUND(x, 1) = 2.5",
+        "HAVING cannot filter the GROUP BY key ROUND(x, 1)",
+        "which writes such a number as 1 or as 1.0 depending on the column's type."
+      ),
+      // on a numeric field 5 and 5.0 are one key, which the lists keep AND remove (DuckDB: (5, 1))
+      (
+        "SELECT n AS k, COUNT(*) AS c FROM VENUE GROUP BY n " +
+        "HAVING n = 5 AND (n IS NOT NULL OR NOT n = 5.0)",
+        "HAVING cannot combine the conditions in",
+        "otherwise split the query."
+      ),
+      (
+        "SELECT n AS k, COUNT(*) AS c FROM VENUE GROUP BY n HAVING n = 5 AND (n <> 7 OR NOT n = 5.0)",
+        "HAVING cannot combine the conditions in",
+        "restate it as an OR of equalities or an AND of inequalities."
+      )
+    ) ++ (
+      // a level of a kind whose key filter Elasticsearch parses its own way: a key IS NOT NULL
+      // beside its values is refused as before (DuckDB: (5, 1) on hf, sf and ul, no group on r;
+      // (2024-01-03, 1); (10.0.0.1, 1))
+      Seq("r", "hf", "sf") ++ (if (esMajor >= 7) Seq("ul") else Nil)
+    ).map(c =>
+      (
+        s"SELECT $c AS k, COUNT(*) AS c FROM VENUE GROUP BY $c " +
+        s"HAVING $c = 5 AND ($c IS NOT NULL OR NOT $c = 5.0)",
+        s"HAVING cannot filter on $c IS NOT NULL: a condition over the GROUP BY key",
+        "Compare the key itself, or filter in WHERE."
+      )
+    ) ++ Seq(
+      (
+        "SELECT d AS k, COUNT(*) AS c FROM VENUE GROUP BY d " +
+        "HAVING d = '2024-01-03' AND (d IS NOT NULL OR NOT d = '2024-01-03T00:00:00Z')",
+        "HAVING cannot filter on d IS NOT NULL: a condition over the GROUP BY key",
+        "Compare the key itself, or filter in WHERE."
+      ),
+      (
+        "SELECT ip AS k, COUNT(*) AS c FROM VENUE GROUP BY ip " +
+        "HAVING ip = '10.0.0.1' AND (ip IS NOT NULL OR NOT ip = '::ffff:10.0.0.1')",
+        "HAVING cannot filter on ip IS NOT NULL: a condition over the GROUP BY key",
+        "Compare the key itself, or filter in WHERE."
+      )
+    )
+    val wrong = Seq(havingKeyIndex, havingKeyPattern).flatMap { v =>
+      val answers = answered.flatMap { case (template, expected) =>
+        val sql = template.replace("VENUE", v)
+        havingKeyRows(sql, Seq("k", "c")) match {
+          case Right(actual) if actual == expected => None
+          case other => Some(s"[$sql] expected $expected, got ${other.toString.take(400)}")
+        }
+      }
+      val refusals = refused.flatMap { case (template, lead, tail) =>
+        val sql = template.replace("VENUE", v)
+        havingKeyRows(sql, Seq("k", "c")) match {
+          // the gateway relays a parse refusal as its first 120 characters and its last 77
+          case Left(message) if message.contains(lead) && message.contains(tail) => None
+          case other => Some(s"[$sql] expected the refusal, got ${other.toString.take(400)}")
+        }
+      }
+      val kept = everyGroup.flatMap { template =>
+        val sql = template.replace("VENUE", v)
+        havingKeyRows(sql, Seq("c")) match {
+          case Right(actual) if actual == Seq.fill(havingKeyDocs.size)(Seq("1")) => None
+          case other => Some(s"[$sql] expected every group, got ${other.toString.take(400)}")
+        }
+      }
+      answers ++ refusals ++ kept
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
   }
 }
