@@ -740,6 +740,21 @@ package object bridge {
       case _           => true
     }))
 
+  /** The same question asked of BOTH operands (issue #373).
+    *
+    * 🔴 `requiresScript` only ever inspected the LEFT identifier, so a comparison of one column
+    * with another -- which the ES query DSL cannot express at all -- fell through to `rangeQuery`
+    * keyed on the left field NAME, with the RIGHT column rendered as DATE MATH. MEASURED on ES
+    * 6.8.23: `WHERE ts < d` answered `failed to parse date field [d]` -- Elasticsearch read the
+    * column NAME as a date literal. A range can only compare a field with a CONSTANT; two fields
+    * need the script path, which renders both sides and already emits a correct comparison.
+    */
+  private[bridge] def requiresScript(identifier: Identifier, maybeValue: Option[Token]): Boolean =
+    requiresScript(identifier) || maybeValue.exists {
+      case id: Identifier => id.name.trim.nonEmpty
+      case _              => false
+    }
+
   private[bridge] def scriptQueryOf(criteria: Criteria)(implicit
     timestamp: Long,
     contextType: PainlessContextType,
@@ -765,7 +780,7 @@ package object bridge {
     import expression._
     if (isAggregation)
       return matchAllQuery()
-    if (requiresScript(identifier)) return scriptQueryOf(expression)
+    if (requiresScript(identifier, maybeValue)) return scriptQueryOf(expression)
     // Geo distance special case
     identifier.functions.headOption match {
       case Some(d: Distance) =>

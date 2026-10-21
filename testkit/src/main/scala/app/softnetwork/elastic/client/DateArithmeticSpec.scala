@@ -1026,8 +1026,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     * `date` doc value is a `JodaCompatibleZonedDateTime`, which `isBefore` / `isAfter` / `isEqual`
     * against a genuine `ZonedDateTime` used to fail with `Class.cast`.
     *
-    * ⚠️ A column compared with ANOTHER column (`d2 > d`) is not here: on Elasticsearch 6.8 it is
-    * sent as a `range` bounded by the other column's NAME, outside this suite's rules.
+    * A column compared with ANOTHER column (`d2 > d`) is not here: it is scripted on every major,
+    * and the TIMESTAMP-vs-DATE row below covers it.
     */
   private val columnForms: Seq[WhereForm] = Seq(
     WhereForm("d < CAST('2024-01-07' AS DATE) - 7", r => r.d.map(_.isBefore(on("2023-12-31")))),
@@ -1664,10 +1664,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     "CASE WHEN DATE_TRUNC(d, MONTH) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7"
   )
 
-  /** A column compared with a column, or with a function of one that Elasticsearch reads as date
-    * math (`CAST(ts AS DATE)`, `DATE_TRUNC(d, MONTH)`): RIGHT on 7 and up only. On 6.8 the
-    * comparison runs as a range query that reads the other column's NAME as a date (`failed to
-    * parse date field [d]`), an error before and after this fix.
+  /** A column compared with a column, or with a function of one that Elasticsearch would read as
+    * date math (`CAST(ts AS DATE)`, `DATE_TRUNC(d, MONTH)`). A range query cannot compare two
+    * fields: on every major the comparison renders as a script.
     */
   private val timestampDateColumnComparisons: Seq[(String, String)] = Seq(
     "ts < d"                      -> "",
@@ -1745,9 +1744,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   )
 
   "a TIMESTAMP compared with a DATE expression" should "keep exactly the documents DuckDB keeps" in {
-    val comparisons = timestampDateComparisons ++
-      (if (elasticVersion.takeWhile(_ != '.').toInt < 7) Nil else timestampDateColumnComparisons)
-    (timestampDateComparisons ++ timestampDateColumnComparisons).size shouldBe 600
+    val comparisons = timestampDateComparisons ++ timestampDateColumnComparisons
+    comparisons.size shouldBe 600
     verdict(
       "TIMESTAMP vs DATE",
       comparisons.map { case (where, ids) =>
