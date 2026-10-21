@@ -16,8 +16,25 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.SQLType
+import app.softnetwork.elastic.sql.`type`.{
+  SQLBigInt,
+  SQLBool,
+  SQLChar,
+  SQLDouble,
+  SQLInt,
+  SQLReal,
+  SQLSmallInt,
+  SQLTemporal,
+  SQLTinyInt,
+  SQLType,
+  SQLTypes,
+  SQLVarchar
+}
+import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate._
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
+import app.softnetwork.elastic.sql.function.convert.Conversion
+import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -92,6 +109,66 @@ object Bucket {
     TimeUnit.MINUTES,
     TimeUnit.SECONDS
   )
+
+  /** A column's OWN type, without the functions a key applies to it. */
+  private[query] def columnType(column: Identifier): SQLType = column.withFunctions(Nil).baseType
+
+  /** The mapped types of a FIELD level whose key filter is proven exact
+    * ([[Bucket.isExactKeyKind]]).
+    */
+  private[query] def exactFieldType(t: SQLType): Boolean = t match {
+    case SQLTypes.Keyword                                                         => true
+    case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt | _: SQLDouble => true
+    case _                                                                        => false
+  }
+
+  /** The column types a computed key of a proven kind may read ([[Bucket.isExactKeyKind]]): the
+    * whole numbers, DOUBLE, the strings, the dates and BOOLEAN. Never REAL or NUMERIC, which
+    * Painless computes with in double, and never a type the mapping did not give.
+    */
+  private[query] def exactSourceType(t: SQLType): Boolean = t match {
+    case _: SQLReal                                                               => false
+    case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt | _: SQLDouble => true
+    case _: SQLVarchar | _: SQLChar | _: SQLTemporal | _: SQLBool                 => true
+    case _                                                                        => false
+  }
+
+  /** A string type: the type of a text column, or of a value a function renders as text. */
+  private[query] def stringType(t: SQLType): Boolean =
+    t.isInstanceOf[SQLVarchar] || t.isInstanceOf[SQLChar]
+
+  /** Whether `round` rounds to decimal places a value that is not a whole number: its script rounds
+    * to a whole number (`Long.valueOf(Math.round((x * 10) / 10))`), so its value is not the one SQL
+    * computes.
+    */
+  private[query] def roundsToAnotherScale(round: Round): Boolean =
+    round.scale.exists(_ != 0) && !NumericReducer.wholeNumber(renderedTypeOf(round.arg))
+
+  /** Every text a Java number EQUAL to `number` prints, for [[Bucket.keyFilterTexts]]:
+    *   - a whole value: its integer text and its `Double` text (`5` and `5.0`, `1.0E7` for ten
+    *     million), and for zero both `0.0` and `-0.0`;
+    *   - a fractional value: its `Double` text, which no integral key prints;
+    *   - with `real`, also its `Float` text;
+    *   - NaN and the infinities: their own text.
+    *
+    * Two finite numbers print the same Java text only if they are equal, so no text here matches a
+    * key the comparison does not hold for.
+    */
+  private[query] def numberTexts(number: java.lang.Number, real: Boolean): Set[String] = {
+    val own = number.toString
+    val asDouble = number.doubleValue
+    if (asDouble.isNaN || asDouble.isInfinite) Set(own)
+    else
+      Try(BigDecimal(own)).toOption match {
+        case None => Set(own)
+        case Some(exact) =>
+          val texts =
+            if (!exact.isWhole) Set(java.lang.Double.toString(asDouble))
+            else if (asDouble == 0d) Set(exact.toBigInt.toString, "0.0", "-0.0")
+            else Set(exact.toBigInt.toString, java.lang.Double.toString(asDouble))
+          if (real) texts + java.lang.Float.toString(number.floatValue) else texts
+      }
+  }
 
   /** The 1-based SELECT position an identifier names, when it is an ANSI ordinal at all.
     *
@@ -422,6 +499,136 @@ case class Bucket(
     * statement; no bridge reads it.
     */
   def isTemporalScriptKey: Boolean = isScriptedKey && renderedTypeOf(identifier).isTemporal
+
+  /** The columns this level's key reads -- through its functions and its arithmetic, a CASE's
+    * branches and its conditions -- each with the functions the key applies to it.
+    */
+  def keyColumns: Seq[Identifier] =
+    (FunctionUtils.funIdentifiers(identifier) ++
+      Case
+        .conditionsOf(identifier)
+        .flatMap(_.referencedIdentifiers)
+        .flatMap(FunctionUtils.funIdentifiers(_)))
+      .filter(_.name.nonEmpty)
+
+  /** Whether the mapping typed every column this level's key reads. With no mapping every column is
+    * `Any`: nothing is known of the key's value or of the text its script prints.
+    */
+  def keyTypesKnown: Boolean = keyColumns.forall(c => !Bucket.columnType(c).isUnknown)
+
+  /** Is this level's key of a kind whose key filter Elasticsearch is PROVEN to match exactly as the
+    * HAVING rules model it -- the ONE predicate that says so (#292), read by the nameless-key gate
+    * (`SingleSearch.namelessKeyRouteReason`) and [[keyFilterTexts]]. A level of any other kind is
+    * judged as before.
+    *
+    * A FIELD level, of a mapped type whose include / exclude values Elasticsearch 8.18.3 reads as
+    * follows (`TermsAggregatorFactory`, `IncludeExclude`, `DocValueFormat`):
+    *   - `keyword`: a values source of bytes in the RAW format, whose values are compared as the
+    *     bytes they are;
+    *   - `byte`, `short`, `integer`, `long`: a numeric source that is not floating-point, read
+    *     through `convertToLongFilter(DocValueFormat.RAW)`, that is `Long.parseLong`, else the
+    *     floor of `Double.parseDouble`;
+    *   - `double`: a floating-point source, read through `convertToDoubleFilter`, that is
+    *     `Double.parseDouble`, compared bit for bit with the key.
+    *
+    * Not proven, so not decided: `float` (the same `Double.parseDouble`, against a key that is the
+    * float widened to a double), `half_float`, `scaled_float` and `unsigned_long` (no SQL type, or
+    * `NUMERIC`), every date type and `ip` (parsed by their own format, so two spellings name one
+    * key), `boolean`, `text`, and any column the mapping does not type.
+    *
+    * A COMPUTED level is a string `terms`: the script's values have no ordinals, so the level runs
+    * in the `map` mode (`TermsAggregatorFactory.bytesSupplier`), each value is the text of the
+    * script's value (`ScriptBytesValues`: `toString()`), and the include / exclude is the
+    * `SetAndRegexStringFilter` of `convertToStringFilter(RAW)`: membership of the values as the
+    * bytes they are, and a full match of the pattern -- the set a `keyword` field's
+    * `SetAndRegexOrdinalsFilter` accepts, by the same values and automaton. Proven:
+    *   - a key whose value is the number SQL computes and prints as a `Long`, an `Integer`, a
+    *     `Short`, a `Byte` or a `Double`, every text of which [[keyFilterTexts]] sends: it renders
+    *     a number other than REAL, and reads only columns of a mapped type that is a whole number,
+    *     a DOUBLE, a string, a date or a BOOLEAN (a date part, a LENGTH, an integer cast of a
+    *     string are exact integers of their argument). Not proven: a key reading a REAL or a
+    *     NUMERIC column, or converting anything to REAL or NUMERIC, anywhere in its expression
+    *     (Painless computes it in double, DuckDB in REAL or DECIMAL), or holding a `ROUND` to
+    *     decimal places over a non-integer value (its script rounds to a whole number);
+    *   - a key that renders a string computed from strings alone (`UPPER(k)`, `SUBSTRING(k, 1, 3)`,
+    *     `CONCAT(k1, k2)`, `TRIM(k)`): every column it reads is a string, and every function and
+    *     operand in its expression renders a string, so nothing converts a number, a date or a
+    *     BOOLEAN to a text (`CAST(n AS VARCHAR)`, `CONCAT(k, 1)`, `CAST(LENGTH(k) AS VARCHAR)` are
+    *     not proven). Never proven: a key that renders a BOOLEAN or a date, and a key reading a
+    *     column the mapping does not type.
+    */
+  def isExactKeyKind: Boolean =
+    if (isScriptedKey) isExactComputedKey
+    else
+      !isBucketScript && !isDateHistogram && identifier.functions.isEmpty &&
+      Bucket.exactFieldType(Bucket.columnType(identifier))
+
+  private[this] def isExactComputedKey: Boolean = {
+    val rendered = renderedTypeOf(identifier)
+    val functions = functionsOf(identifier) ++ keyColumns.flatMap(functionsOf)
+    if (Bucket.stringType(rendered))
+      keyColumns.forall(c => Bucket.stringType(Bucket.columnType(c))) &&
+      functions.forall(f => Bucket.stringType(renderedTypeOf(f)))
+    else
+      rendered.isNumber && !rendered.isInstanceOf[SQLReal] &&
+      keyColumns.forall(c => Bucket.exactSourceType(Bucket.columnType(c))) &&
+      !functions.exists {
+        case conversion: Conversion =>
+          conversion.targetType.isInstanceOf[SQLReal] || conversion.targetType == SQLTypes.Numeric
+        case round: Round => Bucket.roundsToAnotherScale(round)
+        case _            => false
+      }
+  }
+
+  /** The texts a HAVING key filter sends on THIS level for the literal `value`: the ONE writer of a
+    * key-filter VALUE (#292). `Expression.includes` (its `=` and `<>` arms) and `InExpr.includes`
+    * call it; both bridges emit the lists it fills, and every rule that judges the key filter reads
+    * those same lists.
+    *
+    * A scripted `terms` level is a string `terms`: Elasticsearch compares each value with the TEXT
+    * the key's script value prints, which is whatever its Java class prints -- a Long `5`, a Double
+    * `5.0`, an int date part `1`. That class is decided by the emitter (a cast's coercion, a
+    * function's integer or `Math` form, the column's doc value), and nothing that reads the key
+    * reads it: `renderedTypeOf` is not the printed class (`CAST(n AS DOUBLE)` without a mapping
+    * prints the raw Long). So the literal was sent in its OWN spelling, and the match depended on
+    * that spelling and on the key's runtime class, never on SQL equality. MEASURED on Elasticsearch
+    * 8.18.3: `GROUP BY CONVERT(n, DOUBLE) HAVING CONVERT(n, DOUBLE) IN (5, 1)` over an index
+    * pattern sent `["5","1"]` against a key printing `5.0` and answered no group, and `GROUP BY
+    * MONTH(d) HAVING MONTH(d) IN (1.0, 3.0)` sent `["1.0","3.0"]` against a key printing `1`.
+    *
+    * A NUMBER on a scripted key that renders neither a string, a BOOLEAN nor a temporal type (a
+    * temporal one is refused, [[isTemporalScriptKey]]) is therefore sent in EVERY text a Java
+    * number of that value prints ([[Bucket.numberTexts]]), and the filter matches the key however
+    * its script prints it. So is a QUOTED number on a key that renders a number, when it is a
+    * number of the key's type (`ABS(x) = '5'`): DuckDB casts the string to the key's type, and the
+    * key prints `5.0`. That holds on a key of a proven kind ([[isExactKeyKind]]), and on a key
+    * whose columns no mapping typed, whose printed class is unknown (on a key that renders REAL
+    * there, the `Float` text is sent too). A key the mapping shows to be of another kind -- a REAL
+    * computed in double, a `ROUND` to decimal places -- keeps the literal's own text, as before: no
+    * spelling is known to match its value, and the nameless-key gate judges that text as it did.
+    * Everything else is sent as its own text too: Elasticsearch parses a FIELD level's values
+    * itself, and a string or a boolean prints as itself.
+    *
+    * Called once per literal while the request is built.
+    */
+  def keyFilterTexts(value: Any): Set[String] =
+    if (!isScriptedKey || (keyTypesKnown && !isExactKeyKind)) Set(value.toString)
+    else
+      value match {
+        case number: java.lang.Number =>
+          val rendered = renderedTypeOf(identifier)
+          if (rendered.isText || rendered.isBoolean || rendered.isTemporal) Set(number.toString)
+          else Bucket.numberTexts(number, real = rendered.isInstanceOf[SQLReal])
+        case quoted: String =>
+          val rendered = renderedTypeOf(identifier)
+          Try(BigDecimal(quoted)).toOption
+            .filter(number =>
+              rendered.isNumber && (number.isWhole || !NumericReducer.wholeNumber(rendered))
+            )
+            .map(number => Bucket.numberTexts(number, real = rendered.isInstanceOf[SQLReal]))
+            .getOrElse(Set(quoted))
+        case other => Set(other.toString)
+      }
 
   /** The function of this level's key that formats a date column's RAW doc value (`DATE_FORMAT(d,
     * '%Y-%m')`, `DATETIME_FORMAT(ts, …)` over a mapped date column), which Elasticsearch 6.8 cannot

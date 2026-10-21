@@ -533,4 +533,30 @@ class HavingFunctionEmissionSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // A HAVING key filter: the lists the level's `terms` carries
+
+  /** The include and exclude values of the statement's first `terms` level, sorted. */
+  private def keyLists(sql: String): (Seq[String], Seq[String]) = {
+    val level = valuesOf(mapper.readTree(queryOf(sql)), "terms").head
+    def side(name: String): Seq[String] =
+      Option(level.get(name)).toSeq.flatMap(n => n.elements().asScala.map(_.asText())).sorted
+    (side("include"), side("exclude"))
+  }
+
+  "a HAVING key filter on a scripted numeric key" should
+  "send every text the key's script value may print the number as" in {
+    // the script prints a Long or a Double depending on the column's mapping: both texts are sent
+    keyLists(
+      "SELECT CAST(n AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS DOUBLE) " +
+      "HAVING CAST(n AS DOUBLE) IN (5, 1)"
+    ) shouldBe ((Seq("1", "1.0", "5", "5.0"), Nil))
+    // a date part prints an int, whatever the literal's spelling
+    keyLists(
+      "SELECT MONTH(d) AS k, COUNT(*) AS c FROM t GROUP BY MONTH(d) HAVING MONTH(d) <> 3.0"
+    ) shouldBe ((Nil, Seq("3", "3.0")))
+    // a FIELD level keeps the literal's own text: Elasticsearch parses it numerically
+    keyLists("SELECT n, COUNT(*) AS c FROM t GROUP BY n HAVING n = 5") shouldBe ((Seq("5"), Nil))
+  }
 }

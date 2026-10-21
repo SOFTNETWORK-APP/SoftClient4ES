@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
+import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -1778,10 +1779,18 @@ package object query {
       *   - every column the key reads has a known type, and it is not a date (the column's own
       *     `baseType`): with no mapping every column is `Any`, and a date prints in its own form
       *     (`"2024-01-03T00:00Z"`);
-      *   - the key renders a string, a BOOLEAN, or a whole number whose every whole value the
-      *     filter sends is written as the integer it prints as (`1`, never `1.0`). A decimal key
-      *     (`ABS(n)`, `SQRT(n)`, `n * 1.5`) prints `1.0` or `1` depending on the column's Java
-      *     type, so it is closed.
+      *   - a key of a proven kind ([[Bucket.isExactKeyKind]]) is open: a number is sent in every
+      *     text the key may print it as (`Bucket.keyFilterTexts`, the lists' one writer), `1` and
+      *     `1.0` for one, whatever the key's Java class, so a whole-number key (`LENGTH(s)`) and a
+      *     decimal one (`ABS(n)`, `SQRT(n)`) match it alike;
+      *   - a key of any other kind is judged as before, on the literal's own text, which is what
+      *     the lists hold there: it is open where it renders a string or a BOOLEAN, or a whole
+      *     number whose every whole value the filter sends is written as the integer it prints as
+      *     (`1`, never `1.0`); a decimal key over a REAL column (`ABS(r)`, `r * 10`) prints `1.0`
+      *     or `1` depending on the column's Java type, and is computed in double where DuckDB
+      *     computes in REAL, so it is closed;
+      *   - and a key holding a `ROUND` to decimal places over a non-integer value stays closed: its
+      *     script rounds to a whole number.
       *
       * Asked by [[validateResolved]] and [[validateUnresolved]], never at parse: there the route is
       * open, and rules (a), (b), (b2) and (c) of `validate()` apply to it as to any key. The named
@@ -1802,22 +1811,16 @@ package object query {
       val asText =
         "Elasticsearch compares this key with the condition as the text of the value its script " +
         "returns"
-      val columns = (FunctionUtils.funIdentifiers(key) ++
-        Case
-          .conditionsOf(key)
-          .flatMap(_.referencedIdentifiers)
-          .flatMap(FunctionUtils.funIdentifiers(_)))
-        .filter(_.name.nonEmpty)
-      def ownType(column: Identifier): SQLType = column.withFunctions(Nil).baseType
+      val columns = level.keyColumns
       columns
-        .find(c => ownType(c).isUnknown)
+        .find(c => Bucket.columnType(c).isUnknown)
         .map(c =>
           lead + s"the type of its column ${c.name} is not known, because no mapping of the " +
           s"source could be read for it, and $asText."
         )
         .orElse(
           columns
-            .find(c => ownType(c).isTemporal)
+            .find(c => Bucket.columnType(c).isTemporal)
             .map(c =>
               lead + s"it reads the date column ${c.name}, and $asText, which spells a date in " +
               "its own form."
@@ -1825,7 +1828,7 @@ package object query {
         )
         .orElse {
           val rendered = renderedTypeOf(key)
-          if (rendered.isText || rendered.isBoolean) None
+          if (level.isExactKeyKind || rendered.isText || rendered.isBoolean) None
           else if (NumericReducer.wholeNumber(rendered)) {
             val empty = BucketIncludesExcludes()
             (e.includes(level, not = false, empty).values ++
@@ -1842,6 +1845,14 @@ package object query {
               "as 1.0 depending on the column's type."
             )
           else Some(lead + s"its type ($rendered) has no text a condition is known to spell.")
+        }
+        .orElse {
+          functionsOf(key).collectFirst {
+            case round: Round if Bucket.roundsToAnotherScale(round) =>
+              lead + s"$asText, and that script rounds ${round.arg} to a whole number, ignoring " +
+                s"the scale ${round.scale.getOrElse(0)} of ${round.sql}, so the condition would " +
+                "compare a different value."
+          }
         }
     }
 
@@ -2930,8 +2941,9 @@ package object query {
 
     /** The integer a text that spells a WHOLE number prints as, when the text is not already that
       * spelling (`"1.0"`, `"1e0"`, `"+1"` -> `"1"`) -- or `None`: the text is the integer itself, a
-      * fraction, or no number at all. Read by `namelessKeyRouteReason`: a whole-number script key
-      * prints as the integer, and the key filter compares texts.
+      * fraction, or no number at all. Read by `namelessKeyRouteReason` on a key of a kind that is
+      * not proven, whose filter sends the literal's own text: a whole-number script key prints as
+      * the integer, and the key filter compares texts.
       */
     private[query] def wholeNumberRespelling(value: String): Option[String] =
       if (!maySpellNumber(value)) None

@@ -204,6 +204,30 @@ class TermsIncludeExcludeSpec extends AnyFlatSpec with Matchers {
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
   }
 
+  "a key filter on a scripted numeric key" should
+  "keep on Elasticsearch 6.8 exactly the texts its script value prints for the number" in {
+    // A script key is a STRING terms: 6.8 compares each value with the text the script value
+    // prints, a Long `5` or a Double `5.0` depending on the column's mapping.
+    val in = termsBody(
+      queryOf(
+        "SELECT CAST(n AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS DOUBLE) " +
+        "HAVING CAST(n AS DOUBLE) IN (5, 1)"
+      ),
+      "k"
+    )
+    keptBy(in, KeywordKey, Seq("5", "5.0", "1", "1.0", "2", "2.0", "15", "5.5")) shouldBe
+    Kept(Set("5", "5.0", "1", "1.0"))
+    // one literal: its two texts are one exact set, never a pattern
+    val one = termsBody(
+      queryOf(
+        "SELECT CAST(n AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS DOUBLE) " +
+        "HAVING CAST(n AS DOUBLE) <> 3"
+      ),
+      "k"
+    )
+    keptBy(one, KeywordKey, Seq("3", "3.0", "30", "3x0", "4")) shouldBe Kept(Set("30", "3x0", "4"))
+  }
+
   // ============================================ PART B: the refusal and the one writing site
 
   "the Default serializer" should "refuse, by name, exactly the pairs 6.8 rejects -- at any grouping level" in {

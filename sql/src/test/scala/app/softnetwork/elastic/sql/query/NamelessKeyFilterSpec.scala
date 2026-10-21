@@ -40,7 +40,9 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
       Column("d", SQLTypes.Date),
       Column("ts", SQLTypes.Timestamp),
       Column("s", SQLTypes.Keyword),
-      Column("n", SQLTypes.Int)
+      Column("n", SQLTypes.Int),
+      Column("x", SQLTypes.Double),
+      Column("r", SQLTypes.Real)
     )
   )
 
@@ -134,12 +136,10 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "be closed with the mapping for a key over a date, a decimal key or a whole number written 1.0" in {
+  it should "be closed with the mapping for a key over a date" in {
     Seq(
       "CONCAT(d, '')"             -> "'2024-01-03'" -> "it reads the date column d",
-      "COALESCE(d, '2024-01-01')" -> "'2024-01-03'" -> "it reads the date column d",
-      "ABS(n)"                    -> "1.0"          -> "as 1 or as 1.0",
-      "LENGTH(s)"                 -> "1.0"          -> "Compare it with 1."
+      "COALESCE(d, '2024-01-01')" -> "'2024-01-03'" -> "it reads the date column d"
     ).foreach { case ((key, value), cause) =>
       val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $key = $value"
       withClue(sql) {
@@ -148,6 +148,77 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
         reason should include(cause)
       }
     }
+  }
+
+  it should "be open with the mapping for a decimal key and for a whole number written 1.0" in {
+    // These were refused ("writes such a number as 1 or as 1.0", "a whole number is written 1
+    // there, never 1.0"): the filter sent the literal's own spelling, which the key's script value
+    // may not print. It now sends every text a number of that value prints (`keyFilterTexts`),
+    // so the key matches however it prints. DuckDB 1.5.5: `ABS(n) = 1.0` keeps the groups whose
+    // |n| is 1 and `LENGTH(s) = 1.0` the groups whose s is one character long (`1 = 1.0` is TRUE).
+    // Over the HAVING key fixture of `GroupByCompletenessSpec` it answers (1, 1) for ABS(n) = 1.0,
+    // (2.0, 1) for SQRT(n) = 2 (n >= 0) and (1, 3) for LENGTH(s) = 1.0.
+    Seq(
+      "ABS(n)"    -> "1.0" -> Set("1", "1.0"),
+      "SQRT(n)"   -> "2"   -> Set("2", "2.0"),
+      "LENGTH(s)" -> "1.0" -> Set("1", "1.0")
+    ).foreach { case ((key, value), sent) =>
+      val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $key = $value"
+      withClue(sql) {
+        resolved(sql) shouldBe Right(())
+        val ss = single(sql).update(Some(schema))
+        ss.having
+          .flatMap(_.criteria)
+          .map(
+            _.includes(ss.buckets.head, not = false, BucketIncludesExcludes()).values
+          ) shouldBe Some(sent)
+      }
+    }
+  }
+
+  it should "stay closed, as before, for a key of a kind that is not proven" in {
+    // A key over a REAL column is not of a proven kind: Painless computes it in double, where
+    // DuckDB 1.5.5 computes it in REAL (it keeps (0.1, n) for ABS(r) = 0.1 over r = 0.1, and
+    // (1.0, n) for r * 10 = 1), and so is a REAL produced by a cast. Such a key keeps the literal's
+    // own text and the gate judges it as before, with its reason. ROUND(x, 1)'s script rounds to a
+    // whole number (DuckDB keeps (2.5, n) for ROUND(x, 1) = 2.5 over x = 2.5).
+    val asBefore = "which writes such a number as 1 or as 1.0 depending on the column's type."
+    Seq(
+      "ABS(r)"               -> "0.1"       -> asBefore,
+      "ABS(r)"               -> "2.5"       -> asBefore,
+      "ABS(r)"               -> "2"         -> asBefore,
+      "r + 1"                -> "1.1"       -> asBefore,
+      "r * 10"               -> "1"         -> asBefore,
+      "r * 10"               -> "IN (1, 2)" -> asBefore,
+      "ABS(r)"               -> "'0.5'"     -> asBefore,
+      "ABS(CAST(x AS REAL))" -> "0.1"       -> asBefore,
+      "ROUND(x, 1)"          -> "2.5"       -> asBefore,
+      "ROUND(x, 1) + 0"      -> "5"         -> "rounds x to a whole number, ignoring the scale 1"
+    ).foreach { case ((key, value), cause) =>
+      val condition = if (value.startsWith("IN")) s"$key $value" else s"$key = $value"
+      val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $condition"
+      withClue(sql) {
+        val reason = resolved(sql).left.getOrElse("")
+        reason should startWith(GateLead)
+        reason should include(cause)
+      }
+    }
+    // ... and open where it is: ROUND over an integer or to no decimal place (keys of a proven
+    // kind), and, as before, a whole-number key over a REAL column compared with an integer: it
+    // keeps the literal's own text, the integer the key prints (DuckDB: FLOOR(r) = 1 keeps the
+    // groups whose r is in [1, 2))
+    Seq(
+      "SELECT ROUND(n, 1) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(n, 1) HAVING ROUND(n, 1) = 5",
+      "SELECT ROUND(x) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x) HAVING ROUND(x) = 3",
+      "SELECT FLOOR(r) AS k, COUNT(*) AS c FROM t GROUP BY FLOOR(r) HAVING FLOOR(r) = 1"
+    ).foreach { sql => withClue(sql) { resolved(sql) shouldBe Right(()) } }
+    val floor = single(
+      "SELECT FLOOR(r) AS k, COUNT(*) AS c FROM t GROUP BY FLOOR(r) HAVING FLOOR(r) = 1"
+    ).update(Some(schema))
+    floor.having
+      .flatMap(_.criteria)
+      .map(_.includes(floor.buckets.head, not = false, BucketIncludesExcludes()).values) shouldBe
+    Some(Set("1"))
   }
 
   it should "not gate a companion level's route, with or without the mapping" in {

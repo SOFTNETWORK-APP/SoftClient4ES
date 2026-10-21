@@ -47,7 +47,10 @@ class NamelessKeyFilterEmissionSpec extends AnyFlatSpec with Matchers {
       ("UPPER(s)", "= 'A'", Seq("A"), "include"),
       ("UPPER(s)", "IN ('A', 'BB')", Seq("A", "BB"), "include"),
       ("UPPER(s)", "<> 'A'", Seq("A"), "exclude"),
-      ("LENGTH(s)", "= 1", Seq("1"), "include")
+      // a number is sent in every text the key's script value may print it as; DuckDB 1.5.5
+      // answers `GROUP BY LENGTH(s) HAVING LENGTH(s) = 1` with (1, 3) over the HAVING key fixture
+      // of `GroupByCompletenessSpec` (s = a, a, b), and the key prints `1`
+      ("LENGTH(s)", "= 1", Seq("1", "1.0"), "include")
     ).foreach { case (key, condition, values, channel) =>
       val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $key $condition"
       Parser(sql) match {

@@ -196,8 +196,11 @@ class QualifiedGroupKeySpec extends AnyFlatSpec with Matchers {
   "each keep their own filter -- a predicate on MONTH must not land on YEAR" in {
     // Unprojected on purpose: a projected function key gets a display alias (`__cN` or its own),
     // which separated the levels by accident. The include used to land on BOTH levels, and
-    // Elasticsearch answered NO group (no year is `1`).
-    val expected = Seq(nothing, keeps("1"))
+    // Elasticsearch answered NO group (no year is `1`). A date part is a scripted key, so the
+    // number is sent in every text a key of its value prints (`Bucket.keyFilterTexts`): the key
+    // prints `1`. DuckDB 1.5.5 answers `GROUP BY YEAR(d), MONTH(d) HAVING MONTH(d) = 1` over the
+    // HAVING key fixture of `GroupByCompletenessSpec` with (2024, 1, 2), the January group alone.
+    val expected = Seq(nothing, keeps("1", "1.0"))
     val wrong = Seq(
       "SELECT COUNT(*) AS c FROM t GROUP BY YEAR(d), MONTH(d) HAVING MONTH(d) = 1",
       "SELECT COUNT(*) AS c FROM t q GROUP BY YEAR(q.d), MONTH(q.d) HAVING MONTH(q.d) = 1",
@@ -216,8 +219,10 @@ class QualifiedGroupKeySpec extends AnyFlatSpec with Matchers {
   it should "answer the AND of the two, each half on its own level" in {
     // Refused until now: both leaves' copies were named `d`, so the YEAR level received BOTH
     // includes under an AND and the channel rule refused the statement -- a loud refusal of a
-    // correct query, in the bare spelling as much as the qualified one.
-    val expected = Seq(keeps("2024"), keeps("1"))
+    // correct query, in the bare spelling as much as the qualified one. Each number in every text
+    // its key prints; DuckDB 1.5.5 answers (2024, 1, 2) over the HAVING key fixture of
+    // `GroupByCompletenessSpec`.
+    val expected = Seq(keeps("2024", "2024.0"), keeps("1", "1.0"))
     val wrong = Seq(
       "SELECT COUNT(*) AS c FROM t GROUP BY YEAR(d), MONTH(d) HAVING YEAR(d) = 2024 AND MONTH(d) = 1",
       "SELECT COUNT(*) AS c FROM t q GROUP BY YEAR(q.d), MONTH(q.d) " +
