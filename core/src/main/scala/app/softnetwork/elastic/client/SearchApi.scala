@@ -473,7 +473,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       System.currentTimeMillis() - missedAt < schemaMissTtlMs
     }
 
-  private def rememberSchemaMiss(source: String): Unit = {
+  /** Remember a 404 miss on `source` -- an index, an alias, or the comma-joined sources of a
+    * pattern or list ([[lookupSchema]]'s key) -- for [[schemaMissTtlMs]].
+    *
+    * `private[client]`: it is also the testkit's way to put a statement on the UNTYPED path -- the
+    * one an unreadable mapping takes -- over an index that exists. Arming a miss by querying the
+    * index before it exists no longer holds once the fixture is created through the same client,
+    * since that DDL forgets the miss ([[forgetSchemaMissesOf]]).
+    */
+  private[client] def rememberSchemaMiss(source: String): Unit = {
     val now = System.currentTimeMillis()
     schemaMisses.put(source, now)
     if (schemaMisses.size() > schemaMissPurgeThreshold) {
