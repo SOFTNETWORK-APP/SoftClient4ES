@@ -203,4 +203,50 @@ class RestHighLevelClientStatusOfSpec extends AnyWordSpec with Matchers {
       }
     }
   }
+
+  /** A page on which ONE of 3 shards failed with `errType`, as Elasticsearch answers it with HTTP
+    * 200, read as the paging doors read it.
+    */
+  private def oneOfThreeShardsFailed(errType: String): com.fasterxml.jackson.databind.JsonNode =
+    app.softnetwork.elastic.sql.serialization.JacksonConfig.objectMapper.readTree(
+      """{"_shards":{"total":3,"successful":2,"skipped":0,"failed":1,"failures":[{"shard":0,""" +
+      s""""index":"idx","node":"n1","reason":{"type":"$errType","reason":"runtime error",""" +
+      """"lang":"painless","caused_by":{"type":"date_time_parse_exception",""" +
+      """"reason":"Text 'x' could not be parsed at index 0"}}}]},"hits":{"hits":[]}}"""
+    )
+
+  private def searchAfterPage(tree: com.fasterxml.jackson.databind.JsonNode): Option[Exception] =
+    probe.failedShardsPage("Search after failed", tree)(new java.io.IOException(_))
+
+  "failedShardsPage" should {
+
+    "answer core's shard-failure error and status when every failure is the caller's" in {
+      val failure = searchAfterPage(oneOfThreeShardsFailed("script_exception")).get
+      failure shouldBe a[RestHighLevelClientHelpers.SearchPageFailure]
+      failure.getMessage shouldBe
+      "Search after failed: 1 of 3 shards failed: script_exception: runtime error " +
+      "(caused by date_time_parse_exception: Text 'x' could not be parsed at index 0)"
+      failure.asInstanceOf[RestHighLevelClientHelpers.SearchPageFailure].error.operation shouldBe
+      Some("search")
+      probe.statusOf(failure) shouldBe Some(400)
+      probe.statusOf(new CompletionException(failure)) shouldBe Some(400)
+      isRetriableError(failure) shouldBe false
+    }
+
+    "keep the door's own exception, text and retry for any other failure" in {
+      val failure = searchAfterPage(oneOfThreeShardsFailed("circuit_breaking_exception")).get
+      failure shouldBe an[java.io.IOException]
+      failure.getMessage shouldBe "Search after failed: runtime error"
+      probe.statusOf(failure) shouldBe None
+      isRetriableError(failure) shouldBe true
+    }
+
+    "answer nothing when no shard failed" in {
+      searchAfterPage(
+        app.softnetwork.elastic.sql.serialization.JacksonConfig.objectMapper.readTree(
+          """{"_shards":{"total":3,"successful":3,"skipped":0,"failed":0},"hits":{"hits":[]}}"""
+        )
+      ) shouldBe None
+    }
+  }
 }

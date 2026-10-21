@@ -1572,12 +1572,6 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       }
   }
 
-  /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
-    * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
-    * check. One reading of `_shards` for every door: [[ShardFailures]].
-    */
-  private def shardFailures(tree: JsonNode): Option[String] = ShardFailures.of(tree).map(_.reasons)
-
   /** Convert a hit's `sort` array into the values fed back as `search_after` on the next page. */
   private def sortValuesOf(sortNode: JsonNode): Array[AnyRef] =
     sortNode
@@ -1654,10 +1648,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
                 val scrollId = tree.path("_scroll_id").textValue()
 
-                shardFailures(tree).foreach { reasons =>
+                failedShardsPage("Initial scroll failed", tree)(new IOException(_)).foreach { ex =>
                   // the failed request still created a server-side scroll context — release it
                   Option(scrollId).foreach(clearScroll)
-                  throw new IOException(s"Initial scroll failed: $reasons")
+                  throw ex
                 }
 
                 if (scrollId == null) {
@@ -1704,12 +1698,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 val tree =
                   executeSearchPage(scrollContinuationRequest(scrollId, config.keepAlive))
 
-                shardFailures(tree).foreach { reasons =>
-                  // the cursor is spent: a retry against a cleared context can only 404, and
-                  // re-polling a scroll cursor skips rows — fail without retrying
-                  clearScroll(scrollId)
-                  throw new IllegalStateException(s"Scroll continuation failed: $reasons")
-                }
+                failedShardsPage("Scroll continuation failed", tree)(new IllegalStateException(_))
+                  .foreach { ex =>
+                    // the cursor is spent: a retry against a cleared context can only 404, and
+                    // re-polling a scroll cursor skips rows — fail without retrying
+                    clearScroll(scrollId)
+                    throw ex
+                  }
 
                 val newScrollId = tree.path("_scroll_id").textValue()
                 val rawHits = tree.path("hits").path("hits").size()
@@ -1843,9 +1838,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
             val tree = executeSearchPage(request)
 
-            shardFailures(tree).foreach { reasons =>
-              throw new IOException(s"Search after failed: $reasons")
-            }
+            failedShardsPage("Search after failed", tree)(new IOException(_))
+              .foreach(ex => throw ex)
 
             // Extract ONLY hits (no aggregations for search_after)
             val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
@@ -2033,9 +2027,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                           executeSearchPageAsync(request)
                         }
                         .map { tree =>
-                          shardFailures(tree).foreach { reasons =>
-                            throw new IOException(s"PIT search_after failed: $reasons")
-                          }
+                          failedShardsPage("PIT search_after failed", tree)(new IOException(_))
+                            .foreach(ex => throw ex)
 
                           val hitsArray = tree.path("hits").path("hits")
                           if (!hitsArray.isArray || hitsArray.size() == 0) {

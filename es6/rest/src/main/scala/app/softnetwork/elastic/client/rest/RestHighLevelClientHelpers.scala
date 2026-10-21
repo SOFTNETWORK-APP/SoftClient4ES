@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.rest
 
-import app.softnetwork.elastic.client.ElasticClientHelpers
+import app.softnetwork.elastic.client.{ElasticClientHelpers, ShardFailures}
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 import app.softnetwork.elastic.sql.serialization.JacksonConfig
 
@@ -624,6 +624,25 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
       ElasticError(message = message, statusCode = statusOf(ex), operation = Some("search"))
     )
   }
+
+  /** The failure of a search page Elasticsearch answered with HTTP 200 and failed shards (`None`
+    * when no shard failed). Such a page is silent row loss on a paging path, so every paging door
+    * fails, by the rule of every search door, core's [[ShardFailures]] (#292):
+    *   - a 4xx (every failure is the caller's): a [[RestHighLevelClientHelpers.SearchPageFailure]],
+    *     `<door>: n of m shards failed: ...`, with that status;
+    *   - otherwise the door's own exception, `otherwise`, with its text as before.
+    */
+  private[client] def failedShardsPage(door: String, tree: com.fasterxml.jackson.databind.JsonNode)(
+    otherwise: String => Exception
+  ): Option[Exception] =
+    ShardFailures.of(tree).map { failures =>
+      val error = failures.toError
+      if (error.statusCode.exists(status => status >= 400 && status < 500))
+        new RestHighLevelClientHelpers.SearchPageFailure(
+          error.copy(message = s"$door: ${error.message}", operation = Some("search"))
+        )
+      else otherwise(s"$door: ${failures.reasons}")
+    }
 }
 
 object RestHighLevelClientHelpers {
