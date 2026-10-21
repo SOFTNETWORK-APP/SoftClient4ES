@@ -1370,6 +1370,18 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
+  it should "cast a date-only keyword to TIMESTAMP as its midnight" in {
+    typedRow(
+      onTyped("ISNOTNULL(CAST(kd AS TIMESTAMP))"),
+      Map(
+        "t1" -> AText("true"),
+        "t2" -> AText("true"),
+        "t3" -> AText("false"),
+        "t4" -> AText("true")
+      )
+    )
+  }
+
   it should "answer a DATE for LAST_DAY over a TIMESTAMP" in {
     typedRow(
       onTyped("LAST_DAY(ts)"),

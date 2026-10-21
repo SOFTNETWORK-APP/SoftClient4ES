@@ -654,6 +654,29 @@ object SQLTypeUtils {
     def temporalGuard(body: String): String =
       if (nullable) s"($expr != null ? $body : null)" else body
 
+    /** 🔴 A date-only string is the midnight it starts, as DuckDB and PostgreSQL cast
+      * `'2024-01-03'` to a TIMESTAMP: `ISO_DATE_TIME` requires a time, so `CAST(kd AS TIMESTAMP)`
+      * over a keyword holding `2024-01-03` threw on every document and failed the statement.
+      *
+      * In a query, ONE length test on the operand, bound once (a parameter is its own name): no
+      * formatter is built per document. A string literal is decided when the script is rendered. An
+      * ingest processor keeps its bytes, so a pipeline does not churn on ALTER: there a date-only
+      * string still fails this cast, as before (`processorTemporal` reads a date-only value of a
+      * DATE column).
+      */
+    def midnightOfDate(operand: String): String =
+      context match {
+        case Some(ctx) if convertsArms(context) =>
+          operand match {
+            case StringLiteral(text) if text.length == 10 => "\"" + text + "T00:00:00\""
+            case StringLiteral(_)                         => operand
+            case _ =>
+              val s = ctx.addParam(LiteralParam(operand)).getOrElse(operand)
+              s"($s.length() == 10 ? $s + 'T00:00:00' : $s)"
+          }
+        case _ => operand
+      }
+
     val ret = {
       (from, to) match {
         // ---- DATE & TIME ----
@@ -837,7 +860,7 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.DateTime) =>
           val guarded = temporalGuard(
-            "LocalDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            "LocalDateTime.parse(" + temporalSeparator(midnightOfDate(expr), " ", "T") +
             ", DateTimeFormatter.ISO_DATE_TIME)"
           )
           context match {
@@ -851,7 +874,7 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.Timestamp) =>
           val guarded = temporalGuard(
-            "ZonedDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            "ZonedDateTime.parse(" + temporalSeparator(midnightOfDate(expr), " ", "T") +
             ", DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z')))"
           )
           context match {
@@ -966,6 +989,9 @@ object SQLTypeUtils {
     */
   private def temporalSeparator(expr: String, from: String, to: String): String =
     s"""($expr).replace("$from", "$to")"""
+
+  /** A double-quoted Painless string literal with no escape in it, and its text. */
+  private val StringLiteral = "\"([^\"\\\\]*)\"".r
 
   private val numericRank: Map[Class[_], Int] = Map(
     classOf[SQLTinyInt]  -> 1,
