@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client.rest
 
 import app.softnetwork.elastic.client.ElasticClientHelpers
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 
 import scala.concurrent.Promise
 import scala.util.{Failure, Success, Try}
@@ -574,17 +575,66 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
         Option(ex.status()).map(_.getStatus)
       case ex: org.elasticsearch.client.ResponseException =>
         Try(ex.getResponse.getStatusLine.getStatusCode).toOption
-      // the wrapper `executeSearchPage` (and `executeSearchPageAsync`, its PIT sibling) throws on
-      // a 4xx so that no retry takes it: the status is its cause's
-      case ex: IllegalStateException
-          if ex.getCause.isInstanceOf[org.elasticsearch.client.ResponseException] =>
-        Try(
-          ex.getCause
-            .asInstanceOf[org.elasticsearch.client.ResponseException]
-            .getResponse
-            .getStatusLine
-            .getStatusCode
-        ).toOption
-      case other => super.statusOf(other)
+      case ex: RestHighLevelClientHelpers.SearchPageFailure => ex.error.statusCode
+      case other                                            => super.statusOf(other)
     }
+
+  /** A search page Elasticsearch rejected for good: a 4xx except 408 / 429.
+    *
+    * A `ResponseException` is an `IOException`, which `retryWithBackoff` retries. A rejected page
+    * fails fast instead, with [[pageRejection]]. A 408, a 429 and a 5xx keep the original
+    * exception, so a transient cluster condition is still retried.
+    */
+  private[client] def isNonRetriable4xx(ex: org.elasticsearch.client.ResponseException): Boolean =
+    statusOf(ex).exists(status => status >= 400 && status < 500 && status != 408 && status != 429)
+
+  /** The failure of a search page Elasticsearch rejected ([[isNonRetriable4xx]]): Elasticsearch's
+    * status and reason, for every paging door of this client.
+    *
+    *   - The message is read from the response body. It leads with the error's type and reason,
+    *     `[<error.type>] <error.reason>`, as the ES 8 / ES 9 client reports them, then adds `:
+    *     <error.root_cause[0].reason>` when the root cause says something else. Without a top-level
+    *     reason it is the root cause's reason; without a readable body, the HTTP status line.
+    *   - The message names no Java class and never the request: the request line names the host,
+    *     the index and its parameters. The `ResponseException` is not kept as the cause for the
+    *     same reason: its message carries that request line.
+    *   - It is thrown as a [[RestHighLevelClientHelpers.SearchPageFailure]]: an `Exception`, as the
+    *     page's failure always was, and not an `IOException`, so no retry takes it.
+    */
+  private[client] def pageRejection(
+    ex: org.elasticsearch.client.ResponseException
+  ): RestHighLevelClientHelpers.SearchPageFailure = {
+    def text(node: com.fasterxml.jackson.databind.JsonNode): Option[String] =
+      Option(node).filter(n => n.isTextual && n.textValue.trim.nonEmpty).map(_.textValue)
+    val fromBody = Try {
+      val error =
+        JacksonConfig.objectMapper.readTree(ex.getResponse.getEntity.getContent).path("error")
+      val reason = text(error.path("reason"))
+      val rootCause = text(error.path("root_cause").path(0).path("reason"))
+      reason.map(r => text(error.path("type")).fold(r)(t => s"[$t] $r")) match {
+        case Some(head) =>
+          Some(rootCause.filterNot(reason.contains).fold(head)(rc => s"$head: $rc"))
+        case None => rootCause
+      }
+    }.toOption.flatten
+    val message = fromBody
+      .orElse(Try(ex.getResponse.getStatusLine.toString).toOption)
+      .getOrElse("Elasticsearch rejected the search page")
+    new RestHighLevelClientHelpers.SearchPageFailure(
+      ElasticError(message = message, statusCode = statusOf(ex), operation = Some("search"))
+    )
+  }
+}
+
+object RestHighLevelClientHelpers {
+
+  /** A search page that failed for good, with the `ElasticError` that describes it.
+    *
+    * It is an `Exception`, so every `Exception` arm that handled the page's failure before still
+    * does (a stream's recovery, a Flight SQL producer, a Java caller); an `ElasticError` alone is a
+    * `Throwable` only. It is not an `IOException`, so the retry policy does not take it. Its
+    * message is the error's.
+    */
+  final class SearchPageFailure(val error: ElasticError)
+      extends RuntimeException(error.message, error.cause.orNull)
 }
