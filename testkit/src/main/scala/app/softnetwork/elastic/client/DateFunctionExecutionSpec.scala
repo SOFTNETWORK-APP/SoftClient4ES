@@ -1259,10 +1259,18 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
   private case class AText(text: String) extends Expected
   private case object ANull extends Expected
 
+  /** A TIME: the time of day its text denotes. */
+  private case class ATime(iso: String) extends Expected
+
+  /** One of `texts`: a value that depends on the day the statement runs. */
+  private case class OneOf(texts: Set[String]) extends Expected
+
   private def matches(expected: Expected, got: String): Boolean = expected match {
     case ANull       => got == "null"
     case ADate(text) => got == text && isoDate.pattern.matcher(got).matches()
     case AText(text) => got == text
+    case ATime(iso)  => Try(LocalTime.parse(got)).toOption.contains(LocalTime.parse(iso))
+    case OneOf(all)  => all.contains(got)
     case AnInstant(iso) =>
       got.contains("T") && Try(java.time.OffsetDateTime.parse(got).toInstant)
         .orElse(Try(Instant.parse(got)))
@@ -1401,6 +1409,80 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
+  /** A DATE cast to BIGINT answers the epoch milliseconds of its UTC midnight, and to TIME that
+    * midnight, whatever renders the DATE. DuckDB refuses both casts (`Unimplemented type for cast
+    * (DATE -> BIGINT)`), so these values are the rule's, not DuckDB's: before, a DATE conditional
+    * and a cast over a cast to DATE called `toInstant()` on a `LocalDate` and failed the statement,
+    * and `CURRENT_DATE` or a DATE literal answered the date itself under the BIGINT label.
+    */
+  it should "convert a DATE to BIGINT and TIME through its UTC midnight" in {
+    def epoch(day: String): Expected =
+      AText(LocalDate.parse(day).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli.toString)
+    val midnight = ATime("00:00:00")
+    // the UTC day the statement runs on, or the next one if the run crosses midnight
+    val now = Instant.now()
+    val today = OneOf(
+      Set(now, now.plusSeconds(600)).map(i =>
+        i.atOffset(ZoneOffset.UTC)
+          .toLocalDate
+          .atStartOfDay(ZoneOffset.UTC)
+          .toInstant
+          .toEpochMilli
+          .toString
+      )
+    )
+    Seq(
+      onTyped("CAST(COALESCE(CAST(d AS DATE), CAST('2024-01-01' AS DATE)) AS BIGINT)") -> Map(
+        "t1" -> epoch("2024-01-15"),
+        "t2" -> epoch("2024-03-31"),
+        "t3" -> epoch("2024-01-01"),
+        "t4" -> epoch("2023-12-31")
+      ),
+      onTyped("CAST(CASE WHEN n > 1 THEN NULL ELSE CAST(d AS DATE) END AS BIGINT)") -> Map(
+        "t1" -> epoch("2024-01-15"),
+        "t2" -> epoch("2024-03-31"),
+        "t3" -> ANull,
+        "t4" -> ANull
+      ),
+      onTyped("CAST(NULLIF(CAST(ts AS DATE), CAST(d AS DATETIME)) AS BIGINT)") -> Map(
+        "t1" -> epoch("2024-04-10"),
+        "t2" -> epoch("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> ANull
+      ),
+      onTyped("CAST(NULLIF(CAST(ts AS DATE), ts) AS BIGINT)") -> Map(
+        "t1" -> epoch("2024-04-10"),
+        "t2" -> epoch("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> epoch("2023-12-31")
+      ),
+      onTyped("CAST(COALESCE(CAST(d AS DATE), CAST(d AS DATE)) AS TIME)") -> Map(
+        "t1" -> midnight,
+        "t2" -> midnight,
+        "t3" -> ANull,
+        "t4" -> midnight
+      ),
+      onTyped("CAST(CAST(ts AS DATE) AS BIGINT)") -> Map(
+        "t1" -> epoch("2024-04-10"),
+        "t2" -> epoch("2024-02-29"),
+        "t3" -> ANull,
+        "t4" -> epoch("2023-12-31")
+      ),
+      onTyped("CAST(CAST(ts AS DATE) AS TIME)") -> Map(
+        "t1" -> midnight,
+        "t2" -> midnight,
+        "t3" -> ANull,
+        "t4" -> midnight
+      ),
+      onTyped("CAST(CAST('2024-01-03' AS DATE) AS BIGINT)") ->
+      Seq("t1", "t2", "t3", "t4").map(_ -> epoch("2024-01-03")).toMap,
+      onTyped("CAST(CURRENT_DATE AS BIGINT)") -> Seq("t1", "t2", "t3", "t4").map(_ -> today).toMap
+    ).flatMap { case (sql, expected) => typedDiff(sql, expected) } match {
+      case Seq() => // every one answers the UTC midnight of its date
+      case wrong => fail(wrong.mkString("\n"))
+    }
+  }
+
   /** Statements RIGHT on main whose script this fix changes: they stay RIGHT. */
   it should "keep answering what it answered where it was right" in {
     (Seq(
@@ -1481,6 +1563,58 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )).flatMap { case (sql, expected) => typedDiff(sql, expected) } match {
       case Seq() => // every one still answers DuckDB's value
       case wrong => fail(wrong.mkString("\n"))
+    }
+  }
+
+  private def typedRows(rows: (String, Map[String, Expected])*): Unit =
+    rows.flatMap { case (sql, expected) => typedDiff(sql, expected) } match {
+      case Seq() => // every one answers DuckDB's value
+      case wrong => fail(wrong.mkString("\n"))
+    }
+
+  it should "apply LAST_DAY inside the NULL guard of its operand" in {
+    typedRows(
+      onTyped("LAST_DAY(DATE_TRUNC(CASE WHEN n > 1 THEN ts ELSE NULL END, MONTH))") -> Map(
+        "t1" -> ANull,
+        "t2" -> ANull,
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      ),
+      onTyped("LAST_DAY(CASE WHEN n > 1 THEN ts ELSE NULL END)") -> Map(
+        "t1" -> ANull,
+        "t2" -> ANull,
+        "t3" -> ANull,
+        "t4" -> ADate("2023-12-31")
+      )
+    )
+  }
+
+  it should "convert every branch of a CASE under a cast, NULL where it is NULL" in {
+    typedRows(
+      onTyped("CAST(CASE WHEN n > 0 THEN d ELSE CAST(ts AS DATE) END AS TIMESTAMP)") -> Map(
+        "t1" -> AnInstant("2024-01-15T00:00:00Z"),
+        "t2" -> AnInstant("2024-02-29T00:00:00Z"),
+        "t3" -> ANull,
+        "t4" -> AnInstant("2023-12-31T00:00:00Z")
+      )
+    )
+    // the NULL row answers NULL, not the text "null" a `String.valueOf` gave it
+    val sql = onTyped(
+      "CAST(CASE WHEN n > 1 THEN DATE_PARSE(kd, '%Y-%m-%d') ELSE CAST(d AS DATE) END AS VARCHAR)"
+    )
+    typedFixture shouldBe true
+    // a script field is a one-value list
+    def value(v: Any): Any = v match {
+      case Seq(one) => one
+      case other    => other
+    }
+    val got =
+      rowsOf(sql).map(r => r.getOrElse("id", "?").toString -> value(r.getOrElse("v", null))).toMap
+    withClue(s"[$sql] $got ") {
+      got.get("t3").flatMap(Option(_)) shouldBe None
+      got.get("t1").map(String.valueOf) shouldBe Some("2024-01-15")
+      got.get("t2").map(String.valueOf) shouldBe Some("2024-03-31")
+      got.get("t4").map(String.valueOf) shouldBe Some("2024-12-31")
     }
   }
 }

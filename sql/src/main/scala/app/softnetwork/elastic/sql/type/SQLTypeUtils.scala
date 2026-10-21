@@ -25,8 +25,14 @@ import app.softnetwork.elastic.sql.{
   PainlessScript
 }
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
-import app.softnetwork.elastic.sql.function.{FunctionUtils, TransformFunction}
-import app.softnetwork.elastic.sql.function.cond.{Case, Coalesce, NullIf, NumericReducer}
+import app.softnetwork.elastic.sql.function.{Function, FunctionUtils, TransformFunction}
+import app.softnetwork.elastic.sql.function.cond.{
+  AnswersArms,
+  Case,
+  Coalesce,
+  NullIf,
+  NumericReducer
+}
 import app.softnetwork.elastic.sql.function.time.DateDiff
 
 object SQLTypeUtils {
@@ -439,6 +445,48 @@ object SQLTypeUtils {
     else None
   }
 
+  /** The type a conditional answers in EVERY row, once each arm it answers is converted to it
+    * ([[convertArm]]): [[armsType]] over those arms, when none of them is still of an unknown type
+    * -- such an arm is left as it renders, and the node renders no single class. A NULL arm renders
+    * NULL. `None` for a function that is no conditional.
+    *
+    * 🔴 The ONE arm decision a consumer of a conditional reads (#292): the arms are the
+    * conditional's own (`AnswersArms.answeredArms`), the decision [[armsType]], which the
+    * conditional converts its arms by.
+    */
+  def armsAnswer(f: Function): Option[SQLType] = f match {
+    case c: AnswersArms =>
+      val arms = c.answeredArms
+      armsType(arms, f.reportedType).filterNot(_ =>
+        arms.exists(a => a.reportedType != SQLTypes.Null && armTypeUnknown(a))
+      )
+    case _ => None
+  }
+
+  /** What a chain of functions (outermost first) RENDERS, read from the chain itself -- never from
+    * an `out` (a cast over it sets it to its target) nor a `baseType` (a schema-resolved operand's
+    * is its column's type whatever function it wears):
+    *   - a conditional renders the type it answers in every row ([[armsAnswer]]), and nothing
+    *     single otherwise (`Any`);
+    *   - a function that only adjusts a date (`DATE_ADD`, `DATE_TRUNC`, an interval) renders its
+    *     receiver's class (#368): the function under it decides;
+    *   - any other function renders its own type: a cast its target, `CURRENT_DATE` and `LAST_DAY`
+    *     a DATE, `DATETIME_ADD` a date-time, `DATE_FORMAT` a string;
+    *   - a bare column renders its doc value (`Any` here).
+    *
+    * 🔴 The one derivation (#292) of the consumers that must know whether their operand is a
+    * `LocalDate`: a cast to BIGINT / TIME, a time-of-day part (`HOUR`, `OFFSET_SECONDS`, …) and a
+    * sub-day interval ([[operandRendersDate]]).
+    */
+  def chainRendered(functions: List[Function]): SQLType = functions match {
+    case (c: AnswersArms) :: _ => armsAnswer(c).map(_ => c.baseType).getOrElse(SQLTypes.Any)
+    case (f: TransformFunction[_, _]) :: receiver
+        if !f.producesOutputJavaType &&
+          (f.baseType == SQLTypes.Date || f.baseType == SQLTypes.Temporal) =>
+      chainRendered(receiver)
+    case f :: _ => f.baseType
+    case Nil    => SQLTypes.Any
+  }
   /** What an ARM renders -- a `THEN` / `ELSE` result of a `CASE`, an argument of `COALESCE`, the
     * value `NULLIF` answers, the date `GREATEST` / `LEAST` choose, the receiver of `LAST_DAY` --
     * once it has rendered as `rendered`.

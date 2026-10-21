@@ -157,6 +157,15 @@ package object cond {
   case object ELSE extends Expr("ELSE") with TokenRegex
   case object END extends Expr("END") with TokenRegex
 
+  /** A conditional whose value is the value of one of its ARMS: `CASE` (its results and its
+    * `ELSE`), `COALESCE` (every argument), `NULLIF` (its first argument), `GREATEST` / `LEAST`
+    * (every argument). Each converts the arms it answers to the type it reports, in a query
+    * (`SQLTypeUtils.convertArm`), and a consumer that must know the class it answers reads the ONE
+    * decision over these same arms (`SQLTypeUtils.armsAnswer`, #292).
+    */
+  trait AnswersArms extends Function {
+    def answeredArms: List[PainlessScript]
+  }
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]
       with FunctionWithIdentifier {
@@ -216,7 +225,10 @@ package object cond {
 
   case class Coalesce(values: List[PainlessScript])
       extends TransformFunction[SQLAny, SQLType]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with AnswersArms {
+    override def answeredArms: List[PainlessScript] = values
+
     def operator: ConditionalOp = Coalesce
 
     override def fun: Option[ConditionalOp] = Some(operator)
@@ -243,7 +255,7 @@ package object cond {
       if (SQLTypeUtils.rendersOutsideQuery) SQLTypeUtils.leastCommonSuperType(argTypes)
       else
         SQLTypeUtils
-          .armsType(values, reportedType)
+          .armsType(answeredArms, reportedType)
           .getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes))
 
     /** `COALESCE` returns whichever arm is first non-null, so the type it REPORTS is the common
@@ -317,7 +329,7 @@ package object cond {
     ): String =
       if (
         !SQLTypeUtils.convertsArms(context) ||
-        SQLTypeUtils.armsType(values, reportedType).isEmpty
+        SQLTypeUtils.armsType(answeredArms, reportedType).isEmpty
       ) rendered
       else {
         val converted =
@@ -366,7 +378,10 @@ package object cond {
   private[cond] case object WhenNumbers extends WhenComparison
 
   case class NullIf(expr1: PainlessScript, expr2: PainlessScript)
-      extends ConditionalFunction[SQLAny] {
+      extends ConditionalFunction[SQLAny]
+      with AnswersArms {
+    override def answeredArms: List[PainlessScript] = List(expr1)
+
     override def conditionalOp: ConditionalOp = NullIf
 
     override def args: List[PainlessScript] = List(expr1, expr2)
@@ -383,7 +398,7 @@ package object cond {
       */
     override def baseType: SQLType =
       (if (firstReading.isDefined || SQLTypeUtils.rendersOutsideQuery) None
-       else SQLTypeUtils.armsType(List(expr1), reportedType)).getOrElse(comparedType)
+       else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(comparedType)
 
     /** The type the two arguments are COMPARED in -- what [[toPainlessCall]] switches on to pick a
       * comparison, unless a cast over the `NULLIF` sets one: the least common supertype of what
@@ -808,7 +823,7 @@ package object cond {
           val arg0 = operand(scalar(firstReading, rendered0), context)
           val typedAnswer =
             SQLTypeUtils.convertsArms(context) && firstReading.isEmpty &&
-            SQLTypeUtils.armsType(List(expr1), reportedType).isDefined
+            SQLTypeUtils.armsType(answeredArms, reportedType).isDefined
           if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr2))
             return bound(
               if (typedAnswer)
@@ -967,7 +982,8 @@ package object cond {
     expression: Option[PainlessScript],
     conditions: List[(PainlessScript, PainlessScript)],
     default: Option[PainlessScript]
-  ) extends TransformFunction[SQLAny, SQLAny] {
+  ) extends TransformFunction[SQLAny, SQLAny]
+      with AnswersArms {
     override def args: List[PainlessScript] = expression.toList ++
       conditions.map { case (_, res) => res } ++
       default.toList
@@ -986,7 +1002,9 @@ package object cond {
     }
 
     /** The THEN results and the ELSE: the arms whose value the CASE answers. */
-    private[this] def arms: List[PainlessScript] = conditions.map(_._2) ++ default.toList
+    override def answeredArms: List[PainlessScript] = conditions.map(_._2) ++ default.toList
+
+    private[this] def arms: List[PainlessScript] = answeredArms
 
     /** The type of the CASE's VALUE: the type it REPORTS, the common type of what its `THEN`
       * results and its `ELSE` report, which each of them is converted to ([[armOf]]) -- never the
@@ -1570,8 +1588,10 @@ package object cond {
     */
   sealed trait NumericReducer
       extends TransformFunction[SQLAny, SQLNumeric]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with AnswersArms {
     def values: List[PainlessScript]
+    override def answeredArms: List[PainlessScript] = values
     def operator: ConditionalOp
     protected def mathFn: String // "Math.max" | "Math.min"
     protected def greatest: Boolean // GREATEST (the larger wins) or LEAST
@@ -1638,7 +1658,7 @@ package object cond {
     override def baseType: SQLType =
       if (overDates)
         (if (SQLTypeUtils.rendersOutsideQuery) None
-         else SQLTypeUtils.armsType(values, reportedType)).getOrElse(SQLTypes.Timestamp)
+         else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(SQLTypes.Timestamp)
       else
         numericType.getOrElse(foldedArgument.getOrElse {
           SQLTypeUtils.leastCommonSuperType(argTypes) match {

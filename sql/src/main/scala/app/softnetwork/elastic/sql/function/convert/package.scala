@@ -23,13 +23,20 @@ import app.softnetwork.elastic.sql.{
   DateMathRounding,
   Expr,
   Identifier,
+  LiteralParam,
   PainlessContext,
   PainlessScript,
   TokenRegex,
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
-import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, Coalesce, NullIf, NumericReducer}
+import app.softnetwork.elastic.sql.function.cond.{
+  functionsOf,
+  Case,
+  Coalesce,
+  NullIf,
+  NumericReducer
+}
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 
 package object convert {
@@ -50,6 +57,7 @@ package object convert {
 
     override def painless(context: Option[PainlessContext] = None): String =
       if (perGroupTemporal(context)) perGroupTemporalOf(value.painless(context))
+      else if (convertsDate(context)) dateAtMidnight(value.painless(context), context)
       else SQLTypeUtils.coerce(value, targetType, context)
 
     /** A conversion renders as an expression -- EXCEPT the one case `toPainless` below folds: an
@@ -78,8 +86,9 @@ package object convert {
     override def rendersNullOnFailure: Boolean = safe
 
     override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String = {
+      val date = convertsDate(context)
       context match {
-        case Some(ctx) =>
+        case Some(ctx) if !date =>
           // 🔴 A receiver that ALREADY renders a `LocalDate` must not be narrowed again (issue
           // #370, found by review). A comparison against a DATE literal appends `.toLocalDate()`
           // to the column's parameter object before this chain renders; re-coercing it as
@@ -118,7 +127,8 @@ package object convert {
       }
       if (perGroupTemporal(context)) return perGroupTemporalOf(base)
       val ret =
-        if (caseOperand(context)) {
+        if (date) dateAtMidnight(base, context)
+        else if (caseOperand(context)) {
           // 🔴 A CASE renders an unparenthesised `p ? a : b`: the conversion appended to it
           // converted the ELSE branch only, and `String.valueOf(…)` around it answered the text
           // "null" for its NULL rows. In a query it is converted as ONE value, bound once and
@@ -187,6 +197,58 @@ package object convert {
       * the cast was silently ignored (`(n + x)::BIGINT` answered 3.25 on main).
       */
     private def sourceType: SQLType = arithmetic.map(_.out).getOrElse(value.baseType)
+
+    /** 🔴 A DATE converted to a BIGINT is the epoch milliseconds of its UTC midnight, and to a TIME
+      * that midnight (`00:00:00`), whatever renders the DATE: a cast to DATE, `CURRENT_DATE`, a
+      * DATE literal, `LAST_DAY`, or a CASE, COALESCE, NULLIF, GREATEST or LEAST that answers a
+      * DATE.
+      *
+      * Neither conversion had an arm, so the `LocalDate` answered itself under a BIGINT / TIME
+      * label (`CAST(CURRENT_DATE AS BIGINT)`), or the conversion from the operand's column type
+      * called `toInstant()` on it and failed the shard (`CAST(CAST(ts AS DATE) AS BIGINT)`, and a
+      * DATE conditional under a cast to BIGINT or TIME).
+      *
+      * A DATE column is not one of these: it renders its doc value, an instant, and keeps the
+      * TIMESTAMP conversions (`CAST(d AS BIGINT)` is that instant's epoch milliseconds).
+      *
+      * In a query only ([[SQLTypeUtils.convertsArms]]): an ingest processor and a transform keep
+      * their bytes.
+      */
+    private def convertsDate(context: Option[PainlessContext]): Boolean =
+      (targetType == SQLTypes.BigInt || targetType == SQLTypes.Time) &&
+      SQLTypeUtils.convertsArms(context) && rendersDate
+
+    /** Does the operand render a DATE, a `java.time.LocalDate`?
+      *
+      * Read from the operand's own chain (`SQLTypeUtils.chainRendered`, the one derivation the
+      * time-of-day parts and a sub-day interval read too), never from its `out` nor its `baseType`:
+      * this conversion's constructor sets the operand's `out` to the TARGET
+      * (`value.cast(targetType)`), and a schema-resolved operand's `baseType` is its column's type
+      * whatever function it wears. A conditional counts once it converts every arm it answers to
+      * the type it reports (`SQLTypeUtils.armsAnswer`, its own decision): arms with no common type,
+      * or of a type still unknown (no schema, `date_nanos`), are left as they render, and the cast
+      * keeps its conversion. A bare column renders its doc value.
+      */
+    private def rendersDate: Boolean =
+      value match {
+        case i: Identifier if !i.isAggregation =>
+          SQLTypeUtils.chainRendered(i.functions) == SQLTypes.Date
+        case _ => false
+      }
+
+    /** The conversion of the DATE `rendered` ([[convertsDate]]), as ONE value
+      * (`SQLTypeUtils.asOneValue`), bound once and guarded here. A DATE conditional answers NULL
+      * without being `nullable` (`CASE WHEN … THEN NULL ELSE CAST(d AS DATE) END`), and a method
+      * appended to an unparenthesised `p ? a : b` converts `b` only.
+      */
+    private def dateAtMidnight(rendered: String, context: Option[PainlessContext]): String = {
+      val operand = SQLTypeUtils.asOneValue(rendered)
+      val date = context.flatMap(_.addParam(LiteralParam(operand))).getOrElse(operand)
+      val midnight = s"$date.atStartOfDay(ZoneId.of('Z'))"
+      if (targetType == SQLTypes.BigInt)
+        s"($date != null ? (def)($midnight.toInstant().toEpochMilli()) : null)"
+      else s"($date != null ? $midnight.toLocalTime() : null)"
+    }
 
     /** A temporal converted PER GROUP to a `DATE` or a `TIMESTAMP`, as in `(MAX(d) + 1)::DATE` or
       * `GREATEST(MAX(d), MAX(d2))::TIMESTAMP`.
