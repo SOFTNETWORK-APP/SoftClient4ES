@@ -143,6 +143,31 @@ class RestHighLevelClientStatusOfSpec extends AnyWordSpec with Matchers {
       rejected.getMessage should not include "method ["
     }
 
+    "name the index of an index error, as Elasticsearch 7 names it in the reason" in {
+      // measured: Elasticsearch 6.8.23 names the missing index beside its reason only
+      probe
+        .pageRejection(
+          responseException(
+            404,
+            body = Some(
+              """{"error":{"root_cause":[{"type":"index_not_found_exception","reason":"no such index","resource.type":"index_or_alias","resource.id":"absent_idx","index_uuid":"_na_","index":"absent_idx"}],"type":"index_not_found_exception","reason":"no such index","resource.type":"index_or_alias","resource.id":"absent_idx","index_uuid":"_na_","index":"absent_idx"},"status":404}"""
+            )
+          )
+        )
+        .getMessage shouldBe "[index_not_found_exception] no such index [absent_idx]"
+      // Elasticsearch 7+ names it in the reason: it is not named twice
+      probe
+        .pageRejection(
+          responseException(
+            404,
+            body = Some(
+              """{"error":{"root_cause":[{"type":"index_not_found_exception","reason":"no such index [absent_idx]","index_uuid":"_na_","index":"absent_idx"}],"type":"index_not_found_exception","reason":"no such index [absent_idx]","index_uuid":"_na_","index":"absent_idx"},"status":404}"""
+            )
+          )
+        )
+        .getMessage shouldBe "[index_not_found_exception] no such index [absent_idx]"
+    }
+
     "carry the reason Elasticsearch 7.17 gives for a function outside its domain" in {
       // measured: `SELECT ASIN(n)` over n outside [-1,1]; the reason is under `caused_by` only
       val body =

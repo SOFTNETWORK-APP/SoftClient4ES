@@ -594,8 +594,11 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
     *   - The message is read from the response body. It leads with the error's type and reason,
     *     `[<error.type>] <error.reason>`, as the ES 8 / ES 9 client reports them, then adds `:
     *     <error.root_cause[0].reason>` when the root cause says something else, then `: <why a
-    *     shard failed>` ([[ShardFailures.shardReason]]). Without a top-level reason it is the root
-    *     cause's reason; without a readable body, the HTTP status line.
+    *     shard failed>` ([[ShardFailures.shardReason]]), then ` [<error.index>]` when the error is
+    *     about an index its message does not name: Elasticsearch 6 names it beside its reason only
+    *     (`no such index`), later majors in the reason (`no such index [<index>]`). Without a
+    *     top-level reason it is the root cause's reason; without a readable body, the HTTP status
+    *     line.
     *   - The message names no class of the client and never the request: the request line names the
     *     host, the index and its parameters. The `ResponseException` is not kept as the cause for
     *     the same reason: its message carries that request line.
@@ -614,11 +617,13 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
       val rootCause = text(error.path("root_cause").path(0).path("reason"))
       val shardReason =
         ShardFailures.shardReason(error.path("failed_shards"), reason.toSeq ++ rootCause)
+      val index = text(error.path("index")).filterNot(_ == "_na_")
       (reason.map(r => text(error.path("type")).fold(r)(t => s"[$t] $r")) match {
         case Some(head) =>
           Some(rootCause.filterNot(reason.contains).fold(head)(rc => s"$head: $rc"))
         case None => rootCause
       }).map(m => shardReason.fold(m)(r => s"$m: $r"))
+        .map(m => index.filterNot(m.contains).fold(m)(i => s"$m [$i]"))
     }.toOption.flatten
     val message = fromBody
       .orElse(Try(ex.getResponse.getStatusLine.toString).toOption)
