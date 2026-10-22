@@ -593,11 +593,12 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
     *
     *   - The message is read from the response body. It leads with the error's type and reason,
     *     `[<error.type>] <error.reason>`, as the ES 8 / ES 9 client reports them, then adds `:
-    *     <error.root_cause[0].reason>` when the root cause says something else. Without a top-level
-    *     reason it is the root cause's reason; without a readable body, the HTTP status line.
-    *   - The message names no Java class and never the request: the request line names the host,
-    *     the index and its parameters. The `ResponseException` is not kept as the cause for the
-    *     same reason: its message carries that request line.
+    *     <error.root_cause[0].reason>` when the root cause says something else, then `: <why a
+    *     shard failed>` ([[ShardFailures.shardReason]]). Without a top-level reason it is the root
+    *     cause's reason; without a readable body, the HTTP status line.
+    *   - The message names no class of the client and never the request: the request line names the
+    *     host, the index and its parameters. The `ResponseException` is not kept as the cause for
+    *     the same reason: its message carries that request line.
     *   - It is thrown as a [[RestHighLevelClientHelpers.SearchPageFailure]]: an `Exception`, as the
     *     page's failure always was, and not an `IOException`, so no retry takes it.
     */
@@ -611,11 +612,13 @@ trait RestHighLevelClientHelpers extends ElasticClientHelpers { _: RestHighLevel
         JacksonConfig.objectMapper.readTree(ex.getResponse.getEntity.getContent).path("error")
       val reason = text(error.path("reason"))
       val rootCause = text(error.path("root_cause").path(0).path("reason"))
-      reason.map(r => text(error.path("type")).fold(r)(t => s"[$t] $r")) match {
+      val shardReason =
+        ShardFailures.shardReason(error.path("failed_shards"), reason.toSeq ++ rootCause)
+      (reason.map(r => text(error.path("type")).fold(r)(t => s"[$t] $r")) match {
         case Some(head) =>
           Some(rootCause.filterNot(reason.contains).fold(head)(rc => s"$head: $rc"))
         case None => rootCause
-      }
+      }).map(m => shardReason.fold(m)(r => s"$m: $r"))
     }.toOption.flatten
     val message = fromBody
       .orElse(Try(ex.getResponse.getStatusLine.toString).toOption)

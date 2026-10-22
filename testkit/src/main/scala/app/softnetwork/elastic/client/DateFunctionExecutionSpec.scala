@@ -1741,15 +1741,12 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     //
     // What the failure carries, measured on ES 6.8.23 (REST client) and ES 8.18.3 (Java client):
     // - the status is the server's: ES 6.8 answers this script error 500, ES 8 400;
-    // - Elasticsearch gives the illegal argument's reason as the `caused_by` of each shard failure.
-    //   The REST client's message carries the whole response, so the reason. The Java client's
-    //   (ES 8 and 9) names the `search_phase_execution_exception` and the script's "runtime error"
-    //   only: the reason is MISSING there, a client gap, alerted and not asserted;
+    // - Elasticsearch gives the illegal argument's reason as the `caused_by` of each shard failure
+    //   only, and every client appends it to its message: the reason is asserted on every major;
     // - streamed, neither client fails the stream with an ElasticError but with its own exception,
     //   so no status is carried: a gap, alerted. A status that is carried is asserted.
     val major = elasticVersion.takeWhile(_ != '.').toInt
     val status = if (major < 7) 500 else 400
-    val reasonCarried = major < 8
     Seq(
       "ASIN(n)"  -> "ASIN is undefined outside [-1,1]",
       "ACOS(n)"  -> "ACOS is undefined outside [-1,1]",
@@ -1772,8 +1769,6 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
               )
               if (error.isEmpty)
                 alert(s"[$sql] fails ($venue) with no ElasticError: no status is carried")
-              if (!reasonCarried)
-                alert(s"[$sql] the failure does not carry the reason: $reason")
               // the search answers the reason in its ElasticError; a stream, in its failure
               val texts =
                 if (searched) error.map(_.message).toSeq
@@ -1783,7 +1778,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
                 (searched && error.isEmpty) -> "carries no ElasticError",
                 error.exists(!_.statusCode.contains(status)) ->
                 s"status ${error.flatMap(_.statusCode)}, ES $major answers $status",
-                (reasonCarried && !texts.exists(carriesReason(_, reason))) ->
+                !texts.exists(carriesReason(_, reason)) ->
                 s"does not carry the reason: $reason"
               ).collect { case (true, what) => s"[$sql] $what; $chain" }
           }

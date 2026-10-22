@@ -127,17 +127,28 @@ class RestHighLevelClientStatusOfSpec extends AnyWordSpec with Matchers {
 
   "a rejected search page" should {
 
-    "answer Elasticsearch's status, type, reason and root cause, naming no Java class" in {
+    "answer Elasticsearch's status, type, reason, root cause and why a shard failed" in {
       val rejected = probe.pageRejection(responseException(400, body = Some(scriptFailureBody)))
-      // led by the type and reason, as the ES 8 / ES 9 client reports them; then the root cause
+      // led by the type and reason, as the ES 8 / ES 9 client reports them; then the root cause,
+      // then why the shard failed (`failed_shards[0].reason.caused_by`), as the ES 8 / ES 9 client
+      // appends it
       rejected.error.message shouldBe
-      "[search_phase_execution_exception] all shards failed: runtime error"
+      "[search_phase_execution_exception] all shards failed: runtime error: java.lang.String cannot be cast to java.lang.Number"
       rejected.getMessage shouldBe rejected.error.message
       rejected.error.statusCode shouldBe Some(400)
       rejected.error.operation shouldBe Some("search")
+      // no exception class of the client, no script stack, no request
       rejected.getMessage should not include "Exception"
-      rejected.getMessage should not include "java."
+      rejected.getMessage should not include "LocalDate"
       rejected.getMessage should not include "method ["
+    }
+
+    "carry the reason Elasticsearch 7.17 gives for a function outside its domain" in {
+      // measured: `SELECT ASIN(n)` over n outside [-1,1]; the reason is under `caused_by` only
+      val body =
+        """{"error":{"root_cause":[{"type":"script_exception","reason":"runtime error","script_stack":["..."],"script":"...","lang":"painless"}],"type":"search_phase_execution_exception","reason":"all shards failed","phase":"query","grouped":true,"failed_shards":[{"shard":0,"index":"idx","node":"n","reason":{"type":"script_exception","reason":"runtime error","script_stack":["..."],"script":"...","lang":"painless","caused_by":{"type":"illegal_argument_exception","reason":"ASIN is undefined outside [-1,1]"}}}]},"status":400}"""
+      probe.pageRejection(responseException(400, body = Some(body))).getMessage shouldBe
+      "[search_phase_execution_exception] all shards failed: runtime error: ASIN is undefined outside [-1,1]"
     }
 
     "add the root cause only when it says something else, and fall back to the status line" in {

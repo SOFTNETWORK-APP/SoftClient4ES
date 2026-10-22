@@ -129,6 +129,30 @@ private[client] object ShardFailures {
   private[client] def typeOf(failure: JsonNode): String =
     failure.path("reason").path("type").asText("")
 
+  /** WHY a shard failed (`For input string: "x"` under a script's `runtime error`), from a
+    * `failed_shards` array: the deepest reason of each failure's `reason.caused_by…` chain, the
+    * first one `said` does not hold. Elasticsearch gives it there only: the `root_cause` entries do
+    * not carry the `caused_by`. Every client appends it to the message of a failed search.
+    */
+  private[client] def shardReason(failedShards: JsonNode, said: Seq[String]): Option[String] =
+    if (!failedShards.isArray) None
+    else
+      failedShards
+        .elements()
+        .asScala
+        .flatMap { failure =>
+          Iterator
+            .iterate(failure.path("reason"))(_.path("caused_by"))
+            .takeWhile(_.isObject)
+            .take(10)
+            .map(_.path("reason"))
+            .filter(_.isTextual)
+            .map(_.asText())
+            .toList
+            .lastOption
+        }
+        .find(r => !said.contains(r))
+
   /** `type: reason (caused by type: reason)`, from what the failure carries. */
   private[client] def describe(failure: JsonNode): String = {
     def typeAndReason(cause: JsonNode): String = {
