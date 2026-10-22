@@ -157,7 +157,14 @@ class JestScrollShardFailureSpec extends AnyWordSpec with Matchers with BeforeAn
       val stub =
         new StubJest(Seq(page(Some("s1"), failedShards, "a")), page(Some("s2"), healthyShards))
       val e = failureOf(classic(stub))
-      e.getMessage should include("Initial scroll failed: shard boom")
+      // a script_exception on a shard is the caller's failure: core's ShardFailures answers 400,
+      // the one page rule every client follows, so the page fails for good with that status
+      e shouldBe a[jest.JestClientHelpers.SearchPageFailure]
+      e.asInstanceOf[jest.JestClientHelpers.SearchPageFailure].error.statusCode shouldBe Some(400)
+      e.getMessage should include(
+        "Initial scroll failed: 1 of 3 shards failed: script_exception: shard boom"
+      )
+      isRetriableError(e) shouldBe false
       stub.cleared.asScala.exists(_.contains("s1")) shouldBe true
     }
 
@@ -168,8 +175,11 @@ class JestScrollShardFailureSpec extends AnyWordSpec with Matchers with BeforeAn
           page(Some("s2"), failedShards, "b")
         )
       val e = failureOf(classic(stub))
-      e shouldBe an[IllegalStateException]
-      e.getMessage should include("Scroll continuation failed: shard boom")
+      e shouldBe a[jest.JestClientHelpers.SearchPageFailure]
+      e.asInstanceOf[jest.JestClientHelpers.SearchPageFailure].error.statusCode shouldBe Some(400)
+      e.getMessage should include(
+        "Scroll continuation failed: 1 of 3 shards failed: script_exception: shard boom"
+      )
       isRetriableError(e) shouldBe false
       stub.cleared.asScala.exists(_.contains("s1")) shouldBe true
     }
@@ -188,7 +198,12 @@ class JestScrollShardFailureSpec extends AnyWordSpec with Matchers with BeforeAn
 
     "fail a page whose shards failed" in {
       val stub = new StubJest(Seq(page(None, failedShards, "a")), page(None, healthyShards))
-      failureOf(searchAfter(stub)).getMessage should include("Search after failed: shard boom")
+      val e = failureOf(searchAfter(stub))
+      e shouldBe a[jest.JestClientHelpers.SearchPageFailure]
+      e.getMessage should include(
+        "Search after failed: 1 of 3 shards failed: script_exception: shard boom"
+      )
+      isRetriableError(e) shouldBe false
     }
 
     "answer every row when no shard failed" in {

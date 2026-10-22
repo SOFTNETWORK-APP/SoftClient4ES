@@ -26,8 +26,7 @@ import app.softnetwork.elastic.client.{
   ClientAggregation,
   ConversionContext,
   ElasticQuery,
-  ScrollApi,
-  ShardFailures
+  ScrollApi
 }
 import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.sql.query.SQLAggregation
@@ -92,9 +91,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
 
                   // HTTP 200 with failed shards is a partial page: fail it, as the ES 6 REST door
                   // does (the catch below releases the context opened just above).
-                  ShardFailures.of(tree).foreach { failures =>
-                    throw new IOException(s"Initial scroll failed: ${failures.reasons}")
-                  }
+                  failedShardsPage("Initial scroll failed", tree)(new IOException(_))
+                    .foreach(ex => throw ex)
 
                   // Extract ALL results (hits + aggregations)
                   val results =
@@ -137,13 +135,13 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
                 try {
                   val tree = pageTree(result, "scroll page")
 
-                  ShardFailures.of(tree).foreach { failures =>
+                  failedShardsPage("Scroll continuation failed", tree)(
+                    new IllegalStateException(_)
+                  ).foreach { ex =>
                     // the cursor is spent: a retry against a cleared context can only 404, and
                     // re-polling a scroll cursor skips rows — fail without retrying
                     clearScroll(scrollId)
-                    throw new IllegalStateException(
-                      s"Scroll continuation failed: ${failures.reasons}"
-                    )
+                    throw ex
                   }
 
                   val results =
@@ -269,9 +267,8 @@ trait JestScrollApi extends ScrollApi with JestClientHelpers {
             // Single parse for core (#228): raw body, not the Gson tree re-serialized
             val tree = pageTree(result, "search_after page")
 
-            ShardFailures.of(tree).foreach { failures =>
-              throw new IOException(s"Search after failed: ${failures.reasons}")
-            }
+            failedShardsPage("Search after failed", tree)(new IOException(_))
+              .foreach(ex => throw ex)
 
             // Extract ONLY hits (no aggregations)
             val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)

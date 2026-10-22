@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client.jest
 
-import app.softnetwork.elastic.client.ElasticClientHelpers
+import app.softnetwork.elastic.client.{ElasticClientHelpers, ShardFailures}
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
 import io.searchbox.action.{AbstractAction, Action}
 import io.searchbox.client.JestResult
@@ -52,8 +52,9 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     */
   override private[client] def statusOf(t: Throwable): Option[Int] =
     unwrapThrowable(t) match {
-      case ex: JestClientHelpers.PageFailure => Some(ex.status)
-      case other                             => super.statusOf(other)
+      case ex: JestClientHelpers.PageFailure       => Some(ex.status)
+      case ex: JestClientHelpers.SearchPageFailure => ex.error.statusCode
+      case other                                   => super.statusOf(other)
     }
 
   /** The failure of a page whose `JestResult` did not succeed. It stays an `IOException`, so the
@@ -66,6 +67,24 @@ trait JestClientHelpers extends ElasticClientHelpers { _: JestClientCompanion =>
     if (status >= 400 && status <= 599) new JestClientHelpers.PageFailure(message, status)
     else new java.io.IOException(message)
   }
+
+  /** The failure of a search page Elasticsearch answered with HTTP 200 and failed shards (`None`
+    * when no shard failed), by the rule of every search door, core's [[ShardFailures]] (#292):
+    *   - a 4xx (every failure is the caller's): a [[JestClientHelpers.SearchPageFailure]] with that
+    *     status, not retried, its message `<door>: n of m shards failed: ...`;
+    *   - otherwise the door's own exception, `otherwise`, with its text as before.
+    */
+  private[client] def failedShardsPage(door: String, tree: com.fasterxml.jackson.databind.JsonNode)(
+    otherwise: String => Exception
+  ): Option[Exception] =
+    ShardFailures.of(tree).map { failures =>
+      val error = failures.toError
+      if (error.statusCode.exists(status => status >= 400 && status < 500))
+        new JestClientHelpers.SearchPageFailure(
+          error.copy(message = s"$door: ${error.message}", operation = Some("search"))
+        )
+      else otherwise(s"$door: ${failures.reasons}")
+    }
 
   // ========================================================================
   // GENERIC METHODS FOR EXECUTIVE JEST ACTIONS
@@ -477,4 +496,11 @@ object JestClientHelpers {
 
   /** A page Elasticsearch answered with an error status, with that status. */
   final class PageFailure(message: String, val status: Int) extends java.io.IOException(message)
+
+  /** A search page that failed for good, with the `ElasticError` that describes it: an `Exception`,
+    * so every `Exception` arm still handles it, and not an `IOException`, so the retry policy does
+    * not take it.
+    */
+  final class SearchPageFailure(val error: ElasticError)
+      extends RuntimeException(error.message, error.cause.orNull)
 }
