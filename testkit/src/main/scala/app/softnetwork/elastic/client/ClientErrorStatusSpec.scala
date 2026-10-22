@@ -540,4 +540,18 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
       )
       .isFailure shouldBe true
   }
+
+  "an un-LIMITed search over a missing index" should "fail with 404, naming the index" in {
+    // Elasticsearch 6.8 names the index beside its reason (`no such index`), later majors in it
+    val failure = Try(
+      Await.result(
+        client.scroll(SelectStatement(s"SELECT id FROM $absentIndex")).runWith(Sink.seq),
+        timeout
+      )
+    ).failed.getOrElse(fail(s"a scroll over $absentIndex answered rows"))
+    withClue(s"${failure.getClass.getName} ${failure.getMessage}: ") {
+      client.statusOf(failure) shouldBe Some(404)
+      failure.getMessage should include(absentIndex)
+    }
+  }
 }

@@ -1838,10 +1838,16 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
       logger.info(s"PIT opened successfully: ${pitId.take(20)}... (keepAlive: $keepAlive)")
       pitId
     }.recoverWith { case ex: Exception =>
-      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
-      Future.failed(
-        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
-      )
+      searchPageFailure(ex) match {
+        // a 4xx Elasticsearch answers (408 / 429 excepted) fails fast, with its status and reason,
+        // as every paging door does; any other failure is retried as before
+        case rejected: JavaClientHelpers.SearchPageFailure => Future.failed(rejected)
+        case _ =>
+          logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+          Future.failed(
+            new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+          )
+      }
     }
   }
 
