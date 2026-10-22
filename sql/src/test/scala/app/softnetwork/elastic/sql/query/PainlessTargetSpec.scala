@@ -72,13 +72,15 @@ class PainlessTargetSpec extends AnyFlatSpec with Matchers {
     * arithmetic, in both directions -- each with how many of its operands read a document.
     */
   private val shapes: Seq[(String, Int)] = Seq(
-    "SELECT n FROM t WHERE CAST(d AS TIMESTAMP) >= ts"                   -> 2,
-    "SELECT n FROM t WHERE LAST_DAY(d) = ts"                             -> 2,
-    "SELECT n FROM t WHERE CAST(ts AS DATE) = d"                         -> 2,
-    "SELECT n FROM t WHERE DATE_ADD(d, INTERVAL 1 DAY) > ts"             -> 2,
-    "SELECT n FROM t WHERE DATE_ADD(d, INTERVAL 1 DAY) = d2"             -> 2,
-    "SELECT n FROM t WHERE CURRENT_DATE > d"                             -> 1,
-    "SELECT n FROM t WHERE COALESCE(d, d2) > CAST('2024-01-01' AS DATE)" -> 1,
+    "SELECT n FROM t WHERE CAST(d AS TIMESTAMP) >= ts"       -> 2,
+    "SELECT n FROM t WHERE LAST_DAY(d) = ts"                 -> 2,
+    "SELECT n FROM t WHERE CAST(ts AS DATE) = d"             -> 2,
+    "SELECT n FROM t WHERE DATE_ADD(d, INTERVAL 1 DAY) > ts" -> 2,
+    "SELECT n FROM t WHERE DATE_ADD(d, INTERVAL 1 DAY) = d2" -> 2,
+    "SELECT n FROM t WHERE CURRENT_DATE > d"                 -> 1,
+    // COALESCE of two DATEs answers a DATE: each arm is converted through the UTC normalisation
+    // (`painlessUtcLocalDate`), which 6.8 needs no other one for
+    "SELECT n FROM t WHERE COALESCE(d, d2) > CAST('2024-01-01' AS DATE)" -> 0,
     "SELECT n FROM t WHERE d2 = d + 1"                                   -> 2,
     "SELECT n FROM t WHERE d > d2 - 1"                                   -> 2,
     "SELECT n FROM t WHERE d >= CAST(ts AS DATE) - 1"                    -> 2

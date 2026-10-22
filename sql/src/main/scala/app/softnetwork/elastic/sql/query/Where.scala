@@ -1094,7 +1094,25 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   private def narrowsToValueType: Boolean =
     identifier.originalType == SQLTypes.Any && mayBeTemporal(identifier) &&
     !valueReadsDocumentField &&
-    (valueType == SQLTypes.Date || valueType == SQLTypes.Time)
+    (valueType == SQLTypes.Time || valueType == SQLTypes.Date && !reportsTimeOfDay)
+
+  /** Does the left operand carry a time of day -- it REPORTS a TIMESTAMP or a DATETIME, read from a
+    * column DECLARED as one -- so that a DATE beside it is compared as its UTC midnight, as DuckDB
+    * compares it, and the operand is never narrowed to its day? `ts > CASE … END` over two DATE
+    * arms narrowed `ts` to `.toLocalDate()` and kept no document of the DATE's own day:
+    * `2024-01-31T10:30Z` was not after `2024-01-31`. The DATE side is promoted instead
+    * (`comparisonTargetType`, `promotedRight`).
+    *
+    * A chain over a DATE column keeps its narrowing: `DATE_TRUNC(d, MONTH)` reports a TIMESTAMP at
+    * a midnight, its day. A column whose type is unknown (no schema) carries none, and keeps the
+    * narrowing the no-schema fixtures pin. Asked in a query only: an ingest processor and a
+    * transform keep their bytes.
+    */
+  private def reportsTimeOfDay: Boolean = {
+    def timeOfDay(t: SQLType) = t == SQLTypes.Timestamp || t == SQLTypes.DateTime
+    !SQLTypeUtils.rendersOutsideQuery && timeOfDay(identifier.reportedType) &&
+    timeOfDay(identifier.declaredType)
+  }
 
   /** The type BOTH operands are reconciled to before they are compared.
     *
@@ -1291,24 +1309,22 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
           case Some(_) =>
-            identifier.originalType match {
-              // 🔴 `originalType == Any` means "this identifier NAMES a column", NOT "that column is
-              // temporal" — so this narrowing fired for any column at all, and `DATE_PARSE(iso,
-              // 'yyyy-MM-dd') = CAST('2025-01-06' AS DATE)` over a KEYWORD column emitted
-              // `doc['iso'].value.toLocalDate()`: `.toLocalDate()` on a `String`, which fails the
-              // shard. MEASURED on ES 8.18, before and after this fix — the narrowing predates it —
-              // and it is the last reason a `DATE_PARSE` predicate could not work. The doc-value is a
-              // temporal only when the COLUMN is, which `baseType` is the thing that knows.
-              case SQLTypes.Any if mayBeTemporal(identifier) && !valueReadsDocumentField =>
-                valueType match {
-                  case SQLTypes.Date =>
-                    identifier.addPainlessMethod(".toLocalDate()")
-                  case SQLTypes.Time =>
-                    identifier.addPainlessMethod(".toLocalTime()")
-                  case _ =>
-                }
-              case _ =>
-            }
+            // 🔴 `originalType == Any` means "this identifier NAMES a column", NOT "that column is
+            // temporal" — so this narrowing fired for any column at all, and `DATE_PARSE(iso,
+            // 'yyyy-MM-dd') = CAST('2025-01-06' AS DATE)` over a KEYWORD column emitted
+            // `doc['iso'].value.toLocalDate()`: `.toLocalDate()` on a `String`, which fails the
+            // shard. MEASURED on ES 8.18, before and after this fix — the narrowing predates it —
+            // and it is the last reason a `DATE_PARSE` predicate could not work. The doc-value is a
+            // temporal only when the COLUMN is, which `baseType` is the thing that knows. The
+            // condition is `narrowsToValueType`'s, which the types of this comparison read (#292).
+            if (narrowsToValueType)
+              valueType match {
+                case SQLTypes.Date =>
+                  identifier.addPainlessMethod(".toLocalDate()")
+                case SQLTypes.Time =>
+                  identifier.addPainlessMethod(".toLocalTime()")
+                case _ =>
+              }
           case _ => // do nothing
         }
       case _ => // do nothing
@@ -1373,8 +1389,20 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         // reason: there the same operand was parsed TWICE).
         case Some(ctx) if ctx.isProcessor && identifier.chainType.isInstanceOf[SQLTemporal] =>
           chain
+        // 🔴 The conversion applies to the WHOLE operand, inside its NULL guard. A conditional's
+        // nameless identifier answers `nullable = false`, so `GREATEST(d, d2) > d` appended its
+        // DATE's midnight to the GREATEST's own guard -- `(lv3 == null ? null : …).atStartOfDay(…)`
+        // -- and a document missing both dates failed the statement (MEASURED on Elasticsearch
+        // 8.18.3 and 9.0.3); appended to a CASE (`p3 ? a : b`), it converted the last branch only.
+        // `mayRenderNull` is the one answer every converting consumer reads: `coerce` binds an
+        // operand that can be NULL once, and guards it; one that cannot is converted as ONE value. A
+        // rendering the conversion leaves alone keeps its bytes.
         case _ =>
-          SQLTypeUtils.coerce(chain, operandType, targetedType, identifier.nullable, context)
+          val nullable = SQLTypeUtils.mayRenderNull(identifier, context)
+          val operand = if (nullable) chain else SQLTypeUtils.asOneValue(chain)
+          val converted =
+            SQLTypeUtils.coerce(operand, operandType, targetedType, nullable, context)
+          if (converted == operand) chain else converted
       }
     (chain, coerced)
   }
@@ -1741,7 +1769,16 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   private def reducesDateMetrics: Boolean =
     NumericReducer.overDates(identifier) && identifier.hasAggregation
 
-  override def painless(context: Option[PainlessContext]): String = {
+  /** A comparison is an entry point of a rendering (`SQLTypeUtils.renderingIn`): in an ingest
+    * processor or a transform, the types it reads to reconcile its operands are the ones its
+    * operands render there. Read outside that scope, a transform's `COALESCE(d2, d) > ts` took the
+    * query's DATE for a conditional whose arms render their doc values there, and appended
+    * `.atStartOfDay(…)` to a `ZonedDateTime`.
+    */
+  override def painless(context: Option[PainlessContext]): String =
+    SQLTypeUtils.renderingIn(context)(comparisonPainless(context))
+
+  private def comparisonPainless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
     if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     if (context.isEmpty && reducesDateMetrics)

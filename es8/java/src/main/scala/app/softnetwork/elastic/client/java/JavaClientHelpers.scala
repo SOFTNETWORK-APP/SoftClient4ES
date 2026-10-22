@@ -58,27 +58,12 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
         .toSeq
     }
     val reasons = (reason.toSeq ++ rootCauses ++ causedBy).distinct
-    // WHY a shard failed (`For input string: "x"` under a script's `runtime error`) is only in
-    // `failed_shards[i].reason.caused_by…`, which the client keeps as raw metadata: the deepest
-    // reason of the first failure that says something not said yet, appended as `: <reason>`.
+    // WHY a shard failed is only in `failed_shards[i].reason.caused_by…`, which the client keeps as
+    // raw metadata: appended as `: <reason>` ([[ShardFailures.shardReason]]).
     val shardReason = error
       .flatMap(e => Option(e.metadata()).flatMap(m => Option(m.get("failed_shards"))))
       .flatMap(failedShards => Try(convertToTree(failedShards)).toOption)
-      .filter(_.isArray)
-      .toSeq
-      .flatMap(_.elements().asScala)
-      .flatMap { failure =>
-        Iterator
-          .iterate(failure.path("reason"))(_.path("caused_by"))
-          .takeWhile(_.isObject)
-          .take(10)
-          .map(_.path("reason"))
-          .filter(_.isTextual)
-          .map(_.asText())
-          .toList
-          .lastOption
-      }
-      .find(r => !reasons.contains(r))
+      .flatMap(ShardFailures.shardReason(_, reasons))
     s"Elasticsearch error during $operation: ${errorType.getOrElse("unknown")} - ${if (reasons.nonEmpty) reasons.mkString("; ")
     else ex.getMessage}${shardReason.fold("")(r => s": $r")}"
   }

@@ -492,24 +492,32 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
     withClue(s"[$sql] out [$out] ")(out shouldBe SQLTypes.Date)
   }
 
-  /** The companion of the row above, and the reason there are two derivations rather than one:
-    * `out` still answers the EMISSION question, so the arm selection #382 repaired is untouched.
-    * `NULLIF(CAST(s AS BIGINT), 0)` over a KEYWORD column must report a NUMBER here, or the string
-    * arm's `$arg1 != null` guard over a primitive reaches the cluster and refuses to compile.
+  /** The companion of the row above, and the reason there are two derivations rather than one: the
+    * comparison is still decided by what BOTH operands render, so the arm selection #382 repaired
+    * is untouched. `NULLIF(CAST(s AS BIGINT), 0)` over a KEYWORD column must compare NUMBERS, or
+    * the string arm's `$arg1 != null` guard over a primitive reaches the cluster and refuses to
+    * compile.
+    *
+    * `out` is the type of the VALUE NULLIF answers, its first argument's (NULLIF converts it to
+    * that type), so a cast to KEYWORD answers a KEYWORD -- the comparison is asserted on the
+    * rendering.
     */
   it should "keep deciding the comparison arm from what BOTH operands render" in {
     forAll(
       Table(
-        ("expr", "out"),
+        ("expr", "out", "comparison"),
         (
           "NULLIF(CAST(s AS BIGINT), 0)",
-          SQLTypes.BigInt: app.softnetwork.elastic.sql.`type`.SQLType
+          SQLTypes.BigInt: app.softnetwork.elastic.sql.`type`.SQLType,
+          " == 0 ? null : "
         ),
-        ("NULLIF(CAST(n AS KEYWORD), 'x')", SQLTypes.Varchar)
+        ("NULLIF(CAST(n AS KEYWORD), 'x')", SQLTypes.Keyword, ".compareTo(\"x\") == 0")
       )
-    ) { (expr, expected) =>
+    ) { (expr, expected, comparison) =>
       val actual = single(s"SELECT $expr AS c FROM t").select.fields.head.identifier.out
       withClue(s"[$expr] out [$actual], expected [$expected] ")(actual shouldBe expected)
+      val emitted = fieldOf(expr)
+      withClue(s"[$expr] $emitted ")(emitted should include(comparison))
     }
   }
 

@@ -142,6 +142,25 @@ class ShardFailuresSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll
       .map(_.statusCode) shouldBe Some(None)
   }
 
+  "ShardFailures.shardReason" should "answer the deepest reason of the first failure that says something new" in {
+    // as Elasticsearch 7.17.29 answers ASIN outside its domain: the reason is under `caused_by` only
+    val failedShards = tree(
+      """[{"shard":0,"reason":{"type":"script_exception","reason":"runtime error","caused_by":{"type":"illegal_argument_exception","reason":"ASIN is undefined outside [-1,1]"}}},{"shard":1,"reason":{"type":"script_exception","reason":"runtime error","caused_by":{"type":"illegal_argument_exception","reason":"another"}}}]"""
+    )
+    ShardFailures.shardReason(failedShards, Seq("runtime error")) shouldBe
+    Some("ASIN is undefined outside [-1,1]")
+    // a reason already said is not said twice: the next failure's is
+    ShardFailures.shardReason(failedShards, Seq("ASIN is undefined outside [-1,1]")) shouldBe
+    Some("another")
+    // no cause: the failure's own reason, unless it is said already
+    val noCause = tree("""[{"shard":0,"reason":{"type":"x_exception","reason":"only"}}]""")
+    ShardFailures.shardReason(noCause, Nil) shouldBe Some("only")
+    ShardFailures.shardReason(noCause, Seq("only")) shouldBe None
+    // not a `failed_shards` array: nothing
+    ShardFailures.shardReason(tree("""{"shard":0}"""), Nil) shouldBe None
+    ShardFailures.shardReason(tree("""{}""").path("failed_shards"), Nil) shouldBe None
+  }
+
   it should "read a multi search per response, naming the failing one" in {
     val msearch = s"""{"responses":[$healthy,$partial]}"""
     ShardFailures.error(tree(msearch)).map(_.message) shouldBe Some(s"Query 2: $expected")

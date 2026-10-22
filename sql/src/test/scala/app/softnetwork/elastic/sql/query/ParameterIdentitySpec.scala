@@ -248,14 +248,19 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
     ) shouldBe
     s"def param1 = $guardedDoc.plus(1, ChronoUnit.DAYS)); def param2 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
     "def left1 = param1; def param3 = (left1 == null || param2 == null ? false : ((left1.isAfter(param2)))); " +
-    s"def param4 = $guardedDoc); param3 ? param1 : param4"
+    // `d + 1 day` is a DATE beside the DATE `d`: the CASE answers a DATE, each arm converted once
+    s"def param4 = $guardedDoc); " +
+    "def param5 = (param4 != null ? param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "param3 ? (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5"
     // a: 2025-01-01, b: 2025-01-05, c: 2025-01-06
     fieldOf(
       "SELECT CASE WHEN DATE_ADD(d, INTERVAL 1 DAY) > ts THEN d ELSE DATE_ADD(d, INTERVAL 1 DAY) END AS c FROM t"
     ) shouldBe
     s"def param1 = $guardedDoc.plus(1, ChronoUnit.DAYS)); def param2 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
     s"def left1 = param1; def param3 = $guardedDoc); " +
-    "def param4 = (left1 == null || param2 == null ? false : ((left1.isAfter(param2)))); param4 ? param3 : param1"
+    "def param4 = (left1 == null || param2 == null ? false : ((left1.isAfter(param2)))); " +
+    "def param5 = (param1 != null ? param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "param4 ? (param3 != null ? param3.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5"
     // = d + 1 on every document
     fieldOf(
       "SELECT COALESCE(DATE_ADD(d, INTERVAL 1 DAY), DATE_ADD(ts, INTERVAL 1 DAY), DATE_ADD(d, INTERVAL 1 DAY)) AS c FROM t"
@@ -406,9 +411,13 @@ class ParameterIdentitySpec extends AnyFlatSpec with Matchers {
   }
 
   "an expression-rendering function compared with its column" should "keep one parameter" in {
+    // ONE parameter for `d`, both sides; LAST_DAY is a DATE (its receiver is made one), so its
+    // `LocalDate` is promoted to meet the raw column.
     predicateOf("SELECT name FROM t WHERE LAST_DAY(d) = d") shouldBe
     s"def param1 = $guardedDoc); " +
-    "def left1 = (param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth()); " +
+    "def param2 = (param1 == null) ? null : " +
+    "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(TemporalAdjusters.lastDayOfMonth()); " +
+    "def left1 = (param2 != null ? param2.atStartOfDay(ZoneId.of('Z')) : null); " +
     "(left1 == null || param1 == null ? false : ((left1.isEqual(param1))))"
     predicateOf("SELECT name FROM t WHERE UPPER(name) = name") shouldBe
     "def param1 = (doc['name'].size() == 0 ? null : doc['name'].value); " +

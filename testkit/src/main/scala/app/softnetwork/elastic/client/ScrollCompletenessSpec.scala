@@ -165,12 +165,12 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
 
   // GATE-024 REST page error
   it should "fail with Elasticsearch's status and reason on a page Elasticsearch rejects (GATE-024 REST page error)" in {
-    // un-LIMITed, over a pattern: every page is a search Elasticsearch refuses with a 400. `id` is
-    // a keyword whose values are not dates, so the script that reads it as a TIMESTAMP fails on
-    // every shard: Elasticsearch 6.8 refuses to compile it, later majors fail it at run time, and
-    // both are a 400 `search_phase_execution_exception`
+    // un-LIMITed, over a pattern: every page is a search Elasticsearch refuses with a 400 on every
+    // major. `value` is an integer and 'not-a-number' cannot be parsed as one, so every shard
+    // rejects the range query while building it, before any script runs. (A script error is not a
+    // 400 on every major: Elasticsearch 6.8 answers a Painless runtime error with a 500.)
     val source = client.scroll(
-      SelectStatement(s"SELECT id FROM ${index}* WHERE EPOCHDAY(CAST(id AS TIMESTAMP)) < 20087"),
+      SelectStatement(s"SELECT id FROM ${index}* WHERE value > 'not-a-number'"),
       ScrollConfig(scrollSize = 100)
     )
 
@@ -180,13 +180,9 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     withClue(s"${failure.getClass.getName} ${failure.getMessage}: ") {
       // a handled failure: Elasticsearch's own status, read by the client module
       client.statusOf(failure) shouldBe Some(400)
-      // Elasticsearch's reason, not the HTTP client's wrapper. On ES 8 / 9 the un-LIMITed scroll is
-      // a sliced PIT, one slice per shard, so a script that fails on the documents of one shard is
-      // a 200 with "1 of 3 shards failed", not "all shards failed" (measured in #443's CI, job
-      // 119218455184)
+      // Elasticsearch's reason, not the HTTP client's wrapper
       failure.getMessage should include("shards failed")
-      // the script's own reason: 6.8 refuses to compile it, later majors fail it at run time
-      failure.getMessage should include regex "(compile|runtime) error"
+      failure.getMessage should include("not-a-number")
       failure should not be an[IllegalStateException]
       // the HTTP client's wrapper is `method [<VERB>], host [...], URI [...]`; Elasticsearch's own
       // reason may say `method [...]` (a Painless method), so only the wrapper's form is refused

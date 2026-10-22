@@ -847,7 +847,8 @@ object Parser
       case ie ~ name ~ _ ~ ((ns, stored)) =>
         AlterColumnScript(
           name,
-          ScriptProcessor.fromScript(name, ns, Some(ns.out), materialized = stored),
+          // the type the processor writes, read in its scope by `fromScript` (#292)
+          ScriptProcessor.fromScript(name, ns, materialized = stored),
           ifExists = ie
         )
     }
