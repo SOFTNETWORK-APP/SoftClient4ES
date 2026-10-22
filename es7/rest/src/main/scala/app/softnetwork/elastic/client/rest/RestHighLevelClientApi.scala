@@ -2120,10 +2120,19 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       logger.info(s"PIT opened: ${pitId.take(20)}...")
       pitId
     }.recoverWith { case ex: Exception =>
-      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
-      Future.failed(
-        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
-      )
+      // the high-level client keeps Elasticsearch's response as a suppressed ResponseException:
+      // a 4xx (408 / 429 excepted) fails fast, with its status and reason ([[pageRejection]]), as
+      // every paging door does; any other failure is retried as before
+      (ex +: ex.getSuppressed.toSeq).collectFirst {
+        case re: ResponseException if isNonRetriable4xx(re) => pageRejection(re)
+      } match {
+        case Some(rejected) => Future.failed(rejected)
+        case None =>
+          logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+          Future.failed(
+            new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+          )
+      }
     }
   }
 
