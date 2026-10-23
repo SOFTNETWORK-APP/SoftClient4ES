@@ -723,4 +723,23 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     valuesById(s"SELECT id, CAST(ts AS BIGINT) AS v FROM $index").get("p1").map(BigDecimal(_)) shouldBe
     Some(BigDecimal(Instant.parse("2024-01-05T10:20:30Z").toEpochMilli))
   }
+
+  // -- predicates: NOT BETWEEN with a date-math and a script bound ---------------------------------
+
+  /** `NOT BETWEEN` whose bounds render one as date math and the other as a script (`LAST_DAY`, a
+    * `COALESCE`) is `NOT (a AND b)` (DuckDB's rows). It rendered `NOT a AND NOT b`: no row.
+    */
+  "NOT BETWEEN with a date-math and a script bound" should "answer the rows outside the range" in {
+    val bounds = "CAST('2024-02-01' AS DATE) AND LAST_DAY(CAST('2024-03-01' AS DATE))"
+    idsOf(s"SELECT id FROM $index WHERE d NOT BETWEEN $bounds") shouldBe
+    Set("p1", "p5", "p6", "p7")
+    idsOf(
+      s"SELECT id FROM $index WHERE d NOT BETWEEN LAST_DAY(CAST('2024-01-01' AS DATE)) AND CAST('2024-03-31' AS DATE)"
+    ) shouldBe Set("p1", "p5", "p6", "p7")
+    idsOf(
+      s"SELECT id FROM $index WHERE ts NOT BETWEEN CAST('2024-02-01' AS TIMESTAMP) AND COALESCE(CAST('2024-04-01' AS TIMESTAMP), NOW())"
+    ) shouldBe Set("p1", "p5", "p7")
+    // control: BETWEEN, both halves
+    idsOf(s"SELECT id FROM $index WHERE d BETWEEN $bounds") shouldBe Set("p2", "p3")
+  }
 }

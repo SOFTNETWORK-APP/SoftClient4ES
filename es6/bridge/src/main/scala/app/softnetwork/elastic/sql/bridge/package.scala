@@ -779,6 +779,9 @@ package object bridge {
     * does not keep the rows whose `n` is NULL, as DuckDB 1.5.5 and every SQL engine answer. A
     * `must_not` alone matched every document the comparison did not, the ones missing the column
     * included, on every major and every field type. The column's `exists` stands beside it.
+    *
+    * ⚠️ Several `queries` are negated EACH (`must_not` of every one: NOT a AND NOT b). A condition
+    * of two halves -- `NOT BETWEEN`, `NOT (a AND b)` -- is passed as ONE query, `must(a, b)`.
     */
   private[bridge] def negationOf(field: String, queries: Query*): Query =
     not(queries: _*).filter(existsQuery(field))
@@ -1124,7 +1127,7 @@ package object bridge {
                 )
               )
             maybeNot match {
-              case Some(_) => return not(fq, tq)
+              case Some(_) => return not(must(fq, tq))
               case _       => return must(fq, tq)
             }
           case _ =>
@@ -1153,21 +1156,21 @@ package object bridge {
                   val fq = rangeQuery(identifier.name) gte from
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return negationOf(identifier.name, fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case (None, Some(to)) =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = rangeQuery(identifier.name) lte to
                   maybeNot match {
-                    case Some(_) => return negationOf(identifier.name, fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case _ =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return negationOf(identifier.name, fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
               }
