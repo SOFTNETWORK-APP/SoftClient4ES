@@ -162,4 +162,21 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     valueOf(rs, "es8") shouldBe (null: Any)
     valueOf(rs, "es7") shouldBe (null: Any)
   }
+
+  behavior of "a percentile of a group with no value"
+
+  it should "answer NULL, not Elasticsearch's map of percents" in {
+    val sql =
+      "SELECT g1, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n) AS a FROM t GROUP BY g1"
+    val rs = rows(
+      sql,
+      """{"key": "null", "doc_count": 2, "a": {"values": {"50.0": null}}},
+        |{"key": "nan", "doc_count": 2, "a": {"values": {"50.0": "NaN"}}},
+        |{"key": "five", "doc_count": 2, "a": {"values": {"50.0": 5.0}}}""".stripMargin
+    )
+    valueOf(rs, "null") shouldBe (null: Any)
+    valueOf(rs, "nan") shouldBe (null: Any)
+    // the control: a group with values answers its percentile
+    valueOf(rs, "five") shouldBe 5.0
+  }
 }

@@ -1273,7 +1273,9 @@ trait ElasticConversion {
     val direct = Option(value.get(resultField)).filterNot(_.isNull)
     val valuesNode = Option(value.get("values"))
     val nested = valuesNode.flatMap(vs => Option(vs.get(resultField))).filterNot(_.isNull)
-    direct.orElse(nested).map(_.asDouble()).orElse {
+    // A statistic Elasticsearch could not compute is NULL, never a number: a percentile of a group
+    // with no value, a sample deviation of one value (`"NaN"` on 7.17).
+    direct.orElse(nested).map(_.asDouble()).filter(finite).orElse {
       (valuesNode, parseDoubleOpt(resultField)) match {
         case (Some(vs: ObjectNode), Some(want)) =>
           var best: Option[(Double, JsonNode)] = None
@@ -1284,10 +1286,13 @@ trait ElasticConversion {
             }
           }
           best.collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
+            .filter(finite)
         case _ => None
       }
     }
   }
+
+  private def finite(d: Double): Boolean = !d.isNaN && !d.isInfinite
 
   /** Whether the aggregation `agg` of this node computed its value over NO value of its field,
     * read from the field's value count wherever the response states it -- never from the value
@@ -1438,8 +1443,9 @@ trait ElasticConversion {
               }
             }
             .orElse {
-              // Percentiles
-              if (value.has("values")) {
+              // Percentiles -- a percentile COLUMN projects its percent above (`aggResultField`) and
+              // is NULL when that percent has no value: it never answers the whole map.
+              if (aggregations.get(name).flatMap(_.aggResultField).isEmpty && value.has("values")) {
                 Option(value.get("values")) match {
                   case Some(valuesNode: ObjectNode) =>
                     var percentiles: Seq[(String, Any)] = Seq.empty
