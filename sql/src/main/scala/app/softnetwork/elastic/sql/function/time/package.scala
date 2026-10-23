@@ -20,6 +20,7 @@ import app.softnetwork.elastic.sql.{
   escapePainlessString,
   escapeStringLiteral,
   painlessUtcLocalDate,
+  painlessUtcZonedDateTime,
   query,
   DateMathRounding,
   DateMathScript,
@@ -1502,6 +1503,23 @@ package object time {
       * hands the formatter a value it reads on every major (MEASURED on Elasticsearch 6.8.23).
       */
     def keepingUnit: TimeUnit
+
+    /** 🔴 The operand as the formatter reads it. Elasticsearch 6.8 hands a QUERY script a `date`
+      * doc value as a `JodaCompatibleZonedDateTime`, which is no `TemporalAccessor`: the format of
+      * a raw date column failed every shard holding such a document ("Cannot cast
+      * org.elasticsearch.script.JodaCompatibleZonedDateTime to java.time.temporal.TemporalAccessor")
+      * and the search answered HTTP 500. On that major the raw doc value is first made the UTC
+      * `ZonedDateTime` it holds, through the normalisation every temporal conversion of a doc value
+      * already takes (`painlessUtcZonedDateTime`). 7 and up hand a `ZonedDateTime`, and an ingest
+      * processor and a transform read no doc value: their scripts keep their bytes. `operand` is a
+      * name (the call's NULL guard tests it first).
+      */
+    protected def formatterOperand(operand: String, context: Option[PainlessContext]): String =
+      if (
+        formatsRawDateDocValue &&
+        context.exists(c => !c.isProcessor && !c.isTransform && c.target.jodaCompatibleDates)
+      ) s"${SQLTypeUtils.asOneValue(operand)}$painlessUtcZonedDateTime"
+      else operand
   }
 
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
@@ -1563,7 +1581,7 @@ package object time {
           val operand = source match {
             case _: SQLVarchar =>
               SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
-            case _ => arg
+            case _ => formatterOperand(arg, context)
           }
           context match {
             case Some(ctx) =>
@@ -1778,7 +1796,7 @@ package object time {
           val operand = source match {
             case _: SQLVarchar =>
               SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
-            case _ => arg
+            case _ => formatterOperand(arg, context)
           }
           context match {
             case Some(ctx) =>

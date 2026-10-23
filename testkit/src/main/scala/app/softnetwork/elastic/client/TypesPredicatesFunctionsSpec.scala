@@ -642,4 +642,39 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     // control: over a DOUBLE, a double
     valuesById(s"SELECT id, ABS(x) AS v FROM $index").get("p2") shouldBe Some("2.46")
   }
+
+  // -- functions: DATETIME_FORMAT / DATE_FORMAT of a raw date column ---------------------------------
+
+  /** DuckDB's `strftime` of each document's date. Elasticsearch 6.8 hands a query script a `date`
+    * doc value as a `JodaCompatibleZonedDateTime`, which the formatter cannot read: the statement
+    * answered HTTP 500 there. It is formatted as the UTC instant it holds, on every major.
+    */
+  "DATETIME_FORMAT of a raw date column" should "answer the formatted dates on every major" in {
+    valuesById(
+      s"SELECT id, DATETIME_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS v FROM $index"
+    ) shouldBe Map(
+      "p1" -> "2024-01-05 10:20:30",
+      "p2" -> "2024-02-10 23:30:00",
+      "p3" -> "2024-03-31 00:00:00",
+      "p4" -> "null",
+      "p5" -> "2023-12-31 08:00:00",
+      "p6" -> "null",
+      "p7" -> "2024-06-15 12:00:00"
+    )
+    idsOf(s"SELECT id FROM $index WHERE DATETIME_FORMAT(ts, '%Y') = '2024'") shouldBe
+    Set("p1", "p2", "p3", "p7")
+    valuesById(s"SELECT id, DATE_FORMAT(d, '%Y-%m-%d') AS v FROM $index") shouldBe Map(
+      "p1" -> "2024-01-05",
+      "p2" -> "2024-02-10",
+      "p3" -> "2024-03-31",
+      "p4" -> "null",
+      "p5" -> "2023-12-31",
+      "p6" -> "2024-01-05",
+      "p7" -> "2024-06-15"
+    )
+    // control: a truncated column, a genuine ZonedDateTime on every major
+    valuesById(
+      s"SELECT id, DATETIME_FORMAT(DATE_TRUNC(ts, MONTH), '%Y-%m') AS v FROM $index"
+    ).get("p2") shouldBe Some("2024-02")
+  }
 }
