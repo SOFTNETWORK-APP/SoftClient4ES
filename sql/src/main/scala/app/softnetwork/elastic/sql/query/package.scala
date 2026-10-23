@@ -3433,6 +3433,10 @@ package object query {
         // An aggregate whose DISTINCT Elasticsearch would drop (`AVG(DISTINCT x)`): it was
         // computed over every value on every release. Refused by name, wherever it is written.
         _ <- UnanswerableAggregate.droppedDistinct(this).map(Left(_)).getOrElse(Right(()))
+        // GREATEST / LEAST over an aggregate that can be NULL, in a calculation over aggregates:
+        // Elasticsearch skips the calculation of a group where the aggregate has no value, and the
+        // group answered NULL where SQL answers the other arguments' largest / smallest.
+        _ <- UnanswerableAggregate.nullSkippingOverNullable(this).map(Left(_)).getOrElse(Right(()))
       } yield ()
     }
 

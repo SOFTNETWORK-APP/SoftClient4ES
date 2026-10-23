@@ -80,4 +80,48 @@ class UnanswerableAggregateSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  behavior of "GREATEST / LEAST in a calculation over aggregates"
+
+  it should "be refused by name over an aggregate that is NULL in a group with no value" in {
+    // DuckDB: GREATEST(MAX(n), 2) is 2 in a group whose `n` has no value; Elasticsearch skips
+    // the group's calculation, which answered NULL
+    Seq(
+      "SELECT g, GREATEST(MAX(n), 2) AS a FROM t GROUP BY g",
+      "SELECT g, LEAST(MIN(n), 2) AS a FROM t GROUP BY g",
+      "SELECT g, GREATEST(MAX(d), MAX(d2)) AS a FROM t GROUP BY g",
+      "SELECT g, LEAST(AVG(n), COUNT(*)) AS a FROM t GROUP BY g",
+      "SELECT g, GREATEST(STDDEV(n), 0) AS a FROM t GROUP BY g",
+      "SELECT g, GREATEST(MAX(n), MIN(n), 2) AS a FROM t GROUP BY g",
+      "SELECT g, GREATEST(MAX(n), 2) - MIN(n) AS a FROM t GROUP BY g",
+      // the whole table is one group
+      "SELECT GREATEST(MAX(n), 2) AS a FROM t"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val reason = refusal(sql).getOrElse(fail("not refused"))
+        reason should include("is not supported in a calculation over aggregates")
+        reason should include("outside the query")
+      }
+    }
+  }
+
+  it should "stay answered over aggregates that are never NULL, in a HAVING, and outside an aggregation" in {
+    Seq(
+      // a COUNT is 0 and a SUM 0.0 over no value
+      "SELECT g, GREATEST(COUNT(n), 2) AS a FROM t GROUP BY g",
+      "SELECT g, LEAST(COUNT(*), SUM(n)) AS a FROM t GROUP BY g",
+      // a HAVING reads each aggregate and skips a NULL one
+      "SELECT g, COUNT(*) AS c FROM t GROUP BY g HAVING GREATEST(MAX(n), 2) > 3",
+      // a calculation that is NULL when an operand is, as SQL is
+      "SELECT g, MAX(n) + 1 AS a FROM t GROUP BY g",
+      // over the document's values
+      "SELECT GREATEST(n, 2) AS a FROM t",
+      // the control
+      "SELECT g, MAX(n) AS a FROM t GROUP BY g"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        refusal(sql) shouldBe None
+      }
+    }
+  }
 }

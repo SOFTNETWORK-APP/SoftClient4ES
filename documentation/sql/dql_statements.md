@@ -1063,10 +1063,10 @@ ORDER BY COUNT(*) DESC;
   operands are computed as hidden aggregations of the group.
 - With **no `GROUP BY`**, the whole table is one group and the statement answers **one row**,
   calculations included (since `0.24.0`): `SELECT MAX(price) - MIN(price) AS price_range FROM t`,
-  `COUNT(*) * 2`, `MAX(created) + 1` (a `DATE`), `DATEDIFF(MAX(created), MIN(created))`,
-  `GREATEST(MAX(created), MAX(updated))`. A calculation is evaluated as it is per group, with the
-  same rules. Every `SELECT` item must then be an aggregate, a calculation over aggregates or a
-  constant.
+  `COUNT(*) * 2`, `MAX(created) + 1` (a `DATE`), `DATEDIFF(MAX(created), MIN(created))`. A
+  calculation is evaluated as it is per group, with the same rules — a `GREATEST` / `LEAST` over an
+  aggregate that can be NULL (`GREATEST(MAX(created), MAX(updated))`) is refused, as per group.
+  Every `SELECT` item must then be an aggregate, a calculation over aggregates or a constant.
 - Over **no matching document**, with no `GROUP BY`: a `MAX`, a `MIN` or an `AVG` is NULL, and so
   is a calculation that reads one; `COUNT(*)` is `0` (`COUNT(*) * 2` is `0`, and
   `HAVING COUNT(*) = 0` keeps the one row). A calculation over `COUNT(column)`,
@@ -1718,8 +1718,10 @@ NULL arguments are ignored (ANSI semantics); the result is NULL only
 when every argument is NULL. Both are emitted as Painless ternary chains — over whole numbers the
 winner is chosen by a comparison, over fractional numbers by `Math.max` / `Math.min`, over dates
 over the epoch milliseconds each one denotes. They are
-conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported — but over
-aggregates they are computed per group (`GREATEST(MAX(a), MAX(b))` beside a `GROUP BY`).
+conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported. Over
+aggregates that are never NULL (`COUNT`, `SUM`) they are computed per group; over an aggregate that
+can be NULL (`MAX`, `MIN`, `AVG`, ...) they are answered in a `HAVING` and refused in a `SELECT`,
+where Elasticsearch would skip a group with no value and answer NULL for it.
 
 ```sql
 SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;

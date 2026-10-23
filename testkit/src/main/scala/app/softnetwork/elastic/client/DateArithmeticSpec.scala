@@ -871,29 +871,37 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       "(MAX(n) + AVG(x))::BIGINT",
       g => expect(for (n <- g.maxN; x <- g.avgX) yield Num((n + x).toLong.toDouble))
     ),
-    // ---- fix round 2: GREATEST / LEAST over aggregates, computed per group ----
-    // ⚠️ A SELECT's per-group calculation is NULL in a group missing one of its metrics:
-    // Elasticsearch's bucket_script does not run there (its gap policy skips the group), as for
-    // every per-group calculation. A HAVING reads every aggregate and skips a NULL one (below).
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
-    ),
-    GroupForm(
-      "LEAST(MAX(ts), MAX(d))",
-      g =>
-        expect(for (t <- g.maxTs; a <- g.maxD; m <- earliest(Some(t), Some(start(a)))) yield At(m))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2)) - MIN(d)",
-      g =>
-        expect(
-          for (a <- g.maxD; b <- g.maxD2; m <- g.minD)
-            yield daysBetween(m, if (a.isAfter(b)) a else b)
-        )
-    ),
-    GroupForm("GREATEST(MAX(n), 2)", g => expect(g.maxN.map(n => Num(Math.max(n, 2).toDouble))))
+    // ---- GREATEST / LEAST over aggregates per group: refused by name (`nullSkippingOverNullable`,
+    // below). Elasticsearch skips the calculation of a group missing one of its metrics, so it
+    // answered NULL where SQL answers the other arguments' greatest / least. A HAVING reads every
+    // aggregate and skips a NULL one, and stays answered (`havingForms`).
   )
+
+  /** The per-group SELECT calculations GREATEST / LEAST make over an aggregate that can be NULL:
+    * each is refused by name, per group, over its conversion, and through its alias.
+    */
+  private val nullSkippingCalculations: Seq[String] = Seq(
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g",
+    s"SELECT g, LEAST(MAX(ts), MAX(d)) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) - MIN(d) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(n), 2) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2))::DATE AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2))::TIMESTAMP AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g " +
+    "HAVING x > CAST('2023-12-01' AS DATE)"
+  )
+
+  "GREATEST / LEAST over an aggregate that can be NULL, per group" should
+  "be refused by name, never answered NULL for a group missing a metric" in {
+    // g2 has a `d` and no `d2`: DuckDB answers GREATEST(MAX(d), MAX(d2)) = MAX(d) there, and
+    // GREATEST(MAX(n), 2) = 2 in a group with no `n`
+    val outcomes = nullSkippingCalculations.map(sql => sql -> gatewayRows(sql))
+    outcomes.collect {
+      case (sql, Right(rs)) => s"[$sql] answered $rs"
+      case (sql, Left(error)) if !error.contains("is not supported in a calculation over aggregates") =>
+        s"[$sql] failed otherwise: $error"
+    } shouldBe empty
+  }
 
   /** A HAVING over a per-group calculation and whether each group is kept. */
   private final case class HavingForm(sql: String, keeps: Group => Option[Boolean])
@@ -941,17 +949,13 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       g => Some(g.countD - 1 > 0)
     ),
     // ---- fix round 2: GREATEST over aggregates. Inline, the group filter reads every aggregate
-    // and SKIPS a NULL one (g2 has a `d` and no `d2`); through its SELECT alias it reads the
-    // per-group calculation, NULL in a group missing one of its metrics ----
+    // and SKIPS a NULL one (g2 has a `d` and no `d2`) ----
     HavingForm(
       s"SELECT g FROM $table GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2023-12-01' AS DATE)",
       g => latest(g.maxD.map(start), g.maxD2.map(start)).map(_.isAfter(start(on("2023-12-01"))))
     ),
-    HavingForm(
-      s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g HAVING x > CAST('2023-12-01' AS DATE)",
-      g =>
-        for (a <- g.maxD; b <- g.maxD2) yield (if (a.isAfter(b)) a else b).isAfter(on("2023-12-01"))
-    )
+    // (through its SELECT alias it is the per-group calculation, refused:
+    // `nullSkippingCalculations`)
   )
 
   /** Run every statement before asserting anything, so a failure names every one that differs. */
@@ -1807,15 +1811,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     GroupForm(
       "(MAX(ts) + 1)::DATE",
       g => expect(g.maxTs.map(t => At(start(utcDay(t.plusMillis(DayMillis))))))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))::DATE",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))::TIMESTAMP",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
     )
+    // (a conversion over GREATEST(MAX(d), MAX(d2)) is refused: `nullSkippingCalculations`)
   )
 
   "a DATE or TIMESTAMP conversion over a per-group date calculation" should "answer the java.time oracle in every group, in a HAVING over its alias, and over the whole table" in {
@@ -1855,7 +1852,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   }
 
   "a DATE aggregate over date-time strings" should
-  "compare as its UTC day's start per group, in GREATEST / LEAST as in date arithmetic" in {
+  "compare as its UTC day's start per group, in a HAVING's LEAST as in date arithmetic" in {
     // Elasticsearch accepts a date-time into a `date` field, and MAX / MIN of it keep that time:
     // per group, a DATE operand is still its UTC day -- the oracle is the one of `table`, whose
     // `d` is the same days without a time
@@ -1864,16 +1861,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       dateTimeTable,
       rows.map(r => json(r.copy(dText = r.d.map(day => s"${day}T22:30:00Z")))).toList
     )
-    val forms = groupForms.filter(f =>
-      Set(
-        "GREATEST(MAX(d), MAX(d2))",
-        "LEAST(MAX(ts), MAX(d))",
-        "GREATEST(MAX(d), MAX(d2)) - MIN(d)",
-        "MAX(d) + 1",
-        "MAX(d) - MIN(ts)"
-      ).contains(f.sql)
-    )
-    forms.size shouldBe 5
+    // (GREATEST / LEAST over these aggregates in a SELECT are refused: `nullSkippingCalculations`)
+    val forms = groupForms.filter(f => Set("MAX(d) + 1", "MAX(d) - MIN(ts)").contains(f.sql))
+    forms.size shouldBe 2
     // a group filter reads every aggregate, NULL ones skipped: g1's LEAST is its day's start,
     // 2024-03-01T00:00, kept; read with its time, it would be 06:00, and g1 would be dropped
     val threshold = Instant.parse("2024-03-01T03:00:00Z")
