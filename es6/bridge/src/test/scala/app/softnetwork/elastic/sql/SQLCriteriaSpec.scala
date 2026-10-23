@@ -58,7 +58,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |             }
         |           }
         |         }
-        |       ]
+        |       ],"filter":[{"exists":{"field":"identifier"}}]
         |    }
         | }
         |]}}}""".stripMargin.replaceAll("\\s", "")
@@ -142,7 +142,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            }
         |          }
         |        }
-        |      ]
+        |      ],"filter":[{"exists":{"field":"identifier"}}]
         |    }
         |  }
         |]}}}""".stripMargin.replaceAll("\\s", "")
@@ -171,7 +171,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            "value": ".*un.*"
         |          }
         |        }
-        |      }]
+        |      }],"filter":[{"exists":{"field":"identifier"}}]
         |    }
         |  }
         |]}}}""".stripMargin.replaceAll("\\s", "")
@@ -1124,7 +1124,7 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |            }
         |          }
         |        }
-        |      ]
+        |      ],"filter":[{"exists":{"field":"identifier"}}]
         |    }
         |  }
         |]}}}""".stripMargin.replaceAll("\\s", "")

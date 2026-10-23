@@ -4114,12 +4114,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // 🔴 With NO function the engine does not script at all, and the contrast is worth pinning:
     // a bare column becomes a TERM query, so `OR` is a `bool.should` of two clauses …
     ids("WHERE status = 'A' OR id = 1") shouldBe Seq(1)
-    // … and `NOT` becomes Elasticsearch's `must_not`, whose semantics INCLUDE a document that does
-    // not carry the field — row 3 matches. That diverges from ANSI (`NOT NULL` is NULL), it is
-    // PRE-EXISTING, structural, and BIDC-8 does not change it: this story fixes what the Painless
-    // FILTER emits, and a bare-column predicate never reaches Painless here. Pinned so the
-    // difference between the two routes is visible rather than discovered.
-    ids("WHERE NOT status = 'A'") shouldBe Seq(2, 3)
+    // … and `NOT` becomes Elasticsearch's `must_not`, beside the column's `exists`: row 3, which
+    // does not carry the field, is left out, as ANSI reads `NOT NULL` (NULL). A `must_not` alone
+    // included it; both routes now agree.
+    ids("WHERE NOT status = 'A'") shouldBe Seq(2)
     // A numeric function family, so the rule is not string-specific (`amount` is present on all).
     ids("WHERE ABS(amount) > 10") shouldBe Seq(2, 3)
     ids("WHERE LOWER(status) = 'a' AND ABS(amount) > 10") shouldBe Seq.empty[Int]
@@ -4253,15 +4251,11 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 'y' END) = 'y'") shouldBe Seq(1)
     ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) = 1") shouldBe Seq(1)
 
-    // 🔴 Round 11, M-3 — A DEVIATION PINNED AS IT IS, NOT AS IT SHOULD BE. A full-text `MATCH` has
-    // no negated spelling of its own, so `NOT match(...)` takes Elasticsearch's `must_not`, which
-    // INCLUDES a document lacking the field: row 3 has no `status`, and ANSI would leave it out
-    // (`NOT UNKNOWN` is UNKNOWN). Same family as the bare-column `NOT status = 'A'` pinned above.
-    // NOT fixed in this story: it needs a `maybeNot` field on `MatchCriteria` (arity + `.sql`
-    // render, which `MaterializedViewExtension` persists) and a bridge arm emitting
-    // `must_not(match) + exists(field)` — the lead's call. `PainlessOperandFormSpec`'s class-axis
-    // gate names the exemption explicitly rather than leaving it silent.
-    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2, 3)
+    // A full-text `MATCH` has no negated spelling of its own, so `NOT match(...)` takes
+    // Elasticsearch's `must_not`; the bridge stands it beside the column's `exists`, so row 3, with
+    // no `status`, is left out, as ANSI reads `NOT UNKNOWN` (UNKNOWN). A `must_not` alone included
+    // it.
+    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2)
 
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
   }

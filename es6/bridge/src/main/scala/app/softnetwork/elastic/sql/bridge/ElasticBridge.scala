@@ -45,6 +45,21 @@ import com.sksamuel.elastic4s.searches.queries.{InnerHit, Query}
 
 import scala.annotation.tailrec
 
+object ElasticBridge {
+
+  /** The columns a MATCH reads, when `filter` is one: a `MATCH (c) AGAINST (…)`, or the group of
+    * one per column that `MATCH (c1, c2) AGAINST (…)` is. `None` for any other filter.
+    */
+  private[bridge] def matchColumns(filter: ElasticFilter): Option[Seq[String]] = filter match {
+    case m: MatchCriteria => Some(Seq(m.identifier.name))
+    case b: ElasticBoolQuery
+        if b.shouldFilters.nonEmpty && b.innerFilters.isEmpty && b.mustFilters.isEmpty &&
+          b.notFilters.isEmpty && b.shouldFilters.forall(_.isInstanceOf[MatchCriteria]) =>
+      Some(b.shouldFilters.collect { case m: MatchCriteria => m.identifier.name })
+    case _ => None
+  }
+}
+
 case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
@@ -57,12 +72,29 @@ case class ElasticBridge(filter: ElasticFilter) {
     filter match {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._
+        // 🔴 A negated MATCH -- the one leaf that reaches `must_not` as it is, having no negated
+        // spelling of its own -- keeps only the documents where its columns have a value, as SQL
+        // reads `NOT` over a NULL: the negation stands beside each column's `exists`
+        // (`negationOnAll`), in this bool's `filter`. Not where this bool's `should` clauses are
+        // required (no `filter` or `must` beside them), which a `filter` would make optional. A
+        // relation keeps its `must_not`: `NOT NESTED(…)` asks whether NO child matches.
+        val shouldsRequired = shouldFilters.nonEmpty && innerFilters.isEmpty && mustFilters.isEmpty
+        val (negatedMatches, negated) =
+          if (shouldsRequired) (Nil, notFilters)
+          else notFilters.partition(f => ElasticBridge.matchColumns(f).isDefined)
         bool(
           mustFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
           shouldFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
-          notFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery))
+          negated.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery))
         )
-          .filter(innerFilters.map(_.query(innerHitsNames, currentQuery)))
+          .filter(
+            innerFilters.map(_.query(innerHitsNames, currentQuery)) ++ negatedMatches.map(f =>
+              negationOnAll(
+                ElasticBridge.matchColumns(f).getOrElse(Nil),
+                implicitly[ElasticBridge](f).query(innerHitsNames, currentQuery)
+              )
+            )
+          )
       case nested: ElasticNested =>
         import nested._
         if (innerHitsNames.contains(innerHitsName.getOrElse(""))) {

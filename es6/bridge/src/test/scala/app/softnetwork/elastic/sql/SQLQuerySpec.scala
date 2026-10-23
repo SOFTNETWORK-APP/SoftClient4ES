@@ -343,7 +343,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                            }
       |                          }
       |                        }
-      |                      ]
+      |                      ],"filter":[{"exists":{"field":"profiles.postalCode"}}]
       |                    }
       |                  }
       |                ]
@@ -707,7 +707,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                        }
       |                      }
       |                    }
-      |                  ]
+      |                  ],"filter":[{"exists":{"field":"blockedCustomers"}}]
       |                }
       |              },
       |              {
@@ -720,7 +720,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                        }
       |                      }
       |                    }
-      |                  ]
+      |                  ],"filter":[{"exists":{"field":"receiptOfOrdersDisabled"}}]
       |                }
       |              },
       |              {
@@ -776,7 +776,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |                          }
       |                        }
       |                      }
-      |                    ]
+      |                    ],"filter":[{"exists":{"field":"products.category"}}]
       |                  }
       |                },
       |                {

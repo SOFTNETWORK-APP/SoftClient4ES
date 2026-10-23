@@ -76,7 +76,9 @@ object BoolQueryModel {
         val bit = ((bits >> (i - 1)) & 1) == 1
         bit == (v.asText == "1")
       case "match_all" => true
-      case other       => throw Unmodelled(s"query kind $other")
+      // every field of the model has a value: the `exists` a negation stands beside holds
+      case "exists" => true
+      case other    => throw Unmodelled(s"query kind $other")
     }
   }
 

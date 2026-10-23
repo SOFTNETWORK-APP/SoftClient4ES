@@ -419,4 +419,33 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     keys("r = 0.5") shouldBe Set(BigDecimal("0.5"))
     keys("r IN (0.25, 0.5)") shouldBe Set(BigDecimal("0.25"), BigDecimal("0.5"))
   }
+
+  // -- predicates: a negation leaves the NULL rows out ---------------------------------------------
+
+  /** SQL's `n <> 0` is NULL, not TRUE, where `n` is NULL: DuckDB leaves such a row out. A
+    * `must_not` alone kept every document missing the column, on every field type; it now stands
+    * beside the column's `exists`. One row per field type, and per negated form.
+    */
+  "A negated comparison" should "leave out the rows whose column is NULL, as DuckDB does" in {
+    Seq(
+      "n <> 0"                                          -> Set("p2", "p3", "p5", "p7"),
+      "NOT n = 0"                                       -> Set("p2", "p3", "p5", "p7"),
+      "k <> 'a'"                                        -> Set("p2", "p5", "p7"),
+      "x <> 2.46"                                       -> Set("p2", "p3", "p5", "p6", "p7"),
+      "r <> 0.5"                                        -> Set("p1", "p3", "p7"),
+      "b <> true"                                       -> Set("p2", "p5"),
+      "d <> '2024-01-05'"                               -> Set("p2", "p3", "p5", "p7"),
+      "df <> '05/01/2024'"                              -> Set("p2", "p3", "p5", "p7"),
+      "n NOT IN (0, 3)"                                 -> Set("p3", "p5", "p7"),
+      "k NOT IN ('a', 'b')"                             -> Set("p5", "p7"),
+      "n NOT BETWEEN 1 AND 5"                           -> Set("p1", "p3", "p5"),
+      "k NOT LIKE 'a%'"                                 -> Set("p2", "p5"),
+      "g1 = 'b' AND NOT k = 'b'"                        -> Set("p4"),
+      "g1 IN ('a', 'b') AND NOT MATCH(k) AGAINST ('a')" -> Set("p2")
+    ).foreach { case (condition, expected) =>
+      withClue(condition)(idsOf(s"SELECT id FROM $index WHERE $condition") shouldBe expected)
+    }
+    // control: the rows the negations leave out
+    idsOf(s"SELECT id FROM $index WHERE n IS NULL") shouldBe Set("p4", "p6")
+  }
 }
