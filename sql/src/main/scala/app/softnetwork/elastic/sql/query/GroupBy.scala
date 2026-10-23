@@ -813,14 +813,15 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *     flattened rows are cut to n ([[limit]]);
   *   - `GROUP BY a, b ORDER BY b` (any ORDER BY that is not the levels' own keys in their order, an
   *     aggregate included) answered the rows ordered inside each `a` only: the flattened rows are
-  *     sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL aggregate sorts where the same
-  *     ORDER BY over one level puts it, the order Elasticsearch gives a group with no value: below
-  *     every value for a `MAX` ([[lowNulls]], its -Infinity), above every value otherwise -- so last
-  *     ascending and first descending, the engine's default (the statement cannot say otherwise
-  *     under a GROUP BY). A level is then sent with every bucket (`Bucket.DefaultSize`): a LIMIT
-  *     cut inside a parent would keep groups the global order does not.
+  *     sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL
+  *     aggregate sorts where the same ORDER BY over one level puts it, the order Elasticsearch
+  *     gives a group with no value: below every value for a `MAX` ([[lowNulls]], its -Infinity),
+  *     above every value otherwise -- so last ascending and first descending, the engine's default
+  *     (the statement cannot say otherwise under a GROUP BY). The levels above the first sort key's
+  *     own level are sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside their parent
+  *     would keep groups the global order does not ([[levelSize]]).
   *
-  * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): every
+  * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): a
   * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in
   * the levels' own order -- drop m before they are cut to n. With one level too: its bucket order
   * is the statement's, only the skip is left to the rows.
@@ -845,6 +846,19 @@ object GroupedRowOrder {
   private def offsetOf(request: SingleSearch): Option[Int] =
     request.limit.flatMap(_.offset).map(_.offset).filter(_ > 0)
 
+  /** The GROUP BY levels of `request` its rows are flattened from, outermost first. */
+  private def levelsOf(request: SingleSearch): Seq[Bucket] =
+    BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil)).filterNot(_.nested)
+
+  /** The level a sort key names, or -1 (an aggregate, or another expression). */
+  private def levelOf(levels: Seq[Bucket], sort: FieldSort): Int =
+    levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
+
+  /** The aggregation the SELECT returns that a sort key names, by its alias (or its name). */
+  private def aggregationOf(request: SingleSearch, sort: FieldSort): Option[SQLAggregation] =
+    request.sqlAggregations.values
+      .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
+
   private def isMax(aggregation: SQLAggregation): Boolean = aggregation.aggType match {
     case MAX | _: MaxAgg => true
     case _               => false
@@ -863,19 +877,13 @@ object GroupedRowOrder {
         .map(m => GroupedRowOrder(Nil, request.limit.map(_.limit), Some(m)))
     else {
       val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
-      def levelOf(sort: FieldSort): Int =
-        levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
-      val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(sort) == i }
+      val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(levels, sort) == i }
       // a sort key as the rows carry it: (its column, its NULL below every value)
       def columnOf(sort: FieldSort): Option[(String, Boolean)] =
         levels
           .find(b => b.identifier.identifierName == sort.name || b.name == sort.name)
           .map(b => (b.name, false))
-          .orElse(
-            request.sqlAggregations.values
-              .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
-              .map(a => (a.field, isMax(a)))
-          )
+          .orElse(aggregationOf(request, sort).map(a => (a.field, isMax(a))))
       val limit = request.limit.map(_.limit)
       if (honoured)
         if (limit.isEmpty && offset.isEmpty) None else Some(GroupedRowOrder(Nil, limit, offset))
@@ -916,11 +924,58 @@ object GroupedRowOrder {
       )
     }
 
-  /** The size every level of `request` is sent with when its rows are sorted after they are
-    * flattened: every bucket. `None` otherwise -- each level keeps its own (`Bucket.size`).
+  /** The size each level of `request` is sent with when its rows are sorted after they are
+    * flattened: every bucket for a level whose own LIMIT cut inside its parent could leave out a
+    * group of the global order, `None` -- the level keeps its own n + m (`Bucket.size`) -- for the
+    * others.
+    *
+    * Inside one parent, the rows of a level are ordered by the first sort key that does not name a
+    * level above it, and a parent's best n + m rows in THAT order hold every row of the global best
+    * n + m under it. So a level keeps its n + m when that key is:
+    *   - none: nothing orders the rows inside the parent, any n + m of them will do;
+    *   - the level's own key, which the level is sent ordered by (`_key`) -- unless it is the last
+    *     level and an aggregate is sorted too: the last level is then ordered by the aggregate;
+    *   - the only sorted aggregate, on the last level, which is ordered by it, with no later sort
+    *     key on that level (Elasticsearch breaks its ties by the key, ascending), when it is a
+    *     COUNT, a SUM, a MIN or a MAX (a group with no value is then ordered where the rows place
+    *     it, on every major).
+    *
+    * Every other level -- above the first sort key's level, or ordered otherwise -- is sent with
+    * every bucket. `GROUP BY a, b ORDER BY b LIMIT 10` sends `a` with every bucket and `b` with 10.
     */
-  def levelSize(request: SingleSearch): Option[Int] =
-    of(request).filter(_.sorts).map(_ => Bucket.DefaultSize)
+  def levelSize(request: SingleSearch): Bucket => Option[Int] =
+    of(request).filter(_.sorts) match {
+      case None => _ => None
+      case Some(_) =>
+        val levels = levelsOf(request)
+        val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
+        val aggregateSorts = sorts.filter(levelOf(levels, _) < 0)
+        val last = levels.size - 1
+        def keepsItsOwn(level: Int): Boolean =
+          sorts.zipWithIndex.find { case (sort, _) =>
+            val l = levelOf(levels, sort)
+            l < 0 || l >= level
+          } match {
+            case None => true
+            case Some((sort, i)) =>
+              val l = levelOf(levels, sort)
+              if (l == level) level != last || aggregateSorts.isEmpty
+              else if (l >= 0) false
+              else
+                level == last && aggregateSorts.size == 1 &&
+                sorts.drop(i + 1).forall { later =>
+                  val ll = levelOf(levels, later)
+                  ll >= 0 && ll < level
+                } &&
+                aggregationOf(request, sort).exists(_.aggType match {
+                  case COUNT | SUM | MIN | MAX                         => true
+                  case _: CountAgg | _: SumAgg | _: MinAgg | _: MaxAgg => true
+                  case _                                               => false
+                })
+          }
+        val everyBucket = levels.indices.filterNot(keepsItsOwn).map(levels(_).name).toSet
+        bucket => if (everyBucket.contains(bucket.name)) Some(Bucket.DefaultSize) else None
+    }
 }
 
 /** What a `HAVING` criterion contributes to a bucket pipeline. THREE values, because `""` used to

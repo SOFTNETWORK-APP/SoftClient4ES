@@ -464,6 +464,34 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     byMin("ASC") shouldBe Seq("x", "w", "y", "z")
   }
 
+  it should "send every bucket only on the levels above the first sort key's" in {
+    def sizes(sql: String): Seq[Option[Int]] = {
+      val single = statement(sql)
+      val size = GroupedRowOrder.levelSize(single)
+      single.groupBy.map(_.buckets).getOrElse(Nil).map(size)
+    }
+    val every = Some(65536)
+    sizes("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC LIMIT 2") shouldBe
+    Seq(every, None)
+    sizes("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC LIMIT 2") shouldBe
+    Seq(every, None)
+    sizes(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k ASC, g1 DESC LIMIT 3"
+    ) shouldBe Seq(every, None)
+    // the last level ordered by the aggregate, its ties by the key ascending: a later key on it
+    // cannot be honoured inside the parent
+    sizes(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC, k DESC LIMIT 2"
+    ) shouldBe Seq(every, every)
+    // the first key's level ordered by the aggregate: its own key cannot be cut by
+    sizes(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC, c DESC LIMIT 2"
+    ) shouldBe Seq(every, every)
+    // an ORDER BY over the levels' keys in their order: nothing sorted after the flattening
+    sizes("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k LIMIT 2") shouldBe
+    Seq(None, None)
+  }
+
   it should "be left as the levels answer them when they already give the order (the control)" in {
     GroupedRowOrder.of(
       statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k")

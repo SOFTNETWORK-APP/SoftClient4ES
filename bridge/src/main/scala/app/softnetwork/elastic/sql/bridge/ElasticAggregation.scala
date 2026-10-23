@@ -480,9 +480,9 @@ object ElasticAggregation {
     having: Option[Criteria],
     nested: Option[NestedElement],
     allElasticAggregations: Seq[ElasticAggregation],
-    // the size of EVERY level, over each level's own (`GroupedRowOrder.levelSize`): every bucket,
-    // when the flattened rows are sorted after they are read
-    levelSize: Option[Int] = None
+    // the size of a level, over its own (`GroupedRowOrder.levelSize`): every bucket for a level
+    // whose own cut could leave out a group of the rows' global order
+    levelSize: app.softnetwork.elastic.sql.query.Bucket => Option[Int] = _ => None
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -608,7 +608,7 @@ object ElasticAggregation {
               // each step must chain on the previous one — restarting from `termsAgg`
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
-              levelSize.orElse(bucket.size).foreach(s => terms = terms.size(s))
+              levelSize(bucket).orElse(bucket.size).foreach(s => terms = terms.size(s))
               val (include, exclude) = having match {
                 case Some(criteria) =>
                   (
