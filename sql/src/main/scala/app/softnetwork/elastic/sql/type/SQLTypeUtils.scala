@@ -813,6 +813,20 @@ object SQLTypeUtils {
           s"$expr.toLocalDate()"
         case (SQLTypes.DateTime, SQLTypes.Time) =>
           s"$expr.toLocalTime()"
+        // 🔴 A TEMPORAL operand -- a function that only adjusts its receiver (`DATE_TRUNC`,
+        // `DATE_ADD`) over a CASE or a COALESCE whose arms are a DATE and a date-time -- renders
+        // whichever class its row's arm has, so the conversion to a TIME is decided per row, from
+        // the runtime class, as `LAST_DAY` decides its receiver's date (`LastDayOfMonth.dateOf`): a
+        // `LocalDate` is its UTC midnight, a `LocalDateTime` its time, any other temporal (a zoned
+        // doc value) its UTC time of day. Before, no arm matched and the cast answered the value
+        // itself under TIME (`2024-03-01T00:00Z`). In a query only: an ingest processor keeps its
+        // bytes. The operand is bound once, and NULL answers NULL.
+        case (SQLTypes.Temporal, SQLTypes.Time) if convertsArms(context) =>
+          val one = asOneValue(expr)
+          val x = context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+          return s"($x == null ? null : $x instanceof LocalDate ? " +
+          s"$x.atStartOfDay(ZoneId.of('Z')).toLocalTime() : $x instanceof LocalDateTime ? " +
+          s"$x.toLocalTime() : $x$painlessUtcLocalTime)"
 
         // ---- NUMERIQUES ----
         case (SQLTypes.Int, SQLTypes.BigInt) =>

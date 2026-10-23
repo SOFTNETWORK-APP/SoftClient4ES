@@ -279,4 +279,43 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       "p7" -> "ab-e"
     )
   }
+
+  // -- functions: a TEMPORAL expression cast to TIME --------------------------------------------
+
+  /** `DATE_TRUNC` over a CASE whose arms are a DATE and a date-time renders either class, row by
+    * row: the cast to TIME is decided from the runtime class, and answers the UTC time of day of
+    * the truncated value (DuckDB: `00:00:00`). It answered the timestamp itself under TIME.
+    */
+  "CAST of a TEMPORAL expression AS TIME" should "answer its time of day, as DuckDB does" in {
+    def times(sql: String): Map[String, Option[LocalTime]] =
+      valuesById(sql).map { case (id, v) =>
+        id -> (if (v == "null") None else Some(Try(LocalTime.parse(v)).getOrElse(fail(s"$id: $v"))))
+      }
+    val midnight = Some(LocalTime.MIDNIGHT)
+    val truncated = Map(
+      "p1" -> midnight,
+      "p2" -> midnight,
+      "p3" -> midnight,
+      "p4" -> None,
+      "p5" -> midnight,
+      "p6" -> midnight,
+      "p7" -> midnight
+    )
+    times(
+      s"SELECT id, CAST(DATE_TRUNC(CASE WHEN n > 1 THEN CAST(d AS DATE) ELSE CAST(d AS DATETIME) END, MONTH) AS TIME) AS v FROM $index"
+    ) shouldBe truncated
+    times(
+      s"SELECT id, CAST(DATE_TRUNC(CASE WHEN n > 1 THEN ts ELSE CAST(d AS DATETIME) END, MONTH) AS TIME) AS v FROM $index"
+    ) shouldBe truncated
+    // control: a TIMESTAMP column cast to TIME, its time of day
+    times(s"SELECT id, CAST(ts AS TIME) AS v FROM $index") shouldBe Map(
+      "p1" -> Some(LocalTime.parse("10:20:30")),
+      "p2" -> Some(LocalTime.parse("23:30:00")),
+      "p3" -> midnight,
+      "p4" -> None,
+      "p5" -> Some(LocalTime.parse("08:00:00")),
+      "p6" -> None,
+      "p7" -> Some(LocalTime.parse("12:00:00"))
+    )
+  }
 }
