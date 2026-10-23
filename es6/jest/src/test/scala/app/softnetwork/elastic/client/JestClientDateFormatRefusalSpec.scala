@@ -87,10 +87,13 @@ class JestClientDateFormatRefusalSpec extends AnyWordSpec with Matchers {
         "SELECT s, d, COUNT(*) AS c FROM t GROUP BY s, d"
       ).foreach { sql =>
         withClue(s"[$sql] ") {
+          // The body the default serializer sends: the request's `query`, which completes the
+          // serializer's JSON as it completes the JSON of any serializer -- the `value_type` of a
+          // scripted numeric key, the params of a per-group calculation.
           val request: ElasticSearchRequest = resolved(sql)
+          request.serializer shouldBe SearchBodySerializer.Default
           val body = client.singleSearchToJsonQuery(resolved(sql))
-          body shouldBe
-          SearchBodySerializer.Default.serialize(request.search).replace("\"version\":true,", "")
+          body shouldBe request.query
           body should not include SearchBodySerializer.Refusal
         }
       }
