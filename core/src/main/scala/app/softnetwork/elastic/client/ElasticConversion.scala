@@ -232,7 +232,7 @@ trait ElasticConversion {
               outputFields = leg0.map(_ => fields).getOrElse(Seq.empty),
               // ...and in the type the result gives each column (`SetOperationValues`)
               converters = leg0.flatMap(_.converters).orNull
-            )
+            )(leg0.flatMap(_.context).getOrElse(context))
           } else {
             Seq.empty
           }

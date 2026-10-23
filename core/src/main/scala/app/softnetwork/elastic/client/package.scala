@@ -319,13 +319,17 @@ package object client extends SerializationApi {
     *   aligned with `fields`: how the BRANCH's value at each position reaches the type the result
     *   gives that column (`SetOperationValues`), `null` where it already has it -- `None` for a
     *   branch with nothing to convert, which is every branch of a statement whose columns agree
+    * @param context
+    *   how the BRANCH's rows are read: the context its own search reads them with (`TextColumns`,
+    *   the columns the branch declares VARCHAR) -- `None` for the caller's own
     */
   case class LegProjection(
     fieldAliases: ListMap[String, String],
     fields: Seq[String],
     nestedHits: Map[String, Seq[(String, String)]],
     aggregations: ListMap[String, ClientAggregation],
-    converters: Option[Array[Any => Any]] = None
+    converters: Option[Array[Any => Any]] = None,
+    context: Option[ConversionContext] = None
   )
 
   /** Retry configuration

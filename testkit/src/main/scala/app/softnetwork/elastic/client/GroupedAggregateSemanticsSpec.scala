@@ -599,6 +599,55 @@ trait GroupedAggregateSemanticsSpec
   }
 
   // ---------------------------------------------------------------------------------------------
+  // A UNION ALL leg answers what the same statement answers on its own
+  // ---------------------------------------------------------------------------------------------
+
+  "a UNION ALL leg" should "skip, cut and order its groups as the same statement does" in {
+    // DuckDB: (x,3) (y,2) (w,1)
+    rowsOf(
+      s"(SELECT g1, COUNT(*) AS c FROM $index GROUP BY g1 ORDER BY g1 ASC LIMIT 2 OFFSET 1) " +
+      s"UNION ALL (SELECT g1, COUNT(*) AS c FROM $index WHERE g1 = 'w' GROUP BY g1)"
+    ).map(r => String.valueOf(cell(r, "g1")) -> number(cell(r, "c"))) shouldBe
+    Seq("x" -> Some(3.0), "y" -> Some(2.0), "w" -> Some(1.0))
+    // DuckDB: (w,c,1) (x,a,2) (w,c,1)
+    twoKeyRows(
+      s"(SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY g1 ASC, k ASC LIMIT 2) " +
+      s"UNION ALL (SELECT g1, k, COUNT(*) AS c FROM $index WHERE g1 = 'w' GROUP BY g1, k)"
+    ) shouldBe Seq(("w", "c", 1.0), ("x", "a", 2.0), ("w", "c", 1.0))
+    // DuckDB: k = c, c, b for the first leg (the two c groups, then one of the two b groups),
+    // then (w,c,1)
+    val byK = twoKeyRows(
+      s"(SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY k DESC LIMIT 3) " +
+      s"UNION ALL (SELECT g1, k, COUNT(*) AS c FROM $index WHERE g1 = 'w' GROUP BY g1, k)"
+    )
+    byK should have size 4
+    byK.take(3).map(_._2) shouldBe Seq("c", "c", "b")
+    byK.take(2).toSet shouldBe Set(("w", "c", 1.0), ("y", "c", 1.0))
+    Set(("x", "b", 1.0), ("z", "b", 1.0)) should contain(byK(2))
+    byK(3) shouldBe (("w", "c", 1.0))
+  }
+
+  it should "answer one row per UNNEST element its WHERE keeps, with no inner hits column" in {
+    // DuckDB: a1, a2, a2, then a7
+    val rows = rowsOf(
+      s"(SELECT t.id FROM $index AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1' LIMIT 10) " +
+      s"UNION ALL (SELECT t.id FROM $index AS t WHERE t.id = 'a7' LIMIT 1)"
+    )
+    rows.map(r => String.valueOf(cell(r, "id"))).take(3).sorted shouldBe Seq("a1", "a2", "a2")
+    rows.map(r => String.valueOf(cell(r, "id"))).drop(3) shouldBe Seq("a7")
+    rows.flatMap(_.keys).distinct shouldBe Seq("id")
+  }
+
+  it should "read the columns it declares VARCHAR as their text" in {
+    // DuckDB: kd VARCHAR in both legs
+    rowsOf(
+      s"(SELECT id, kd FROM $index WHERE id = 'a1' LIMIT 1) " +
+      s"UNION ALL (SELECT id, kd FROM $index WHERE id = 'a3' LIMIT 1)"
+    ).map(r => String.valueOf(cell(r, "id")) -> cell(r, "kd")) shouldBe
+    Seq("a1" -> "2025-03-31T10:00:00", "a3" -> "2024-07-04T00:00:00")
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // The aggregates Elasticsearch cannot answer as SQL does: refused by name
   // ---------------------------------------------------------------------------------------------
 
