@@ -290,6 +290,30 @@ object SQLTypeUtils {
     SQLTypes.Any
   }
 
+  /** The type a conditional REPORTS over the types its arms report -- `COALESCE`'s arguments, a
+    * `CASE`'s results, `GREATEST` / `LEAST`'s arguments: [[leastCommonSuperType]], with one guard
+    * before its temporal step.
+    *
+    * 🔴 An arm whose type is still UNKNOWN (`Any`: a `date_nanos` column, a column no schema types)
+    * beside a DATE arm makes the node a TIMESTAMP, as DuckDB 1.5.5 types a DATE beside a nanosecond
+    * timestamp (`TIMESTAMP_NS`, measured): such an arm renders its doc value, a timestamp with a
+    * time of day, and the DATE arm is not converted to it either (`armsType` leaves a node with an
+    * unknown arm as it renders). `leastCommonSuperType` reads the DATE first and reported DATE over
+    * rows that are timestamps, so a reader of the type (arrow, JDBC) dropped their time. A NULL arm
+    * is no type, and a DATE beside it stays a DATE.
+    *
+    * The reported type only: a node with an unknown arm renders as it did, and the other readers of
+    * [[leastCommonSuperType]] (a comparison's operands, BETWEEN's bounds, arithmetic) keep theirs.
+    */
+  def armsReportedType(types: List[SQLType]): SQLType = {
+    val distinct = types.distinct
+    val unknownBesideDate =
+      distinct.contains(SQLTypes.Date) &&
+      distinct.exists(t => t.isUnknown && t != SQLTypes.Null) &&
+      !distinct.exists(t => t.isInstanceOf[SQLVarchar] || t.isNumber)
+    if (unknownBesideDate) SQLTypes.Timestamp else leastCommonSuperType(types)
+  }
+
   def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String =
     coerce(in, renderedSourceType(in, context), to, context)
 

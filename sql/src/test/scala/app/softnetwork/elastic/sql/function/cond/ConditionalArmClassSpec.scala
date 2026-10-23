@@ -247,6 +247,39 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
     "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param4"
   }
 
+  /** An arm of a still-unknown type (a `date_nanos` column) beside a DATE arm: its rows are the doc
+    * value, a timestamp with its time of day, so the node REPORTS a TIMESTAMP, as DuckDB 1.5.5
+    * types a DATE beside a `TIMESTAMP_NS` (`COALESCE`, `CASE` and `GREATEST` alike). It reported
+    * DATE, and a reader of the type dropped the time. A NULL arm is no type: a DATE beside it stays
+    * a DATE. The rendering does not move.
+    */
+  "an arm whose type is unknown beside a DATE" should "report a TIMESTAMP, as DuckDB types it" in {
+    Seq(
+      "SELECT COALESCE(dn, CAST(d AS DATE)) FROM t",
+      "SELECT COALESCE(CAST(d AS DATE), dn) FROM t",
+      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE dn END FROM t",
+      "SELECT CASE WHEN n > 0 THEN dn ELSE CAST(d AS DATE) END FROM t",
+      "SELECT CASE WHEN n > 0 THEN DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) ELSE dn END FROM t",
+      "SELECT GREATEST(dn, CAST(d AS DATE)) FROM t"
+    ).foreach { sql =>
+      withClue(sql)(field(sql).identifier.reportedType shouldBe SQLTypes.Timestamp)
+    }
+    // the controls: a NULL arm, two DATE arms, an unknown arm beside a TIMESTAMP
+    Seq(
+      "SELECT COALESCE(NULL, CAST(d AS DATE)) FROM t" -> SQLTypes.Date,
+      "SELECT COALESCE(CAST(d AS DATE), d2) FROM t"   -> SQLTypes.Date,
+      "SELECT COALESCE(dn, ts) FROM t"                -> SQLTypes.Timestamp
+    ).foreach { case (sql, expected) =>
+      withClue(sql)(field(sql).identifier.reportedType shouldBe expected)
+    }
+    // the rendering is the one an unknown arm always had
+    scriptOf("SELECT COALESCE(dn, CAST(d AS DATE)) FROM t") shouldBe
+    "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
+    "def param3 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+    "(param1 != null ? param1 : param3)"
+  }
+
   /** A conditional's nameless identifier answers `nullable = false`, so a conversion of what it
     * renders was appended to its own NULL guard -- and ran on its NULL -- instead of being placed
     * inside one. `GREATEST(d, d2) > d` failed the statement on every document missing both dates
