@@ -870,7 +870,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     GroupForm(
       "(MAX(n) + AVG(x))::BIGINT",
       g => expect(for (n <- g.maxN; x <- g.avgX) yield Num((n + x).toLong.toDouble))
-    ),
+    )
     // ---- GREATEST / LEAST over aggregates per group: refused by name (`nullSkippingOverNullable`,
     // below). Elasticsearch skips the calculation of a group missing one of its metrics, so it
     // answered NULL where SQL answers the other arguments' greatest / least. A HAVING reads every
@@ -898,7 +898,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     val outcomes = nullSkippingCalculations.map(sql => sql -> gatewayRows(sql))
     outcomes.collect {
       case (sql, Right(rs)) => s"[$sql] answered $rs"
-      case (sql, Left(error)) if !error.contains("is not supported in a calculation over aggregates") =>
+      case (sql, Left(error))
+          if !error.contains("is not supported in a calculation over aggregates") =>
         s"[$sql] failed otherwise: $error"
     } shouldBe empty
   }
@@ -953,7 +954,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     HavingForm(
       s"SELECT g FROM $table GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2023-12-01' AS DATE)",
       g => latest(g.maxD.map(start), g.maxD2.map(start)).map(_.isAfter(start(on("2023-12-01"))))
-    ),
+    )
     // (through its SELECT alias it is the per-group calculation, refused:
     // `nullSkippingCalculations`)
   )

@@ -168,9 +168,19 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     def of(fn: String) =
       rows(
         s"SELECT g1, $fn(n) AS a FROM t GROUP BY g1",
-        s"""{"key": "x", "doc_count": 3, "a": ${extendedStats68(3, "-899.0", "810041.0", "180213.55555555553")}},
+        s"""{"key": "x", "doc_count": 3, "a": ${extendedStats68(
+          3,
+          "-899.0",
+          "810041.0",
+          "180213.55555555553"
+        )}},
            |{"key": "w", "doc_count": 1, "a": ${extendedStats68(1, "7.0", "49.0", "0.0")}},
-           |{"key": "z", "doc_count": 2, "a": ${extendedStats68(0, "0.0", "0.0", "null")}}""".stripMargin
+           |{"key": "z", "doc_count": 2, "a": ${extendedStats68(
+          0,
+          "0.0",
+          "0.0",
+          "null"
+        )}}""".stripMargin
       )
     Seq("VARIANCE", "VAR_SAMP").foreach { fn =>
       withClue(s"[$fn] ") {
@@ -289,15 +299,21 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
       asTheLevelsAnswer
     ) shouldBe empty
     // one level: its buckets come in the statement's order, only the skip is left to the rows
-    val single = asTheLevelsAnswer.map { case (g, _, c) => ListMap[String, Any]("g1" -> g, "c" -> c) }
-    GroupedRowOrder.of(statement("SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2 OFFSET 3")) match {
+    val single = asTheLevelsAnswer.map { case (g, _, c) =>
+      ListMap[String, Any]("g1" -> g, "c" -> c)
+    }
+    GroupedRowOrder.of(
+      statement("SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2 OFFSET 3")
+    ) match {
       case Some(order) =>
         order shouldBe GroupedRowOrder(Nil, Some(2), Some(3))
         ElasticConversion.orderGroupedRows(single, order)(identity) shouldBe single.slice(3, 5)
       case None => fail("no cut for a one-level OFFSET")
     }
     // an OFFSET with no LIMIT skips its groups and keeps every other one
-    ElasticConversion.orderGroupedRows(single, GroupedRowOrder(Nil, None, Some(4)))(identity) shouldBe
+    ElasticConversion.orderGroupedRows(single, GroupedRowOrder(Nil, None, Some(4)))(
+      identity
+    ) shouldBe
     single.drop(4)
   }
 

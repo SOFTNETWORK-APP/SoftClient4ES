@@ -411,11 +411,11 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
     // GREATEST / LEAST over dates and timestamps (the lead's ruling of 2026-10-05): a DATE for
     // dates, a TIMESTAMP when they mix -- and a date difference of one and a date is days
     Seq(
-      "SELECT GREATEST(d, d2) AS x FROM ev"                         -> SQLTypes.Date,
-      "SELECT LEAST(d, ts) AS x FROM ev"                            -> SQLTypes.Timestamp,
-      "SELECT GREATEST(d, CURRENT_DATE) AS x FROM ev"               -> SQLTypes.Date,
-      "SELECT GREATEST(d, d2) - d AS x FROM ev"                     -> SQLTypes.BigInt,
-      "SELECT LEAST(d, ts) - d AS x FROM ev"                        -> SQLTypes.Double
+      "SELECT GREATEST(d, d2) AS x FROM ev"           -> SQLTypes.Date,
+      "SELECT LEAST(d, ts) AS x FROM ev"              -> SQLTypes.Timestamp,
+      "SELECT GREATEST(d, CURRENT_DATE) AS x FROM ev" -> SQLTypes.Date,
+      "SELECT GREATEST(d, d2) - d AS x FROM ev"       -> SQLTypes.BigInt,
+      "SELECT LEAST(d, ts) - d AS x FROM ev"          -> SQLTypes.Double
     ).foreach { case (sql, t) =>
       val (resolved, item) = resolvedItem(sql)
       withClue(s"[$sql] ") {

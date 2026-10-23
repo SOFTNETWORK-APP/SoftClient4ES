@@ -89,16 +89,16 @@ class MergedSchemaSpec extends AnyFlatSpec with Matchers {
     // DuckDB 1.5.5 (UNION ALL BY NAME of the two types): the later one of
     // TINYINT < SMALLINT < INTEGER < BIGINT < FLOAT < DOUBLE
     Seq(
-      ("integer", "long")    -> SQLTypes.BigInt,
-      ("long", "integer")    -> SQLTypes.BigInt,
-      ("byte", "short")      -> SQLTypes.SmallInt,
-      ("short", "integer")   -> SQLTypes.Int,
-      ("float", "double")    -> SQLTypes.Double,
-      ("double", "float")    -> SQLTypes.Double,
-      ("integer", "float")   -> SQLTypes.Real,
-      ("long", "float")      -> SQLTypes.Real,
-      ("long", "double")     -> SQLTypes.Double,
-      ("byte", "double")     -> SQLTypes.Double
+      ("integer", "long")  -> SQLTypes.BigInt,
+      ("long", "integer")  -> SQLTypes.BigInt,
+      ("byte", "short")    -> SQLTypes.SmallInt,
+      ("short", "integer") -> SQLTypes.Int,
+      ("float", "double")  -> SQLTypes.Double,
+      ("double", "float")  -> SQLTypes.Double,
+      ("integer", "float") -> SQLTypes.Real,
+      ("long", "float")    -> SQLTypes.Real,
+      ("long", "double")   -> SQLTypes.Double,
+      ("byte", "double")   -> SQLTypes.Double
     ).foreach { case ((a, b), wider) =>
       withClue(s"[$a + $b] ") {
         val (merged, disagreements) = mergedSchema(

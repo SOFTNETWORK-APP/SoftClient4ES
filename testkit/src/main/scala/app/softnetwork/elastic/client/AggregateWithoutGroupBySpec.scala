@@ -46,8 +46,8 @@ import scala.util.Try
   * being one implicit group: `SELECT MAX(n) - MIN(n) FROM t`, `COUNT(*) * 2`, `MAX(d) + 1`,
   * `DATEDIFF(MAX(d), MIN(d))`. Elasticsearch refused every one of them on every major (a
   * `bucket_script` at the top level of `aggs`). `GREATEST(MAX(d), MAX(d2))` is refused by name: the
-  * calculation is skipped where an aggregate has no value, so it would answer NULL where SQL answers
-  * the other argument.
+  * calculation is skipped where an aggregate has no value, so it would answer NULL where SQL
+  * answers the other argument.
   *
   * Every expected value is computed HERE, from the fixture, as DuckDB 1.5.5 and PostgreSQL 16
   * compute it (MEASURED over the same rows), with the date rules of the engine (a DATE moved by

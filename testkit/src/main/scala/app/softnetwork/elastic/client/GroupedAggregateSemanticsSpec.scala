@@ -604,7 +604,9 @@ trait GroupedAggregateSemanticsSpec
         implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
           Source.fromIterator(() => list.iterator)
         client.bulk[String](
-          values.zipWithIndex.map { case (v, i) => s"""{"id": "$lvalType-$i", "lval": $v}""" }.toList,
+          values.zipWithIndex.map { case (v, i) =>
+            s"""{"id": "$lvalType-$i", "lval": $v}"""
+          }.toList,
           identity,
           idKey = Some(Set("id"))
         ) match {

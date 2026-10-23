@@ -1353,22 +1353,27 @@ trait ElasticConversion {
     val nested = valuesNode.flatMap(vs => Option(vs.get(resultField))).filterNot(_.isNull)
     // A statistic Elasticsearch could not compute is NULL, never a number: a percentile of a group
     // with no value, a sample deviation of one value (`"NaN"` on 7.17).
-    direct.orElse(nested).map(_.asDouble()).filter(finite).orElse(derivedSample(value, resultField)).orElse {
-      (valuesNode, parseDoubleOpt(resultField)) match {
-        case (Some(vs: ObjectNode), Some(want)) =>
-          var best: Option[(Double, JsonNode)] = None
-          vs.forEachEntry { (k, v) =>
-            parseDoubleOpt(k).foreach { kd =>
-              if (!v.isNull && best.forall(b => Math.abs(kd - want) < Math.abs(b._1 - want)))
-                best = Some(kd -> v)
+    direct
+      .orElse(nested)
+      .map(_.asDouble())
+      .filter(finite)
+      .orElse(derivedSample(value, resultField))
+      .orElse {
+        (valuesNode, parseDoubleOpt(resultField)) match {
+          case (Some(vs: ObjectNode), Some(want)) =>
+            var best: Option[(Double, JsonNode)] = None
+            vs.forEachEntry { (k, v) =>
+              parseDoubleOpt(k).foreach { kd =>
+                if (!v.isNull && best.forall(b => Math.abs(kd - want) < Math.abs(b._1 - want)))
+                  best = Some(kd -> v)
+              }
             }
-          }
-          best
-            .collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
-            .filter(finite)
-        case _ => None
+            best
+              .collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
+              .filter(finite)
+          case _ => None
+        }
       }
-    }
   }
 
   private def finite(d: Double): Boolean = !d.isNaN && !d.isInfinite
@@ -1379,7 +1384,8 @@ trait ElasticConversion {
     * (count - 1)`, never below 0, and its square root for the deviation. `None` under two values
     * (the statistic is NULL there, as in DuckDB: `withoutValues`) or when a key is absent.
     *
-    * Read only where the `_sampling` key is absent, so a response that carries it is read as before.
+    * Read only where the `_sampling` key is absent, so a response that carries it is read as
+    * before.
     */
   private def derivedSample(value: JsonNode, resultField: String): Option[Double] = {
     def number(key: String): Option[Double] =

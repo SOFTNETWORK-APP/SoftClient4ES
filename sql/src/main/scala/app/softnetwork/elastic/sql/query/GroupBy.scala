@@ -785,9 +785,9 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *     would keep groups the global order does not.
   *
   * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): every
-  * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in the
-  * levels' own order -- drop m before they are cut to n. With one level too: its bucket order is the
-  * statement's, only the skip is left to the rows.
+  * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in
+  * the levels' own order -- drop m before they are cut to n. With one level too: its bucket order
+  * is the statement's, only the skip is left to the rows.
   *
   * `None` when the levels already answer the rows as the statement asks: one level and no OFFSET,
   * or an ORDER BY that is the levels' keys in their order and no LIMIT or OFFSET. Also `None`, the
@@ -816,9 +816,9 @@ object GroupedRowOrder {
     val offset = offsetOf(request).filter(_ => levels.size == buckets.size)
     if (request.windowFunctions.exists(_.isWindowing)) None
     else if (levels.size < 2)
-      offset.filter(_ => levels.nonEmpty).map(m =>
-        GroupedRowOrder(Nil, request.limit.map(_.limit), Some(m))
-      )
+      offset
+        .filter(_ => levels.nonEmpty)
+        .map(m => GroupedRowOrder(Nil, request.limit.map(_.limit), Some(m)))
     else {
       val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
       def levelOf(sort: FieldSort): Int =
@@ -1553,17 +1553,17 @@ object UnanswerableAggregate {
 
   /** Does Elasticsearch answer something else than `af(DISTINCT x)` once the DISTINCT is dropped?
     * Every aggregation but a count is computed over every value: a COUNT is a `cardinality` and an
-    * ARRAY_AGG keeps each value once, so they honour it; MIN, MAX, FIRST_VALUE and LAST_VALUE answer
-    * the same with or without it (DuckDB 1.5.5 agrees on each, MEASURED).
+    * ARRAY_AGG keeps each value once, so they honour it; MIN, MAX, FIRST_VALUE and LAST_VALUE
+    * answer the same with or without it (DuckDB 1.5.5 agrees on each, MEASURED).
     *
     * Deliberately a total match, with no default arm: a new aggregate must be classified here.
     */
   private def dropsDistinct(af: AggregateFunction): Boolean = af match {
-    case COUNT | _: CountAgg | _: ArrayAgg                   => false
-    case MIN | MAX | _: MinAgg | _: MaxAgg                   => false
-    case _: FirstValue | _: LastValue                        => false
-    case _: RankingWindow | _: BucketScriptAggregation       => false
-    case AVG | SUM | _: AvgAgg | _: SumAgg                   => true
+    case COUNT | _: CountAgg | _: ArrayAgg             => false
+    case MIN | MAX | _: MinAgg | _: MaxAgg             => false
+    case _: FirstValue | _: LastValue                  => false
+    case _: RankingWindow | _: BucketScriptAggregation => false
+    case AVG | SUM | _: AvgAgg | _: SumAgg             => true
     case STDDEV | STDDEV_POP | STDDEV_SAMP | VARIANCE | VAR_POP | VAR_SAMP | _: ExtendedStatsAgg =>
       true
     case PERCENTILE_CONT | PERCENTILE_DISC | _: PercentileAgg => true
@@ -1618,8 +1618,8 @@ object UnanswerableAggregate {
   /** `GREATEST` / `LEAST` over an aggregate that can be NULL, in a calculation over aggregates of
     * the SELECT -- computed per group, or in the one whole-table group, by a `bucket_script`.
     *
-    * Elasticsearch skips the calculation of a group where one of its operands has no value (its
-    * gap policy, `keep_values` included -- MEASURED on 8.18.3), so the group answered NULL, while
+    * Elasticsearch skips the calculation of a group where one of its operands has no value (its gap
+    * policy, `keep_values` included -- MEASURED on 8.18.3), so the group answered NULL, while
     * GREATEST and LEAST skip a NULL argument: `GREATEST(MAX(n), 2)` is 2 in DuckDB 1.5.5 where `n`
     * has no value. Every other calculation is NULL when one of its operands is, as SQL is, and
     * stays answered; so does GREATEST over aggregates that cannot be NULL (a COUNT, a SUM), and in
