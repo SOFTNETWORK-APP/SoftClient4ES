@@ -30,8 +30,9 @@ import org.scalatest.matchers.should.Matchers
   *   - FOLD-IN 2: `GROUP BY <select alias>` resolves to the aliased field. It used to emit `terms {
   *     field: "<alias>" }` on a NON-EXISTENT field, which Elasticsearch answers with ZERO buckets
   *     and HTTP 200 -- a silent wrong answer in #253's own family.
-  *   - `OFFSET` under a `GROUP BY` is rejected loudly, where it used to be silently dropped by the
-  *     aggregation emission branch.
+  *   - `OFFSET` under a `GROUP BY` was silently dropped by the aggregation emission branch, then
+  *     rejected loudly; the groups are now skipped in core (`GroupedRowOrder`), and an OFFSET that
+  *     cannot be skipped in the statement's order stays refused.
   *
   * Every "today" verdict in the comments was MEASURED against a parser compiled from `origin/main`
   * `8c426253` on 2026-09-07.
@@ -318,14 +319,24 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     Seq(("category", "category", "category"))
   }
 
-  // ---- OFFSET under GROUP BY: loud rejection ----
+  // ---- OFFSET under GROUP BY: skipped in core, refused where it cannot be ----
 
-  "OFFSET under a GROUP BY" should "be rejected loudly, aggregate-free or not" in {
-    // BOTH succeed today with the offset silently dropped (behaviour change -- release note).
-    rejects("SELECT category FROM t GROUP BY category LIMIT 10 OFFSET 5", "OFFSET")
+  "OFFSET under a GROUP BY" should "be accepted, aggregate-free or not, with one key or several" in {
+    accepts("SELECT category FROM t GROUP BY category LIMIT 10 OFFSET 5")
+    accepts("SELECT category, COUNT(*) AS c FROM t GROUP BY category LIMIT 10 OFFSET 5")
+    accepts("SELECT category, city, COUNT(*) AS c FROM t GROUP BY category, city LIMIT 10 OFFSET 5")
+    accepts(
+      "SELECT category, city, COUNT(*) AS c FROM t GROUP BY category, city ORDER BY c DESC " +
+      "LIMIT 10 OFFSET 5"
+    )
+  }
+
+  it should "be rejected loudly where its groups cannot be skipped in the statement's order" in {
+    // a sort key the rows do not carry: an aggregate the SELECT does not return
     rejects(
-      "SELECT category, COUNT(*) AS c FROM t GROUP BY category LIMIT 10 OFFSET 5",
-      "OFFSET"
+      "SELECT category, city, COUNT(*) AS c FROM t GROUP BY category, city ORDER BY MAX(amount) " +
+      "DESC LIMIT 10 OFFSET 5",
+      "OFFSET is not supported"
     )
   }
 

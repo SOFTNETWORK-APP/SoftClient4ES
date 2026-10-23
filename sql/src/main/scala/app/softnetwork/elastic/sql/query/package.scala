@@ -3403,21 +3403,12 @@ package object query {
           }
         }
         _ <- {
-          // OFFSET under a GROUP BY was silently DROPPED: the aggregation path emits
-          // `size 0 fetchSource false` whenever `allAggregations.nonEmpty && fields.isEmpty`, which
-          // is every GROUP BY, so the `limit ... from ...` branch that would carry the offset is
-          // never taken and the offset never reached Elasticsearch. A real group offset needs the
-          // `composite` aggregation and `after_key` — explicitly out of scope. Same reasoning as
-          // the NULLS FIRST / NULLS LAST guard above, and applied uniformly to the
-          // aggregate-bearing and aggregate-free forms alike.
-          if (groupBy.isDefined && limit.exists(_.offset.isDefined)) {
-            Left(
-              "OFFSET is not supported when GROUP BY is present: group results are not paginated " +
-              "(the offset used to be ignored silently). Remove the OFFSET, or page by key ranges."
-            )
-          } else {
-            Right(())
-          }
+          // OFFSET under a GROUP BY never reaches Elasticsearch: the aggregation path emits
+          // `size 0 fetchSource false` for every GROUP BY, so no `from` carries it. The groups are
+          // skipped in core instead, once the rows are flattened (`GroupedRowOrder`: each level
+          // holds LIMIT + OFFSET buckets); an OFFSET the rows cannot skip in the order the
+          // statement asks for is refused, by name.
+          GroupedRowOrder.offsetRefusal(this).map(Left(_)).getOrElse(Right(()))
         }
         _ <- {
           // A DATEDIFF-family call over a WINDOW function with no GROUP BY

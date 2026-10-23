@@ -1281,7 +1281,11 @@ GROUP BY profile.city;
   each group of the keys before it**, not across the whole result: `GROUP BY city, created_at
   ORDER BY created_at DESC` orders the dates inside each city. To sort the whole result by a key,
   list that key first: `GROUP BY created_at, city ORDER BY created_at DESC`.
-- `OFFSET` is **not supported** with `GROUP BY` and is rejected: group results are not paginated.
+- `LIMIT n OFFSET m` on a `GROUP BY` skips the first m groups, then answers n, in the order the
+  statement asks for: every level is sent with n + m buckets, and the groups are skipped once the
+  rows are put together. It is refused beside a window function, over a `GROUP BY` key of an
+  `UNNEST` element, and with an `ORDER BY` over an aggregate the `SELECT` does not return, where
+  the groups cannot be skipped in that order.
 - With no `LIMIT`, every level is sized at Elasticsearch's `search.max_buckets` ceiling (65,536):
   a grouping wider than that fails loudly rather than truncating silently.
 
