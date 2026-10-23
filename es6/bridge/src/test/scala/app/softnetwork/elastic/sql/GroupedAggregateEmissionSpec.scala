@@ -122,6 +122,44 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // A date part renders NUMERIC and reports BIGINT, the whole number its script returns: DuckDB
+  // 1.5.5 answers BIGINT for every one (`typeof(year(d))`, ..., `typeof(extract(hour FROM ts))`).
+  // Sent as a `double` level, `GROUP BY YEAR(d)` answered the key 2024.0.
+  it should "be a whole-number level for a date part, the BIGINT it reports" in {
+    val parts = Seq(
+      "YEAR(%s)",
+      "MONTH(%s)",
+      "DAY(%s)",
+      "QUARTER(%s)",
+      "WEEK(%s)",
+      "DAYOFWEEK(%s)",
+      "DAYOFYEAR(%s)",
+      "HOUR(%s)",
+      "MINUTE(%s)",
+      "SECOND(%s)",
+      "EXTRACT(YEAR FROM %s)",
+      "EXTRACT(HOUR FROM %s)"
+    )
+    for (part <- parts; c <- Seq("d", "ts")) {
+      val key = part.format(c)
+      val sql = s"SELECT $key AS kk, COUNT(*) AS c FROM t GROUP BY $key"
+      withClue(s"[$sql] ") { valueTypeOf(body(sql), "kk") shouldBe Some("long") }
+    }
+    Seq(
+      // beside a key filter of exact numbers of its type
+      "SELECT YEAR(d) AS kk, COUNT(*) AS c FROM t GROUP BY YEAR(d) HAVING kk IN (2024, 2025)" ->
+      Some("long"),
+      // GREATEST / LEAST cast to the common type they report: BIGINT beside an INT, DOUBLE beside
+      // a DOUBLE
+      "SELECT GREATEST(n, YEAR(d)) AS kk, COUNT(*) AS c FROM t GROUP BY GREATEST(n, YEAR(d))" ->
+      Some("long"),
+      "SELECT LEAST(x, YEAR(d)) AS kk, COUNT(*) AS c FROM t GROUP BY LEAST(x, YEAR(d))" ->
+      Some("double")
+    ).foreach { case (sql, expected) =>
+      withClue(s"[$sql] ") { valueTypeOf(body(sql), "kk") shouldBe expected }
+    }
+  }
+
   behavior of "a GROUP BY of several levels"
 
   /** The `size` the level `name` is sent with. */

@@ -243,6 +243,34 @@ trait GroupedAggregateSemanticsSpec
     included.foreach(_ shouldBe a[java.lang.Long])
   }
 
+  it should "come back as a whole number for a date part, DuckDB's BIGINT" in {
+    // A date part renders NUMERIC and reports BIGINT: sent as a `double` level, its keys came back
+    // as Doubles (2024.0). `==` holds between a Long and a Double of one value, so the class is
+    // asserted on its own.
+    def wholeKeys(sql: String)(expected: (Long, Double)*): Unit =
+      withClue(s"[$sql] ") {
+        val actual =
+          rowsOf(sql).map(r => (cell(r, "kk"), number(cell(r, "c")))).filter(_._1 != null)
+        actual.foreach { case (key, _) => key shouldBe a[java.lang.Long] }
+        actual shouldBe expected.map { case (key, count) => (key, Some(count)) }
+      }
+    // DuckDB: (2024, 8)
+    wholeKeys(s"SELECT YEAR(d) AS kk, COUNT(*) AS c FROM $index GROUP BY YEAR(d)")(2024L -> 8.0)
+    // DuckDB: (2024, 3), (2025, 2), then the NULL group
+    wholeKeys(
+      s"SELECT YEAR(ts) AS kk, COUNT(*) AS c FROM $index GROUP BY YEAR(ts) ORDER BY kk"
+    )(2024L -> 3.0, 2025L -> 2.0)
+    // DuckDB: (12, 1), (5, 2), (3, 2), (1, 3) -- in numeric order, where texts put 5 and 3 first
+    wholeKeys(
+      s"SELECT MONTH(d) AS kk, COUNT(*) AS c FROM $index GROUP BY MONTH(d) ORDER BY kk DESC"
+    )(12L -> 1.0, 5L -> 2.0, 3L -> 2.0, 1L -> 3.0)
+    // DuckDB: (12, 1), (10, 1), (0, 3), then the NULL group
+    wholeKeys(
+      s"SELECT EXTRACT(HOUR FROM ts) AS kk, COUNT(*) AS c FROM $index " +
+      "GROUP BY EXTRACT(HOUR FROM ts) ORDER BY kk DESC"
+    )(12L -> 1.0, 10L -> 1.0, 0L -> 3.0)
+  }
+
   // ---------------------------------------------------------------------------------------------
   // MIN / MAX of a date column
   // ---------------------------------------------------------------------------------------------

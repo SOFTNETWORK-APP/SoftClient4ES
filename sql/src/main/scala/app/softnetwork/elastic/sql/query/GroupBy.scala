@@ -544,6 +544,12 @@ case class Bucket(
     * Read by both bridges through [[scriptedKeyValueTypeBeside]]: a HAVING key filter is written as
     * the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric level parses as its
     * numbers. A temporal key is left as it is (`date_histogram` or its own text).
+    *
+    * A key that renders a number of no known kind (NUMERIC) is the number it REPORTS: a date part
+    * (`YEAR(d)`, `EXTRACT(HOUR FROM ts)`, ...) renders NUMERIC for the coercions that read it, and
+    * reports the BIGINT DuckDB answers, the whole number its script returns; GREATEST / LEAST cast
+    * to the common type they report. Read as NUMERIC it was a `double` level, and `GROUP BY
+    * YEAR(d)` answered the key `2024.0`, a Double, where DuckDB answers the BIGINT `2024`.
     */
   def scriptedKeyValueType: Option[String] =
     if (!isScriptedKey || isDateHistogram) None
@@ -551,8 +557,9 @@ case class Bucket(
       renderedTypeOf(identifier) match {
         case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => Some("long")
         case _: SQLDouble | _: SQLReal                                 => Some("double")
-        case SQLTypes.Numeric                                          => Some("double")
-        case _                                                         => None
+        case SQLTypes.Numeric =>
+          if (NumericReducer.wholeNumber(identifier.reportedType)) Some("long") else Some("double")
+        case _ => None
       }
 
   /** [[scriptedKeyValueType]] for a level whose HAVING key filter is `include` / `exclude`: the
