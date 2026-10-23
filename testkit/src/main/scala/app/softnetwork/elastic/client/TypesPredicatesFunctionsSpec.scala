@@ -318,4 +318,56 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       "p7" -> Some(LocalTime.parse("12:00:00"))
     )
   }
+
+  // -- functions: ROUND to decimal places ---------------------------------------------------------
+
+  /** A number read back as the decimal it denotes, `None` for NULL. */
+  private def decimal(v: String): Option[BigDecimal] =
+    if (v == "null") None else Some(Try(BigDecimal(v)).getOrElse(fail(s"not a number: $v")))
+
+  /** `ROUND(x, 1)` is DuckDB's `std::round(x * 10) / 10`, a half away from zero: `2.46` is `2.5`,
+    * `-1.25` is `-1.3`. The script was `Math.round(x)`: every scale answered a whole number, in the
+    * SELECT list, a WHERE, a GROUP BY key and the HAVING filter on that key.
+    */
+  "ROUND to decimal places" should "answer DuckDB's value in every clause" in {
+    valuesById(s"SELECT id, ROUND(x, 1) AS v FROM $index").map { case (id, v) =>
+      id -> decimal(v)
+    } shouldBe Map(
+      "p1" -> Some(BigDecimal("2.5")),
+      "p2" -> Some(BigDecimal("-2.5")),
+      "p3" -> Some(BigDecimal("2.4")),
+      "p4" -> None,
+      "p5" -> Some(BigDecimal("1.3")),
+      "p6" -> Some(BigDecimal("-1.3")),
+      "p7" -> Some(BigDecimal("2.6"))
+    )
+    idsOf(s"SELECT id FROM $index WHERE ROUND(x, 1) = 2.5") shouldBe Set("p1")
+    // the GROUP BY key; DuckDB has a NULL group too, which a terms level does not return
+    columnOf(
+      s"SELECT ROUND(x, 1) AS rx, COUNT(*) AS c FROM $index GROUP BY ROUND(x, 1)",
+      "rx"
+    ).flatMap(decimal).toSet shouldBe Set("-2.5", "-1.3", "1.3", "2.4", "2.5", "2.6")
+      .map(BigDecimal(_))
+    // the HAVING key filter on that key
+    columnOf(
+      s"SELECT ROUND(x, 1) AS rx, COUNT(*) AS c FROM $index GROUP BY ROUND(x, 1) HAVING ROUND(x, 1) = 2.5",
+      "rx"
+    ).flatMap(decimal) shouldBe Seq(BigDecimal("2.5"))
+    columnOf(
+      s"SELECT ROUND(x, 1) AS rx, COUNT(*) AS c FROM $index GROUP BY ROUND(x, 1) HAVING ROUND(x, 1) IN (2.5, -2.5)",
+      "rx"
+    ).flatMap(decimal).toSet shouldBe Set(BigDecimal("2.5"), BigDecimal("-2.5"))
+    // control: to no decimal place, a whole number, as before
+    valuesById(s"SELECT id, ROUND(x) AS v FROM $index").map { case (id, v) =>
+      id -> decimal(v)
+    } shouldBe Map(
+      "p1" -> Some(BigDecimal(2)),
+      "p2" -> Some(BigDecimal(-2)),
+      "p3" -> Some(BigDecimal(2)),
+      "p4" -> None,
+      "p5" -> Some(BigDecimal(1)),
+      "p6" -> Some(BigDecimal(-1)),
+      "p7" -> Some(BigDecimal(3))
+    )
+  }
 }

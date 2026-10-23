@@ -34,7 +34,6 @@ import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.convert.Conversion
-import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
@@ -136,13 +135,6 @@ object Bucket {
   /** A string type: the type of a text column, or of a value a function renders as text. */
   private[query] def stringType(t: SQLType): Boolean =
     t.isInstanceOf[SQLVarchar] || t.isInstanceOf[SQLChar]
-
-  /** Whether `round` rounds to decimal places a value that is not a whole number: its script rounds
-    * to a whole number (`Long.valueOf(Math.round((x * 10) / 10))`), so its value is not the one SQL
-    * computes.
-    */
-  private[query] def roundsToAnotherScale(round: Round): Boolean =
-    round.scale.exists(_ != 0) && !NumericReducer.wholeNumber(renderedTypeOf(round.arg))
 
   /** Every text a Java number EQUAL to `number` prints, for [[Bucket.keyFilterTexts]]:
     *   - a whole value: its integer text and its `Double` text (`5` and `5.0`, `1.0E7` for ten
@@ -561,8 +553,8 @@ case class Bucket(
     *     a DOUBLE, a string, a date or a BOOLEAN (a date part, a LENGTH, an integer cast of a
     *     string are exact integers of their argument). Not proven: a key reading a REAL or a
     *     NUMERIC column, or converting anything to REAL or NUMERIC, anywhere in its expression
-    *     (Painless computes it in double, DuckDB in REAL or DECIMAL), or holding a `ROUND` to
-    *     decimal places over a non-integer value (its script rounds to a whole number);
+    *     (Painless computes it in double, DuckDB in REAL or DECIMAL). A `ROUND` to decimal places
+    *     is the DOUBLE DuckDB computes (`Round`), and prints as one;
     *   - a key that renders a string computed from strings alone (`UPPER(k)`, `SUBSTRING(k, 1, 3)`,
     *     `CONCAT(k1, k2)`, `TRIM(k)`): every column it reads is a string, and every function and
     *     operand in its expression renders a string, so nothing converts a number, a date or a
@@ -588,8 +580,7 @@ case class Bucket(
       !functions.exists {
         case conversion: Conversion =>
           conversion.targetType.isInstanceOf[SQLReal] || conversion.targetType == SQLTypes.Numeric
-        case round: Round => Bucket.roundsToAnotherScale(round)
-        case _            => false
+        case _ => false
       }
   }
 
@@ -617,10 +608,10 @@ case class Bucket(
     * key prints `5.0`. That holds on a key of a proven kind ([[isExactKeyKind]]), and on a key
     * whose columns no mapping typed, whose printed class is unknown (on a key that renders REAL
     * there, the `Float` text is sent too). A key the mapping shows to be of another kind -- a REAL
-    * computed in double, a `ROUND` to decimal places -- keeps the literal's own text, as before: no
-    * spelling is known to match its value, and the nameless-key gate judges that text as it did.
-    * Everything else is sent as its own text too: Elasticsearch parses a FIELD level's values
-    * itself, and a string or a boolean prints as itself.
+    * computed in double -- keeps the literal's own text, as before: no spelling is known to match
+    * its value, and the nameless-key gate judges that text as it did. Everything else is sent as
+    * its own text too: Elasticsearch parses a FIELD level's values itself, and a string or a
+    * boolean prints as itself.
     *
     * Called once per literal while the request is built.
     */

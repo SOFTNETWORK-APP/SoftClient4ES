@@ -225,8 +225,31 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg, PowParam(scale.getOrElse(0)))
 
+    /** 🔴 `ROUND(x, d)` with `d` decimal places is DuckDB 1.5.5's double rounding, `std::round(x *
+      * 10^d) / 10^d` -- a half rounded away from zero -- answered as a DOUBLE: `ROUND(2.46, 1)` is
+      * `2.5`, `ROUND(-1.25, 1)` is `-1.3` (measured). The script was `Math.round((x * 10^d) /
+      * 10^d)`, which IS `Math.round(x)`: every scale answered a whole number, in every context.
+      * Java's `Math.round` rounds a half up, toward positive infinity, so the rounding is taken on
+      * the magnitude and the sign restored: one form, in a query, an ingest processor and a
+      * transform alike, since the old one was wrong in each.
+      *
+      * The value is read twice. In a query an operand that is no name -- a function's rendering,
+      * which the call's NULL guard does not test -- is bound once, and NULL answers NULL.
+      *
+      * Without decimal places (`ROUND(x)`, `ROUND(x, 0)`) the script is the one it was, byte for
+      * byte: a whole number, rounded half up (`ROUND(-2.5)` is `-2`, where DuckDB answers `-3`).
+      */
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
+        case List(a, p) if scale.exists(_ != 0) =>
+          val one = SQLTypeUtils.asOneValue(a)
+          val bound =
+            if (FunctionN.isName(one) || !SQLTypeUtils.convertsArms(context)) None
+            else context.flatMap(_.addParam(LiteralParam(one)))
+          val x = bound.getOrElse(one)
+          val rounded =
+            s"Double.valueOf(Math.signum($x) * ${mathOp.painless(context)}(Math.abs($x) * $p) / $p)"
+          bound.fold(rounded)(b => s"($b == null ? null : $rounded)")
         case List(a, p) => s"Long.valueOf(${mathOp.painless(context)}(($a * $p) / $p))"
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }

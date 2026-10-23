@@ -2880,7 +2880,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "__c11": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
+        |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 2); (param1 == null || param2 == null) ? null : Double.valueOf(Math.signum(param1) * Math.round(Math.abs(param1) * param2) / param2)"
         |      }
         |    },
         |    "__c12": {

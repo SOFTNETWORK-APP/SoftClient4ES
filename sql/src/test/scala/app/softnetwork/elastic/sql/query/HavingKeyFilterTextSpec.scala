@@ -92,6 +92,11 @@ class HavingKeyFilterTextSpec extends AnyFlatSpec with Matchers {
       "SELECT CAST(x AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(x AS DOUBLE) " +
       "HAVING CAST(x AS DOUBLE) <> 5"
     ) shouldBe ((Set.empty[String], Set("5", "5.0")))
+    // a ROUND to decimal places: the DOUBLE DuckDB computes, printed as one (it rounded to a whole
+    // number, and kept the literal's own text)
+    lists(
+      "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x, 1) HAVING ROUND(x, 1) = 2"
+    ) shouldBe ((Set("2", "2.0"), Set.empty[String]))
   }
 
   "a number on a scripted key of a kind that is not proven" should "keep its own text, as before" in {
@@ -107,10 +112,6 @@ class HavingKeyFilterTextSpec extends AnyFlatSpec with Matchers {
       "SELECT CAST(n AS REAL) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS REAL) " +
       "HAVING CAST(n AS REAL) = 16777217"
     )._1 shouldBe Set("16777217")
-    // a ROUND to decimal places over a non-integer value, whose script rounds to a whole number
-    lists(
-      "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x, 1) HAVING ROUND(x, 1) = 2"
-    )._1 shouldBe Set("2")
     // a quoted number too
     lists(
       "SELECT ABS(f) AS k, COUNT(*) AS c FROM t GROUP BY ABS(f) HAVING ABS(f) = '5'"

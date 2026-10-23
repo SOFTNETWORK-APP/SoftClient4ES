@@ -180,8 +180,7 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
     // A key over a REAL column is not of a proven kind: Painless computes it in double, where
     // DuckDB 1.5.5 computes it in REAL (it keeps (0.1, n) for ABS(r) = 0.1 over r = 0.1, and
     // (1.0, n) for r * 10 = 1), and so is a REAL produced by a cast. Such a key keeps the literal's
-    // own text and the gate judges it as before, with its reason. ROUND(x, 1)'s script rounds to a
-    // whole number (DuckDB keeps (2.5, n) for ROUND(x, 1) = 2.5 over x = 2.5).
+    // own text and the gate judges it as before, with its reason.
     val asBefore = "which writes such a number as 1 or as 1.0 depending on the column's type."
     Seq(
       "ABS(r)"               -> "0.1"       -> asBefore,
@@ -191,9 +190,7 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
       "r * 10"               -> "1"         -> asBefore,
       "r * 10"               -> "IN (1, 2)" -> asBefore,
       "ABS(r)"               -> "'0.5'"     -> asBefore,
-      "ABS(CAST(x AS REAL))" -> "0.1"       -> asBefore,
-      "ROUND(x, 1)"          -> "2.5"       -> asBefore,
-      "ROUND(x, 1) + 0"      -> "5"         -> "rounds x to a whole number, ignoring the scale 1"
+      "ABS(CAST(x AS REAL))" -> "0.1"       -> asBefore
     ).foreach { case ((key, value), cause) =>
       val condition = if (value.startsWith("IN")) s"$key $value" else s"$key = $value"
       val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $condition"
@@ -203,11 +200,15 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
         reason should include(cause)
       }
     }
-    // ... and open where it is: ROUND over an integer or to no decimal place (keys of a proven
-    // kind), and, as before, a whole-number key over a REAL column compared with an integer: it
-    // keeps the literal's own text, the integer the key prints (DuckDB: FLOOR(r) = 1 keeps the
-    // groups whose r is in [1, 2))
+    // ... and open where it is: ROUND, to decimal places or not, over an integer or a DOUBLE (keys
+    // of a proven kind: a ROUND to decimal places is the DOUBLE DuckDB computes -- DuckDB keeps
+    // (2.5, n) for ROUND(x, 1) = 2.5 over x = 2.46), and, as before, a whole-number key over a REAL
+    // column compared with an integer: it keeps the literal's own text, the integer the key prints
+    // (DuckDB: FLOOR(r) = 1 keeps the groups whose r is in [1, 2))
     Seq(
+      "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x, 1) HAVING ROUND(x, 1) = 2.5",
+      "SELECT ROUND(x, 1) + 0 AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x, 1) + 0 " +
+      "HAVING ROUND(x, 1) + 0 = 5",
       "SELECT ROUND(n, 1) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(n, 1) HAVING ROUND(n, 1) = 5",
       "SELECT ROUND(x) AS k, COUNT(*) AS c FROM t GROUP BY ROUND(x) HAVING ROUND(x) = 3",
       "SELECT FLOOR(r) AS k, COUNT(*) AS c FROM t GROUP BY FLOOR(r) HAVING FLOOR(r) = 1"

@@ -52,7 +52,6 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
-import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -1893,9 +1892,7 @@ package object query {
       *     number whose every whole value the filter sends is written as the integer it prints as
       *     (`1`, never `1.0`); a decimal key over a REAL column (`ABS(r)`, `r * 10`) prints `1.0`
       *     or `1` depending on the column's Java type, and is computed in double where DuckDB
-      *     computes in REAL, so it is closed;
-      *   - and a key holding a `ROUND` to decimal places over a non-integer value stays closed: its
-      *     script rounds to a whole number.
+      *     computes in REAL, so it is closed.
       *
       * Asked by [[validateResolved]] and [[validateUnresolved]], never at parse: there the route is
       * open, and rules (a), (b), (b2) and (c) of `validate()` apply to it as to any key. The named
@@ -1950,14 +1947,6 @@ package object query {
               "as 1.0 depending on the column's type."
             )
           else Some(lead + s"its type ($rendered) has no text a condition is known to spell.")
-        }
-        .orElse {
-          functionsOf(key).collectFirst {
-            case round: Round if Bucket.roundsToAnotherScale(round) =>
-              lead + s"$asText, and that script rounds ${round.arg} to a whole number, ignoring " +
-                s"the scale ${round.scale.getOrElse(0)} of ${round.sql}, so the condition would " +
-                "compare a different value."
-          }
         }
     }
 

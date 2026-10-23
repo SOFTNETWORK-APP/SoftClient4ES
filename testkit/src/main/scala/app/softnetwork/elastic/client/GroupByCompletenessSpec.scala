@@ -4277,6 +4277,12 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         "SELECT UPPER(s) AS k, COUNT(*) AS c FROM VENUE GROUP BY UPPER(s) " +
         "HAVING UPPER(s) = 'AXB' AND UPPER(s) IN ('A', 'B') OR UPPER(s) LIKE 'A%'",
         rows("A" -> 2, "A.B" -> 1, "AXB" -> 1)
+      ),
+      // a ROUND to decimal places is the DOUBLE DuckDB computes, printed as one (DuckDB: (2.5, 1))
+      (
+        "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM VENUE GROUP BY ROUND(x, 1) " +
+        "HAVING ROUND(x, 1) = 2.5",
+        rows("2.5" -> 1)
       )
     )
     // a key IS NOT NULL alone keeps every group on a level of any kind (a date here): it sends
@@ -4321,13 +4327,6 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         "SELECT ABS(CAST(x AS REAL)) AS k, COUNT(*) AS c FROM VENUE " +
         "GROUP BY ABS(CAST(x AS REAL)) HAVING ABS(CAST(x AS REAL)) = 0.1",
         "HAVING cannot filter the GROUP BY key ",
-        "which writes such a number as 1 or as 1.0 depending on the column's type."
-      ),
-      // the script rounds to a whole number (DuckDB: (2.5, 1)); refused as before
-      (
-        "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM VENUE GROUP BY ROUND(x, 1) " +
-        "HAVING ROUND(x, 1) = 2.5",
-        "HAVING cannot filter the GROUP BY key ROUND(x, 1)",
         "which writes such a number as 1 or as 1.0 depending on the column's type."
       ),
       // on a numeric field 5 and 5.0 are one key, which the lists keep AND remove (DuckDB: (5, 1))
