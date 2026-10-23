@@ -20,6 +20,10 @@ import app.softnetwork.elastic.sql.function.aggregate.{
   AggregateFunction,
   BucketScriptAggregation,
   COUNT,
+  MAX,
+  MIN,
+  MaxAgg,
+  MinAgg,
   WindowFunction
 }
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain, FunctionUtils}
@@ -205,7 +209,12 @@ case class SQLAggregation(
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,
-  bucketPath: String = ""
+  bucketPath: String = "",
+  /** The aggregate answers a date or a timestamp: a `MIN` / `MAX` of a temporal column. Its value
+    * is read from the `value_as_string` Elasticsearch formats it as, never from the epoch
+    * milliseconds of `value`.
+    */
+  temporal: Boolean = false
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val multivalued: Boolean = aggType.multivalued
@@ -306,7 +315,12 @@ object SQLAggregation {
         aggType = aggType,
         direction = direction,
         nestedElement = identifier.nestedElement,
-        bucketPath = bucketPath
+        bucketPath = bucketPath,
+        temporal = aggType match {
+          case MIN | MAX | _: MinAgg | _: MaxAgg =>
+            AggregateFunction.outputTypeOf(identifier).exists(_.isTemporal)
+          case _ => false
+        }
       )
     )
   }

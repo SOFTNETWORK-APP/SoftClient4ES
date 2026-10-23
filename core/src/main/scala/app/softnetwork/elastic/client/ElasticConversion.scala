@@ -1289,6 +1289,16 @@ trait ElasticConversion {
     }
   }
 
+  /** The value of a `MIN` / `MAX` of a date or a timestamp: the `value_as_string` Elasticsearch
+    * formats, read as a temporal exactly as a date bucket key is; a format no ISO reader takes (a
+    * custom date format of the mapping) is read from the epoch milliseconds, at UTC.
+    */
+  private def temporalValueOf(value: JsonNode, metricValue: JsonNode): Any =
+    Option(value.get("value_as_string"))
+      .filter(_.isTextual)
+      .flatMap(text => tryParseAsDateTime(text.asText()))
+      .getOrElse(Instant.ofEpochMilli(metricValue.asDouble().toLong).atZone(ZoneId.of("UTC")))
+
   /** Extract metrics from an aggregation node
     */
   /** @param docCount
@@ -1340,7 +1350,9 @@ trait ElasticConversion {
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
             .map { metricValue =>
-              val numericValue = if (metricValue.isIntegralNumber) {
+              val numericValue = if (aggregations.get(name).exists(_.temporal)) {
+                temporalValueOf(value, metricValue)
+              } else if (metricValue.isIntegralNumber) {
                 metricValue.asLong()
               } else if (metricValue.isFloatingPointNumber) {
                 metricValue.asDouble()

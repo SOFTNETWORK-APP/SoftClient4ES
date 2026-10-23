@@ -465,7 +465,10 @@ package object client extends SerializationApi {
     // aggregation, the delegates name the shared response node here (the owner
     // column's aggName). extractMetrics reads `values[aggResultField]` from that
     // node for the delegate column. None ⇒ this column reads its own node.
-    sourceAgg: Option[String] = None
+    sourceAgg: Option[String] = None,
+    // A `MIN` / `MAX` that answers a date or a timestamp (`SQLAggregation.temporal`): its value is
+    // the `value_as_string` Elasticsearch formats, and a group with no value answers NULL.
+    temporal: Boolean = false
   ) {
     def multivalued: Boolean =
       aggType == AggregationType.ArrayAgg ||
@@ -569,7 +572,8 @@ package object client extends SerializationApi {
       agg.bucketPath,
       agg.bucketRoot,
       agg.auxiliary,
-      aggResultField
+      aggResultField,
+      temporal = agg.temporal
     )
   }
 
