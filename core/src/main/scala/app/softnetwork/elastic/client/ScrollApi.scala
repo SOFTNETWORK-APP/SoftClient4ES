@@ -327,6 +327,8 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           return scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
+        // the columns `single` declares VARCHAR are read as their text (`TextColumns`)
+        val textContext: ConversionContext = TextColumns.of(single, context)
         val elasticQuery =
           ElasticQuery(
             single,
@@ -348,7 +350,7 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           single.sorts.nonEmpty,
           requestedFields,
           UnnestScope.rowExplosion(single)
-        )
+        )(system, textContext)
         // The rows of a GROUP BY of several levels, in the order and to the count the statement
         // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
         // response, so collecting them holds nothing the response did not already.

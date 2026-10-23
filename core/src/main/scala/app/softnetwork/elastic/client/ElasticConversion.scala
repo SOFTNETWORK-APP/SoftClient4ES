@@ -628,8 +628,19 @@ trait ElasticConversion {
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     // One decision per parse — the per-row hot path does no `_id` work when it is not kept
     val withDocumentId = retainDocumentId || keepsDocumentId(requestedFields)
+    // ...and none for the columns declared VARCHAR unless the statement declares some
+    val text: Set[String] = context match {
+      case TextColumns(columns) => columns
+      case _                    => Set.empty
+    }
     hits.map { hit =>
-      var source = extractSource(hit, fieldAliases)
+      var source =
+        if (text.isEmpty) extractSource(hit, fieldAliases)
+        else
+          Option(hit.get("_source"))
+            .filter(_.isObject)
+            .map(jsonNodeToMap(_, fieldAliases, text))
+            .getOrElse(ListMap.empty)
       fieldAliases.foreach(entry => {
         if (!source.contains(entry._2)) {
           findKeyValue(entry._1, source) match {
@@ -644,7 +655,7 @@ trait ElasticConversion {
       val fieldsNode = Option(hit.path("fields"))
         .filter(!_.isMissingNode)
       val fields = fieldsNode
-        .map(jsonNodeToMap(_, fieldAliases))
+        .map(n => if (text.isEmpty) jsonNodeToMap(n, fieldAliases) else jsonNodeToMap(n, fieldAliases, text))
         .getOrElse(ListMap.empty)
       source ++ metadata ++ innerHits ++ fields
     }
@@ -1746,6 +1757,36 @@ trait ElasticConversion {
         ListMap.empty
     }
   }
+
+  /** [[jsonNodeToMap]], with the top-level entries named in `text` -- the columns a statement
+    * declares VARCHAR ([[TextColumns]]) -- read as their text, never re-read as a temporal.
+    */
+  private[client] def jsonNodeToMap(
+    node: JsonNode,
+    fieldAliases: ListMap[String, String],
+    text: Set[String]
+  ): ListMap[String, Any] =
+    node match {
+      case n: ObjectNode =>
+        var entries: Seq[(String, Any)] = Seq.empty
+        n.forEachEntry { (name, e) =>
+          val column = fieldAliases.getOrElse(name, name)
+          val value =
+            if (text.contains(column) || text.contains(name)) jsonNodeToText(e, fieldAliases)
+            else jsonNodeToAny(e, fieldAliases)
+          entries ++= Seq(column -> value)
+        }
+        ListMap(entries: _*)
+      case _ =>
+        ListMap.empty
+    }
+
+  /** [[jsonNodeToAny]] with no temporal inference: a text is its own value. */
+  private def jsonNodeToText(node: JsonNode, fieldAliases: ListMap[String, String]): Any =
+    if (node != null && node.isTextual) node.asText()
+    else if (node != null && node.isArray)
+      node.elements().asScala.map(jsonNodeToText(_, fieldAliases)).toList
+    else jsonNodeToAny(node, fieldAliases)
 
   /** Convert a JsonNode to Any (primitive types, List, Map)
     */

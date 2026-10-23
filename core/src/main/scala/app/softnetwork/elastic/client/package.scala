@@ -18,7 +18,8 @@ package app.softnetwork.elastic
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.query.SQLAggregation
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.renderedTypeOf
 import com.typesafe.scalalogging.LazyLogging
 import org.slf4j.Logger
 
@@ -590,4 +591,33 @@ package object client extends SerializationApi {
     * nested (`{"obj": {"a": 1}}`; the row's null `obj.a` cell is not written).
     */
   private[client] case object DocumentContext extends ConversionContext
+
+  /** The rows of a statement read natively (as [[NativeContext]]), except that the columns it
+    * declares VARCHAR -- by their output name, and by the column they read -- are never re-read as
+    * a temporal: their text is their value.
+    *
+    * 🔴 A text that looks like a date or a time was parsed into a `java.time` value whatever the
+    * column was declared, so `DATETIME_FORMAT(ts, '%H:%i:%s')`, whose script returns `"00:00:00"`,
+    * answered `LocalTime` `00:00`: another class than the VARCHAR it reports, and another text.
+    * Built once per statement by [[TextColumns.of]], only around a [[NativeContext]].
+    */
+  private[client] final case class TextColumns(columns: Set[String]) extends ConversionContext
+
+  private[client] object TextColumns {
+
+    /** `context` for the rows of `single`: [[TextColumns]] when it is native and `single` declares
+      * a VARCHAR column, `context` itself otherwise.
+      */
+    def of(single: SingleSearch, context: ConversionContext): ConversionContext =
+      context match {
+        case NativeContext =>
+          val columns = single.select.fieldsWithComputedAliases.flatMap { field =>
+            if (renderedTypeOf(field.identifier).isText)
+              Seq(field.outputName, field.identifier.name).filter(_.nonEmpty)
+            else Nil
+          }.toSet
+          if (columns.isEmpty) context else TextColumns(columns)
+        case other => other
+      }
+  }
 }

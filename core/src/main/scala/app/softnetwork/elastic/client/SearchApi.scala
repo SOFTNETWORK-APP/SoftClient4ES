@@ -2428,7 +2428,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          ).map(inGroupedRowOrder(single, _))
+          )(TextColumns.of(single, context)).map(inGroupedRowOrder(single, _))
     }
   }
 
@@ -2466,7 +2466,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          ).map(_.map(inGroupedRowOrder(single, _)))
+          )(ec, TextColumns.of(single, context)).map(_.map(inGroupedRowOrder(single, _)))
     }
   }
 
