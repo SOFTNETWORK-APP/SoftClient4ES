@@ -510,7 +510,7 @@ case class Bucket(
     * script's value prints and the level orders those texts. MEASURED on Elasticsearch 8.18.3:
     * `GROUP BY n + 0 ORDER BY kk DESC` answered `'900', '7', ..., '0', '-900', '-4'`, where the
     * field key `GROUP BY n` answers the numbers in numeric order. With it, Elasticsearch builds a
-    * numeric `terms` (every major takes the parameter with a script), so the keys come back as
+    * numeric `terms` (MEASURED with a script on 8.18.3 and 6.8.23), so the keys come back as
     * numbers and sort as numbers.
     *
     * Read by both bridges, which send it only on a level that carries no key filter: a HAVING key
