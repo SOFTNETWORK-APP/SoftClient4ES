@@ -370,4 +370,28 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       "p7" -> Some(BigDecimal(3))
     )
   }
+
+  // -- predicates: a fractional number against an INTEGER key in HAVING --------------------------
+
+  /** The groups of `n` a HAVING keeps, as the decimals their keys denote. */
+  private def nGroups(having: String): Set[BigDecimal] =
+    columnOf(s"SELECT n, COUNT(*) AS c FROM $index GROUP BY n HAVING $having", "n")
+      .flatMap(v => if (v == "null") None else Some(BigDecimal(v)))
+      .toSet
+
+  /** No integer is equal to 1.5: `n = 1.5` keeps no group and `n <> 1.5` every one (DuckDB 1.5.5,
+    * v0.23.0). It was refused ("no integer is equal to it"); sent as it is, Elasticsearch compares
+    * the key with the floor, 1, which the fixture holds.
+    */
+  "HAVING on an integer key compared with a fractional number" should "answer DuckDB's groups" in {
+    val every = Set(0, 1, 3, 7, 10).map(BigDecimal(_))
+    nGroups("n = 1.5") shouldBe Set.empty
+    nGroups("n <> 1.5") shouldBe every
+    nGroups("n IN (1.5, 2.5)") shouldBe Set.empty
+    nGroups("n NOT IN (1.5)") shouldBe every
+    nGroups("n = 1.5 OR n = 3") shouldBe Set(BigDecimal(3))
+    nGroups("n = 1.5 AND COUNT(*) > 0") shouldBe Set.empty
+    // control: a whole number
+    nGroups("n = 1") shouldBe Set(BigDecimal(1))
+  }
 }

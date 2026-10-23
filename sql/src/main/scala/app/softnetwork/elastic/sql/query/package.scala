@@ -997,7 +997,7 @@ package object query {
         )
         where   <- Option(select.copy(where = where.map(_.update(select))))
         updated <- Option(where.copy(orderBy = orderBy.map(_.update(where))))
-      } yield updated).getOrElse(
+      } yield updated.withFractionalIntegerKeysFolded).getOrElse(
         throw new IllegalStateException("Failed to update SQLSearchRequest")
       )
     }
@@ -2426,6 +2426,123 @@ package object query {
           }
           .headOption
       }
+
+    /** This statement with every HAVING key filter that compares an INTEGER grouping key with a
+      * number that has a fractional part answered as SQL answers it: no integer is equal to such a
+      * number, as DuckDB 1.5.5 and v0.23.0 answer. `k = 1.5` and `k IN (1.5, 2.5)` are FALSE for
+      * every group, `k <> 1.5` and `k NOT IN (1.5)` TRUE; a list holding whole numbers too keeps
+      * them alone. Each constant is folded into the tree around it, so a HAVING that is FALSE keeps
+      * no group -- the statement filters no document in (`MatchNoneCriteria` in its WHERE) -- and
+      * one that is TRUE keeps every group.
+      *
+      * Elasticsearch reads such a value on an integer field as its floor
+      * ([[fractionalIntegerKeyComparison]]), so sent as it is it answered the group 1 for `k =
+      * 1.5`. Comparisons the terms filter cannot express (`k < 1.5`) are refused as they were; a
+      * leaf in a relation, or one the fold cannot place, keeps the refusal. It needs the MAPPING,
+      * read once the schema is attached ([[update]]): without one every column is `Any`, and
+      * nothing folds. Idempotent: a folded statement holds no such leaf.
+      */
+    private[query] def withFractionalIntegerKeysFolded: SingleSearch =
+      if (groupBy.isEmpty) this
+      else
+        having.flatMap(_.criteria) match {
+          case Some(criteria) =>
+            foldFractionalIntegerKeys(criteria) match {
+              case Right(same) if same eq criteria => this
+              case Right(folded) => this.copy(having = having.map(_.copy(criteria = Some(folded))))
+              case Left(true)    => this.copy(having = None)
+              case Left(false) =>
+                val none: Criteria = MatchNoneCriteria()
+                this.copy(
+                  having = None,
+                  where = Some(
+                    Where(Some(where.flatMap(_.criteria).fold(none)(Predicate(_, AND, none))))
+                  )
+                )
+            }
+          case None => this
+        }
+
+    /** [[withFractionalIntegerKeysFolded]]'s fold of one criteria tree: a constant, or the tree. */
+    private[query] def foldFractionalIntegerKeys(c: Criteria): Either[Boolean, Criteria] =
+      c match {
+        case p @ Predicate(left, op, right, not, _) =>
+          val l = foldFractionalIntegerKeys(left)
+          // the predicate's NOT binds its RIGHT operand
+          val r = foldFractionalIntegerKeys(right) match {
+            case Left(b) if not.isDefined => Left(!b)
+            case other                    => other
+          }
+          (op, l, r) match {
+            case (AND, Left(false), _) | (AND, _, Left(false)) => Left(false)
+            case (OR, Left(true), _) | (OR, _, Left(true))     => Left(true)
+            case (_, Left(_), Left(b))                         => Left(b)
+            case (_, Left(_), Right(rc)) =>
+              if (not.isEmpty) Right(rc) else rc.negated.map(Right(_)).getOrElse(Right(p))
+            case (_, Right(lc), Left(_)) => Right(lc)
+            case (_, Right(lc), Right(rc)) =>
+              if ((lc eq left) && (rc eq right)) Right(p)
+              else Right(p.copy(leftCriteria = lc, rightCriteria = rc))
+          }
+        case e: Expression => fractionalIntegerKeyLeaf(e).getOrElse(Right(e))
+        case other         => Right(other)
+      }
+
+    /** A HAVING leaf comparing a bare INTEGER grouping key with numbers that have a fractional
+      * part, as SQL answers it: FALSE where it keeps them (`=`, `IN`), TRUE where it removes them
+      * (`<>`, `NOT IN`), or the IN list of its whole numbers alone. `None` for any other leaf, and
+      * for one the fold does not rebuild (it keeps the refusal). The values are the ones the key
+      * filter SENDS, read as [[fractionalIntegerKeyComparison]] reads them.
+      */
+    private[query] def fractionalIntegerKeyLeaf(e: Expression): Option[Either[Boolean, Criteria]] =
+      keyBucketOf(e.identifier)
+        .filter(b =>
+          !e.nested && e.identifier.functions.isEmpty && b.identifier.functions.isEmpty &&
+          NumericReducer.wholeNumber(b.identifier.out)
+        )
+        .flatMap { b =>
+          val empty = BucketIncludesExcludes()
+          val kept = e.includes(b, not = false, empty).values
+          val removed = e.excludes(b, not = false, empty).values
+          def fractional(v: Any): Boolean =
+            SingleSearch.fractionalReading(String.valueOf(v)).isDefined
+          val values = kept ++ removed
+          if (!values.exists(fractional)) None
+          else if (values.forall(fractional)) Some(Left(removed.nonEmpty))
+          else
+            e match {
+              case in: InExpr[_, _] =>
+                val whole: Option[Criteria] = in.values match {
+                  case DoubleValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        DoubleValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case FloatValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        FloatValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case StringValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        StringValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case _ => None
+                }
+                whole.map(Right(_))
+              case _ => None
+            }
+        }
 
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
