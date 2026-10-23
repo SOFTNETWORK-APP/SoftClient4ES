@@ -394,4 +394,29 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     // control: a whole number
     nGroups("n = 1") shouldBe Set(BigDecimal(1))
   }
+
+  // -- predicates: a float key in HAVING -----------------------------------------------------------
+
+  /** Elasticsearch prints a `float` key as the float widened to a double, so `HAVING r = 0.1` kept
+    * no group with HTTP 200, where DuckDB keeps the group 0.1: refused by name now. A value a float
+    * holds exactly is answered, as DuckDB answers it.
+    */
+  "HAVING on a float key" should "refuse a value a float does not hold, and answer one it holds" in {
+    Seq(
+      s"SELECT r, COUNT(*) AS c FROM $index GROUP BY r HAVING r = 0.1",
+      s"SELECT r, COUNT(*) AS c FROM $index GROUP BY r HAVING r <> 0.1"
+    ).foreach { sql =>
+      withClue(sql) {
+        failureOf(sql).left.toOption.getOrElse("") should include(
+          "HAVING cannot compare the float GROUP BY key r with 0.1"
+        )
+      }
+    }
+    def keys(having: String): Set[BigDecimal] =
+      columnOf(s"SELECT r, COUNT(*) AS c FROM $index GROUP BY r HAVING $having", "r")
+        .map(BigDecimal(_))
+        .toSet
+    keys("r = 0.5") shouldBe Set(BigDecimal("0.5"))
+    keys("r IN (0.25, 0.5)") shouldBe Set(BigDecimal("0.25"), BigDecimal("0.5"))
+  }
 }

@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLReal, SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.operator.{
   AND,
   DIFF,
@@ -2427,6 +2427,50 @@ package object query {
           .headOption
       }
 
+    /** The first HAVING key filter comparing a `float` (REAL) grouping key with a number a float
+      * does not hold exactly, as the reason it is refused -- or `None`.
+      *
+      * Elasticsearch prints a `float` key as the float WIDENED to a double (`0.10000000149011612`)
+      * and reads an include / exclude value with `Double.parseDouble`, so `HAVING r = 0.1` keeps no
+      * group and `r <> 0.1` removes none, HTTP 200, where DuckDB 1.5.5 casts `0.1` to the key's
+      * FLOAT and keeps the group 0.1 (measured). A value a float holds exactly (`0.5`, `0.25`, `3`)
+      * is compared exactly, and passes. The values judged are the ones the key filter SENDS, read
+      * as Elasticsearch reads them; a value that spells no number is left to Elasticsearch. Asked
+      * of a bare FIELD key, once the mapping types it: a computed REAL key is judged by the
+      * nameless-key gate.
+      *
+      * A `half_float` key is not judged here: the mapping gives such a column no SQL type, so it
+      * cannot be told from a `scaled_float` key, whose filter compares exactly.
+      */
+    private[query] def inexactFloatKeyComparison: Option[String] =
+      if (groupBy.isEmpty) None
+      else {
+        val empty = BucketIncludesExcludes()
+        havingLeaves.view.flatMap { e =>
+          keyBucketOf(e.identifier)
+            .filter(b =>
+              e.identifier.functions.isEmpty && b.identifier.functions.isEmpty &&
+              b.identifier.out.isInstanceOf[SQLReal]
+            )
+            .flatMap { b =>
+              (e.includes(b, not = false, empty).values ++ e.excludes(b, not = false, empty).values)
+                .flatMap(v =>
+                  Try(java.lang.Double.parseDouble(v.trim)).toOption
+                    .filter(d => d.toFloat.toDouble != d)
+                    .map(d => v -> d.toFloat.toDouble)
+                )
+                .headOption
+            }
+            .map { case (value, widened) =>
+              s"HAVING cannot compare the float GROUP BY key ${e.identifier.sql} with $value: " +
+                "Elasticsearch compares the key as the double its float widens to " +
+                s"($widened for the float nearest $value), so the condition would not compare " +
+                "the value SQL compares. Filter the rows in WHERE, where Elasticsearch reads the " +
+                "value as a float, or compare the key with a value a float holds exactly."
+            }
+        }.headOption
+      }
+
     /** This statement with every HAVING key filter that compares an INTEGER grouping key with a
       * number that has a fractional part answered as SQL answers it: no integer is equal to such a
       * number, as DuckDB 1.5.5 and v0.23.0 answer. `k = 1.5` and `k IN (1.5, 2.5)` are FALSE for
@@ -2773,6 +2817,8 @@ package object query {
           // level of another kind is judged as before, and a key-filter value names a NUMBER on a
           // numeric field level (`Bucket.keyOf`).
           .orElse(keyKindRefusal)
+          // a key filter the rules above accept, on a float key, with a value no float equals
+          .orElse(inexactFloatKeyComparison)
           .map(Left(_))
           .getOrElse(Right(()))
       }
