@@ -545,16 +545,16 @@ class IdentifierEqualitySpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  /** CHARACTERIZATION, not a feature pin: `DISTINCT` now reaches the render, which this parser
-    * accepts and reads back to the same statement. It means nothing downstream -- the Elasticsearch
-    * `percentiles` emission ignores `DISTINCT` (before and after), and DuckDB rejects `WITHIN GROUP
-    * (ORDER BY DISTINCT x)` where it used to ignore the dropped `DISTINCT`, so a relational engine
-    * fed this render fails loudly on it. Pinned so that change is seen.
+  /** The Elasticsearch `percentiles` emission ignores `DISTINCT`, so a percentile written with it
+    * is refused by name (`UnanswerableAggregate.droppedDistinct`), its rendering naming the
+    * `DISTINCT` it carries -- where it was answered as the percentile of every value.
     */
-  it should "carry DISTINCT into the render (CHARACTERIZATION)" in {
-    val r1 = single("SELECT PERCENTILE_CONT(DISTINCT x, 0.5) AS p FROM t")
-    r1.sql shouldBe "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY DISTINCT x) AS p FROM t"
-    Parser(r1.sql) shouldBe Right(r1)
+  it should "refuse DISTINCT by name, naming it in the rendering" in {
+    Parser("SELECT PERCENTILE_CONT(DISTINCT x, 0.5) AS p FROM t").swap.map(_.msg) match {
+      case Right(reason) =>
+        reason should startWith("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY DISTINCT x) is not")
+      case Left(answered) => fail(s"answered $answered")
+    }
   }
 
   it should "leave an unqualified, unquoted percentile rendering exactly as before" in {

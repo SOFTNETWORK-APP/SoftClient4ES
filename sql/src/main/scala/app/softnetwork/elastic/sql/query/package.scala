@@ -3430,6 +3430,9 @@ package object query {
               case None => Right(())
             }
         }
+        // An aggregate whose DISTINCT Elasticsearch would drop (`AVG(DISTINCT x)`): it was
+        // computed over every value on every release. Refused by name, wherever it is written.
+        _ <- UnanswerableAggregate.droppedDistinct(this).map(Left(_)).getOrElse(Right(()))
       } yield ()
     }
 

@@ -61,6 +61,10 @@ COUNT(*) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 - `COUNT(*)` includes rows with NULL values
 - `COUNT(expr)` excludes NULL values
 - `COUNT(DISTINCT expr)` excludes NULL values
+- `DISTINCT` is read by `COUNT` (and `ARRAY_AGG`) only. `MIN` and `MAX` answer the same with or
+  without it. Every other aggregate written with `DISTINCT` — `SUM`, `AVG`, the `STDDEV` /
+  `VARIANCE` family, `PERCENTILE_CONT` / `PERCENTILE_DISC`, plain or over a window — is refused by
+  name, since Elasticsearch would compute it over every value.
 
 **Examples:**
 
@@ -198,13 +202,13 @@ Sum of values.
 **Syntax:**
 ```sql
 SUM(expr)
-SUM(DISTINCT expr)
 SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
 - `expr` - Numeric expression (`INT`, `DOUBLE`, `DECIMAL`, etc.)
-- `DISTINCT expr` - Sum of distinct values only
+- ⚠️ `SUM(DISTINCT expr)` is **refused**: Elasticsearch sums every value, so the `DISTINCT` would be
+  ignored.
 
 **Output:**
 - `NUMERIC` - Sum of values (same type as input, or promoted)
@@ -253,15 +257,6 @@ SELECT
 FROM orders
 GROUP BY DATE_TRUNC('month', order_date)
 ORDER BY month;
-```
-
-**SUM DISTINCT:**
-```sql
--- Sum of distinct salaries (removes duplicates)
-SELECT SUM(DISTINCT salary) AS sum_distinct_salaries FROM emp;
-
--- Sum of unique prices
-SELECT SUM(DISTINCT price) AS sum_unique_prices FROM products;
 ```
 
 **SUM with Calculations:**
@@ -346,13 +341,13 @@ Average of values.
 **Syntax:**
 ```sql
 AVG(expr)
-AVG(DISTINCT expr)
 AVG(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
 - `expr` - Numeric expression
-- `DISTINCT expr` - Average of distinct values only
+- ⚠️ `AVG(DISTINCT expr)` is **refused**: Elasticsearch averages every value, so the `DISTINCT`
+  would be ignored.
 
 **Output:**
 - `DOUBLE` - Average value
@@ -402,19 +397,6 @@ SELECT
 FROM orders
 GROUP BY DATE_TRUNC('day', order_date)
 ORDER BY day;
-```
-
-**AVG DISTINCT:**
-```sql
--- Average of distinct salaries
-SELECT AVG(DISTINCT salary) AS avg_distinct_salary FROM emp;
-
--- Average of unique prices
-SELECT 
-  category,
-  AVG(DISTINCT price) AS avg_unique_price
-FROM products
-GROUP BY category;
 ```
 
 **AVG with Rounding:**

@@ -4,7 +4,6 @@
   "shortDescription": "Calculate the sum of values",
   "syntax": [
     "SUM(column)",
-    "SUM(DISTINCT column)",
     "SUM(column) OVER (PARTITION BY partition_expr, ...)"
   ],
   "description": "Aggregate function that calculates the sum of numeric values.",
@@ -28,16 +27,12 @@
       "title": "Sum by group",
       "description": "Total per category",
       "sql": "SELECT category, SUM(price) as total_price\nFROM products\nGROUP BY category"
-    },
-    {
-      "title": "Sum distinct",
-      "description": "Sum unique values only",
-      "sql": "SELECT SUM(DISTINCT quantity) FROM order_items"
     }
   ],
   "notes": [
     "NULL values are ignored",
-    "Returns NULL if all values are NULL"
+    "Returns NULL if all values are NULL",
+    "SUM(DISTINCT column) is refused: Elasticsearch sums every value, so DISTINCT would be ignored"
   ],
   "seeAlso": ["COUNT", "AVG", "MIN", "MAX"],
   "aliases": []

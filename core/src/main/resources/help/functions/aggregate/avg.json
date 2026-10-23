@@ -4,7 +4,6 @@
   "shortDescription": "Calculate the average of values",
   "syntax": [
     "AVG(column)",
-    "AVG(DISTINCT column)",
     "AVG(column) OVER (PARTITION BY partition_expr, ...)"
   ],
   "description": "Aggregate function that calculates the arithmetic mean of numeric values.",
@@ -32,7 +31,8 @@
   ],
   "notes": [
     "NULL values are ignored in calculation",
-    "Returns NULL if all values are NULL"
+    "Returns NULL if all values are NULL",
+    "AVG(DISTINCT column) is refused: Elasticsearch averages every value, so DISTINCT would be ignored"
   ],
   "seeAlso": ["SUM", "COUNT", "MIN", "MAX"],
   "aliases": []
