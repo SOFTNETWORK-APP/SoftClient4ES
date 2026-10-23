@@ -39,6 +39,12 @@ import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
 import scala.util.{DynamicVariable, Try}
 import scala.util.matching.Regex
+import app.softnetwork.elastic.sql.function.{
+  Function,
+  FunctionChain,
+  FunctionN,
+  FunctionWithIdentifier
+}
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
   renderedTypeOf,
@@ -964,7 +970,7 @@ object MetricSelectorScript {
     * this module cannot see the client one -- the core suite asserts that the two agree for every
     * aggregation type.
     */
-  private def nullOverEmptyInput(metric: Identifier): Boolean =
+  private[query] def nullOverEmptyInput(metric: Identifier): Boolean =
     metric.aggregateFunction match {
       case Some(af) => nullOverEmptyInput(af)
       // `Identifier.bucketMetrics`' second arm: the alias of a SELECT `bucket_script` item,
@@ -973,7 +979,7 @@ object MetricSelectorScript {
     }
 
   /** Deliberately a total match, with no default arm: a new aggregate must be classified here. */
-  private def nullOverEmptyInput(af: AggregateFunction): Boolean = af match {
+  private[query] def nullOverEmptyInput(af: AggregateFunction): Boolean = af match {
     // 0 and 0.0 over no value (#336), never NULL
     case COUNT | SUM | _: CountAgg | _: SumAgg => false
     // multi-valued: no comparison reads them
@@ -1576,5 +1582,67 @@ object UnanswerableAggregate {
         "COUNT(DISTINCT ...) counts distinct values (MIN and MAX answer the same with or without " +
         "DISTINCT). Remove DISTINCT, or compute the aggregate over the distinct values outside " +
         "the query."
+      }
+
+  /** The `GREATEST` / `LEAST` calls of `f`, at any depth. */
+  private def reducersIn(f: Function, depth: Int = 0): Seq[NumericReducer] =
+    if (depth > 32) Nil
+    else
+      f match {
+        case r: NumericReducer =>
+          r +: r.values.collect { case g: Function => g }.flatMap(reducersIn(_, depth + 1))
+        case id: Identifier => id.functions.flatMap(reducersIn(_, depth + 1))
+        case fn: FunctionN[_, _] =>
+          fn.args.collect { case g: Function => g }.flatMap(reducersIn(_, depth + 1))
+        case fc: FunctionChain           => fc.functions.flatMap(reducersIn(_, depth + 1))
+        case fwi: FunctionWithIdentifier => reducersIn(fwi.identifier, depth + 1)
+        case _                           => Nil
+      }
+
+  /** The first aggregate an argument of `reducer` reads that is NULL in a group with no value of
+    * its column (`MetricSelectorScript.nullOverEmptyInput`: MIN, MAX, AVG, the STDDEV / VARIANCE
+    * family, the percentiles). A COUNT or a SUM is never NULL there (0 and 0.0 over no value).
+    */
+  private def nullableArgument(reducer: NumericReducer): Option[Identifier] =
+    reducer.values.iterator
+      .collect { case g: Function => g }
+      .flatMap(g => FunctionUtils.funIdentifiers(g))
+      .find(_.aggregateFunction.exists {
+        // an aggregate over a window is computed apart, never by the group's calculation; an
+        // argument `MAX(n)` parses as a window function with no window (`MaxAgg`), and is one of
+        // the group's aggregates
+        case w: WindowFunction if w.isWindowing => false
+        case af                                 => MetricSelectorScript.nullOverEmptyInput(af)
+      })
+
+  /** `GREATEST` / `LEAST` over an aggregate that can be NULL, in a calculation over aggregates of
+    * the SELECT -- computed per group, or in the one whole-table group, by a `bucket_script`.
+    *
+    * Elasticsearch skips the calculation of a group where one of its operands has no value (its
+    * gap policy, `keep_values` included -- MEASURED on 8.18.3), so the group answered NULL, while
+    * GREATEST and LEAST skip a NULL argument: `GREATEST(MAX(n), 2)` is 2 in DuckDB 1.5.5 where `n`
+    * has no value. Every other calculation is NULL when one of its operands is, as SQL is, and
+    * stays answered; so does GREATEST over aggregates that cannot be NULL (a COUNT, a SUM), and in
+    * a HAVING, which reads each aggregate as SELECT does and skips a NULL one.
+    */
+  def nullSkippingOverNullable(request: SingleSearch): Option[String] =
+    request.select.fields.iterator
+      .filter(_.isBucketScript)
+      .flatMap { field =>
+        reducersIn(field.identifier).iterator.flatMap(r =>
+          nullableArgument(r).map(metric => (field, r, metric))
+        )
+      }
+      .toSeq
+      .headOption
+      .map { case (field, reducer, metric) =>
+        val name = reducer.operator.sql
+        val wins = if (name == "GREATEST") "largest" else "smallest"
+        s"$name over ${metric.sql} is not supported in a calculation over aggregates " +
+        s"(${field.identifier.sql}): ${metric.sql} is NULL in a group with no value of its " +
+        "column, and Elasticsearch then skips the calculation, so the group would answer NULL " +
+        s"where SQL answers the $wins of the other arguments. Select the aggregate on its own and " +
+        s"apply $name to the result outside the query; in a HAVING, $name over aggregates is " +
+        "answered."
       }
 }
