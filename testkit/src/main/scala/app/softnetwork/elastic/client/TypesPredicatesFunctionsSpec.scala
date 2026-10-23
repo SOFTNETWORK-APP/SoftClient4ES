@@ -77,6 +77,9 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   private val allIds: Set[String] = (1 to 7).map(i => s"p$i").toSet
 
+  /** A second index, whose first parent holds five elements `s1` (and one `s2`). */
+  private val elementsIndex = "types_predicates_functions_elements"
+
   override def beforeAll(): Unit = {
     super.beforeAll()
     val mapping =
@@ -118,9 +121,40 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     }
 
     client.refresh(index)
+
+    // a parent holding more matching elements than an `inner_hits` returns by default (3)
+    client
+      .createIndex(elementsIndex, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client
+      .setMapping(
+        elementsIndex,
+        """{"properties": {"id": {"type": "keyword"}, "items": {"type": "nested", "properties": {
+          | "sku": {"type": "keyword"}, "qty": {"type": "integer"}}}}}""".stripMargin
+      )
+      .get shouldBe true
+    locally {
+      // the same name, so it shadows the statement's options rather than competing with them
+      implicit val bulkOptions: BulkOptions =
+        BulkOptions(defaultIndex = elementsIndex, logEvery = 10)
+      client.bulk[String](
+        List(
+          """{"id":"e1","items":[{"sku":"s1","qty":1},{"sku":"s1","qty":2},{"sku":"s1","qty":3},{"sku":"s1","qty":4},{"sku":"s1","qty":5},{"sku":"s2","qty":6}]}""",
+          """{"id":"e2","items":[{"sku":"s1","qty":7},{"sku":"s3","qty":8}]}"""
+        ),
+        identity,
+        idKey = Some(Set("id"))
+      ) match {
+        case ElasticSuccess(_) => // ok
+        case ElasticFailure(error) =>
+          fail(s"Bulk indexing into $elementsIndex failed: ${error.message}")
+      }
+    }
+    client.refresh(elementsIndex)
   }
 
   override def afterAll(): Unit = {
+    client.deleteIndex(elementsIndex)
     client.deleteIndex(index)
     system.terminate()
     super.afterAll()
@@ -465,5 +499,26 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     rowsOf(s"SELECT t.id FROM $index AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'")
       .map(r => scalar(r.getOrElse("id", null)))
       .toSet shouldBe Set("p1", "p3")
+  }
+
+  // -- UNNEST: a WHERE over an element, without LIMIT ----------------------------------------------
+
+  /** `… JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'`, no column of `i` projected, answers one row
+    * per matching element (DuckDB: six rows, five of `e1` and one of `e2`). The element's
+    * `inner_hits` asked for Elasticsearch's default size of 3, so `e1` answered three rows.
+    */
+  "A WHERE over an UNNEST element without LIMIT" should "answer every matching element" in {
+    def ids(where: String): Seq[String] =
+      columnOf(
+        s"SELECT t.id FROM $elementsIndex AS t JOIN UNNEST(t.items) AS i WHERE $where",
+        "id"
+      ).sorted
+    ids("i.sku = 's1'") shouldBe Seq.fill(5)("e1") :+ "e2"
+    ids("i.qty > 1") shouldBe Seq.fill(5)("e1") ++ Seq.fill(2)("e2")
+    // control: an element column projected, the same rows
+    columnOf(
+      s"SELECT t.id, i.qty AS q FROM $elementsIndex AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'",
+      "q"
+    ).sorted shouldBe Seq("1", "2", "3", "4", "5", "7")
   }
 }

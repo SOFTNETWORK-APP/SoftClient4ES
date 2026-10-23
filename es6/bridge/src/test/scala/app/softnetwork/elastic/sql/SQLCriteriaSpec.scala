@@ -455,7 +455,9 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
       |              }
       |            },
       |            "inner_hits": {
-      |              "name": "nested"
+      |              "name": "nested",
+      |              "from": 0,
+      |              "size": 100
       |            }
       |          }
       |        }
@@ -489,7 +491,9 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
       |              }
       |            },
       |            "inner_hits": {
-      |              "name": "nested"
+      |              "name": "nested",
+      |              "from": 0,
+      |              "size": 100
       |            }
       |          }
       |        }
@@ -850,7 +854,9 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
         |              }
         |            },
         |            "inner_hits": {
-        |              "name": "nested"
+        |              "name": "nested",
+        |              "from": 0,
+        |              "size": 100
         |            }
         |          }
         |        }
@@ -1088,7 +1094,9 @@ class SQLCriteriaSpec extends AnyFlatSpec with Matchers {
       |              }
       |            },
       |            "inner_hits": {
-      |              "name": "ciblage"
+      |              "name": "ciblage",
+      |              "from": 0,
+      |              "size": 100
       |            }
       |          }
       |        }

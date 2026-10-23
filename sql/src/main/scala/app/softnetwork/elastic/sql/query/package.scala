@@ -922,14 +922,26 @@ package object query {
       }
     }
 
-    /** The inner hits whose ELEMENTS become rows (the UNNEST row explosion): each UNNEST a
-      * non-aggregated SELECT column reads, and every UNNEST it is nested in — a parent's inner hits
-      * carry its children's, so a parent left at Elasticsearch's default would cap them too.
+    /** The inner hits whose ELEMENTS become rows (the UNNEST row explosion,
+      * `UnnestScope.rowExplosion`): each UNNEST a non-aggregated SELECT column reads, each UNNEST a
+      * row statement's WHERE filters per element, and every UNNEST either is nested in — a parent's
+      * inner hits carry its children's, so a parent left at Elasticsearch's default would cap them
+      * too.
+      *
+      * 🔴 The row explosion is the ONE answer to "which elements are rows", read by the reader and
+      * here. `… JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'`, no column of `i` projected, answers
+      * one row per matching element; its inner hits were left at Elasticsearch's default size of
+      * 3, so a parent with five matching elements answered three rows, HTTP 200.
       */
     private[this] lazy val rowSourceInnerHits: Set[String] = {
       def withAncestors(u: Unnest): Seq[String] =
         u.innerHitsName +: u.parent.toSeq.flatMap(withAncestors)
-      nestedFields.keys.toSeq.flatMap(k => unnests.get(k).toSeq.flatMap(withAncestors)).toSet
+      UnnestScope
+        .rowExplosion(this)
+        .keys
+        .toSeq
+        .flatMap(k => unnests.get(k).toSeq.flatMap(withAncestors))
+        .toSet
     }
 
     def toNestedElement(u: Unnest): NestedElement = {
@@ -938,10 +950,11 @@ package object query {
       NestedElement(
         path = updated.path,
         innerHitsName = updated.innerHitsName,
-        // The statement's LIMIT when it has one (unchanged). Without it, an UNNEST projection asks
-        // for `NestedElements.innerHitsSize` elements per parent (100, or the index's own lower
-        // `index.max_inner_result_window`) instead of inner_hits' own default of 3; a nested filter
-        // or aggregate whose elements are not rows keeps the default.
+        // The statement's LIMIT when it has one (unchanged). Without it, an UNNEST whose elements
+        // are rows ([[rowSourceInnerHits]]) asks for `NestedElements.innerHitsSize` elements per
+        // parent (100, or the index's own lower `index.max_inner_result_window`) instead of
+        // inner_hits' own default of 3; a nested filter or aggregate whose elements are not rows
+        // keeps the default.
         size = limit
           .map(_.limit)
           .orElse(
@@ -981,6 +994,25 @@ package object query {
         }
         .collectFirst { case found => found }
 
+    /** This statement with `original` resolved as its WHERE, against this statement ([[update]]).
+      *
+      * 🔴 An UNNEST element's `inner_hits` size depends on whether its elements are rows
+      * ([[rowSourceInnerHits]]), and a WHERE that filters an UNNEST per element makes them rows
+      * (`UnnestScope.rowExplosion`) — which only the RESOLVED WHERE shows, its columns carrying
+      * their element. Resolved against a statement whose WHERE is not resolved yet (the parse-time
+      * pass), the element kept Elasticsearch's default size of 3. So when resolving the WHERE
+      * makes more elements rows than before, it is resolved once more, against the statement that
+      * shows them. Only a statement with an UNNEST, a WHERE and no LIMIT asks.
+      */
+    private def withWhereResolved(original: Option[Where]): SingleSearch = {
+      val resolved = this.copy(where = original.map(_.update(this)))
+      if (
+        limit.isEmpty && original.isDefined && from.unnests.nonEmpty &&
+        UnnestScope.rowExplosion(resolved).keySet != UnnestScope.rowExplosion(this).keySet
+      ) this.copy(where = original.map(_.update(resolved)))
+      else resolved
+    }
+
     def update(schema: Option[Schema] = None): SingleSearch = {
       schema match {
         case Some(s) => return this.copy(schema = Some(s)).update()
@@ -995,7 +1027,7 @@ package object query {
             having = having.map(_.update(from))
           )
         )
-        where   <- Option(select.copy(where = where.map(_.update(select))))
+        where   <- Option(select.withWhereResolved(where))
         updated <- Option(where.copy(orderBy = orderBy.map(_.update(where))))
       } yield updated.withFractionalIntegerKeysFolded).getOrElse(
         throw new IllegalStateException("Failed to update SQLSearchRequest")

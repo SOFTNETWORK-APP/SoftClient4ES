@@ -29,11 +29,12 @@ import java.time.ZonedDateTime
 
 /** How many elements per parent an UNNEST asks Elasticsearch for: its `inner_hits` size.
   *
-  * Without a `LIMIT`, an UNNEST projection asks for `NestedElements.innerHitsSize`: 100
-  * (Elasticsearch's default `index.max_inner_result_window`), or the index's own setting when it is
-  * lower, read from the schema core attaches before rendering. Left unset, `inner_hits` returns 3,
-  * and a five-element parent answered three rows with HTTP 200. With a `LIMIT` the size is the
-  * LIMIT, as before; a nested FILTER or AGGREGATE, whose elements are not rows, keeps the default.
+  * Without a `LIMIT`, an UNNEST whose elements are rows -- a projection, or a row statement's WHERE
+  * over an element -- asks for `NestedElements.innerHitsSize`: 100 (Elasticsearch's default
+  * `index.max_inner_result_window`), or the index's own setting when it is lower, read from the
+  * schema core attaches before rendering. Left unset, `inner_hits` returns 3, and a five-element
+  * parent answered three rows with HTTP 200. With a `LIMIT` the size is the LIMIT, as before; an
+  * AGGREGATE, whose elements are not rows, keeps the default.
   *
   * The emission is pinned here; that Elasticsearch returns the elements is asserted at RUN level
   * (`UnnestInnerHitsSizeExecutionSpec`). Same cases as the bridge template's copy.
@@ -131,11 +132,36 @@ class UnnestInnerHitsSizeSpec extends AnyFlatSpec with Matchers {
     Map("item" -> Some(10))
   }
 
+  "A row statement's WHERE over an UNNEST element" should
+  "ask for 100 elements per parent, its matching elements being its rows" in {
+    // `SELECT t.id … WHERE item.price > 2` answers one row per matching element
+    // (`UnnestScope.rowExplosion`): it asked for Elasticsearch's default of 3
+    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2") shouldBe Map("item" -> Some(100))
+    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2", Some(schemaOf("t", None))) shouldBe
+    Map("item" -> Some(100))
+    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2", Some(schemaOf("t", Some(4)))) shouldBe
+    Map("item" -> Some(4))
+    // resolved twice, as core does on a scrolled search: the same size
+    val twice = Parser(s"SELECT t.id $from WHERE item.price > 2") match {
+      case Right(s: SingleSearch) =>
+        val schema = Some(schemaOf("t", None))
+        s.update(schema).update(schema)
+      case other => fail(s"did not parse: $other")
+    }
+    val request: ElasticSearchRequest = twice
+    mapper.readTree(request.query).findValues("inner_hits").get(0).get("size").asInt() shouldBe 100
+    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2 LIMIT 5") shouldBe Map("item" -> Some(5))
+    innerHitsSizes(s"SELECT c.author $nestedOfNested WHERE r.reply_author = 'x'") shouldBe
+    Map("c" -> Some(100), "r" -> Some(100))
+  }
+
   "A nested filter or aggregate whose elements are not rows" should "keep the default size" in {
-    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2") shouldBe Map("item" -> None)
     innerHitsSizes(s"SELECT COUNT(item.id) AS n $from WHERE item.price > 2") shouldBe
     Map("item" -> None)
-    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2", Some(schemaOf("t", Some(4)))) shouldBe
+    innerHitsSizes(
+      s"SELECT COUNT(item.id) AS n $from WHERE item.price > 2",
+      Some(schemaOf("t", Some(4)))
+    ) shouldBe
     Map("item" -> None)
   }
 }
