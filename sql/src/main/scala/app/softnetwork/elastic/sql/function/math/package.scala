@@ -30,8 +30,10 @@ import app.softnetwork.elastic.sql.{
 }
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
+  SQLDouble,
   SQLInt,
   SQLNumeric,
+  SQLReal,
   SQLSmallInt,
   SQLTinyInt,
   SQLType,
@@ -127,6 +129,29 @@ package object math {
           case _             => super.reportedType
         }
       case _ => super.reportedType
+    }
+
+    /** 🔴 What `ABS` RENDERS, per class, as DuckDB 1.5.5 types it (`abs(INTEGER)` is an INTEGER,
+      * `abs(BIGINT)` a BIGINT, `abs(DOUBLE)` a DOUBLE):
+      *   - over a whole number (TINYINT, SMALLINT, INT, BIGINT) the script answers the argument's
+      *     own whole value (`(x < 0 ? -x : x)`, [[toPainlessCall]]), so its type is the argument's;
+      *   - over a DOUBLE or a REAL it answers a `Double` (Painless's `Math.abs` takes a `double`),
+      *     a DOUBLE;
+      *   - over anything else (no schema, a NUMERIC) it keeps NUMERIC.
+      *
+      * It answered NUMERIC whatever the argument was, so a GROUP BY `ABS(n)` key was a `double`
+      * terms level and every key came back as a double (`3.0` for the INT `3`): the type a reader
+      * of the RENDERED value sees (`renderedTypeOf`) was not the one reported.
+      */
+    override def outputType: SQLNumeric = mathOp match {
+      case Abs =>
+        renderedTypeOf(arg) match {
+          case whole @ (_: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt) =>
+            whole.asInstanceOf[SQLNumeric]
+          case _: SQLDouble | _: SQLReal => SQLTypes.Double
+          case _                         => super.outputType
+        }
+      case _ => super.outputType
     }
 
     /** `ABS` of a whole number answers a whole number of its argument's type per document, as its

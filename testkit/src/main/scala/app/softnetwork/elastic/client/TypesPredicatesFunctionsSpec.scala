@@ -613,4 +613,33 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     numbers(s"SELECT id, ROUND(x, 0) AS v FROM $index").get("p2") shouldBe
     Some(Some(BigDecimal(-2)))
   }
+
+  // -- types: ABS of a whole number ----------------------------------------------------------------
+
+  /** `ABS` answers its argument's type (DuckDB: `abs(INTEGER)` is an INTEGER, `abs(DOUBLE)` a
+    * DOUBLE). It rendered NUMERIC whatever the argument, so a GROUP BY `ABS(n)` level was a `double`
+    * terms level and its keys came back as `3.0`. DuckDB's groups also hold a NULL one, which a
+    * terms level does not return.
+    */
+  "ABS of an INTEGER column" should "report and answer an INTEGER, a GROUP BY key included" in {
+    reportedTypes(s"SELECT ABS(n) AS v, ABS(x) AS w FROM $index") shouldBe Map(
+      "v" -> SQLTypes.Int,
+      "w" -> SQLTypes.Double
+    )
+    columnOf(
+      s"SELECT ABS(n) AS v, COUNT(*) AS c FROM $index GROUP BY ABS(n)",
+      "v"
+    ).toSet shouldBe Set("0", "1", "3", "7", "10")
+    valuesById(s"SELECT id, ABS(n) AS v FROM $index") shouldBe Map(
+      "p1" -> "0",
+      "p2" -> "3",
+      "p3" -> "10",
+      "p4" -> "null",
+      "p5" -> "7",
+      "p6" -> "null",
+      "p7" -> "1"
+    )
+    // control: over a DOUBLE, a double
+    valuesById(s"SELECT id, ABS(x) AS v FROM $index").get("p2") shouldBe Some("2.46")
+  }
 }
