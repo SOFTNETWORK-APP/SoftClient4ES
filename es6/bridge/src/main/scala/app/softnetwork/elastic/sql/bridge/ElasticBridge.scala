@@ -26,9 +26,8 @@ import app.softnetwork.elastic.sql.query.{
   ElasticFilter,
   ElasticNested,
   ElasticParent,
-  ElasticRelation,
-  Expression,
   GenericExpression,
+  ImplicitNested,
   InExpr,
   IsNotNullCriteria,
   IsNotNullExpr,
@@ -37,7 +36,6 @@ import app.softnetwork.elastic.sql.query.{
   MatchAllCriteria,
   MatchCriteria,
   MatchNoneCriteria,
-  MultiMatchCriteria,
   NestedElement,
   NestedElements,
   Predicate,
@@ -52,19 +50,12 @@ import scala.annotation.tailrec
 object ElasticBridge {
 
   /** The nested path of each column a condition reads, the first segment of its dotted name, for a
-    * `NESTED(…)` no JOIN UNNEST declares (`ElasticBridge.query`). A column with no dot has none.
+    * `NESTED(…)` no JOIN UNNEST declares, or a condition the resolution wrapped as one
+    * (`ElasticBridge.query`): `ImplicitNested.nestedPathsOf`, the one derivation the wrapping reads
+    * too. A column with no dot has none.
     */
-  private[bridge] def nestedPaths(criteria: Criteria): List[String] = criteria match {
-    case Predicate(left, _, right, _, _) => nestedPaths(left) ++ nestedPaths(right)
-    case relation: ElasticRelation       => nestedPaths(relation.criteria)
-    case m: MultiMatchCriteria           => nestedPaths(m.criteria)
-    case e: Expression =>
-      e.identifier.name.split('.').toList match {
-        case path :: _ :: _ => List(path)
-        case _              => Nil
-      }
-    case _ => Nil
-  }
+  private[bridge] def nestedPaths(criteria: Criteria): List[String] =
+    ImplicitNested.nestedPathsOf(criteria)
 
   /** The columns a MATCH reads, when `filter` is one: a `MATCH (c) AGAINST (…)`, or the group of
     * one per column that `MATCH (c1, c2) AGAINST (…)` is. `None` for any other filter.
@@ -138,6 +129,17 @@ case class ElasticBridge(filter: ElasticFilter) {
                 case Nil => q
                 case path :: Nil =>
                   nestedQuery(path, q).copy(ignoreUnmapped = Some(true))
+                // conditions over several paths, joined by AND or OR (`items.sku = 's1' AND
+                // tags.v = 'x'`, or two `NESTED(…)` the resolution merged): each operand is the
+                // nested query over its own path -- no element belongs to two paths
+                case _ :: _ if criteria.isInstanceOf[Predicate] =>
+                  val p = criteria.asInstanceOf[Predicate]
+                  val split = p.copy(
+                    leftCriteria = ElasticNested(p.leftCriteria, p.leftCriteria.limit),
+                    rightCriteria = ElasticNested(p.rightCriteria, p.rightCriteria.limit)
+                  )
+                  val splitQuery = Option(ElasticBoolQuery(group = true))
+                  split.asFilter(splitQuery).query(innerHitsNames, splitQuery)
                 case paths =>
                   throw new IllegalArgumentException(
                     s"NESTED(${criteria.sql}) reads the nested paths ${paths.mkString(", ")}: " +

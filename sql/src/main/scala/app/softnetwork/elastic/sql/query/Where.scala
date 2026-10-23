@@ -3298,13 +3298,183 @@ case class ElasticParent(
   }
 }
 
+/** 🔴 A WHERE condition over a column of a NESTED path that no JOIN UNNEST and no `NESTED(…)`
+  * declares -- `WHERE items.sku = 's1'` -- is the nested query over that path: the documents one of
+  * whose elements satisfies it, as `NESTED(items.sku = 's1')` answers and as DuckDB answers `EXISTS
+  * (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`. Sent as it was, the condition queried the
+  * ROOT document, which holds no field of a nested path: no document matched, HTTP 200.
+  *
+  * The condition is wrapped in the `ElasticNested` relation the bridge renders for a `NESTED(…)` no
+  * JOIN UNNEST declares (its path is the column's first segment). Conditions over the same path,
+  * joined by AND or OR, are ONE wrapper and test the same element, as a JOIN UNNEST does
+  * (`items.sku = 's2' AND items.qty > 2`); conditions over different paths test each its own.
+  *
+  * Read from the schema core attaches (`SingleSearch.update(Some(schema))`): without one a
+  * condition is sent as before. A condition that cannot be wrapped -- reading two nested paths, a
+  * nested column and a column of the document, or a column under a nested path that is not its
+  * first segment -- is refused by name before any request ([[refusal]],
+  * `SingleSearch.validateResolved`).
+  */
+private[sql] object ImplicitNested {
+
+  /** Where a condition's columns lie. */
+  sealed trait Reading
+  case object OnDocument extends Reading
+  final case class OnPath(path: String) extends Reading
+  final case class Unwrappable(reason: String) extends Reading
+
+  private def schemaOf(column: Identifier, request: SingleSearch): Option[Schema] =
+    column.table.flatMap(request.schemas.get).orElse(request.schema)
+
+  /** The proper prefixes of `name` the schema maps as `nested`, outermost first. */
+  private def nestedPrefixes(name: String, schema: Option[Schema]): List[String] = {
+    val parts = name.split('.').toList
+    (1 until parts.size).toList
+      .map(i => parts.take(i).mkString("."))
+      .filter(NestedElements.mappedAsNested(schema, _))
+  }
+
+  /** The columns a condition reads: its operand's, and its value's when that is a column. */
+  private[sql] def columnsOf(e: Expression): Seq[Identifier] =
+    (e.identifier +: e.maybeValue.toSeq.collect { case column: Identifier => column })
+      .flatMap(FunctionUtils.funIdentifiers(_))
+      .filter(_.name.trim.nonEmpty)
+      .distinct
+
+  def readingOf(e: Expression, request: SingleSearch): Reading = {
+    val columns = columnsOf(e)
+    // a condition reading a JOIN UNNEST column, at any depth (`COALESCE(t.name, i.s) = 'x'`), is
+    // the UNNEST's: its own wrapping and its own scope rules (`UnnestScope`) apply
+    if (
+      e.nestedElement.isDefined || e.identifier.nested ||
+      columns.exists(c => c.nested || c.nestedElement.isDefined)
+    ) OnDocument
+    else {
+      val placed: Seq[Either[String, Option[String]]] = columns.map { column =>
+        val head = column.name.split('.').head
+        nestedPrefixes(column.name, schemaOf(column, request)) match {
+          case Nil                     => Right(None)
+          case only :: Nil if only == head => Right(Some(head))
+          case paths =>
+            Left(s"the column ${column.name}, under the nested path ${paths.last}")
+        }
+      }
+      placed.collectFirst { case Left(reason) => reason } match {
+        case Some(reason) => Unwrappable(reason)
+        case None =>
+          placed.collect { case Right(Some(path)) => path }.distinct.toList match {
+            case Nil => OnDocument
+            case path :: Nil if placed.contains(Right(None)) =>
+              Unwrappable(s"a column of the nested path $path and a column of the document")
+            case path :: Nil => OnPath(path)
+            case paths       => Unwrappable(s"the nested paths ${paths.mkString(", ")}")
+          }
+      }
+    }
+  }
+
+  /** The one nested path an implicit wrapper ([[wrap]]) tests, if `criteria` is one. */
+  private def pathOf(criteria: Criteria, request: SingleSearch): Option[String] = {
+    def leaves(c: Criteria): Seq[Reading] = c match {
+      case p: Predicate  => leaves(p.leftCriteria) ++ leaves(p.rightCriteria)
+      case e: Expression => Seq(readingOf(e, request))
+      case _             => Seq(OnDocument)
+    }
+    criteria match {
+      case n: ElasticNested if n.fromCriteria && n.criteria.nestedElements.isEmpty =>
+        leaves(n.criteria).distinct match {
+          case Seq(OnPath(path)) => Some(path)
+          case _                 => None
+        }
+      case _ => None
+    }
+  }
+
+  /** The first segment of every dotted column `criteria` reads, through its relations: the nested
+    * path a `NESTED(…)` no JOIN UNNEST declares tests, as the bridge renders it. The ONE derivation,
+    * read by [[wrap]] and by the bridge: read off the operand's NAME alone, it missed a column under
+    * a function (`UPPER(items.sku)`, whose operand is a nameless wrapper).
+    */
+  def nestedPathsOf(criteria: Criteria): List[String] = criteria match {
+    case p: Predicate              => nestedPathsOf(p.leftCriteria) ++ nestedPathsOf(p.rightCriteria)
+    case relation: ElasticRelation => nestedPathsOf(relation.criteria)
+    case m: MultiMatchCriteria     => nestedPathsOf(m.criteria)
+    case e: Expression =>
+      columnsOf(e).toList.flatMap(_.name.split('.').toList match {
+        case path :: _ :: _ => List(path)
+        case _              => Nil
+      })
+    case _ => Nil
+  }
+
+  /** `criteria`, its conditions over a nested path wrapped in the nested query over it. */
+  def wrap(criteria: Criteria, request: SingleSearch): Criteria =
+    if (request.schema.isEmpty && request.schemas.isEmpty) criteria else wrapped(criteria, request)
+
+  private def wrapped(criteria: Criteria, request: SingleSearch): Criteria = criteria match {
+    case p: Predicate =>
+      val left = wrapped(p.leftCriteria, request)
+      val right = wrapped(p.rightCriteria, request)
+      def unwrapped(c: Criteria): Criteria = c match {
+        case n: ElasticNested => n.criteria
+        case other            => other
+      }
+      (pathOf(left, request), pathOf(right, request)) match {
+        // the same path: one element satisfies both, as over a JOIN UNNEST
+        case (Some(l), Some(r)) if l == r =>
+          val joined = p.copy(leftCriteria = unwrapped(left), rightCriteria = unwrapped(right))
+          ElasticNested(joined, joined.limit)
+        case _ => p.copy(leftCriteria = left, rightCriteria = right)
+      }
+    case e: Expression =>
+      readingOf(e, request) match {
+        case OnPath(_) => ElasticNested(e, e.limit)
+        case _         => e
+      }
+    // `MATCH (c1, …) AGAINST (…)`, one MATCH per column: wrapped when every column lies on one path
+    case m: MultiMatchCriteria if pathOf(ElasticNested(m.criteria, None), request).isDefined =>
+      ElasticNested(m, None)
+    // a later resolution (`update(Some(schema))` again, as core resolves a scrolled search) merges
+    // two wrappers into one (`Predicate.update`): over several paths, each path is its own again,
+    // so the statement renders as it did once resolved
+    case n: ElasticNested
+        if n.fromCriteria && n.criteria.nestedElements.isEmpty &&
+          n.criteria.isInstanceOf[Predicate] && pathOf(n, request).isEmpty &&
+          nestedPathsOf(n.criteria).distinct.size > 1 =>
+      wrapped(n.criteria, request)
+    case other => other
+  }
+
+  /** The refusal of the first condition of `criteria` that reads a nested path and cannot be
+    * wrapped, through `NESTED(…)` too, which renders the same nested query.
+    */
+  def refusal(criteria: Criteria, request: SingleSearch): Option[String] = {
+    def first(c: Criteria): Option[String] = c match {
+      case p: Predicate     => first(p.leftCriteria).orElse(first(p.rightCriteria))
+      case n: ElasticNested => first(n.criteria)
+      case e: Expression =>
+        readingOf(e, request) match {
+          case Unwrappable(reason) =>
+            Some(
+              s"WHERE ${e.sql} reads $reason: a condition over a nested column is tested on one " +
+              "element of one nested path. Write it over a JOIN UNNEST of that path, or one " +
+              "condition per path."
+            )
+          case _ => None
+        }
+      case _ => None
+    }
+    first(criteria)
+  }
+}
+
 case class Where(criteria: Option[Criteria]) extends Updateable {
   override def sql: String = criteria match {
     case Some(c) => s" $Where $c"
     case _       => ""
   }
   def update(request: SingleSearch): Where =
-    this.copy(criteria = criteria.map(_.update(request)))
+    this.copy(criteria = criteria.map(c => ImplicitNested.wrap(c.update(request), request)))
 
   override def validate(): Either[String, Unit] = criteria match {
     case Some(c) =>

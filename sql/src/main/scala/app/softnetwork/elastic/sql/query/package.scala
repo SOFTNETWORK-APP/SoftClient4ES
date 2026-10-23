@@ -2851,6 +2851,8 @@ package object query {
           .orElse(keyKindRefusal)
           // a key filter the rules above accept, on a float key, with a value no float equals
           .orElse(inexactFloatKeyComparison)
+          // a WHERE condition over a nested column that no nested query can test
+          .orElse(where.flatMap(_.criteria).flatMap(ImplicitNested.refusal(_, this)))
           .map(Left(_))
           .getOrElse(Right(()))
       }

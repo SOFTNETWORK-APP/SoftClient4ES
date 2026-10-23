@@ -47,11 +47,20 @@ class NestedWithoutUnnestSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "be refused by name over several nested paths" in {
-    val error = intercept[IllegalArgumentException](
-      queryOf("SELECT id FROM t WHERE NESTED(items.sku = 's1' AND tags.v = 'x')")
-    )
-    error.getMessage should include("reads the nested paths items, tags")
+  it should "test each operand on its own path over several nested paths" in {
+    // no element belongs to two paths: each operand is the nested query over its own. It was
+    // refused, and so were two NESTED(…) of two paths, which the resolution merges into one
+    Seq(
+      "SELECT id FROM t WHERE NESTED(items.sku = 's1' AND tags.v = 'x')",
+      "SELECT id FROM t WHERE NESTED(items.sku = 's1') AND NESTED(tags.v = 'x')"
+    ).foreach { sql =>
+      val q = queryOf(sql)
+      withClue(q) {
+        "\"nested\"".r.findAllMatchIn(q).size shouldBe 2
+        q should include(""""path":"items"""")
+        q should include(""""path":"tags"""")
+      }
+    }
   }
 
   "a JOIN UNNEST" should "keep its nested query and inner hits" in {

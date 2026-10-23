@@ -761,4 +761,28 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     idsOf(s"SELECT id FROM $index WHERE n = 10 AND NOT MATCH(k) AGAINST ('a')") shouldBe Set.empty
     idsOf(s"SELECT id FROM $index WHERE n = 3 AND NOT MATCH(k) AGAINST ('a')") shouldBe Set("p2")
   }
+
+  // -- predicates: a condition over a nested column, with no NESTED and no UNNEST ---------------------
+
+  /** `WHERE items.sku = 's1'` keeps the documents one of whose elements satisfies it (DuckDB:
+    * `EXISTS (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`); conditions over the same path
+    * test the same element. It queried the root document, which holds no field of a nested path:
+    * no row, HTTP 200. A condition no nested query can test is refused by name.
+    */
+  "A condition over a nested column without NESTED or UNNEST" should "keep the documents with such an element" in {
+    Seq(
+      "items.sku = 's1'"                  -> Set("p1", "p3"),
+      "items.sku = 's2' AND items.qty > 2" -> Set("p2"),
+      "items.sku <> 's1'"                 -> Set("p1", "p2", "p7"),
+      "items.sku IN ('s1', 's3')"         -> Set("p1", "p3", "p7"),
+      "items.qty BETWEEN 2 AND 4"         -> Set("p1", "p2"),
+      "items.sku = 's1' OR g1 = 'e'"      -> Set("p1", "p3", "p7")
+    ).foreach { case (condition, expected) =>
+      withClue(condition)(idsOf(s"SELECT id FROM $index WHERE $condition") shouldBe expected)
+    }
+    failureOf(s"SELECT id FROM $index WHERE items.qty > n").left.toOption.getOrElse("") should
+    include("a column of the nested path items and a column of the document")
+    // control: the same condition written with NESTED
+    idsOf(s"SELECT id FROM $index WHERE NESTED(items.sku = 's1')") shouldBe Set("p1", "p3")
+  }
 }
