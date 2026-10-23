@@ -101,6 +101,19 @@ object Bucket {
     */
   val DefaultSize: Int = 65536
 
+  /** Whether `text` is a number Elasticsearch reads as exactly one value of `valueType` (`long`: a
+    * whole number within its range, `double`: any decimal number) -- see
+    * [[Bucket.scriptedKeyValueTypeBeside]].
+    */
+  def isExactNumberOf(valueType: String)(text: String): Boolean =
+    Try(BigDecimal(text.trim)).toOption.exists { number =>
+      valueType match {
+        case "long"   => number.isWhole && number.isValidLong
+        case "double" => true
+        case _        => false
+      }
+    }
+
   /** The `DATE_TRUNC` units a `date_histogram` has a calendar interval for. A level is a
     * `date_histogram` only with one of them: Elasticsearch refuses one without an interval.
     */
@@ -527,10 +540,9 @@ case class Bucket(
     * numeric `terms` (MEASURED with a script on 8.18.3 and 6.8.23), so the keys come back as
     * numbers and sort as numbers.
     *
-    * Read by both bridges, which send it only on a level that carries no key filter: a HAVING key
-    * filter is written as the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric
-    * level would parse as numbers (a fractional text read as a whole number, a regular expression
-    * refused). A temporal key is left as it is (`date_histogram` or its own text).
+    * Read by both bridges through [[scriptedKeyValueTypeBeside]]: a HAVING key filter is written as
+    * the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric level parses as its
+    * numbers. A temporal key is left as it is (`date_histogram` or its own text).
     */
   def scriptedKeyValueType: Option[String] =
     if (!isScriptedKey || isDateHistogram) None
@@ -540,6 +552,28 @@ case class Bucket(
         case _: SQLDouble | _: SQLReal                                 => Some("double")
         case SQLTypes.Numeric                                          => Some("double")
         case _                                                         => None
+      }
+
+  /** [[scriptedKeyValueType]] for a level whose HAVING key filter is `include` / `exclude`: the
+    * type when the filter is exact values only, each an exact number of that type, which a numeric
+    * `terms` parses as the very numbers its keys are; `None` -- a string `terms`, its keys texts --
+    * beside a pattern, or a value that is not one. MEASURED on Elasticsearch 8.18.3 and 6.8.23: a
+    * scripted `terms` with `value_type: long` keeps the groups `include: ["5", "7"]` names, drops
+    * the one `exclude: ["5"]` names, and answers its keys as numbers in numeric order -- but it
+    * reads `"5.5"` as 5, which is why an inexact value keeps the string `terms`.
+    *
+    * 🔴 Without the filter's values a scripted numeric key with a key filter (`GROUP BY n + 0
+    * HAVING kk <> 5 ORDER BY kk DESC`) answered its keys as texts in text order: `'900', '7', '0',
+    * '-900', '-4'`, where DuckDB answers 900, 7, 0, -4, -900.
+    */
+  def scriptedKeyValueTypeBeside(
+    include: BucketIncludesExcludes,
+    exclude: BucketIncludesExcludes
+  ): Option[String] =
+    if (Seq(include, exclude).exists(_.regex.exists(_.nonEmpty))) None
+    else
+      scriptedKeyValueType.filter { valueType =>
+        (include.values ++ exclude.values).forall(Bucket.isExactNumberOf(valueType))
       }
 
   /** The columns this level's key reads -- through its functions and its arithmetic, a CASE's

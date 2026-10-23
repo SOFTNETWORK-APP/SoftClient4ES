@@ -609,36 +609,36 @@ object ElasticAggregation {
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
               levelSize.orElse(bucket.size).foreach(s => terms = terms.size(s))
-              having match {
+              val (include, exclude) = having match {
                 case Some(criteria) =>
-                  criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.includeRegex(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.includeExactValues(values.toArray)
-                    case _ =>
-                  }
-                  criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.excludeRegex(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.excludeExactValues(values.toArray)
-                    case _ =>
-                  }
+                  (
+                    criteria.includes(bucket, not = false, BucketIncludesExcludes()),
+                    criteria.excludes(bucket, not = false, BucketIncludesExcludes())
+                  )
+                case _ => (BucketIncludesExcludes(), BucketIncludesExcludes())
+              }
+              include match {
+                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                  terms = terms.includeRegex(regex)
+                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                  terms = terms.includeExactValues(values.toArray)
                 case _ =>
               }
-              // A scripted key that reports a number is a numeric `terms`, on a level with no key
-              // filter (`Bucket.scriptedKeyValueType`). elastic4s does not write the parameter:
-              // `BucketScriptParams.bind` does, from this field.
-              if (
-                terms.includeExactValues.isEmpty && terms.excludeExactValues.isEmpty &&
-                terms.includeRegex.isEmpty && terms.excludeRegex.isEmpty
-              )
-                bucket.scriptedKeyValueType.foreach {
-                  case "long"   => terms = terms.valueType(ValueType.LONG)
-                  case "double" => terms = terms.valueType(ValueType.DOUBLE)
-                  case _        =>
-                }
+              exclude match {
+                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                  terms = terms.excludeRegex(regex)
+                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                  terms = terms.excludeExactValues(values.toArray)
+                case _ =>
+              }
+              // A scripted key that reports a number is a numeric `terms`, beside a key filter of
+              // exact numbers of its type too (`Bucket.scriptedKeyValueTypeBeside`). elastic4s does
+              // not write the parameter: `BucketScriptParams.bind` does, from this field.
+              bucket.scriptedKeyValueTypeBeside(include, exclude).foreach {
+                case "long"   => terms = terms.valueType(ValueType.LONG)
+                case "double" => terms = terms.valueType(ValueType.DOUBLE)
+                case _        =>
+              }
               agg = terms
             case _ =>
           }

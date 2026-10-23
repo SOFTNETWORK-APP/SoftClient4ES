@@ -225,6 +225,24 @@ trait GroupedAggregateSemanticsSpec
     ) shouldBe Seq(900.0, 7.0, 5.0, 0.0, -4.0, -900.0)
   }
 
+  it should "come back as a number, in numeric order, beside a HAVING key filter" in {
+    def keys(sql: String): Seq[Any] = rowsOf(sql).map(r => cell(r, "kk")).filter(_ != null)
+    // DuckDB: 900, 7, 0, -4, -900
+    val excluded =
+      keys(
+        s"SELECT n + 0 AS kk, COUNT(*) AS c FROM $index GROUP BY n + 0 HAVING kk <> 5 ORDER BY kk DESC"
+      )
+    excluded shouldBe Seq(900L, 7L, 0L, -4L, -900L)
+    excluded.foreach(_ shouldBe a[java.lang.Long])
+    // DuckDB: 5, 7
+    val included =
+      keys(
+        s"SELECT n + 0 AS kk, COUNT(*) AS c FROM $index GROUP BY n + 0 HAVING kk IN (5, 7) ORDER BY kk"
+      )
+    included shouldBe Seq(5L, 7L)
+    included.foreach(_ shouldBe a[java.lang.Long])
+  }
+
   // ---------------------------------------------------------------------------------------------
   // MIN / MAX of a date column
   // ---------------------------------------------------------------------------------------------

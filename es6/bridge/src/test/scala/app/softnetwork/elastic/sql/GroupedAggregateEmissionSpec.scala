@@ -109,10 +109,12 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
       "SELECT n * 2 AS kk, COUNT(*) AS c FROM t GROUP BY n * 2"                  -> Some("long"),
       "SELECT x * 2 AS kk, COUNT(*) AS c FROM t GROUP BY x * 2"                  -> Some("double"),
       "SELECT g1, n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY g1, n + 0"          -> Some("long"),
-      // the controls: a field key, a key that reports a string, and a key filter on the level
-      "SELECT n AS kk, COUNT(*) AS c FROM t GROUP BY n"                        -> None,
-      "SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"          -> None,
-      "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 HAVING kk <> 0" -> None
+      // beside a key filter of exact numbers of its type
+      "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 HAVING kk <> 5"      -> Some("long"),
+      "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 HAVING kk IN (5, 7)" -> Some("long"),
+      // the controls: a field key, and a key that reports a string
+      "SELECT n AS kk, COUNT(*) AS c FROM t GROUP BY n"               -> None,
+      "SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)" -> None
     ).foreach { case (sql, expected) =>
       withClue(s"[$sql] ") {
         valueTypeOf(body(sql), "kk") shouldBe expected

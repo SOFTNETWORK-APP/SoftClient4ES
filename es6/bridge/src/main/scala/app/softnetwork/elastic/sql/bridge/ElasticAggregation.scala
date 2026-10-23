@@ -640,26 +640,25 @@ object ElasticAggregation {
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
               levelSize.orElse(bucket.size).foreach(s => terms = terms.size(s))
-              having match {
+              val (include, exclude) = having match {
                 case Some(criteria) =>
-                  // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
-                  // string, which Elasticsearch 6.8 reads as a REGEX. See [[TermsIncludeExclude]].
-                  terms = TermsIncludeExclude(
-                    terms,
+                  (
                     criteria.includes(bucket, not = false, BucketIncludesExcludes()),
                     criteria.excludes(bucket, not = false, BucketIncludesExcludes())
                   )
-                case _ =>
+                case _ => (BucketIncludesExcludes(), BucketIncludesExcludes())
               }
-              // A scripted key that reports a number is a numeric `terms`, on a level with no key
-              // filter (`Bucket.scriptedKeyValueType`). elastic4s does not write the parameter:
-              // `BucketScriptParams.bind` does, from this field.
-              if (terms.includeExclude.isEmpty)
-                bucket.scriptedKeyValueType.foreach {
-                  case "long"   => terms = terms.valueType(ValueType.LONG)
-                  case "double" => terms = terms.valueType(ValueType.DOUBLE)
-                  case _        =>
-                }
+              // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
+              // string, which Elasticsearch 6.8 reads as a REGEX. See [[TermsIncludeExclude]].
+              if (having.isDefined) terms = TermsIncludeExclude(terms, include, exclude)
+              // A scripted key that reports a number is a numeric `terms`, beside a key filter of
+              // exact numbers of its type too (`Bucket.scriptedKeyValueTypeBeside`). elastic4s does
+              // not write the parameter: `BucketScriptParams.bind` does, from this field.
+              bucket.scriptedKeyValueTypeBeside(include, exclude).foreach {
+                case "long"   => terms = terms.valueType(ValueType.LONG)
+                case "double" => terms = terms.valueType(ValueType.DOUBLE)
+                case _        =>
+              }
               refusal.foreach { message =>
                 terms =
                   terms.copy(metadata = terms.metadata + (SearchBodySerializer.Refusal -> message))
