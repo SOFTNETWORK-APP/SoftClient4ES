@@ -1298,15 +1298,20 @@ GROUP BY profile.city;
   groups: each level is sent with that size, and the rows are cut to the `LIMIT` once they are put
   together (`GROUP BY a, b LIMIT 2` answers two rows, not two per value of `a`).
 - On a multi-column `GROUP BY`, `ORDER BY` sorts the **whole result**, over a key other than the
-  first or over an aggregate too: `GROUP BY city, created_at ORDER BY created_at DESC` orders every
-  group by its date, across the cities. When the levels cannot give that order themselves, every
-  level is asked for all its groups, and the rows are sorted once they are put together — `NULL`
-  last ascending and first descending — then cut to the `LIMIT`.
+  first or over an aggregate too — named by its alias (`ORDER BY c`) or by its expression
+  (`ORDER BY COUNT(*)`, `ORDER BY MAX(amount)`), returned by the `SELECT` or not:
+  `GROUP BY city, created_at ORDER BY created_at DESC` orders every group by its date, across the
+  cities. When the levels cannot give that order themselves, the rows are sorted once they are put
+  together, then cut to the `LIMIT`; an aggregate the `SELECT` does not return is read for the sort
+  only. A `NULL` aggregate is placed where the same `ORDER BY` over one column places it: a `MAX`
+  with no value last descending and first ascending, any other `NULL` last ascending and first
+  descending. The levels above the first sort key's own level are asked for all their groups;
+  that level and the ones below it keep the `LIMIT` (`GROUP BY city, created_at ORDER BY
+  created_at DESC LIMIT 10` asks every city, and 10 dates in each).
 - `LIMIT n OFFSET m` on a `GROUP BY` skips the first m groups, then answers n, in the order the
-  statement asks for: every level is sent with n + m buckets, and the groups are skipped once the
-  rows are put together. It is refused beside a window function, over a `GROUP BY` key of an
-  `UNNEST` element, and with an `ORDER BY` over an aggregate the `SELECT` does not return, where
-  the groups cannot be skipped in that order.
+  statement asks for: a level is sent with n + m buckets, and the groups are skipped once the rows
+  are put together. It is refused beside a window function and over a `GROUP BY` key of an
+  `UNNEST` element, where the groups cannot be skipped in that order.
 - With no `LIMIT`, every level is sized at Elasticsearch's `search.max_buckets` ceiling (65,536):
   a grouping wider than that fails loudly rather than truncating silently.
 

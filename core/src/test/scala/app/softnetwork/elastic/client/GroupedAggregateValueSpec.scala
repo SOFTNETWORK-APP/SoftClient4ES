@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{GroupedRowOrder, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Desc, GroupedRowOrder, SingleSearch}
 import app.softnetwork.elastic.sql.schema.Schema
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -429,12 +429,10 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
       .getOrElse(Nil) shouldBe Seq(Some(2))
   }
 
-  it should "refuse an OFFSET the rows cannot skip in the statement's order, and no other" in {
-    // an ORDER BY over an aggregate the SELECT does not return: the rows do not carry it
-    Parser(
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY MAX(n) DESC LIMIT 2 OFFSET 1"
-    ).swap.map(_.msg).getOrElse(fail("not refused")) should include("OFFSET is not supported")
+  it should "refuse no OFFSET the rows can skip in the statement's order" in {
     Seq(
+      // an ORDER BY over an aggregate the SELECT does not return: the rows carry it until the sort
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY MAX(n) DESC LIMIT 2 OFFSET 1",
       "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2 OFFSET 1",
       "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 ORDER BY MAX(n) DESC LIMIT 2 OFFSET 1",
       "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2 OFFSET 0",
@@ -443,6 +441,33 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     ).foreach { sql =>
       withClue(s"[$sql] ") { GroupedRowOrder.offsetRefusal(statement(sql)) shouldBe None }
     }
+  }
+
+  it should "be sorted by an aggregate the ORDER BY spells, returned or not" in {
+    // the expression of a returned aggregate: its column
+    GroupedRowOrder
+      .of(
+        statement(
+          "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2"
+        )
+      )
+      .map(o => (o.sortKeys, o.limit, o.carried)) shouldBe
+    Some((Seq("c" -> Desc), Some(2), Set.empty[String]))
+    // an aggregate the SELECT does not return: read until the sort, then left out
+    val unprojected =
+      statement("SELECT g1, k FROM t GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2")
+    val order = GroupedRowOrder.of(unprojected).getOrElse(fail("no order"))
+    order.carried should have size 1
+    order.sortKeys.map(_._1).toSet shouldBe order.carried
+    GroupedRowOrder.readAggregations(unprojected).values.filter(_.auxiliary) shouldBe empty
+    unprojected.sqlAggregations.values.filter(_.auxiliary) should have size 1
+    val counted = Seq(("x", "a", 2L), ("x", "b", 1L), ("y", "a", 1L), ("y", "c", 1L)).map {
+      case (g, k, c) => ListMap[String, Any]("g1" -> g, "k" -> k, order.carried.head -> c)
+    }
+    ElasticConversion
+      .orderGroupedRows(counted, order)(identity)
+      .map(ElasticConversion.withoutCarried(order)) shouldBe
+    Seq(ListMap("g1" -> "x", "k" -> "a"), ListMap("g1" -> "x", "k" -> "b"))
   }
 
   it should "place a NULL aggregate where the same ORDER BY over one level places it" in {

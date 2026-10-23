@@ -37,6 +37,7 @@ import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
+import scala.collection.immutable.ListMap
 import scala.util.{DynamicVariable, Try}
 import scala.util.matching.Regex
 import app.softnetwork.elastic.sql.function.{
@@ -812,14 +813,16 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *   - `GROUP BY a, b LIMIT n` answered up to n rows per parent (n x n rows for two levels): the
   *     flattened rows are cut to n ([[limit]]);
   *   - `GROUP BY a, b ORDER BY b` (any ORDER BY that is not the levels' own keys in their order, an
-  *     aggregate included) answered the rows ordered inside each `a` only: the flattened rows are
-  *     sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL
+  *     aggregate included, by its alias or by its expression) answered the rows ordered inside each
+  *     `a` only: the flattened rows are sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL
   *     aggregate sorts where the same ORDER BY over one level puts it, the order Elasticsearch
   *     gives a group with no value: below every value for a `MAX` ([[lowNulls]], its -Infinity),
   *     above every value otherwise -- so last ascending and first descending, the engine's default
   *     (the statement cannot say otherwise under a GROUP BY). The levels above the first sort key's
   *     own level are sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside their parent
-  *     would keep groups the global order does not ([[levelSize]]).
+  *     would keep groups the global order does not ([[levelSize]]);
+  *   - an aggregate the SELECT does not return is read as a column of the rows until they are
+  *     sorted, then left out ([[carried]]).
   *
   * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): a
   * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in
@@ -828,14 +831,15 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *
   * `None` when the levels already answer the rows as the statement asks: one level and no OFFSET,
   * or an ORDER BY that is the levels' keys in their order and no LIMIT or OFFSET. Also `None`, the
-  * rows kept as they come, when a sort key is not a column of the rows (an aggregate the SELECT
-  * does not project) -- and an OFFSET is then refused ([[offsetRefusal]]).
+  * rows kept as they come, when a sort key is neither a level nor an aggregate -- and an OFFSET is
+  * then refused ([[offsetRefusal]]).
   */
 case class GroupedRowOrder(
   sortKeys: Seq[(String, SortOrder)],
   limit: Option[Int],
   offset: Option[Int] = None,
-  lowNulls: Set[String] = Set.empty
+  lowNulls: Set[String] = Set.empty,
+  carried: Set[String] = Set.empty
 ) {
   def sorts: Boolean = sortKeys.nonEmpty
 }
@@ -854,10 +858,20 @@ object GroupedRowOrder {
   private def levelOf(levels: Seq[Bucket], sort: FieldSort): Int =
     levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
 
-  /** The aggregation the SELECT returns that a sort key names, by its alias (or its name). */
+  /** The aggregation a sort key names: by its alias (or its name), else -- the bridge's own
+    * derivation of the aggregate a terms `order` reads -- the aggregate whose expression the sort
+    * spells (`ORDER BY COUNT(*)`, `ORDER BY MAX(n)`), a returned one before one only the ORDER BY
+    * reads.
+    */
   private def aggregationOf(request: SingleSearch, sort: FieldSort): Option[SQLAggregation] =
     request.sqlAggregations.values
       .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
+      .orElse(
+        request.aggregates
+          .find(_.identifier.identifierName == sort.name)
+          .flatMap(SQLAggregation.fromField(_, request))
+          .flatMap(a => request.sqlAggregations.get(a.aggName))
+      )
 
   private def isMax(aggregation: SQLAggregation): Boolean = aggregation.aggType match {
     case MAX | _: MaxAgg => true
@@ -878,12 +892,15 @@ object GroupedRowOrder {
     else {
       val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
       val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(levels, sort) == i }
-      // a sort key as the rows carry it: (its column, its NULL below every value)
-      def columnOf(sort: FieldSort): Option[(String, Boolean)] =
+      // a sort key as the rows carry it: (its column, its NULL below every value, carried only
+      // until the sort)
+      def columnOf(sort: FieldSort): Option[(String, Boolean, Boolean)] =
         levels
           .find(b => b.identifier.identifierName == sort.name || b.name == sort.name)
-          .map(b => (b.name, false))
-          .orElse(aggregationOf(request, sort).map(a => (a.field, isMax(a))))
+          .map(b => (b.name, false, false))
+          .orElse(aggregationOf(request, sort).map { a =>
+            if (a.auxiliary) (a.aggName, isMax(a), true) else (a.field, isMax(a), false)
+          })
       val limit = request.limit.map(_.limit)
       if (honoured)
         if (limit.isEmpty && offset.isEmpty) None else Some(GroupedRowOrder(Nil, limit, offset))
@@ -894,16 +911,30 @@ object GroupedRowOrder {
           val resolved = keys.flatten
           Some(
             GroupedRowOrder(
-              resolved.map { case ((column, _), direction) => column -> direction },
+              resolved.map { case ((column, _, _), direction) => column -> direction },
               limit,
               offset,
-              lowNulls = resolved.collect { case ((column, true), _) => column }.toSet
+              lowNulls = resolved.collect { case ((column, true, _), _) => column }.toSet,
+              carried = resolved.collect { case ((column, _, true), _) => column }.toSet
             )
           )
         }
       }
     }
   }
+
+  /** The aggregations of `request` as its rows are READ: an aggregate only the ORDER BY reads is
+    * read as a column until the rows are sorted ([[GroupedRowOrder.carried]]), every other one as
+    * it is.
+    */
+  def readAggregations(request: SingleSearch): ListMap[String, SQLAggregation] =
+    of(request).map(_.carried).filter(_.nonEmpty) match {
+      case Some(carried) =>
+        request.sqlAggregations.map { case (name, a) =>
+          name -> (if (a.auxiliary && carried.contains(a.aggName)) a.copy(auxiliary = false) else a)
+        }
+      case None => request.sqlAggregations
+    }
 
   /** Why the OFFSET of a GROUP BY `request` cannot be honoured -- its rows are not skipped in the
     * order the statement asks for ([[of]]) -- or `None`: no GROUP BY, no OFFSET, or one the rows
@@ -917,7 +948,7 @@ object GroupedRowOrder {
         if (request.windowFunctions.exists(_.isWindowing)) "beside a window function"
         else if (request.groupBy.exists(_.buckets.exists(_.nested)))
           "over a GROUP BY key of an UNNEST element"
-        else "with an ORDER BY over an aggregate the SELECT does not return"
+        else "with an ORDER BY over an expression that is neither a GROUP BY key nor an aggregate"
       Some(
         s"OFFSET is not supported $why: the groups cannot be skipped in the order the statement " +
         "asks for. Remove the OFFSET, or page by key ranges."

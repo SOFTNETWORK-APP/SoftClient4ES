@@ -331,12 +331,10 @@ class GroupByFoldInSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  it should "be rejected loudly where its groups cannot be skipped in the statement's order" in {
-    // a sort key the rows do not carry: an aggregate the SELECT does not return
-    rejects(
+  it should "be accepted over an aggregate the SELECT does not return, which the rows carry" in {
+    accepts(
       "SELECT category, city, COUNT(*) AS c FROM t GROUP BY category, city ORDER BY MAX(amount) " +
-      "DESC LIMIT 10 OFFSET 5",
-      "OFFSET is not supported"
+      "DESC LIMIT 10 OFFSET 5"
     )
   }
 

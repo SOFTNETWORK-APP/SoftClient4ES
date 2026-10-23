@@ -315,7 +315,8 @@ trait ElasticConversion {
     * every value otherwise -- last ascending and first descending (a NULLS clause is refused under
     * a GROUP BY). Two numbers compare as numbers whatever their class (a key may come back a Long,
     * a metric a Double), two values of one comparable class by their order, anything else by its
-    * text. The sort is stable.
+    * text. The sort is stable. The columns read only for the sort (`GroupedRowOrder.carried`) are
+    * left to [[withoutCarried]].
     */
   def orderGroupedRows[T](items: Seq[T], order: GroupedRowOrder)(
     row: T => ListMap[String, Any]
@@ -346,6 +347,12 @@ trait ElasticConversion {
     val skipped = order.offset.fold(sorted)(m => sorted.drop(math.max(m, 0)))
     order.limit.fold(skipped)(n => skipped.take(math.max(n, 0)))
   }
+
+  /** `row` without the columns `order` read only to sort the rows by (`GroupedRowOrder.carried`):
+    * an aggregate the SELECT does not return. `row` itself when there is none.
+    */
+  def withoutCarried(order: GroupedRowOrder)(row: ListMap[String, Any]): ListMap[String, Any] =
+    if (order.carried.isEmpty) row else row -- order.carried
 
   private def unwrapCell(value: Any): Any = value match {
     case Seq(one) => one

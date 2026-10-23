@@ -2442,7 +2442,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearch(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
@@ -2456,7 +2457,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private def inGroupedRowOrder(single: SingleSearch, response: ElasticResponse): ElasticResponse =
     GroupedRowOrder.of(single) match {
       case Some(order) =>
-        response.copy(results = orderGroupedRows(response.results, order)(identity))
+        response.copy(results =
+          orderGroupedRows(response.results, order)(identity).map(withoutCarried(order))
+        )
       case None => response
     }
 
@@ -2480,7 +2483,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearchAsync(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)

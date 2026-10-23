@@ -343,7 +343,8 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         val rows = scrollWithMetrics(
           elasticQuery,
           single.fieldAliases,
-          single.sqlAggregations,
+          // an aggregate only the ORDER BY reads is read until the rows are sorted
+          GroupedRowOrder.readAggregations(single),
           // `_id` is injected at parse time only when it will be kept — the streamed rows
           // need no per-row strip on this hot path.
           config0.copy(retainDocumentId = keepsDocumentId(requestedFields)),
@@ -358,7 +359,14 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           case Some(order) =>
             rows
               .fold(Vector.empty[(ListMap[String, Any], ScrollMetrics)])(_ :+ _)
-              .mapConcat(all => ElasticConversion.orderGroupedRows(all, order)(_._1).toList)
+              .mapConcat(all =>
+                ElasticConversion
+                  .orderGroupedRows(all, order)(_._1)
+                  .map { case (row, metrics) =>
+                    (ElasticConversion.withoutCarried(order)(row), metrics)
+                  }
+                  .toList
+              )
           case None => rows
         }
 

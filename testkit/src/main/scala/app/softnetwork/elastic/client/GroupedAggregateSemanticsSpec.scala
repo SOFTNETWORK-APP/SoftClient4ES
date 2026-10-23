@@ -456,6 +456,28 @@ trait GroupedAggregateSemanticsSpec
     ) shouldBe twoKeyGroups.toSeq.sortBy(r => (r._1, r._2))
   }
 
+  it should "answer the global order and the LIMIT of an ORDER BY over an aggregate expression" in {
+    // DuckDB: (x,a,2) first, then one of the groups of one row
+    val counted = twoKeyRows(
+      s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2"
+    )
+    counted should have size 2
+    counted.head shouldBe (("x", "a", 2.0))
+    // the same, COUNT(*) not returned: the rows carry it to the sort only
+    val unprojected =
+      rowsOf(s"SELECT g1, k FROM $index GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2")
+    unprojected should have size 2
+    (cell(unprojected.head, "g1"), cell(unprojected.head, "k")) shouldBe (("x", "a"))
+    unprojected.flatMap(_.keys).distinct shouldBe Seq("g1", "k")
+    // DuckDB: (y,a,900) (w,c,7) (x,a,5)
+    rowsOf(
+      s"SELECT g1, k, MAX(n) AS m FROM $index GROUP BY g1, k ORDER BY MAX(n) DESC LIMIT 3"
+    ).map(r =>
+      (String.valueOf(cell(r, "g1")), String.valueOf(cell(r, "k")), number(cell(r, "m")))
+    ) shouldBe
+    Seq(("y", "a", Some(900.0)), ("w", "c", Some(7.0)), ("x", "a", Some(5.0)))
+  }
+
   it should "place a NULL aggregate where the same ORDER BY over one level places it" in {
     def groups(sql: String): Seq[(String, Option[Double])] =
       rowsOf(sql).map(r => String.valueOf(cell(r, "g1")) -> number(cell(r, "m")))

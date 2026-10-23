@@ -174,4 +174,18 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     2
   }
 
+  it should "order its levels by the aggregate an ORDER BY spells, returned or not" in {
+    orderOf(
+      body("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2"),
+      "k"
+    ) should include(""""c":"desc"""")
+    sizeOf(
+      body("SELECT g1, k FROM t GROUP BY g1, k ORDER BY COUNT(*) DESC LIMIT 2"),
+      "k"
+    ) shouldBe 2
+    sizeOf(
+      body("SELECT g1, k, MAX(n) AS m FROM t GROUP BY g1, k ORDER BY MAX(n) DESC LIMIT 3"),
+      "g1"
+    ) shouldBe 65536
+  }
 }
