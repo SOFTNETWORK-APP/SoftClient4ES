@@ -117,6 +117,8 @@ trait GroupedAggregateSemanticsSpec
 
   override def afterAll(): Unit = {
     client.deleteIndex(index)
+    client.deleteIndex("grouped_aggregate_mixed_int")
+    client.deleteIndex("grouped_aggregate_mixed_long")
     super.afterAll()
   }
 
@@ -267,32 +269,32 @@ trait GroupedAggregateSemanticsSpec
     }
   }
 
-  /** Elasticsearch computes a SAMPLE deviation from 7.7 on: before, every group answers NULL. */
-  private lazy val samplesComputed: Boolean = client.asInstanceOf[VersionApi].version match {
-    case ElasticSuccess(v) => ElasticsearchVersion.isAtLeast(v, 7, 7)
-    case other             => fail(s"$other")
-  }
-
   "STDDEV / VARIANCE of a group" should
   "answer NULL with no value, and NULL for a SAMPLE statistic of one value" in {
     def of(fn: String) = byGroup(s"SELECT g1, $fn(n) AS a FROM $index GROUP BY g1", "a")(number)
-    def sampled(expected: Map[String, Option[Double]]) =
-      if (samplesComputed) expected else expected.map { case (g, _) => g -> None }
+    // on every release: before 7.7 Elasticsearch reports no sample statistic, and it is derived
+    // from the count, the sum and the sum of squares it reports
     // DuckDB: w NULL, x 519.9233917928037, y 636.3961030678928, z NULL
-    close(
-      sampled(
-        Map(
-          "w" -> None,
-          "x" -> Some(519.9233917928037),
-          "y" -> Some(636.3961030678928),
-          "z" -> None
-        )
-      )
-    )(of("STDDEV_SAMP"))
+    Seq("STDDEV", "STDDEV_SAMP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        close(
+          Map(
+            "w" -> None,
+            "x" -> Some(519.9233917928037),
+            "y" -> Some(636.3961030678928),
+            "z" -> None
+          )
+        )(of(fn))
+      }
+    }
     // DuckDB: w NULL, x 270320.3333333333, y 405000.0, z NULL
-    close(
-      sampled(Map("w" -> None, "x" -> Some(270320.3333333333), "y" -> Some(405000.0), "z" -> None))
-    )(of("VAR_SAMP"))
+    Seq("VARIANCE", "VAR_SAMP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        close(
+          Map("w" -> None, "x" -> Some(270320.3333333333), "y" -> Some(405000.0), "z" -> None)
+        )(of(fn))
+      }
+    }
     // DuckDB: w 0.0, x 424.5156717431708, y 450.0, z NULL
     close(Map("w" -> Some(0.0), "x" -> Some(424.5156717431708), "y" -> Some(450.0), "z" -> None))(
       of("STDDEV_POP")
@@ -492,5 +494,185 @@ trait GroupedAggregateSemanticsSpec
       .toSeq shouldBe
     empty
     ddl(s"DROP TABLE IF EXISTS $table")
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A GROUP BY with LIMIT n OFFSET m
+  // ---------------------------------------------------------------------------------------------
+
+  "a GROUP BY with LIMIT n OFFSET m" should "skip m groups, then answer n" in {
+    // DuckDB: (x,b,1) (y,a,1) (y,c,1)
+    twoKeyRows(
+      s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY g1 ASC, k ASC " +
+      "LIMIT 3 OFFSET 2"
+    ) shouldBe Seq(("x", "b", 1.0), ("y", "a", 1.0), ("y", "c", 1.0))
+    // DuckDB: (y,c,1) (x,b,1) -- ordered by a key that is not the first
+    twoKeyRows(
+      s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY k DESC, g1 ASC " +
+      "LIMIT 2 OFFSET 1"
+    ) shouldBe Seq(("y", "c", 1.0), ("x", "b", 1.0))
+    // DuckDB: x 3, y 2 -- one key
+    rowsOf(s"SELECT g1, COUNT(*) AS c FROM $index GROUP BY g1 ORDER BY g1 ASC LIMIT 2 OFFSET 1")
+      .map(r => String.valueOf(cell(r, "g1")) -> number(cell(r, "c"))) shouldBe
+    Seq("x" -> Some(3.0), "y" -> Some(2.0))
+    // DuckDB: none -- past the last group
+    twoKeyRows(
+      s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY g1 ASC, k ASC " +
+      "LIMIT 2 OFFSET 10"
+    ) shouldBe empty
+    // no ORDER BY: two of DuckDB's groups
+    val unordered =
+      twoKeyRows(s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k LIMIT 2 OFFSET 1")
+    unordered should have size 2
+    unordered.toSet.subsetOf(twoKeyGroups) shouldBe true
+    // the control: OFFSET 0
+    twoKeyRows(
+      s"SELECT g1, k, COUNT(*) AS c FROM $index GROUP BY g1, k ORDER BY g1 ASC, k ASC " +
+      "LIMIT 2 OFFSET 0"
+    ) shouldBe Seq(("w", "c", 1.0), ("x", "a", 2.0))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The aggregates Elasticsearch cannot answer as SQL does: refused by name
+  // ---------------------------------------------------------------------------------------------
+
+  /** The message `sql` is refused with, or the test fails with what it answered. */
+  private def refused(sql: String): String =
+    scala.util.Try(Await.result(client.run(sql), 60.seconds)) match {
+      case scala.util.Success(ElasticFailure(error)) => error.message
+      case other => fail(s"[$sql] answered $other instead of a refusal")
+    }
+
+  "an aggregate whose DISTINCT Elasticsearch would drop" should "be refused by name" in {
+    Seq(
+      s"SELECT g1, AVG(DISTINCT n) AS a FROM $index GROUP BY g1",
+      s"SELECT AVG(DISTINCT n) AS a FROM $index",
+      s"SELECT g1, SUM(DISTINCT n) AS a FROM $index GROUP BY g1",
+      s"SELECT g1, STDDEV(DISTINCT n) AS a FROM $index GROUP BY g1"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        refused(sql) should include("computes this aggregate over every value")
+      }
+    }
+    // the control: COUNT(DISTINCT) counts distinct values (DuckDB: w 1, x 2, y 2, z 2)
+    byGroup(s"SELECT g1, COUNT(DISTINCT k) AS a FROM $index GROUP BY g1", "a")(number) shouldBe
+    Map("w" -> Some(1.0), "x" -> Some(2.0), "y" -> Some(2.0), "z" -> Some(2.0))
+  }
+
+  "GREATEST / LEAST over an aggregate that can be NULL" should
+  "be refused by name in a SELECT, and answered over a COUNT and in a HAVING" in {
+    // DuckDB: GREATEST(MAX(n), 2) is 2 for z, whose documents have no `n`; Elasticsearch skips
+    // that group's calculation
+    Seq(
+      s"SELECT g1, GREATEST(MAX(n), 2) AS a FROM $index GROUP BY g1",
+      s"SELECT g1, LEAST(MIN(x), 0) AS a FROM $index GROUP BY g1",
+      s"SELECT GREATEST(MAX(n), 2) AS a FROM $index WHERE g1 = 'z'"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        refused(sql) should include("is not supported in a calculation over aggregates")
+      }
+    }
+    // over a COUNT (DuckDB: w 2, x 3, y 2, z 2)
+    byGroup(s"SELECT g1, GREATEST(COUNT(n), 2) AS a FROM $index GROUP BY g1", "a")(
+      number
+    ) shouldBe Map("w" -> Some(2.0), "x" -> Some(3.0), "y" -> Some(2.0), "z" -> Some(2.0))
+    // in a HAVING, a NULL aggregate is skipped (DuckDB: w, y)
+    rowsOf(s"SELECT g1, COUNT(*) AS c FROM $index GROUP BY g1 HAVING GREATEST(MAX(n), 2) > 6")
+      .map(r => String.valueOf(cell(r, "g1")))
+      .toSet shouldBe Set("w", "y")
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // An index pattern whose indices map the key with two integer types
+  // ---------------------------------------------------------------------------------------------
+
+  private val mixedInt = "grouped_aggregate_mixed_int"
+  private val mixedLong = "grouped_aggregate_mixed_long"
+
+  "a key that the indices map integer and long" should
+  "be a BIGINT, whose key filter answers no group for 1.5" in {
+    Seq(mixedInt -> ("integer", Seq(1, 2)), mixedLong -> ("long", Seq(1, 1, 3))).foreach {
+      case (name, (lvalType, values)) =>
+        client.createIndex(name, mappings = None, aliases = Nil).get shouldBe true
+        client
+          .setMapping(
+            name,
+            s"""{"properties": {"id": {"type": "keyword"}, "lval": {"type": "$lvalType"}}}"""
+          )
+          .get shouldBe true
+        implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = name, logEvery = 10)
+        implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+          Source.fromIterator(() => list.iterator)
+        client.bulk[String](
+          values.zipWithIndex.map { case (v, i) => s"""{"id": "$lvalType-$i", "lval": $v}""" }.toList,
+          identity,
+          idKey = Some(Set("id"))
+        ) match {
+          case ElasticSuccess(_)     => client.refresh(name)
+          case ElasticFailure(error) => fail(s"Bulk indexing $name failed: ${error.message}")
+        }
+    }
+    def counts(having: String): Map[String, Option[Double]] =
+      rowsOf(
+        s"SELECT lval, COUNT(*) AS c FROM $mixedInt, $mixedLong GROUP BY lval HAVING $having"
+      ).map(r => String.valueOf(cell(r, "lval")) -> number(cell(r, "c"))).toMap
+    // DuckDB (UNION ALL BY NAME of an INTEGER and a BIGINT column: BIGINT): no group
+    counts("lval = 1.5") shouldBe empty
+    // the control: a whole number keeps its group, counted over both indices (DuckDB: 1 -> 3)
+    counts("lval = 1") shouldBe Map("1" -> Some(3.0))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // ALTER TABLE beside a stored-script processor
+  // ---------------------------------------------------------------------------------------------
+
+  "ALTER TABLE on a table whose pipeline runs a stored script" should
+  "succeed, and keep the processor as it is stored" in {
+    val table = "grouped_alter_stored_script"
+    val pipeline = s"${table}_ddl_default_pipeline"
+    val script = "grouped_tag_document"
+    val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+    def ddl(sql: String): Unit =
+      Await.result(client.run(sql), 120.seconds) match {
+        case ElasticSuccess(_)     =>
+        case ElasticFailure(error) => fail(s"[$sql] failed: ${error.message}")
+      }
+    ddl(s"DROP TABLE IF EXISTS $table")
+    ddl(s"DROP PIPELINE IF EXISTS $pipeline")
+    rest(
+      "PUT",
+      s"/_scripts/$script",
+      Some("""{"script": {"lang": "painless", "source": "ctx.tag = params.tag"}}""")
+    )._1 shouldBe 200
+    ddl(s"CREATE TABLE $table (id KEYWORD, a INT, tag KEYWORD, PRIMARY KEY (id))")
+    val stored = client.asInstanceOf[PipelineApi].getPipeline(pipeline) match {
+      case ElasticSuccess(Some(json)) =>
+        mapper.readTree(json).asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+      case other => fail(s"$other")
+    }
+    val processor = s"""{"script":{"id":"$script","params":{"tag":"t"}}}"""
+    stored
+      .get("processors")
+      .asInstanceOf[com.fasterxml.jackson.databind.node.ArrayNode]
+      .add(mapper.readTree(processor))
+    client
+      .asInstanceOf[PipelineApi]
+      .createPipeline(pipeline, mapper.writeValueAsString(stored)) shouldBe
+    ElasticSuccess(true)
+
+    // it used to fail with a NullPointerException reading the processor
+    ddl(s"ALTER TABLE $table ADD COLUMN x INT SCRIPT AS (a * 2)")
+
+    val (_, after) = rest("GET", s"/_ingest/pipeline/$pipeline")
+    val processors = mapper.readTree(after).path(pipeline).path("processors")
+    processors.elements().asScala.map(mapper.writeValueAsString(_)).toSeq should contain(processor)
+    // and a document goes through both: the computed column and the stored script
+    ddl(s"INSERT INTO $table (id, a) VALUES ('d1', 4)")
+    client.refresh(table)
+    rowsOf(s"SELECT id, x, tag FROM $table WHERE id = 'd1'")
+      .map(r => (number(cell(r, "x")), String.valueOf(cell(r, "tag")))) shouldBe
+    Seq((Some(8.0), "t"))
+    ddl(s"DROP TABLE IF EXISTS $table")
+    rest("DELETE", s"/_scripts/$script")
   }
 }
