@@ -77,7 +77,9 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   private val allIds: Set[String] = (1 to 7).map(i => s"p$i").toSet
 
-  /** A second index, whose first parent holds five elements `s1` (and one `s2`). */
+  /** A second index: `e1` holds five elements `s1` (and one `s2`), `e1` and `e2` a half (`h`),
+    * `e3` neither.
+    */
   private val elementsIndex = "types_predicates_functions_elements"
 
   override def beforeAll(): Unit = {
@@ -129,8 +131,8 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     client
       .setMapping(
         elementsIndex,
-        """{"properties": {"id": {"type": "keyword"}, "items": {"type": "nested", "properties": {
-          | "sku": {"type": "keyword"}, "qty": {"type": "integer"}}}}}""".stripMargin
+        """{"properties": {"id": {"type": "keyword"}, "h": {"type": "double"}, "items": {"type":
+          | "nested", "properties": {"sku": {"type": "keyword"}, "qty": {"type": "integer"}}}}}""".stripMargin
       )
       .get shouldBe true
     locally {
@@ -139,8 +141,9 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
         BulkOptions(defaultIndex = elementsIndex, logEvery = 10)
       client.bulk[String](
         List(
-          """{"id":"e1","items":[{"sku":"s1","qty":1},{"sku":"s1","qty":2},{"sku":"s1","qty":3},{"sku":"s1","qty":4},{"sku":"s1","qty":5},{"sku":"s2","qty":6}]}""",
-          """{"id":"e2","items":[{"sku":"s1","qty":7},{"sku":"s3","qty":8}]}"""
+          """{"id":"e1","h":2.5,"items":[{"sku":"s1","qty":1},{"sku":"s1","qty":2},{"sku":"s1","qty":3},{"sku":"s1","qty":4},{"sku":"s1","qty":5},{"sku":"s2","qty":6}]}""",
+          """{"id":"e2","h":-2.5,"items":[{"sku":"s1","qty":7},{"sku":"s3","qty":8}]}""",
+          """{"id":"e3"}"""
         ),
         identity,
         idKey = Some(Set("id"))
@@ -570,5 +573,44 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       valuesById(s"SELECT id, CONCAT(k, '-', g1) AS v FROM $table") shouldBe
       Map("q1" -> "a-b", "q2" -> "-c")
     } finally execute(s"DROP TABLE IF EXISTS $table")
+  }
+
+  // -- functions: ROUND to no decimal place -----------------------------------------------------
+
+  /** `ROUND(x)` and `ROUND(x, 0)` round a half AWAY from zero, as DuckDB 1.5.5 does: `ROUND(2.5)` is
+    * `3` and `ROUND(-2.5)` is `-3`. The script rounded a half up (`Math.round`), so `-2.5` answered
+    * `-2`. A NULL operand that is no name (`ROUND(ABS(x))` over a document missing `x`) answers
+    * NULL: it was multiplied, and the shard failed.
+    */
+  "ROUND to no decimal place" should "round a half away from zero and answer NULL for NULL" in {
+    def numbers(sql: String): Map[String, Option[BigDecimal]] =
+      valuesById(sql).map { case (id, v) => id -> decimal(v) }
+    val halves = Map(
+      "e1" -> Some(BigDecimal(3)),
+      "e2" -> Some(BigDecimal(-3)),
+      "e3" -> None
+    )
+    numbers(s"SELECT id, ROUND(h) AS v FROM $elementsIndex") shouldBe halves
+    numbers(s"SELECT id, ROUND(h, 0) AS v FROM $elementsIndex") shouldBe halves
+    numbers(s"SELECT id, ROUND(ABS(h)) AS v FROM $elementsIndex") shouldBe Map(
+      "e1" -> Some(BigDecimal(3)),
+      "e2" -> Some(BigDecimal(3)),
+      "e3" -> None
+    )
+    idsOf(s"SELECT id FROM $elementsIndex WHERE ROUND(h) = -3") shouldBe Set("e2")
+    // ROUND over a NULL function value, on every document of the main index (DuckDB's values)
+    numbers(s"SELECT id, ROUND(ABS(x)) AS v FROM $index") shouldBe Map(
+      "p1" -> Some(BigDecimal(2)),
+      "p2" -> Some(BigDecimal(2)),
+      "p3" -> Some(BigDecimal(2)),
+      "p4" -> None,
+      "p5" -> Some(BigDecimal(1)),
+      "p6" -> Some(BigDecimal(1)),
+      "p7" -> Some(BigDecimal(3))
+    )
+    numbers(s"SELECT id, ROUND(ABS(x), 1) AS v FROM $index").get("p4") shouldBe Some(None)
+    // control: a value that is no half
+    numbers(s"SELECT id, ROUND(x, 0) AS v FROM $index").get("p2") shouldBe
+    Some(Some(BigDecimal(-2)))
   }
 }

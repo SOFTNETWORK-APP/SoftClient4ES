@@ -225,32 +225,35 @@ package object math {
 
     override def args: List[PainlessScript] = List(arg, PowParam(scale.getOrElse(0)))
 
-    /** 🔴 `ROUND(x, d)` with `d` decimal places is DuckDB 1.5.5's double rounding, `std::round(x *
-      * 10^d) / 10^d` -- a half rounded away from zero -- answered as a DOUBLE: `ROUND(2.46, 1)` is
-      * `2.5`, `ROUND(-1.25, 1)` is `-1.3` (measured). The script was `Math.round((x * 10^d) /
-      * 10^d)`, which IS `Math.round(x)`: every scale answered a whole number, in every context.
-      * Java's `Math.round` rounds a half up, toward positive infinity, so the rounding is taken on
-      * the magnitude and the sign restored: one form, in a query, an ingest processor and a
-      * transform alike, since the old one was wrong in each.
+    /** 🔴 ONE rounding, DuckDB 1.5.5's, at every scale: `std::round(x * 10^d) / 10^d`, a half
+      * rounded AWAY from zero. `ROUND(2.46, 1)` is `2.5`, `ROUND(-1.25, 1)` is `-1.3`, and without
+      * decimal places (`ROUND(x)`, `ROUND(x, 0)`) `ROUND(2.5)` is `3` and `ROUND(-2.5)` is `-3`
+      * (measured). Java's `Math.round` rounds a half UP, toward positive infinity, so the rounding
+      * is taken on the magnitude and the sign restored. To decimal places the value is the DOUBLE
+      * DuckDB computes; to none it is the whole number it always was (a `Long`, so a GROUP BY key
+      * and its HAVING filter print it as before).
       *
-      * The value is read twice. In a query an operand that is no name -- a function's rendering,
-      * which the call's NULL guard does not test -- is bound once, and NULL answers NULL.
+      * The script was `Math.round((x * 10^d) / 10^d)`, which IS `Math.round(x)`: every scale
+      * answered a whole number, and a whole number rounded half up (`ROUND(-2.5)` answered `-2`).
       *
-      * Without decimal places (`ROUND(x)`, `ROUND(x, 0)`) the script is the one it was, byte for
-      * byte: a whole number, rounded half up (`ROUND(-2.5)` is `-2`, where DuckDB answers `-3`).
+      * The value is read three times, so an operand that is no name -- a function's rendering,
+      * which the call's NULL guard does not test -- is bound once, and its NULL answers NULL:
+      * `ROUND(ABS(x))` multiplied the NULL `ABS` of a document missing `x` and failed the shard.
+      * One form in a query, an ingest processor and a transform alike.
       */
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
-        case List(a, p) if scale.exists(_ != 0) =>
+        case List(a, p) =>
           val one = SQLTypeUtils.asOneValue(a)
           val bound =
-            if (FunctionN.isName(one) || !SQLTypeUtils.convertsArms(context)) None
+            if (FunctionN.isName(one)) None
             else context.flatMap(_.addParam(LiteralParam(one)))
           val x = bound.getOrElse(one)
-          val rounded =
-            s"Double.valueOf(Math.signum($x) * ${mathOp.painless(context)}(Math.abs($x) * $p) / $p)"
-          bound.fold(rounded)(b => s"($b == null ? null : $rounded)")
-        case List(a, p) => s"Long.valueOf(${mathOp.painless(context)}(($a * $p) / $p))"
+          val rounded = s"Math.signum($x) * ${mathOp.painless(context)}(Math.abs($x) * $p) / $p"
+          val value =
+            if (scale.exists(_ != 0)) s"Double.valueOf($rounded)"
+            else s"Long.valueOf((long) ($rounded))"
+          bound.fold(value)(b => s"($b == null ? null : $value)")
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }
 

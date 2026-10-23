@@ -2858,7 +2858,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |    "__c10": {
       |      "script": {
       |        "lang": "painless",
-      |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Long.valueOf(Math.round((param1 * param2) / param2))"
+      |        "source": "def param1 = (doc['identifier'].size() == 0 ? null : doc['identifier'].value); def param2 = Math.pow(10, 0); (param1 == null || param2 == null) ? null : Long.valueOf((long) (Math.signum(param1) * Math.round(Math.abs(param1) * param2) / param2))"
       |      }
       |    },
       |    "__c11": {
@@ -2958,6 +2958,8 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(",LocalDate", ", LocalDate")
       .replaceAll("=DateTimeFormatter", " = DateTimeFormatter")
       .replaceAll("\\(double\\)(\\d)", "(double) $1")
+      // ROUND to no decimal place: `Long.valueOf((long) (…))`, a space the normaliser cannot restore
+      .replaceAll("\\(long\\)\\(", "(long) (")
       .replace(
         "(param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(()- > newIllegalArgumentException('cannottakesquarerootofanegativenumber')).toString()):Double.valueOf(Math.sqrt(param1)))",
         "(param1 != null && param1 < 0 ? Double.valueOf(Optional.empty().orElseThrow(() -> new IllegalArgumentException('cannot take square root of a negative number')).toString()) : Double.valueOf(Math.sqrt(param1)))"
