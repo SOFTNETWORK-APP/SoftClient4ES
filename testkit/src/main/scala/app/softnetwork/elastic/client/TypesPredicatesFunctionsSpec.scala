@@ -677,4 +677,50 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       s"SELECT id, DATETIME_FORMAT(DATE_TRUNC(ts, MONTH), '%Y-%m') AS v FROM $index"
     ).get("p2") shouldBe Some("2024-02")
   }
+
+  // -- functions: a TEMPORAL expression cast to DATE or BIGINT ---------------------------------------
+
+  /** `DATE_TRUNC` over a CASE of a DATE and a date-time arm renders either class, row by row: its
+    * cast to DATE is the date part, and to BIGINT the epoch milliseconds (DuckDB's values, a DATE's
+    * UTC midnight). Both answered the truncated timestamp itself under their label.
+    */
+  "CAST of a TEMPORAL expression AS DATE or BIGINT" should "convert the value, as DuckDB does" in {
+    val months = Map(
+      "p1" -> "2024-01-01",
+      "p2" -> "2024-02-01",
+      "p3" -> "2024-03-01",
+      "p5" -> "2023-12-01",
+      "p6" -> "2024-01-01",
+      "p7" -> "2024-06-01"
+    )
+    Seq(
+      "CASE WHEN n > 1 THEN CAST(d AS DATE) ELSE CAST(d AS DATETIME) END",
+      "CASE WHEN n > 1 THEN ts ELSE CAST(d AS DATETIME) END"
+    ).foreach { operand =>
+      withClue(operand) {
+        val dates = valuesById(s"SELECT id, CAST(DATE_TRUNC($operand, MONTH) AS DATE) AS v FROM $index")
+        dates.get("p4") shouldBe Some("null")
+        // the date itself, never a timestamp under the DATE label (`2024-01-01T00:00Z`)
+        months.foreach { case (id, day) =>
+          withClue(s"$id: ${dates.get(id)} ")(dates.get(id) shouldBe Some(day))
+        }
+        reportedTypes(
+          s"SELECT id, CAST(DATE_TRUNC($operand, MONTH) AS DATE) AS v FROM $index"
+        ).get("v") shouldBe Some(SQLTypes.Date)
+        val millis =
+          valuesById(s"SELECT id, CAST(DATE_TRUNC($operand, MONTH) AS BIGINT) AS v FROM $index")
+        millis.get("p4") shouldBe Some("null")
+        months.foreach { case (id, day) =>
+          withClue(s"$id: ${millis.get(id)} ")(
+            millis.get(id).map(BigDecimal(_)) shouldBe Some(
+              BigDecimal(java.time.LocalDate.parse(day).atStartOfDay(java.time.ZoneOffset.UTC).toInstant.toEpochMilli)
+            )
+          )
+        }
+      }
+    }
+    // control: a TIMESTAMP column cast to BIGINT, its epoch milliseconds
+    valuesById(s"SELECT id, CAST(ts AS BIGINT) AS v FROM $index").get("p1").map(BigDecimal(_)) shouldBe
+    Some(BigDecimal(Instant.parse("2024-01-05T10:20:30Z").toEpochMilli))
+  }
 }

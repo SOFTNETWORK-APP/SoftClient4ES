@@ -75,4 +75,47 @@ class TemporalCastToTimeSpec extends AnyFlatSpec with Matchers {
       PainlessContextType.Processor
     ) should not include "instanceof LocalDate"
   }
+
+  private val toDate: String => String = x =>
+    s"($x == null ? null : $x instanceof LocalDate ? $x : " +
+    s"$x instanceof LocalDateTime ? $x.toLocalDate() : $x.toInstant().atZone(ZoneId.of('Z')).toLocalDate())"
+
+  private val toEpochMillis: String => String = x =>
+    s"($x == null ? null : (def) ($x instanceof LocalDate ? " +
+    s"$x.atStartOfDay(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+    s"$x instanceof LocalDateTime ? $x.atZone(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+    s"$x.toInstant().toEpochMilli()))"
+
+  /** The same dispatch to a DATE (the value's date part, as DuckDB's `CAST(<timestamp> AS DATE)`)
+    * and to a BIGINT (the epoch milliseconds of the instant, a DATE's of its UTC midnight). Both
+    * answered the truncated timestamp itself under their label.
+    */
+  "a TEMPORAL operand cast to DATE or BIGINT" should "be converted per row, from its runtime class" in {
+    Seq(
+      "CASE WHEN n > 1 THEN CAST(d AS DATE) ELSE CAST(d AS DATETIME) END",
+      "CASE WHEN n > 1 THEN ts ELSE CAST(d AS DATETIME) END"
+    ).foreach { operand =>
+      withClue(operand) {
+        scriptOf(s"SELECT CAST(DATE_TRUNC($operand, MONTH) AS DATE) FROM t") should endWith(
+          toDate("param6")
+        )
+        scriptOf(s"SELECT CAST(DATE_TRUNC($operand, MONTH) AS BIGINT) FROM t") should endWith(
+          toEpochMillis("param6")
+        )
+      }
+    }
+  }
+
+  "a typed operand cast to DATE or BIGINT" should "keep its own conversion" in {
+    scriptOf("SELECT CAST(DATE_TRUNC(ts, MONTH) AS BIGINT) FROM t") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value.toInstant().atZone(ZoneId.of('Z'))" +
+    ".withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS)); " +
+    "(param1 != null ? (def)(param1.toInstant().toEpochMilli()) : null)"
+    scriptOf("SELECT CAST(ts AS DATE) FROM t") should not include "instanceof"
+    scriptOf(
+      "SELECT CAST(DATE_TRUNC(CASE WHEN n > 1 THEN ts ELSE CAST(d AS DATETIME) END, MONTH) " +
+      "AS BIGINT) FROM t",
+      PainlessContextType.Processor
+    ) should not include "instanceof LocalDate"
+  }
 }

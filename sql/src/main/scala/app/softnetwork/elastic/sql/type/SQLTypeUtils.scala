@@ -699,6 +699,50 @@ object SQLTypeUtils {
     found
   }
 
+  /** 🔴 An explicit conversion (`CAST`, `CONVERT`, `TRY_CAST`) of a TEMPORAL operand -- a function
+    * that only adjusts its receiver (`DATE_TRUNC`, `DATE_ADD`) over a CASE or a COALESCE whose arms
+    * are a DATE and a date-time -- to a DATE or a BIGINT, decided per row from the runtime class, as
+    * the conversion to a TIME is ([[coerce]]'s TEMPORAL arm): to a DATE, the value's date part, as
+    * DuckDB's `CAST(<timestamp> AS DATE)` (a `LocalDate` is itself, a `LocalDateTime` its date, a
+    * zoned doc value its UTC date); to a BIGINT, the epoch milliseconds of the instant, a DATE's of
+    * its UTC midnight (the rule `Conversion` follows for a DATE operand). Before, no conversion
+    * matched and the cast answered the value itself under its label.
+    *
+    * Only an explicit conversion asks, not every [[coerce]]: a DATE-input function over a TEMPORAL
+    * chain (`DATE_FORMAT(DATE_TRUNC(…), '%H')`) or an arm of a conditional keeps what it rendered.
+    * In a query only ([[convertsArms]]), the operand bound once, and NULL answers NULL; `None` for
+    * any other conversion, the operand then left unrendered (`expr` is read only when it applies).
+    */
+  def temporalByRuntimeClass(
+    expr: => String,
+    to: SQLType,
+    context: Option[PainlessContext]
+  ): Option[String] =
+    if (!convertsArms(context)) None
+    else {
+      def bound: String = {
+        val one = asOneValue(expr)
+        context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+      }
+      to match {
+        case SQLTypes.Date =>
+          val x = bound
+          Some(
+            s"($x == null ? null : $x instanceof LocalDate ? $x : " +
+            s"$x instanceof LocalDateTime ? $x.toLocalDate() : $x$painlessUtcLocalDate)"
+          )
+        case SQLTypes.BigInt =>
+          val x = bound
+          Some(
+            s"($x == null ? null : (def) ($x instanceof LocalDate ? " +
+            s"$x.atStartOfDay(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x instanceof LocalDateTime ? $x.atZone(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x.toInstant().toEpochMilli()))"
+          )
+        case _ => None
+      }
+    }
+
   def coerce(
     expr: String,
     from: SQLType,
