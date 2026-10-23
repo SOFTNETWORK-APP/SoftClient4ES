@@ -293,6 +293,17 @@ package object schema {
             )
           }
 
+        // A STORED script (`{"script": {"id": "<stored script>", "params": {...}}}`) has no
+        // `source`: no column declares it, so it is kept as it is stored, as any processor the
+        // table does not declare (it used to throw a NullPointerException on `source`, which made
+        // every ALTER TABLE of such a table fail).
+        case IngestProcessorType.Script.name if !props.hasNonNull("source") =>
+          GenericProcessor(
+            pipelineType = pipelineType,
+            processorType = IngestProcessorType.Script,
+            properties = props
+          )
+
         case IngestProcessorType.Script.name =>
           val desc = Option(props.get("description")).map(_.asText())
           val lang = Option(props.get("lang")).map(_.asText()).getOrElse("painless")

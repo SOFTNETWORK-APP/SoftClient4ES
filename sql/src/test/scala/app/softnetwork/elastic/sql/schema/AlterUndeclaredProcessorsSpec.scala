@@ -150,6 +150,7 @@ class AlterUndeclaredProcessorsSpec extends AnyFlatSpec with Matchers {
   private val leadingRename =
     """{"rename":{"field":"a_raw","target_field":"a","ignore_missing":true}}"""
   private val unrenderable = """{"set":{"field":"tags","value":[null,"a"]}}"""
+  private val storedScript = """{"script":{"id":"tag_document","params":{"tag":"t"}}}"""
 
   private val AddNote = "ALTER TABLE t ADD COLUMN note KEYWORD"
   private val DropC = "ALTER TABLE t DROP COLUMN c"
@@ -277,6 +278,24 @@ class AlterUndeclaredProcessorsSpec extends AnyFlatSpec with Matchers {
         }
       }
     }
+  }
+
+  it should "keep a stored-script processor verbatim for every ALTER" in {
+    // a stored script has no `source`: reading the pipeline used to throw a NullPointerException,
+    // and the ALTER with it
+    Seq(false, true).foreach { on68 =>
+      alters.foreach { sql =>
+        withClue(s"[${form(on68)} $sql] ") {
+          val (json, _, rw) = altered(sql, on68, Seq(storedScript))
+          rw.undeclared.map(_.processorType.name) shouldBe Seq("script")
+          ownedChange(sql, rw.diff)
+          rw.written.processors.last.json shouldBe stored(json, 2)
+          rw.written.processors.last.json shouldBe storedScript
+        }
+      }
+    }
+    // the mechanism: the processor reads as one no column declares
+    IngestProcessor(Default, mapper.readTree(storedScript)) shouldBe a[GenericProcessor]
   }
 
   it should "keep a leading undeclared processor first, verbatim" in {
