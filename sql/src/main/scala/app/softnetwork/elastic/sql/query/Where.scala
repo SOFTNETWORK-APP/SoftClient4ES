@@ -3301,8 +3301,8 @@ case class ElasticParent(
 /** 🔴 A WHERE condition over a column of a NESTED path that no JOIN UNNEST and no `NESTED(…)`
   * declares -- `WHERE items.sku = 's1'` -- is the nested query over that path: the documents one of
   * whose elements satisfies it, as `NESTED(items.sku = 's1')` answers and as DuckDB answers `EXISTS
-  * (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`. Sent as it was, the condition queried the
-  * ROOT document, which holds no field of a nested path: no document matched, HTTP 200.
+  * (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`. Sent as it was, the condition queried
+  * the ROOT document, which holds no field of a nested path: no document matched, HTTP 200.
   *
   * The condition is wrapped in the `ElasticNested` relation the bridge renders for a `NESTED(…)` no
   * JOIN UNNEST declares (its path is the column's first segment). Conditions over the same path,
@@ -3353,7 +3353,7 @@ private[sql] object ImplicitNested {
       val placed: Seq[Either[String, Option[String]]] = columns.map { column =>
         val head = column.name.split('.').head
         nestedPrefixes(column.name, schemaOf(column, request)) match {
-          case Nil                     => Right(None)
+          case Nil                         => Right(None)
           case only :: Nil if only == head => Right(Some(head))
           case paths =>
             Left(s"the column ${column.name}, under the nested path ${paths.last}")
@@ -3391,12 +3391,12 @@ private[sql] object ImplicitNested {
   }
 
   /** The first segment of every dotted column `criteria` reads, through its relations: the nested
-    * path a `NESTED(…)` no JOIN UNNEST declares tests, as the bridge renders it. The ONE derivation,
-    * read by [[wrap]] and by the bridge: read off the operand's NAME alone, it missed a column under
-    * a function (`UPPER(items.sku)`, whose operand is a nameless wrapper).
+    * path a `NESTED(…)` no JOIN UNNEST declares tests, as the bridge renders it. The ONE
+    * derivation, read by [[wrap]] and by the bridge: read off the operand's NAME alone, it missed a
+    * column under a function (`UPPER(items.sku)`, whose operand is a nameless wrapper).
     */
   def nestedPathsOf(criteria: Criteria): List[String] = criteria match {
-    case p: Predicate              => nestedPathsOf(p.leftCriteria) ++ nestedPathsOf(p.rightCriteria)
+    case p: Predicate => nestedPathsOf(p.leftCriteria) ++ nestedPathsOf(p.rightCriteria)
     case relation: ElasticRelation => nestedPathsOf(relation.criteria)
     case m: MultiMatchCriteria     => nestedPathsOf(m.criteria)
     case e: Expression =>

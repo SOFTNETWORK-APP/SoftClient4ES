@@ -9,8 +9,8 @@ import org.scalatest.matchers.should.Matchers
 
 /** `NOT BETWEEN` whose temporal bounds render one as Elasticsearch date math and the other as a
   * script (`LAST_DAY(…)`) is `NOT (a AND b)`, as SQL reads it: the two halves are negated as ONE
-  * condition. It rendered `must_not: [a, b]`, i.e. `NOT a AND NOT b`, which no value satisfies
-  * when the bounds are in order: an empty answer, HTTP 200.
+  * condition. It rendered `must_not: [a, b]`, i.e. `NOT a AND NOT b`, which no value satisfies when
+  * the bounds are in order: an empty answer, HTTP 200.
   */
 class NotBetweenMixedBoundSpec extends AnyFlatSpec with Matchers {
 

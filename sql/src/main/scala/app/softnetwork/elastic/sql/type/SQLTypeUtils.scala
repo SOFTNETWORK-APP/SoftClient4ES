@@ -701,11 +701,11 @@ object SQLTypeUtils {
 
   /** 🔴 An explicit conversion (`CAST`, `CONVERT`, `TRY_CAST`) of a TEMPORAL operand -- a function
     * that only adjusts its receiver (`DATE_TRUNC`, `DATE_ADD`) over a CASE or a COALESCE whose arms
-    * are a DATE and a date-time -- to a DATE or a BIGINT, decided per row from the runtime class, as
-    * the conversion to a TIME is ([[coerce]]'s TEMPORAL arm): to a DATE, the value's date part, as
-    * DuckDB's `CAST(<timestamp> AS DATE)` (a `LocalDate` is itself, a `LocalDateTime` its date, a
-    * zoned doc value its UTC date); to a BIGINT, the epoch milliseconds of the instant, a DATE's of
-    * its UTC midnight (the rule `Conversion` follows for a DATE operand). Before, no conversion
+    * are a DATE and a date-time -- to a DATE or a BIGINT, decided per row from the runtime class,
+    * as the conversion to a TIME is ([[coerce]]'s TEMPORAL arm): to a DATE, the value's date part,
+    * as DuckDB's `CAST(<timestamp> AS DATE)` (a `LocalDate` is itself, a `LocalDateTime` its date,
+    * a zoned doc value its UTC date); to a BIGINT, the epoch milliseconds of the instant, a DATE's
+    * of its UTC midnight (the rule `Conversion` follows for a DATE operand). Before, no conversion
     * matched and the cast answered the value itself under its label.
     *
     * Only an explicit conversion asks, not every [[coerce]]: a DATE-input function over a TEMPORAL

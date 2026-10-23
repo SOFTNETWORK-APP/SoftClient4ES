@@ -86,7 +86,11 @@ class ImplicitNestedConditionSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "render the same once resolved twice, as core resolves a scrolled search" in {
-    Seq("items.sku = 's1'", "items.sku = 's2' AND items.qty > 2", "items.sku = 's1' AND tags.v = 'x'")
+    Seq(
+      "items.sku = 's1'",
+      "items.sku = 's2' AND items.qty > 2",
+      "items.sku = 's1' AND tags.v = 'x'"
+    )
       .foreach { where =>
         val once = resolved(s"SELECT id FROM t WHERE $where")
         withClue(where)(queryOf(once.update(Some(schema))) shouldBe queryOf(once))
@@ -98,7 +102,11 @@ class ImplicitNestedConditionSpec extends AnyFlatSpec with Matchers {
       "items.qty > n" -> "a column of the nested path items and a column of the document"
     ).foreach { case (where, reason) =>
       withClue(where) {
-        resolved(s"SELECT id FROM t WHERE $where").validateResolved().left.toOption.getOrElse("") should
+        resolved(s"SELECT id FROM t WHERE $where")
+          .validateResolved()
+          .left
+          .toOption
+          .getOrElse("") should
         include(reason)
       }
     }
@@ -111,7 +119,8 @@ class ImplicitNestedConditionSpec extends AnyFlatSpec with Matchers {
       case other                  => fail(s"$other")
     }
     nestedCount(noSchema) shouldBe 0
-    val unnest = queryOf(resolved("SELECT t.id FROM t AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'"))
+    val unnest =
+      queryOf(resolved("SELECT t.id FROM t AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'"))
     unnest should include(""""inner_hits":{"name":"i"""")
     // a condition reading a JOIN UNNEST column beside a column of the document is the UNNEST's:
     // neither wrapped nor refused here (the UNNEST scope rules judge it)

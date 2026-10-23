@@ -150,7 +150,9 @@ class UnnestInnerHitsSizeSpec extends AnyFlatSpec with Matchers {
     }
     val request: ElasticSearchRequest = twice
     mapper.readTree(request.query).findValues("inner_hits").get(0).get("size").asInt() shouldBe 100
-    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2 LIMIT 5") shouldBe Map("item" -> Some(5))
+    innerHitsSizes(s"SELECT t.id $from WHERE item.price > 2 LIMIT 5") shouldBe Map(
+      "item" -> Some(5)
+    )
     innerHitsSizes(s"SELECT c.author $nestedOfNested WHERE r.reply_author = 'x'") shouldBe
     Map("c" -> Some(100), "r" -> Some(100))
   }

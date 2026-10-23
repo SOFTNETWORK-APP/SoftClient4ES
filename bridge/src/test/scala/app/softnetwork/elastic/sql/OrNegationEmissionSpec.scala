@@ -9,8 +9,8 @@ import org.scalatest.matchers.should.Matchers
 
 import scala.jdk.CollectionConverters._
 
-/** Under OR, a negation that cannot fold into its criterion (a MATCH) is ONE of the alternatives:
-  * a `bool { must_not }` inside the `should`. It sat in the bool's own `must_not`, beside the
+/** Under OR, a negation that cannot fold into its criterion (a MATCH) is ONE of the alternatives: a
+  * `bool { must_not }` inside the `should`. It sat in the bool's own `must_not`, beside the
   * `should` clauses, where Elasticsearch requires it of every document: `x = 50 OR NOT MATCH(k)`
   * answered `x = 50 AND NOT MATCH(k)`.
   */
@@ -50,7 +50,9 @@ class OrNegationEmissionSpec extends AnyFlatSpec with Matchers {
           .getOrElse(fail("no should clause tests n"))
         alternatives.size shouldBe 2
         // the negated alternative keeps the documents where its column has a value
-        alternatives.exists(a => a.toString.contains("must_not") && a.toString.contains("exists")) shouldBe true
+        alternatives.exists(a =>
+          a.toString.contains("must_not") && a.toString.contains("exists")
+        ) shouldBe true
       }
     }
   }

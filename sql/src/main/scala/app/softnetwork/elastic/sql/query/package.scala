@@ -930,8 +930,8 @@ package object query {
       *
       * 🔴 The row explosion is the ONE answer to "which elements are rows", read by the reader and
       * here. `… JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'`, no column of `i` projected, answers
-      * one row per matching element; its inner hits were left at Elasticsearch's default size of
-      * 3, so a parent with five matching elements answered three rows, HTTP 200.
+      * one row per matching element; its inner hits were left at Elasticsearch's default size of 3,
+      * so a parent with five matching elements answered three rows, HTTP 200.
       */
     private[this] lazy val rowSourceInnerHits: Set[String] = {
       def withAncestors(u: Unnest): Seq[String] =
@@ -1000,9 +1000,9 @@ package object query {
       * ([[rowSourceInnerHits]]), and a WHERE that filters an UNNEST per element makes them rows
       * (`UnnestScope.rowExplosion`) — which only the RESOLVED WHERE shows, its columns carrying
       * their element. Resolved against a statement whose WHERE is not resolved yet (the parse-time
-      * pass), the element kept Elasticsearch's default size of 3. So when resolving the WHERE
-      * makes more elements rows than before, it is resolved once more, against the statement that
-      * shows them. Only a statement with an UNNEST, a WHERE and no LIMIT asks.
+      * pass), the element kept Elasticsearch's default size of 3. So when resolving the WHERE makes
+      * more elements rows than before, it is resolved once more, against the statement that shows
+      * them. Only a statement with an UNNEST, a WHERE and no LIMIT asks.
       */
     private def withWhereResolved(original: Option[Where]): SingleSearch = {
       val resolved = this.copy(where = original.map(_.update(this)))

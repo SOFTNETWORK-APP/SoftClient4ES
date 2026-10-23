@@ -1507,12 +1507,12 @@ package object time {
     /** 🔴 The operand as the formatter reads it. Elasticsearch 6.8 hands a QUERY script a `date`
       * doc value as a `JodaCompatibleZonedDateTime`, which is no `TemporalAccessor`: the format of
       * a raw date column failed every shard holding such a document ("Cannot cast
-      * org.elasticsearch.script.JodaCompatibleZonedDateTime to java.time.temporal.TemporalAccessor")
-      * and the search answered HTTP 500. On that major the raw doc value is first made the UTC
-      * `ZonedDateTime` it holds, through the normalisation every temporal conversion of a doc value
-      * already takes (`painlessUtcZonedDateTime`). 7 and up hand a `ZonedDateTime`, and an ingest
-      * processor and a transform read no doc value: their scripts keep their bytes. `operand` is a
-      * name (the call's NULL guard tests it first).
+      * org.elasticsearch.script.JodaCompatibleZonedDateTime to
+      * java.time.temporal.TemporalAccessor") and the search answered HTTP 500. On that major the
+      * raw doc value is first made the UTC `ZonedDateTime` it holds, through the normalisation
+      * every temporal conversion of a doc value already takes (`painlessUtcZonedDateTime`). 7 and
+      * up hand a `ZonedDateTime`, and an ingest processor and a transform read no doc value: their
+      * scripts keep their bytes. `operand` is a name (the call's NULL guard tests it first).
       */
     protected def formatterOperand(operand: String, context: Option[PainlessContext]): String =
       if (

@@ -77,8 +77,8 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   private val allIds: Set[String] = (1 to 7).map(i => s"p$i").toSet
 
-  /** A second index: `e1` holds five elements `s1` (and one `s2`), `e1` and `e2` a half (`h`),
-    * `e3` neither.
+  /** A second index: `e1` holds five elements `s1` (and one `s2`), `e1` and `e2` a half (`h`), `e3`
+    * neither.
     */
   private val elementsIndex = "types_predicates_functions_elements"
 
@@ -577,10 +577,10 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   // -- functions: ROUND to no decimal place -----------------------------------------------------
 
-  /** `ROUND(x)` and `ROUND(x, 0)` round a half AWAY from zero, as DuckDB 1.5.5 does: `ROUND(2.5)` is
-    * `3` and `ROUND(-2.5)` is `-3`. The script rounded a half up (`Math.round`), so `-2.5` answered
-    * `-2`. A NULL operand that is no name (`ROUND(ABS(x))` over a document missing `x`) answers
-    * NULL: it was multiplied, and the shard failed.
+  /** `ROUND(x)` and `ROUND(x, 0)` round a half AWAY from zero, as DuckDB 1.5.5 does: `ROUND(2.5)`
+    * is `3` and `ROUND(-2.5)` is `-3`. The script rounded a half up (`Math.round`), so `-2.5`
+    * answered `-2`. A NULL operand that is no name (`ROUND(ABS(x))` over a document missing `x`)
+    * answers NULL: it was multiplied, and the shard failed.
     */
   "ROUND to no decimal place" should "round a half away from zero and answer NULL for NULL" in {
     def numbers(sql: String): Map[String, Option[BigDecimal]] =
@@ -617,9 +617,9 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
   // -- types: ABS of a whole number ----------------------------------------------------------------
 
   /** `ABS` answers its argument's type (DuckDB: `abs(INTEGER)` is an INTEGER, `abs(DOUBLE)` a
-    * DOUBLE). It rendered NUMERIC whatever the argument, so a GROUP BY `ABS(n)` level was a `double`
-    * terms level and its keys came back as `3.0`. DuckDB's groups also hold a NULL one, which a
-    * terms level does not return.
+    * DOUBLE). It rendered NUMERIC whatever the argument, so a GROUP BY `ABS(n)` level was a
+    * `double` terms level and its keys came back as `3.0`. DuckDB's groups also hold a NULL one,
+    * which a terms level does not return.
     */
   "ABS of an INTEGER column" should "report and answer an INTEGER, a GROUP BY key included" in {
     reportedTypes(s"SELECT ABS(n) AS v, ABS(x) AS w FROM $index") shouldBe Map(
@@ -698,7 +698,8 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       "CASE WHEN n > 1 THEN ts ELSE CAST(d AS DATETIME) END"
     ).foreach { operand =>
       withClue(operand) {
-        val dates = valuesById(s"SELECT id, CAST(DATE_TRUNC($operand, MONTH) AS DATE) AS v FROM $index")
+        val dates =
+          valuesById(s"SELECT id, CAST(DATE_TRUNC($operand, MONTH) AS DATE) AS v FROM $index")
         dates.get("p4") shouldBe Some("null")
         // the date itself, never a timestamp under the DATE label (`2024-01-01T00:00Z`)
         months.foreach { case (id, day) =>
@@ -713,14 +714,22 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
         months.foreach { case (id, day) =>
           withClue(s"$id: ${millis.get(id)} ")(
             millis.get(id).map(BigDecimal(_)) shouldBe Some(
-              BigDecimal(java.time.LocalDate.parse(day).atStartOfDay(java.time.ZoneOffset.UTC).toInstant.toEpochMilli)
+              BigDecimal(
+                java.time.LocalDate
+                  .parse(day)
+                  .atStartOfDay(java.time.ZoneOffset.UTC)
+                  .toInstant
+                  .toEpochMilli
+              )
             )
           )
         }
       }
     }
     // control: a TIMESTAMP column cast to BIGINT, its epoch milliseconds
-    valuesById(s"SELECT id, CAST(ts AS BIGINT) AS v FROM $index").get("p1").map(BigDecimal(_)) shouldBe
+    valuesById(s"SELECT id, CAST(ts AS BIGINT) AS v FROM $index")
+      .get("p1")
+      .map(BigDecimal(_)) shouldBe
     Some(BigDecimal(Instant.parse("2024-01-05T10:20:30Z").toEpochMilli))
   }
 
@@ -745,8 +754,8 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   // -- predicates: a negated MATCH under OR -----------------------------------------------------------
 
-  /** `x OR NOT MATCH(k) AGAINST ('a')` keeps the documents satisfying either (DuckDB's rows for
-    * `x OR NOT k = 'a'`; a NULL `k` makes the negation NULL). The negated MATCH stood in the bool's
+  /** `x OR NOT MATCH(k) AGAINST ('a')` keeps the documents satisfying either (DuckDB's rows for `x
+    * OR NOT k = 'a'`; a NULL `k` makes the negation NULL). The negated MATCH stood in the bool's
     * own `must_not`, beside the `should`, so the OR answered an AND.
     */
   "A negated MATCH under OR" should "answer the OR, as DuckDB does" in {
@@ -766,17 +775,17 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   /** `WHERE items.sku = 's1'` keeps the documents one of whose elements satisfies it (DuckDB:
     * `EXISTS (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`); conditions over the same path
-    * test the same element. It queried the root document, which holds no field of a nested path:
-    * no row, HTTP 200. A condition no nested query can test is refused by name.
+    * test the same element. It queried the root document, which holds no field of a nested path: no
+    * row, HTTP 200. A condition no nested query can test is refused by name.
     */
   "A condition over a nested column without NESTED or UNNEST" should "keep the documents with such an element" in {
     Seq(
-      "items.sku = 's1'"                  -> Set("p1", "p3"),
+      "items.sku = 's1'"                   -> Set("p1", "p3"),
       "items.sku = 's2' AND items.qty > 2" -> Set("p2"),
-      "items.sku <> 's1'"                 -> Set("p1", "p2", "p7"),
-      "items.sku IN ('s1', 's3')"         -> Set("p1", "p3", "p7"),
-      "items.qty BETWEEN 2 AND 4"         -> Set("p1", "p2"),
-      "items.sku = 's1' OR g1 = 'e'"      -> Set("p1", "p3", "p7")
+      "items.sku <> 's1'"                  -> Set("p1", "p2", "p7"),
+      "items.sku IN ('s1', 's3')"          -> Set("p1", "p3", "p7"),
+      "items.qty BETWEEN 2 AND 4"          -> Set("p1", "p2"),
+      "items.sku = 's1' OR g1 = 'e'"       -> Set("p1", "p3", "p7")
     ).foreach { case (condition, expected) =>
       withClue(condition)(idsOf(s"SELECT id FROM $index WHERE $condition") shouldBe expected)
     }

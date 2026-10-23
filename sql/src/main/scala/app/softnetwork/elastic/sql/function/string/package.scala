@@ -248,8 +248,8 @@ package object string {
       * same expression answers in a SELECT.
       *
       * Before, in a query, an argument whose NULL nothing flagged -- the `NULL` literal, a
-      * `COALESCE`, a `CASE` or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the
-      * row read the text `"nullx"`, while a NULL column made the whole call NULL. An ingest
+      * `COALESCE`, a `CASE` or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and
+      * the row read the text `"nullx"`, while a NULL column made the whole call NULL. An ingest
       * processor and a transform kept that rule (#382 Ruling B, overturned by the lead's ruling of
       * 2026-10-23): their bytes move, so a pipeline holding a CONCAT is re-created by `ALTER`.
       */

@@ -8,9 +8,9 @@ import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does: `concat(NULL, 'x')` is `'x'`,
-  * `concat(k, 'x')` over a NULL `k` is `'x'`, and `concat(NULL, NULL)` is `''` (measured), in a
-  * query, an ingest processor and a transform alike.
+/** `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does: `concat(NULL, 'x')` is `'x'`, `concat(k,
+  * 'x')` over a NULL `k` is `'x'`, and `concat(NULL, NULL)` is `''` (measured), in a query, an
+  * ingest processor and a transform alike.
   *
   * Before, an argument whose NULL nothing flagged -- the `NULL` literal, a `COALESCE`, a `CASE` or
   * a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the row read `"nullx"`, and a
