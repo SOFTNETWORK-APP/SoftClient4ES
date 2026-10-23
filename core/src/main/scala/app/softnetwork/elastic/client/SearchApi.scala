@@ -36,7 +36,8 @@ import app.softnetwork.elastic.sql.query.{
   SearchStatement,
   SelectStatement,
   SingleSearch,
-  SubqueryScope
+  SubqueryScope,
+  UnnestScope
 }
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.schema.Schema
@@ -2425,7 +2426,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             single.fieldAliases,
             single.sqlAggregations,
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
           ).map(inGroupedRowOrder(single, _))
     }
@@ -2463,7 +2464,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             single.fieldAliases,
             single.sqlAggregations,
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
           ).map(_.map(inGroupedRowOrder(single, _)))
     }

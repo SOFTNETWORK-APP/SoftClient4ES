@@ -35,7 +35,8 @@ import app.softnetwork.elastic.sql.query.{
   SQLAggregation,
   SearchStatement,
   SelectStatement,
-  SingleSearch
+  SingleSearch,
+  UnnestScope
 }
 import org.json4s.{Formats, JNothing, JValue}
 import org.json4s.jackson.JsonMethods.parse
@@ -346,7 +347,7 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           config0.copy(retainDocumentId = keepsDocumentId(requestedFields)),
           single.sorts.nonEmpty,
           requestedFields,
-          single.nestedHitsMappings
+          UnnestScope.rowExplosion(single)
         )
         // The rows of a GROUP BY of several levels, in the order and to the count the statement
         // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
