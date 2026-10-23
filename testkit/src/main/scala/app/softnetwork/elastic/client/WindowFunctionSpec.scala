@@ -51,15 +51,6 @@ trait WindowFunctionSpec
   implicit val localDateOrdering: Ordering[LocalDate] =
     Ordering.by(_.toEpochDay)
 
-  def supportsStdDevVariance: Boolean = {
-    client.asInstanceOf[VersionApi].version match {
-      case ElasticSuccess(v) => ElasticsearchVersion.supportsStdDevVariance(v)
-      case ElasticFailure(error) =>
-        log.error(s"❌ Failed to retrieve Elasticsearch version: ${error.message}")
-        false
-    }
-  }
-
   override def beforeAll(): Unit = {
     super.beforeAll()
 
@@ -1983,12 +1974,9 @@ trait WindowFunctionSpec
   // STORY 14.4 — STDDEV / VARIANCE family (extended_stats)
   // ========================================================================
 
+  // On every release: before Elasticsearch 7.7 the response has no `_sampling` keys, and the sample
+  // statistics are derived from its `count`, `sum` and `sum_of_squares`.
   "STDDEV / VARIANCE family" should "compute sample stddev, sample variance and pop variance per department" in {
-    assume(
-      supportsStdDevVariance,
-      "Sample STDDEV / VARIANCE require the extended_stats `_sampling` keys (Elasticsearch 7.7+)"
-    )
-
     val results = client.searchAs[DepartmentStatsExtended](
       """
         SELECT

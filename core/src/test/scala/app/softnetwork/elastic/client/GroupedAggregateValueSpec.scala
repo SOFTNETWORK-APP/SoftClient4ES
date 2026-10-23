@@ -156,6 +156,50 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** `extended_stats` as Elasticsearch 6.8 answers it: no `_sampling` key. */
+  private def extendedStats68(count: Long, sum: String, squares: String, variance: String): String =
+    s"""{"count": $count, "min": null, "max": null, "avg": null, "sum": $sum,
+       | "sum_of_squares": $squares, "variance": $variance, "std_deviation": $variance,
+       | "std_deviation_bounds": {"upper": null, "lower": null}}""".stripMargin
+
+  it should "derive a SAMPLE statistic from count, sum and sum of squares where 6.8 has no key" in {
+    // the values of the shared trait's group x, n in (5, -900, -4): DuckDB answers var_samp
+    // 270320.3333333333 and stddev_samp 519.9233917928037; a group of one value or none, NULL
+    def of(fn: String) =
+      rows(
+        s"SELECT g1, $fn(n) AS a FROM t GROUP BY g1",
+        s"""{"key": "x", "doc_count": 3, "a": ${extendedStats68(3, "-899.0", "810041.0", "180213.55555555553")}},
+           |{"key": "w", "doc_count": 1, "a": ${extendedStats68(1, "7.0", "49.0", "0.0")}},
+           |{"key": "z", "doc_count": 2, "a": ${extendedStats68(0, "0.0", "0.0", "null")}}""".stripMargin
+      )
+    Seq("VARIANCE", "VAR_SAMP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        val rs = of(fn)
+        valueOf(rs, "x").asInstanceOf[Double] shouldBe 270320.3333333333 +- 1e-6
+        valueOf(rs, "w") shouldBe (null: Any)
+        valueOf(rs, "z") shouldBe (null: Any)
+      }
+    }
+    Seq("STDDEV", "STDDEV_SAMP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        val rs = of(fn)
+        valueOf(rs, "x").asInstanceOf[Double] shouldBe 519.9233917928037 +- 1e-9
+        valueOf(rs, "w") shouldBe (null: Any)
+        valueOf(rs, "z") shouldBe (null: Any)
+      }
+    }
+    // the control: a POPULATION statistic reads its own key, present on 6.8
+    valueOf(of("VAR_POP"), "x").asInstanceOf[Double] shouldBe 180213.55555555553 +- 1e-6
+    // and a response that carries the sample key is read from it, not derived
+    valueOf(
+      rows(
+        "SELECT g1, VAR_SAMP(n) AS a FROM t GROUP BY g1",
+        s"""{"key": "x", "doc_count": 3, "a": ${extendedStats(3, "1.0", "2.0")}}"""
+      ),
+      "x"
+    ) shouldBe 2.0
+  }
+
   it should "answer NULL for a MIN / MAX of a date column" in {
     val rs = rows(
       "SELECT g1, MAX(ts) AS a FROM t GROUP BY g1",

@@ -1351,7 +1351,7 @@ trait ElasticConversion {
     val nested = valuesNode.flatMap(vs => Option(vs.get(resultField))).filterNot(_.isNull)
     // A statistic Elasticsearch could not compute is NULL, never a number: a percentile of a group
     // with no value, a sample deviation of one value (`"NaN"` on 7.17).
-    direct.orElse(nested).map(_.asDouble()).filter(finite).orElse {
+    direct.orElse(nested).map(_.asDouble()).filter(finite).orElse(derivedSample(value, resultField)).orElse {
       (valuesNode, parseDoubleOpt(resultField)) match {
         case (Some(vs: ObjectNode), Some(want)) =>
           var best: Option[(Double, JsonNode)] = None
@@ -1370,6 +1370,31 @@ trait ElasticConversion {
   }
 
   private def finite(d: Double): Boolean = !d.isNaN && !d.isInfinite
+
+  /** A SAMPLE variance or standard deviation the `extended_stats` response does not carry -- its
+    * `_sampling` keys exist from Elasticsearch 7.7 on -- derived from the `count`, `sum` and
+    * `sum_of_squares` every release reports, as 7.7 computes it: `(sum_of_squares - sum² / count) /
+    * (count - 1)`, never below 0, and its square root for the deviation. `None` under two values
+    * (the statistic is NULL there, as in DuckDB: `withoutValues`) or when a key is absent.
+    *
+    * Read only where the `_sampling` key is absent, so a response that carries it is read as before.
+    */
+  private def derivedSample(value: JsonNode, resultField: String): Option[Double] = {
+    def number(key: String): Option[Double] =
+      Option(value.get(key)).filter(_.isNumber).map(_.asDouble()).filter(finite)
+    resultField match {
+      case "variance_sampling" | "std_deviation_sampling" =>
+        for {
+          count   <- number("count") if count >= 2
+          sum     <- number("sum")
+          squares <- number("sum_of_squares")
+        } yield {
+          val variance = math.max(0.0, (squares - sum * sum / count) / (count - 1))
+          if (resultField == "variance_sampling") variance else math.sqrt(variance)
+        }
+      case _ => None
+    }
+  }
 
   /** Whether the aggregation `agg` of this node computed its value over NO value of its field, read
     * from the field's value count wherever the response states it -- never from the value itself:
@@ -1477,7 +1502,8 @@ trait ElasticConversion {
               // ClientAggregation.aggResultField, set at SQLAggregation →
               // ClientAggregation conversion time. Covers:
               //   * extended_stats (STDDEV / VARIANCE) — key is top-level, e.g.
-              //     "variance"; the `_sampling` sample keys require ES 7.7+.
+              //     "variance"; the `_sampling` sample keys exist from ES 7.7 on, and
+              //     are derived from count / sum / sum_of_squares before (`derivedSample`).
               //   * percentiles (PERCENTILE_CONT / PERCENTILE_DISC) — key is
               //     nested under the response `values` object, e.g. "99.0".
               // When the key is absent, logs a warning and yields None so the
@@ -1491,8 +1517,7 @@ trait ElasticConversion {
                     case None =>
                       conversionLogger.warn(
                         s"Aggregation '$name' requested result field '$resultField' " +
-                        "which is absent from the response (extended_stats sample variants " +
-                        "require Elasticsearch 7.7+); the column will be null."
+                        "which is absent from the response; the column will be null."
                       )
                       None
                   }

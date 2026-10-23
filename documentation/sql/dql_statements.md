@@ -990,8 +990,10 @@ GROUP BY department;
 
 All six map to a single Elasticsearch `extended_stats` aggregation per call; the requested field
 (`std_deviation_sampling`, `variance_sampling` for the sample variants; the un-suffixed
-`std_deviation`, `variance` for the population variants) is projected from the response. Sample
-variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
+`std_deviation`, `variance` for the population variants) is projected from the response. Both
+work on Elasticsearch 6+: before 7.7 the response has no sample keys, and the sample variants are
+computed from the `count`, `sum` and `sum_of_squares` it reports. A group with no value answers
+`NULL`, and so does a sample variant over one value.
 
 Over a **transformed** operand (`STDDEV(YEAR(hire_date))`, `VARIANCE(ABS(salary))`, plain or
 windowed) the statistic is computed over the transform on **Elasticsearch 7 and later**; on

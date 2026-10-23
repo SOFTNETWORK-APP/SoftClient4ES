@@ -1234,16 +1234,17 @@ STDDEV(expr) OVER (PARTITION BY partition_expr, ...)
 
 | SQL                | ES `extended_stats` field  | Min ES version |
 |--------------------|----------------------------|----------------|
-| `STDDEV(x)`        | `std_deviation_sampling`   | **7.7+**       |
-| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV(x)`        | `std_deviation_sampling`   | 6+ (computed before 7.7) |
+| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | 6+ (computed before 7.7) |
 | `STDDEV_POP(x)`    | `std_deviation`            | 6+             |
-| `VARIANCE(x)`      | `variance_sampling`        | **7.7+**       |
-| `VAR_SAMP(x)`      | `variance_sampling`        | **7.7+**       |
+| `VARIANCE(x)`      | `variance_sampling`        | 6+ (computed before 7.7) |
+| `VAR_SAMP(x)`      | `variance_sampling`        | 6+ (computed before 7.7) |
 | `VAR_POP(x)`       | `variance`                 | 6+             |
 
 **Behavior:**
 - `NULL` values are ignored.
-- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Consequently the sample variants — including the default `STDDEV` / `VARIANCE` — require Elasticsearch 7.7+. On older clusters the column is returned as `null` and a warning is logged.
+- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Before 7.7 the sample variants — including the default `STDDEV` / `VARIANCE` — are computed from the `count`, `sum` and `sum_of_squares` the response reports, as 7.7 computes them, so they answer on every supported release.
+- A group with no value answers `NULL`; a sample variant over one value answers `NULL` too (it needs two).
 - Each call emits its own `extended_stats` aggregation; two stat calls over the same column emit two aggregations.
 - **Transformed operands** (`STDDEV(YEAR(created_at))`, `VARIANCE(ABS(salary))`, `STDDEV_POP(DATE_TRUNC(ts, MONTH))`, plain or windowed) are computed over the transform on **Elasticsearch 7 and later**. The client library the driver builds on used to drop the aggregation script of an `extended_stats` on every line (elastic4s#4100); that is fixed upstream in the 7.x line the driver ships (Elasticsearch 7 emits the script natively); on the 8.x and 9.x lines the driver works around the drop itself; and on 6.x neither is possible:
 
