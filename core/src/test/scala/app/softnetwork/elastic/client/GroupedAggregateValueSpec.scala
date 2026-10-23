@@ -102,4 +102,64 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     )
     valueOf(rs, "x") shouldBe 7.0
   }
+
+  behavior of "an aggregate of a group with documents but no value of its field"
+
+  /** `extended_stats` over a group, as Elasticsearch 8's typed client renders it (`0.0` for null)
+    * and as 6.8 / 7.17 answer it (`null`).
+    */
+  private def extendedStats(count: Long, variance: String, sampling: String): String =
+    s"""{"count": $count, "min": null, "max": null, "avg": null, "sum": 0.0,
+       | "sum_of_squares": $variance, "variance": $variance, "variance_sampling": $sampling,
+       | "std_deviation": $variance, "std_deviation_sampling": $sampling}""".stripMargin
+
+  it should "answer NULL for a STDDEV / VARIANCE, read from the field's value count" in {
+    Seq("STDDEV", "STDDEV_SAMP", "STDDEV_POP", "VARIANCE", "VAR_SAMP", "VAR_POP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        val rs = rows(
+          s"SELECT g1, $fn(n) AS a FROM t GROUP BY g1",
+          s"""{"key": "es8", "doc_count": 2, "a": ${extendedStats(0, "0.0", "0.0")}},
+             |{"key": "es7", "doc_count": 2, "a": ${extendedStats(0, "null", "null")}},
+             |{"key": "two", "doc_count": 2, "a": ${extendedStats(2, "1.0", "2.0")}}""".stripMargin
+        )
+        valueOf(rs, "es8") shouldBe (null: Any)
+        valueOf(rs, "es7") shouldBe (null: Any)
+        // the control: a group with values keeps its statistic
+        valueOf(rs, "two") should not be (null: Any)
+      }
+    }
+  }
+
+  it should "answer NULL for a SAMPLE statistic of one value, and 0 for a POPULATION one" in {
+    def one(fn: String) =
+      rows(
+        s"SELECT g1, $fn(n) AS a FROM t GROUP BY g1",
+        // 7.17 answers the sample statistic of one value as "NaN", 8 as 0.0
+        s"""{"key": "es8", "doc_count": 1, "a": ${extendedStats(1, "0.0", "0.0")}},
+           |{"key": "es7", "doc_count": 1, "a": ${extendedStats(1, "0.0", "\"NaN\"")}}""".stripMargin
+      )
+    Seq("STDDEV", "STDDEV_SAMP", "VARIANCE", "VAR_SAMP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        val rs = one(fn)
+        valueOf(rs, "es8") shouldBe (null: Any)
+        valueOf(rs, "es7") shouldBe (null: Any)
+      }
+    }
+    Seq("STDDEV_POP", "VAR_POP").foreach { fn =>
+      withClue(s"[$fn] ") {
+        valueOf(one(fn), "es8") shouldBe 0.0
+      }
+    }
+  }
+
+  it should "answer NULL for a MIN / MAX of a date column" in {
+    val rs = rows(
+      "SELECT g1, MAX(ts) AS a FROM t GROUP BY g1",
+      // 8: the typed client's 0.0, and no value_as_string; 6.8 / 7.17: null
+      """{"key": "es8", "doc_count": 2, "a": {"value": 0.0}},
+        |{"key": "es7", "doc_count": 2, "a": {"value": null}}""".stripMargin
+    )
+    valueOf(rs, "es8") shouldBe (null: Any)
+    valueOf(rs, "es7") shouldBe (null: Any)
+  }
 }

@@ -1289,6 +1289,29 @@ trait ElasticConversion {
     }
   }
 
+  /** Whether the aggregation `agg` of this node computed its value over NO value of its field,
+    * read from the field's value count wherever the response states it -- never from the value
+    * itself: Elasticsearch 8's typed client has already turned a `null` value into `0.0`.
+    *
+    *   - a STDDEV / VARIANCE (`extended_stats`) reports its `count`: no value, or one value for a
+    *     SAMPLE statistic, which needs two (DuckDB answers NULL for both);
+    *   - a `MIN` / `MAX` of a date or a timestamp reports a `value_as_string` exactly when it has a
+    *     value (Elasticsearch formats only a value it has).
+    */
+  private def withoutValues(value: JsonNode, agg: ClientAggregation): Boolean =
+    if (agg.temporal) {
+      val text = value.get("value_as_string")
+      text == null || text.isNull
+    } else
+      agg.aggType match {
+        case AggregationType.Stddev | AggregationType.StddevSamp | AggregationType.StddevPop |
+            AggregationType.Variance | AggregationType.VarSamp | AggregationType.VarPop =>
+          val count = value.path("count")
+          count.isNumber && (count.asLong() == 0L ||
+          (count.asLong() < 2L && agg.aggResultField.exists(_.endsWith("_sampling"))))
+        case _ => false
+      }
+
   /** The value of a `MIN` / `MAX` of a date or a timestamp: the `value_as_string` Elasticsearch
     * formats, read as a temporal exactly as a date bucket key is; a format no ISO reader takes (a
     * custom date format of the mapping) is read from the epoch milliseconds, at UTC.
@@ -1342,10 +1365,16 @@ trait ElasticConversion {
           // that reads any other value than a count or a sum -- it is absent, NULL -- and evaluates
           // one over counts and sums only (`_count`, and `keep_values` from 7.17), whose answer is
           // the calculation's (`COUNT(*) * 2` is 0), issue #413.
+          //
+          // A GROUP with documents but no value of the field (`docCount` > 0) is the same NULL, and
+          // ES 8 has turned its `null` into `0.0` too: that is read from the field's value count
+          // (`withoutValues`).
           val emptyInput =
-            docCount.contains(0L) && aggregations
+            (docCount.contains(0L) && aggregations
               .get(name)
-              .exists(agg => agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript)
+              .exists(agg =>
+                agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript
+              )) || aggregations.get(name).exists(withoutValues(value, _))
           Option(value.get("value"))
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
@@ -1373,7 +1402,8 @@ trait ElasticConversion {
               // column appears as null — the Stats branch below is skipped for
               // these aggregations (see its `aggResultField.isEmpty` guard) to
               // avoid emitting a stats-shaped struct in place of the null.
-              aggregations.get(name).flatMap(_.aggResultField).flatMap { resultField =>
+              aggregations.get(name).flatMap(_.aggResultField).filter(_ => !emptyInput).flatMap {
+                resultField =>
                 projectAggResultField(value, resultField) match {
                   case Some(d) => Some(name -> d)
                   case None =>
