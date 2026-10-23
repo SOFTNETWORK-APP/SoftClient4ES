@@ -593,8 +593,7 @@ package object client extends SerializationApi {
   private[client] case object DocumentContext extends ConversionContext
 
   /** The rows of a statement read natively (as [[NativeContext]]), except that the columns it
-    * declares VARCHAR -- by their output name, and by the column they read -- are never re-read as
-    * a temporal: their text is their value.
+    * declares VARCHAR are never re-read as a temporal: their text is their value.
     *
     * 🔴 A text that looks like a date or a time was parsed into a `java.time` value whatever the
     * column was declared, so `DATETIME_FORMAT(ts, '%H:%i:%s')`, whose script returns `"00:00:00"`,
@@ -607,14 +606,28 @@ package object client extends SerializationApi {
 
     /** `context` for the rows of `single`: [[TextColumns]] when it is native and `single` declares
       * a VARCHAR column, `context` itself otherwise.
+      *
+      * The columns are named from the types the statement declares, each under the name its row
+      * carries it by:
+      *   - a column the SELECT reads bare (no function, no script), by its output name and by the
+      *     source column its document holds;
+      *   - a computed column (a function, a script field), by its output name ONLY: the column it
+      *     reads keeps its own type. Naming that column too re-read `ts` of `SELECT ts,
+      *     DATE_FORMAT(ts, '%Y') AS y` and `d` of `CAST(d AS VARCHAR) AS s` as texts;
+      *   - `*`, the columns the resolved schema declares VARCHAR.
       */
     def of(single: SingleSearch, context: ConversionContext): ConversionContext =
       context match {
         case NativeContext =>
           val columns = single.select.fieldsWithComputedAliases.flatMap { field =>
-            if (renderedTypeOf(field.identifier).isText)
+            if (field.identifier.identifierName == "*")
+              single.schema.toSeq.flatMap(_.columns.collect {
+                case column if column.dataType.isText => column.name
+              })
+            else if (!renderedTypeOf(field.identifier).isText) Nil
+            else if (field.identifier.functions.isEmpty && !field.isScriptField)
               Seq(field.outputName, field.identifier.name).filter(_.nonEmpty)
-            else Nil
+            else Seq(field.outputName).filter(_.nonEmpty)
           }.toSet
           if (columns.isEmpty) context else TextColumns(columns)
         case other => other

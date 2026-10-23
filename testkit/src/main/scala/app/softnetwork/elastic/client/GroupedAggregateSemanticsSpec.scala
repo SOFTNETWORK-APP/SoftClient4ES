@@ -450,6 +450,30 @@ trait GroupedAggregateSemanticsSpec
     )
   }
 
+  it should "leave the column a computed VARCHAR reads in that column's own type" in {
+    // DuckDB: ts TIMESTAMPTZ 2025-03-31 10:00:00+00, y VARCHAR '2025'
+    val formatted =
+      rowsOf(s"SELECT id, ts, DATE_FORMAT(ts, '%Y') AS y FROM $index WHERE id = 'a1'").head
+    instant(cell(formatted, "ts")) shouldBe at("2025-03-31T10:00:00Z")
+    cell(formatted, "ts") shouldBe a[ZonedDateTime]
+    cell(formatted, "y") shouldBe "2025"
+    // DuckDB: d DATE 2024-01-03, s VARCHAR
+    val cast = rowsOf(s"SELECT id, d, CAST(d AS VARCHAR) AS s FROM $index WHERE id = 'a1'").head
+    cell(cast, "d") shouldBe LocalDate.of(2024, 1, 3)
+    cell(cast, "s") shouldBe a[String]
+  }
+
+  it should "answer the text of a bare VARCHAR column, selected by name or by *" in {
+    // DuckDB: kd VARCHAR '2025-03-31T10:00:00'
+    cell(rowsOf(s"SELECT id, kd FROM $index WHERE id = 'a1'").head, "kd") shouldBe
+    "2025-03-31T10:00:00"
+    val star = rowsOf(s"SELECT * FROM $index WHERE id = 'a1'").head
+    cell(star, "kd") shouldBe "2025-03-31T10:00:00"
+    // the control: the DATE and TIMESTAMP columns of the same row keep their types
+    cell(star, "d") shouldBe LocalDate.of(2024, 1, 3)
+    cell(star, "ts") shouldBe a[ZonedDateTime]
+  }
+
   // ---------------------------------------------------------------------------------------------
   // ALTER TABLE on the reindex path
   // ---------------------------------------------------------------------------------------------

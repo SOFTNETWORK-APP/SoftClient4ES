@@ -23,7 +23,7 @@ import app.softnetwork.elastic.sql.schema.Schema
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import java.time.LocalTime
+import java.time.{LocalDate, LocalTime, ZonedDateTime}
 import scala.collection.immutable.ListMap
 
 /** A column a statement declares VARCHAR is read as its text, never re-read as a temporal
@@ -36,7 +36,7 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
     Index(
       "t",
       """{"t": {"aliases": {}, "mappings": {"properties": {"id": {"type": "keyword"},
-        | "ts": {"type": "date"}}}, "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
+        | "ts": {"type": "date"}, "d": {"type": "date"}, "kd": {"type": "keyword"}}}, "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
     ).schema
 
   private def statement(sql: String): SingleSearch = Parser(sql) match {
@@ -71,5 +71,61 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
 
   it should "leave a column of another type as it is read (the control)" in {
     valueOf("SELECT id, CAST(ts AS TIME) AS v FROM t", "00:00:00") shouldBe LocalTime.of(0, 0)
+  }
+
+  /** The row `sql` answers for one hit whose `_source` is `source` and whose `fields` is `fields`.
+    */
+  private def rowOf(sql: String, source: String, fields: String = "{}"): ListMap[String, Any] = {
+    val single = statement(sql)
+    implicit val context: ConversionContext = TextColumns.of(single, NativeContext)
+    val response =
+      s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
+         | {"_id": "a1", "_source": $source, "fields": $fields}]}}""".stripMargin
+    val names =
+      if (single.select.fields.exists(_.identifier.identifierName == "*")) Seq.empty
+      else single.select.fieldsWithComputedAliases.map(_.outputName)
+    ElasticConversion
+      .parseResponse(response, single.fieldAliases, ListMap.empty, names)
+      .get
+      .head
+      .map {
+        case (k, Seq(one)) => k -> one
+        case other         => other
+      }
+  }
+
+  "a computed VARCHAR column" should "leave the column it reads in that column's own type" in {
+    // DuckDB: ts TIMESTAMPTZ, y VARCHAR '2025'
+    val formatted = rowOf(
+      "SELECT id, ts, DATE_FORMAT(ts, '%Y') AS y FROM t",
+      """{"id": "a1", "ts": "2025-03-31T10:00:00Z"}""",
+      """{"y": ["2025"]}"""
+    )
+    formatted("ts") shouldBe a[ZonedDateTime]
+    formatted("y") shouldBe "2025"
+    // DuckDB: d DATE, s VARCHAR
+    val cast = rowOf(
+      "SELECT id, d, CAST(d AS VARCHAR) AS s FROM t",
+      """{"id": "a1", "d": "2024-01-03"}""",
+      """{"s": ["2024-01-03"]}"""
+    )
+    cast("d") shouldBe LocalDate.of(2024, 1, 3)
+    cast("s") shouldBe a[String]
+  }
+
+  "a bare VARCHAR column" should "answer its text, selected by name or by *" in {
+    val source = """{"id": "a1", "d": "2024-01-03", "kd": "2025-03-31T10:00:00"}"""
+    rowOf("SELECT id, kd FROM t", source)("kd") shouldBe "2025-03-31T10:00:00"
+    rowOf("SELECT id, kd AS k2 FROM t", source)("k2") shouldBe "2025-03-31T10:00:00"
+    val star = rowOf("SELECT * FROM t", source)
+    star("kd") shouldBe "2025-03-31T10:00:00"
+    // the control: a DATE column of the same row keeps its type
+    star("d") shouldBe LocalDate.of(2024, 1, 3)
+    // and without a schema nothing is declared VARCHAR
+    val context: ConversionContext = Parser("SELECT * FROM t") match {
+      case Right(s: SingleSearch) => TextColumns.of(s, NativeContext)
+      case other                  => fail(s"$other")
+    }
+    context shouldBe NativeContext
   }
 }
