@@ -1528,3 +1528,53 @@ object BucketTree {
     BucketNode(currentBucket, children, parent)
   }
 }
+
+/** The aggregate shapes Elasticsearch cannot answer as SQL does, named so that the statement's
+  * validation refuses them before any request (`SingleSearch.validate`), instead of answering a
+  * different number.
+  */
+object UnanswerableAggregate {
+
+  /** The aggregates of `request` -- in its SELECT, its HAVING, its ORDER BY, or inside a per-group
+    * calculation -- with every identifier they hold, as the request reads them
+    * (`FunctionUtils.funIdentifiers`, the walk the calculation's operands are found by).
+    */
+  private def identifiersOf(request: SingleSearch): Seq[Identifier] =
+    (request.select.fields ++ request.aggregates)
+      .map(_.identifier)
+      .flatMap(id => FunctionUtils.funIdentifiers(id))
+      .distinct
+
+  /** Does Elasticsearch answer something else than `af(DISTINCT x)` once the DISTINCT is dropped?
+    * Every aggregation but a count is computed over every value: a COUNT is a `cardinality` and an
+    * ARRAY_AGG keeps each value once, so they honour it; MIN, MAX, FIRST_VALUE and LAST_VALUE answer
+    * the same with or without it (DuckDB 1.5.5 agrees on each, MEASURED).
+    *
+    * Deliberately a total match, with no default arm: a new aggregate must be classified here.
+    */
+  private def dropsDistinct(af: AggregateFunction): Boolean = af match {
+    case COUNT | _: CountAgg | _: ArrayAgg                   => false
+    case MIN | MAX | _: MinAgg | _: MaxAgg                   => false
+    case _: FirstValue | _: LastValue                        => false
+    case _: RankingWindow | _: BucketScriptAggregation       => false
+    case AVG | SUM | _: AvgAgg | _: SumAgg                   => true
+    case STDDEV | STDDEV_POP | STDDEV_SAMP | VARIANCE | VAR_POP | VAR_SAMP | _: ExtendedStatsAgg =>
+      true
+    case PERCENTILE_CONT | PERCENTILE_DISC | _: PercentileAgg => true
+  }
+
+  /** `AVG(DISTINCT x)` and every aggregate whose DISTINCT Elasticsearch would drop
+    * ([[dropsDistinct]]): `SUM`, the STDDEV / VARIANCE family and the percentiles, plain or over a
+    * window. Each was computed over every value, as if DISTINCT were not written, on every release.
+    */
+  def droppedDistinct(request: SingleSearch): Option[String] =
+    identifiersOf(request)
+      .find(id => id.distinct && id.aggregateFunction.exists(dropsDistinct))
+      .map { id =>
+        s"${id.sql} is not supported: Elasticsearch computes this aggregate over every value of " +
+        "its column, not over its distinct values, so DISTINCT would be ignored. Only " +
+        "COUNT(DISTINCT ...) counts distinct values (MIN and MAX answer the same with or without " +
+        "DISTINCT). Remove DISTINCT, or compute the aggregate over the distinct values outside " +
+        "the query."
+      }
+}
