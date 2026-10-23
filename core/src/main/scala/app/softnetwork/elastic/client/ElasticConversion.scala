@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{GroupedRowOrder, SingleSearch}
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.json4s.{Extraction, Formats}
@@ -303,6 +303,15 @@ trait ElasticConversion {
           } yield accMap ++ groupMap
         }
         .map(_ - "bucket_root")
+
+  /** The rows of a GROUP BY of several levels, cut to the count the statement asks for
+    * (`GroupedRowOrder`). Run once over the rows of ONE aggregation response, which is already whole
+    * in memory, and only for a statement that needs it (`GroupedRowOrder.of`).
+    */
+  def orderGroupedRows[T](items: Seq[T], order: GroupedRowOrder)(
+    row: T => ListMap[String, Any]
+  ): Seq[T] =
+    order.limit.fold(items)(n => items.take(math.max(n, 0)))
 
   /** convert JsonNode to Rows
     */

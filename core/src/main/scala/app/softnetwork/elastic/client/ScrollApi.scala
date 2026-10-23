@@ -30,6 +30,7 @@ import app.softnetwork.elastic.client.scroll.{
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  GroupedRowOrder,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
@@ -336,7 +337,7 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             sql = Some(parsed.sql),
             explodeNested = single.explodeNested
           )
-        scrollWithMetrics(
+        val rows = scrollWithMetrics(
           elasticQuery,
           single.fieldAliases,
           single.sqlAggregations,
@@ -347,6 +348,16 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           requestedFields,
           single.nestedHitsMappings
         )
+        // The rows of a GROUP BY of several levels, in the order and to the count the statement
+        // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
+        // response, so collecting them holds nothing the response did not already.
+        GroupedRowOrder.of(single) match {
+          case Some(order) =>
+            rows
+              .fold(Vector.empty[(ListMap[String, Any], ScrollMetrics)])(_ :+ _)
+              .mapConcat(all => ElasticConversion.orderGroupedRows(all, order)(_._1).toList)
+          case None => rows
+        }
 
       // Multi search
       case _: MultiSearch =>

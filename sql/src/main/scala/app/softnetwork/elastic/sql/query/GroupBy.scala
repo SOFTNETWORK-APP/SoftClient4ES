@@ -757,6 +757,34 @@ case class BucketPath(buckets: Seq[Bucket]) {
   override def toString: String = path
 }
 
+/** The cut the ROWS of a GROUP BY of several levels take once they are flattened -- what each
+  * level's own size cannot give.
+  *
+  * A level is cut to the statement's LIMIT INSIDE its parent bucket only, so `GROUP BY a, b LIMIT
+  * n` answered up to n rows per parent (n x n rows for two levels): the flattened rows are cut to n
+  * ([[limit]]). Only where the levels already answer the rows in the order the statement asks: no
+  * ORDER BY, or the levels' keys in their order.
+  */
+case class GroupedRowOrder(sortKeys: Seq[(String, SortOrder)], limit: Option[Int]) {
+  def sorts: Boolean = sortKeys.nonEmpty
+}
+
+object GroupedRowOrder {
+
+  def of(request: SingleSearch): Option[GroupedRowOrder] = {
+    val levels =
+      BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil)).filterNot(_.nested)
+    if (levels.size < 2 || request.windowFunctions.exists(_.isWindowing)) None
+    else {
+      val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
+      def levelOf(sort: FieldSort): Int =
+        levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
+      val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(sort) == i }
+      if (honoured) request.limit.map(l => GroupedRowOrder(Nil, Some(l.limit))) else None
+    }
+  }
+}
+
 /** What a `HAVING` criterion contributes to a bucket pipeline. THREE values, because `""` used to
   * mean two things and the caller could not tell them apart (issue #389): "this level has nothing
   * to filter" and "I cannot express this filter" both came back as the empty string, and the second

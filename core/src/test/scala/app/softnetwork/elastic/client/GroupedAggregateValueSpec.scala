@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{GroupedRowOrder, SingleSearch}
 import app.softnetwork.elastic.sql.schema.Schema
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -36,7 +36,7 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
   implicit private val context: ConversionContext = NativeContext
 
   private val properties: String =
-    """{"g1": {"type": "keyword"}, "n": {"type": "integer"}, "ts": {"type": "date"},
+    """{"g1": {"type": "keyword"}, "k": {"type": "keyword"}, "n": {"type": "integer"}, "ts": {"type": "date"},
       | "df": {"type": "date", "format": "yyyy/MM/dd HH:mm:ss"}}""".stripMargin
 
   private val schema: Schema =
@@ -178,5 +178,41 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     valueOf(rs, "nan") shouldBe (null: Any)
     // the control: a group with values answers its percentile
     valueOf(rs, "five") shouldBe 5.0
+  }
+
+  behavior of "the rows of a GROUP BY of several levels"
+
+  private def ordered(sql: String, in: Seq[(String, String, Any)]): Seq[(String, String, Any)] = {
+    val rs = in.map { case (g, k, c) => ListMap[String, Any]("g1" -> g, "k" -> k, "c" -> c) }
+    GroupedRowOrder.of(statement(sql)) match {
+      case Some(order) =>
+        ElasticConversion
+          .orderGroupedRows(rs, order)(identity)
+          .map(r => (r("g1").toString, r("k").toString, r("c")))
+      case None => in
+    }
+  }
+
+  /** The rows as the levels answer them: ordered inside each `g1` only. */
+  private val asTheLevelsAnswer: Seq[(String, String, Any)] = Seq(
+    ("x", "a", 2L),
+    ("x", "b", 1L),
+    ("y", "a", 1L),
+    ("y", "c", null),
+    ("z", "b", 1L),
+    ("w", "c", 1L)
+  )
+
+  it should "be cut to the LIMIT" in {
+    ordered("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2", asTheLevelsAnswer) shouldBe
+    asTheLevelsAnswer.take(2)
+  }
+
+  it should "be left as the levels answer them when they already give the order (the control)" in {
+    GroupedRowOrder.of(
+      statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k")
+    ) shouldBe None
+    GroupedRowOrder.of(statement("SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2")) shouldBe
+    None
   }
 }

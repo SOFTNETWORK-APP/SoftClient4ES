@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  GroupedRowOrder,
   Limit,
   MultiSearch,
   SQLAggregation,
@@ -2426,9 +2427,19 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             single.nestedHitsMappings,
             rowInvariantsOf(single)
-          )
+          ).map(inGroupedRowOrder(single, _))
     }
   }
+
+  /** `response` with the rows of a GROUP BY of several levels in the order and to the count the
+    * statement asks for ([[ElasticConversion.orderGroupedRows]]); itself for every other statement.
+    */
+  private def inGroupedRowOrder(single: SingleSearch, response: ElasticResponse): ElasticResponse =
+    GroupedRowOrder.of(single) match {
+      case Some(order) =>
+        response.copy(results = orderGroupedRows(response.results, order)(identity))
+      case None => response
+    }
 
   /** The async twin of [[searchResolved]]. */
   private def searchResolvedAsync(single: SingleSearch)(implicit
@@ -2454,7 +2465,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             single.nestedHitsMappings,
             rowInvariantsOf(single)
-          )
+          ).map(_.map(inGroupedRowOrder(single, _)))
     }
   }
 
