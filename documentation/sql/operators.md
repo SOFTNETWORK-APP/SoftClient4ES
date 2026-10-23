@@ -574,8 +574,9 @@ SELECT order_date * 2 FROM orders;
   is read, and before anything is sent to Elasticsearch: `WHERE due_date + 7 > CURRENT_DATE` runs,
   `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map
   differently, a mapping that cannot be read), nothing is refused on types.
-- In a per-group calculation, a date result comes back as the same number a date aggregate does
-  (`MAX(order_date)`): milliseconds since the epoch. `CURRENT_DATE` and `NOW()` there are the time
+- In a per-group calculation, a date result comes back as milliseconds since the epoch, the number
+  Elasticsearch computes it as; a date aggregate on its own (`MAX(order_date)`) answers its date or
+  timestamp. `CURRENT_DATE` and `NOW()` there are the time
   the statement runs (`CURRENT_DATE - MAX(order_date)`); a materialized view refuses them.
 - An explicit cast applies to the result, and a `NULL` stays `NULL`:
   `(ship_date - order_date)::TIMESTAMP` converts the number of days as any number is converted to a

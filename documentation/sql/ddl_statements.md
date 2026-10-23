@@ -466,7 +466,9 @@ written, so `WHERE zip_n IS NOT NULL` and any aggregation over `zip_n` skip that
 a value that cannot be converted should be a loud failure instead.
 
 A failed safe cast is a NULL operand for whatever wraps it, exactly like a column that is null:
-`CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, not the text `null-X`.
+`CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `'-X'` for that row — `CONCAT` skips a NULL
+argument, as DuckDB does, never the text `null-X` — and `UPPER(...)`, `ABS(...)` or `ROUND(...)`
+over it is `NULL`.
 
 > **What "never rejected" rests on.** The generated `script` processor carries
 > `ignore_failure: true`, so a document survives even a conversion the engine cannot express as a
