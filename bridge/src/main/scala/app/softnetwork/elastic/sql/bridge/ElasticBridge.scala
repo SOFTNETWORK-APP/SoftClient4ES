@@ -227,7 +227,8 @@ case class ElasticBridge(filter: ElasticFilter) {
                       if (negate) not(rightQuery).filter(leftQuery)
                       else must(leftQuery, rightQuery)
                     case _ =>
-                      if (negate) not(rightQuery).should(leftQuery)
+                      // under OR the negated side is one of the alternatives, not a requirement
+                      if (negate) should(leftQuery, not(rightQuery))
                       else should(leftQuery, rightQuery)
                   }
                 case _ =>

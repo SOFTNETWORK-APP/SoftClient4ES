@@ -742,4 +742,23 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     // control: BETWEEN, both halves
     idsOf(s"SELECT id FROM $index WHERE d BETWEEN $bounds") shouldBe Set("p2", "p3")
   }
+
+  // -- predicates: a negated MATCH under OR -----------------------------------------------------------
+
+  /** `x OR NOT MATCH(k) AGAINST ('a')` keeps the documents satisfying either (DuckDB's rows for
+    * `x OR NOT k = 'a'`; a NULL `k` makes the negation NULL). The negated MATCH stood in the bool's
+    * own `must_not`, beside the `should`, so the OR answered an AND.
+    */
+  "A negated MATCH under OR" should "answer the OR, as DuckDB does" in {
+    idsOf(s"SELECT id FROM $index WHERE n = 10 OR NOT MATCH(k) AGAINST ('a')") shouldBe
+    Set("p2", "p3", "p5", "p7")
+    idsOf(s"SELECT id FROM $index WHERE n = 50 OR NOT MATCH(k) AGAINST ('a')") shouldBe
+    Set("p2", "p5", "p7")
+    idsOf(
+      s"SELECT id FROM $index WHERE (n = 10 OR NOT MATCH(k) AGAINST ('a')) AND g1 = 'b'"
+    ) shouldBe Set("p3")
+    // control: under AND, both
+    idsOf(s"SELECT id FROM $index WHERE n = 10 AND NOT MATCH(k) AGAINST ('a')") shouldBe Set.empty
+    idsOf(s"SELECT id FROM $index WHERE n = 3 AND NOT MATCH(k) AGAINST ('a')") shouldBe Set("p2")
+  }
 }

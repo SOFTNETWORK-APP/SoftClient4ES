@@ -532,7 +532,14 @@ case class Predicate(
         (if (negate) query.not(filterOf(emittedRight)) else query.filter(filterOf(emittedRight)))
           .filter(filterOf(leftCriteria))
       case OR =>
-        (if (negate) query.not(filterOf(emittedRight)) else query.should(filterOf(emittedRight)))
+        // 🔴 Under OR a negation that cannot fold into its criterion (a MATCH, a relation, a
+        // group) is ONE of the alternatives: a `bool { must_not }` inside the `should`. Put in
+        // this bool's own `must_not`, beside the `should` clauses, it was required of EVERY
+        // document: `x = 50 OR NOT MATCH(k) AGAINST ('a')` answered `x = 50 AND NOT MATCH(…)`.
+        // The negated MATCH keeps the documents where its columns have a value (the bridge's
+        // `negationOnAll`), as SQL reads NOT over a NULL.
+        (if (negate) query.should(ElasticBoolQuery(group = true).not(filterOf(emittedRight)))
+         else query.should(filterOf(emittedRight)))
           .should(filterOf(leftCriteria))
     }
   }
