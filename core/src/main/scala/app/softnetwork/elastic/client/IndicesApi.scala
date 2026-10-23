@@ -317,8 +317,9 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
   /** The schema an index PATTERN or a comma list answers with (`FROM logs-*`, `FROM a,b`): the
     * columns of every index it matches, merged field by field (`schema.mergedSchema`), so a
-    * statement over a pattern is typed as one over a single index is. A field the indices map
-    * differently is left untyped: nothing is refused on it, and Elasticsearch answers for it.
+    * statement over a pattern is typed as one over a single index is. A field the indices map with
+    * two number types takes the wider one; any other field they map differently is left untyped:
+    * nothing is refused on it, and Elasticsearch answers for it.
     *
     * ONE mapping read per pattern -- `GET <pattern>` answers every matched index at once -- through
     * the SAME cache as [[loadSchema]], keyed by the pattern, so a hit costs no round trip. A

@@ -564,10 +564,12 @@ SELECT order_date * 2 FROM orders;
   days, whatever its fraction, which PostgreSQL does not (see "The engines this follows" above).
 - An index pattern or a comma list (`FROM logs-*`, `FROM orders_2024, orders_2025`) answers like a
   single index: every field its indices map alike has its type, read once per pattern from the
-  merged mapping. ⚠️ A field two of them map differently (a `date` in one index, a `keyword` in
-  another) has no type: nothing is refused on it and Elasticsearch answers for it — per group,
-  `MAX(order_date) - MIN(order_date)` over such a field answers milliseconds rather than days. Every
-  other field of the pattern keeps its type.
+  merged mapping. A field two of them map with two number types takes the wider one, as DuckDB
+  types it: `integer` and `long` make a `BIGINT`, `float` and `double` a `DOUBLE`, a whole-number
+  type and a `float` a `REAL`. ⚠️ A field two of them map with types that have no common type (a
+  `date` in one index, a `keyword` in another) has no type: nothing is refused on it and
+  Elasticsearch answers for it — per group, `MAX(order_date) - MIN(order_date)` over such a field
+  answers milliseconds rather than days. Every other field of the pattern keeps its type.
 - Type errors are checked once the column types are known, when the statement runs and the mapping
   is read, and before anything is sent to Elasticsearch: `WHERE due_date + 7 > CURRENT_DATE` runs,
   `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map

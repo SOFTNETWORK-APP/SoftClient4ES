@@ -2798,14 +2798,21 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     countsBy(sql, "lval") shouldBe Right(Map.empty[String, Long])
   }
 
-  it should "be left to Elasticsearch where the indices map the key with different types" in {
-    // the merged mapping gives `lval` no type, so no check runs: Elasticsearch rounds 1.5 down
-    // and keeps the group 1 -- the documented boundary of the check
+  it should "answer no group where the indices map the key with two integer types" in {
+    // the merged mapping types `lval` BIGINT, the wider of `integer` and `long`, as DuckDB 1.5.5
+    // types the column: no integer is equal to 1.5, so DuckDB answers no group (sent as it is,
+    // Elasticsearch would round 1.5 down and keep the group 1)
     mixedKeyLoaded
     val sql =
       s"SELECT lval, COUNT(*) AS c FROM $mixedIntIndex, $mixedLongIndex GROUP BY lval " +
       "HAVING lval = 1.5"
-    countsBy(sql, "lval") shouldBe Right(Map("1" -> 3L))
+    countsBy(sql, "lval") shouldBe Right(Map.empty[String, Long])
+    // the control: a whole number keeps its group, counted over both indices (DuckDB: 1 -> 3)
+    countsBy(
+      s"SELECT lval, COUNT(*) AS c FROM $mixedIntIndex, $mixedLongIndex GROUP BY lval " +
+      "HAVING lval = 1",
+      "lval"
+    ) shouldBe Right(Map("1" -> 3L))
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -835,6 +835,27 @@ package object schema {
       .filter(path => projection.find(path).isEmpty)
       .distinct
 
+  /** DuckDB 1.5.5's order of the number types, the narrowest first: the type it gives a column two
+    * of them make (`UNION ALL BY NAME`, MEASURED pair by pair) is the later one.
+    */
+  private val numberWidths: Map[SQLType, Int] = Map(
+    SQLTypes.TinyInt  -> 1,
+    SQLTypes.SmallInt -> 2,
+    SQLTypes.Int      -> 3,
+    SQLTypes.BigInt   -> 4,
+    SQLTypes.Real     -> 5,
+    SQLTypes.Double   -> 6
+  )
+
+  /** Of two columns mapped with two NUMBER types, the one with the wider type ([[numberWidths]]);
+    * `None` for any other pair.
+    */
+  private def widerNumber(a: Column, b: Column): Option[Column] =
+    (numberWidths.get(a.dataType), numberWidths.get(b.dataType)) match {
+      case (Some(x), Some(y)) => Some(if (x >= y) a else b)
+      case _                  => None
+    }
+
   /** The schema an index PATTERN or a comma list (`FROM logs-*`) answers with, so it is typed as
     * the single index is: the union of its indices' columns, merged FIELD BY FIELD (the lead's
     * ruling of 2026-10-05).
@@ -845,10 +866,16 @@ package object schema {
     *     statement's meaning depends on: a temporal literal is read against it) -- keeps that type,
     *     whatever the indices disagree on elsewhere. A field one index maps and another does not is
     *     the one index's.
-    *   - A field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot be chosen
-    *     between them, so nothing is refused on it and Elasticsearch answers for it, as it does
-    *     with no schema at all (the ruling's rule 4). It stays IN the schema: the name exists, and
-    *     a subquery's scope must know it does.
+    *   - A field two indices map with two NUMBER types takes the wider one, as DuckDB 1.5.5 types
+    *     such a column (`UNION ALL BY NAME`, MEASURED): `TINYINT` < `SMALLINT` < `INTEGER` <
+    *     `BIGINT` < `REAL` < `DOUBLE` -- an `integer` and a `long` are a `BIGINT`, a `float` and a
+    *     `double` a `DOUBLE`, a whole-number type and a `float` a `REAL`. Every value of either
+    *     index is a value of that type, so the rules that read a type (an integer key's filter, a
+    *     date's arithmetic) apply as over one index.
+    *   - Any other field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot
+    *     be chosen between them, so nothing is refused on it and Elasticsearch answers for it, as
+    *     it does with no schema at all (the ruling's rule 4). It stays IN the schema: the name
+    *     exists, and a subquery's scope must know it does.
     *   - Sub-fields (multi-fields, object properties) merge by the same rule, under their parent.
     *
     * 🔴 Found by review, MEASURED on Elasticsearch 8.18.3: `SELECT g, MAX(d) - MIN(d) FROM zwild_*
@@ -869,30 +896,39 @@ package object schema {
     def sameMapping(a: Column, b: Column): Boolean =
       a.dataType == b.dataType && format(a) == format(b)
     val conflicts = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
+    // every type a path is mapped with, so a disagreement lists the members' own types even after
+    // two of them were widened into one
+    val mappedTypes = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
     def merge(into: List[Column], columns: List[Column], parent: String): List[Column] = {
       val merged = scala.collection.mutable.LinkedHashMap(into.map(c => c.name -> c): _*)
       columns.foreach { column =>
         val path = s"$parent${column.name}"
         merged.get(column.name) match {
-          case None => merged.put(column.name, column)
+          case None =>
+            mappedTypes.put(path, Set(column.dataType.typeId))
+            merged.put(column.name, column)
           case Some(first) =>
+            mappedTypes.put(
+              path,
+              mappedTypes.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
+            )
             val multiFields = merge(first.multiFields, column.multiFields, s"$path.")
             if (sameMapping(first, column))
               merged.put(column.name, first.copy(multiFields = multiFields))
-            else {
-              conflicts.put(
-                path,
-                conflicts.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
-              )
-              merged.put(
-                column.name,
-                first.copy(
-                  dataType = SQLTypes.Any,
-                  options = first.options - "format",
-                  multiFields = multiFields
-                )
-              )
-            }
+            else
+              widerNumber(first, column) match {
+                case Some(wider) => merged.put(column.name, wider.copy(multiFields = multiFields))
+                case None =>
+                  conflicts.put(path, mappedTypes(path))
+                  merged.put(
+                    column.name,
+                    first.copy(
+                      dataType = SQLTypes.Any,
+                      options = first.options - "format",
+                      multiFields = multiFields
+                    )
+                  )
+              }
         }
       }
       merged.values.toList
