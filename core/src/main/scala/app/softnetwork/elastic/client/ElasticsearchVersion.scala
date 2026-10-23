@@ -226,10 +226,4 @@ object ElasticsearchVersion {
   def supportsQueryWatchers(version: String): Boolean = {
     isAtLeast(version, 7, 11)
   }
-
-  /** Check if standard deviation aggregation is supported (ES >= 7.7)
-    */
-  def supportsStdDevVariance(version: String): Boolean = {
-    isAtLeast(version, 7, 7)
-  }
 }
