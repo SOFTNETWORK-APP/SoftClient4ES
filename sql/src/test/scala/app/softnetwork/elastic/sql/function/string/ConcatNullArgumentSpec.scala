@@ -8,13 +8,13 @@ import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-/** `CONCAT` skips a NULL argument in a query, as DuckDB 1.5.5 does: `concat(NULL, 'x')` is `'x'`,
-  * `concat(k, 'x')` over a NULL `k` is `'x'`, and `concat(NULL, NULL)` is `''` (measured).
+/** `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does: `concat(NULL, 'x')` is `'x'`,
+  * `concat(k, 'x')` over a NULL `k` is `'x'`, and `concat(NULL, NULL)` is `''` (measured), in a
+  * query, an ingest processor and a transform alike.
   *
   * Before, an argument whose NULL nothing flagged -- the `NULL` literal, a `COALESCE`, a `CASE` or
   * a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the row read `"nullx"`, and a
-  * NULL column made the whole call NULL. An ingest processor keeps its bytes: its source is
-  * persisted.
+  * NULL column made the whole call NULL.
   */
 class ConcatNullArgumentSpec extends AnyFlatSpec with Matchers {
 
@@ -60,9 +60,20 @@ class ConcatNullArgumentSpec extends AnyFlatSpec with Matchers {
     "((param1 == null ? \"\" : String.valueOf(param1)) + \"x\").toUpperCase()"
   }
 
-  "an ingest processor" should "keep the bytes it had" in {
-    scriptOf("SELECT CONCAT(k, 'x') FROM t", PainlessContextType.Processor) should startWith(
-      "def param1 = ctx.k; (param1 == null) ? null : "
-    )
+  /** One rule in every context (the lead's ruling of 2026-10-23, overturning #382 Ruling B): an
+    * ingest processor -- a computed column, a view's -- and a transform skip a NULL argument as a
+    * query does. The processor made the whole call NULL, printed the NULL literal as `null`, and
+    * applied `UPPER` to its last argument only.
+    */
+  "an ingest processor and a transform" should "skip a NULL argument, as a query does" in {
+    scriptOf("SELECT CONCAT(k, 'x') FROM t", PainlessContextType.Processor) shouldBe
+    "def param1 = ctx.k; ((param1 == null ? \"\" : String.valueOf(param1)) + \"x\")"
+    scriptOf("SELECT CONCAT(NULL, 'x') FROM t", PainlessContextType.Processor) shouldBe
+    "(\"\" + \"x\")"
+    scriptOf("SELECT UPPER(CONCAT(k, 'x')) FROM t", PainlessContextType.Processor) shouldBe
+    "def param1 = ctx.k; ((param1 == null ? \"\" : String.valueOf(param1)) + \"x\").toUpperCase()"
+    scriptOf("SELECT CONCAT(k, 'x') FROM t", PainlessContextType.Transform) shouldBe
+    "def param1 = (doc['k'].size() == 0 ? null : doc['k'].value); " +
+    "((param1 == null ? \"\" : String.valueOf(param1)) + \"x\")"
   }
 }

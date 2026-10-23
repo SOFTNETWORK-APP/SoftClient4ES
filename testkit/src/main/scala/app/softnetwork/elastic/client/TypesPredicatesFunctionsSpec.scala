@@ -521,4 +521,54 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       "q"
     ).sorted shouldBe Seq("1", "2", "3", "4", "5", "7")
   }
+
+  // -- functions: CONCAT in a computed column (an ingest processor) ---------------------------------
+
+  /** A statement through the gateway that must succeed, whatever it answers. */
+  private def execute(sql: String): Unit =
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticSuccess(_)     => // ok
+      case ElasticFailure(error) => fail(s"Statement failed: ${error.message}\n$sql")
+    }
+
+  /** A computed column is the same CONCAT an ingest processor runs at index time: it skips a NULL
+    * argument, as the CONCAT of a query does and as DuckDB's `concat` does. It made the whole value
+    * NULL (#382 Ruling B, overturned), printed the NULL literal as the text `null`, and applied a
+    * function over it to its last argument only (`UPPER(CONCAT(k, 'x'))` read `aX`).
+    */
+  "CONCAT in a computed column" should "skip a NULL argument, as the CONCAT of a query does" in {
+    val table = "types_predicates_functions_concat"
+    execute(
+      s"""CREATE TABLE IF NOT EXISTS $table (
+         |  id KEYWORD,
+         |  k KEYWORD,
+         |  g1 KEYWORD,
+         |  c1 KEYWORD SCRIPT AS (CONCAT(k, 'x')),
+         |  c2 KEYWORD SCRIPT AS (CONCAT(k, '-', g1)),
+         |  c3 KEYWORD SCRIPT AS (UPPER(CONCAT(k, 'x'))),
+         |  c4 KEYWORD SCRIPT AS (CONCAT(NULL, g1))
+         |)""".stripMargin
+    )
+    try {
+      execute(s"INSERT INTO $table (id, k, g1) VALUES ('q1', 'a', 'b')")
+      execute(s"INSERT INTO $table (id, g1) VALUES ('q2', 'c')")
+      client.refresh(table)
+      // id -> `column`, through both venues (which must agree)
+      def byId(column: String): Map[String, String] = {
+        val sql = s"SELECT id, $column FROM $table"
+        def of(rows: Seq[ListMap[String, Any]]): Map[String, String] =
+          rows.map(r => scalar(r.getOrElse("id", null)) -> scalar(r.getOrElse(column, null))).toMap
+        val viaSearch = of(rowsOf(sql))
+        withClue(s"[$sql] ")(of(gatewayRowsOf(sql)) shouldBe viaSearch)
+        viaSearch
+      }
+      byId("c1") shouldBe Map("q1" -> "ax", "q2" -> "x")
+      byId("c2") shouldBe Map("q1" -> "a-b", "q2" -> "-c")
+      byId("c3") shouldBe Map("q1" -> "AX", "q2" -> "X")
+      byId("c4") shouldBe Map("q1" -> "b", "q2" -> "c")
+      // control: the same CONCAT in a query over the stored columns answers the same values
+      valuesById(s"SELECT id, CONCAT(k, '-', g1) AS v FROM $table") shouldBe
+      Map("q1" -> "a-b", "q2" -> "-c")
+    } finally execute(s"DROP TABLE IF EXISTS $table")
+  }
 }

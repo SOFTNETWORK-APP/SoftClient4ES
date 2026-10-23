@@ -1264,9 +1264,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
-  /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,
-    * and the function wrapping it guarded the raw COLUMN parameter — which is not null — so the
-    * null reached the call. MEASURED on real Elasticsearch 8.18.3 over `s = 'abc'`:
+  /** 🔴 The lead's Ruling B, executed, then overturned for CONCAT (lead, 2026-10-23). A safe cast
+    * that FAILS leaves its hoisted local at `null`, and the function wrapping it guarded the raw
+    * COLUMN parameter — which is not null — so the null reached the call. MEASURED on real
+    * Elasticsearch 8.18.3 over `s = 'abc'`:
     *
     * {{{
     *   CONCAT(TRY_CAST(s AS BIGINT), 'x')   ->  "nullx"     <- the literal text, stored
@@ -1276,9 +1277,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     *
     * The first two are a wrong VALUE — Painless `String.valueOf(null)` — not an absent column, and
     * that is what makes this worth a cluster row: nothing throws, Elasticsearch answers 200, and a
-    * `keyword` mapping stores the word `null` as happily as any other. The repair guards the
-    * reference the CALL reads as well as the raw parameter, so a failed safe cast is a NULL operand
-    * and the whole call is NULL — the rule `CONCAT(s, 'x')` over a null `s` already followed.
+    * `keyword` mapping stores the word `null` as happily as any other. A failed safe cast is a NULL
+    * operand: `ROUND` over it is NULL, and `CONCAT` skips it, as DuckDB's `concat` skips a NULL
+    * argument (`concat(NULL, 'x')` is `'x'`) — the one rule a query follows too. Ruling B made the
+    * whole CONCAT NULL in a computed column only.
     *
     * ⚠️ `'125'` is in the fixture so the row cannot be satisfied by a script that computes nothing:
     * the castable row must still produce the concatenation.
@@ -1311,7 +1313,8 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       String.valueOf(scalarOf(ok.head, "f")).toDouble shouldBe 125.0
     }
 
-    // the UNCASTABLE row: no value at all, and above all NOT the words `nullx` / `xnull`
+    // the UNCASTABLE row: CONCAT skips the NULL operand (DuckDB: `x` and `x`), never the words
+    // `nullx` / `xnull`, and ROUND over it is NULL
     val failing = collectRows(
       System.nanoTime(),
       client.run("SELECT id, s, c, d, f FROM trycast_null WHERE id = 2").futureValue
@@ -1319,34 +1322,30 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     withClue(s"$failing ") {
       failing.size shouldBe 1
       String.valueOf(scalarOf(failing.head, "s")) shouldBe "abc"
-      // 🔴 Stated as the DEFECT, so this row cannot go green on the pre-fix emission -- and read
-      // through `scalarOf`, which UNWRAPS Elasticsearch's per-field array. Comparing the wrapped
-      // value would have made `List("nullx")` pass this assertion (issue #382, found by review).
+      // read through `scalarOf`, which UNWRAPS Elasticsearch's per-field array: comparing the
+      // wrapped value would have made `List("nullx")` pass a negative assertion (issue #382)
       List("c", "d").foreach { k =>
-        failing.head.get(k).map(v => String.valueOf(scalarOf(failing.head, k))) match {
-          case Some(rendered) =>
-            withClue(s"[$k] ") {
-              rendered should not be "nullx"
-              rendered should not be "xnull"
-            }
-          case None => // absent is the right answer too
-        }
+        withClue(s"[$k] ")(String.valueOf(scalarOf(failing.head, k)) shouldBe "x")
       }
-      // ...and the column really is SQL NULL, by the same predicate every other row here uses
-      List("c", "d", "f").foreach(k =>
-        withClue(s"[$k] ")(isNullColumn(failing.head, k) shouldBe true)
-      )
+      withClue("[f] ")(isNullColumn(failing.head, "f") shouldBe true)
     }
 
     // 🔴 What the documentation promises about a NULL computed column, measured rather than
     // assumed: the row IS returned by a plain SELECT (above, `failing.size shouldBe 1`) and IS
-    // skipped by an existence test, because a null writes no doc value.
+    // skipped by an existence test, because a null writes no doc value. `c` holds a value on both.
     val existing = collectRows(
       System.nanoTime(),
-      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+      client.run("SELECT id FROM trycast_null WHERE f IS NOT NULL").futureValue
     )
     withClue(s"$existing ") {
       existing.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+    val both = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+    )
+    withClue(s"$both ") {
+      both.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L, 2L)
     }
   }
 

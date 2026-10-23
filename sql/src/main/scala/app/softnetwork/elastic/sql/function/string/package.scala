@@ -206,12 +206,8 @@ package object string {
     }
   }
 
-  /** Whether a `CONCAT` renders, on this thread, in a QUERY, where it skips a NULL argument
-    * (`Concat.toPainlessCall`): set by `Concat.painless` for the duration of its own rendering, and
-    * read by the guard `FunctionN` builds around the call, which takes no context.
-    */
+  /** What `Concat.toPainlessCall` reads of its arguments. */
   private[string] object ConcatNulls {
-    val skipping: scala.util.DynamicVariable[Boolean] = new scala.util.DynamicVariable(false)
 
     /** A literal value, bare or as the one function of a nameless identifier (the parser wraps an
       * operand in one): never NULL.
@@ -245,26 +241,19 @@ package object string {
       }
     }
 
-    /** 🔴 In a QUERY, `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does (`concat(NULL, 'x')` is
-      * `'x'`, `concat(NULL, NULL)` is `''`, measured): each argument that can be NULL renders `""`
-      * when it is, and the call itself is never NULL, so it takes no NULL guard of its own.
+    /** 🔴 `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does (`concat(NULL, 'x')` is `'x'`,
+      * `concat(NULL, NULL)` is `''`, measured): each argument that can be NULL renders `""` when it
+      * is, and the call itself is never NULL, so it takes no NULL guard of its own. ONE rule, in a
+      * query, an ingest processor and a transform alike: a view's computed column answers what the
+      * same expression answers in a SELECT.
       *
-      * Before, an argument whose NULL nothing flagged -- the `NULL` literal, a `COALESCE`, a `CASE`
-      * or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the row read the text
-      * `"nullx"`, while a NULL column made the whole call NULL. An ingest processor and a transform
-      * keep their bytes: their source is persisted (`SQLTypeUtils.convertsArms`).
+      * Before, in a query, an argument whose NULL nothing flagged -- the `NULL` literal, a
+      * `COALESCE`, a `CASE` or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the
+      * row read the text `"nullx"`, while a NULL column made the whole call NULL. An ingest
+      * processor and a transform kept that rule (#382 Ruling B, overturned by the lead's ruling of
+      * 2026-10-23): their bytes move, so a pipeline holding a CONCAT is re-created by `ALTER`.
       */
-    private[this] def skipsNulls(context: Option[PainlessContext]): Boolean =
-      SQLTypeUtils.convertsArms(context)
-
-    /** The guard `FunctionN` puts around the call: none in a query ([[skipsNulls]]), where each
-      * argument answers `""` for its own NULL. Read while this call renders.
-      */
-    override def checkIfNullable: Boolean =
-      !ConcatNulls.skipping.value && super.checkIfNullable
-
-    override def painless(context: Option[PainlessContext]): String =
-      ConcatNulls.skipping.withValue(skipsNulls(context))(super.painless(context))
+    override def checkIfNullable: Boolean = false
 
     override def toPainlessCall(
       callArgs: List[String],
@@ -272,18 +261,6 @@ package object string {
     ): String = {
       if (callArgs.isEmpty)
         throw new IllegalArgumentException("CONCAT requires at least one argument")
-      else if (!skipsNulls(context))
-        callArgs.zipWithIndex
-          .map { case (arg, idx) =>
-            SQLTypeUtils.coerce(
-              arg,
-              values(idx).baseType,
-              SQLTypes.Varchar,
-              nullable = false,
-              context
-            )
-          }
-          .mkString(stringOp.painless(context))
       else {
         val parts = callArgs.zipWithIndex.map { case (arg, idx) =>
           val value = values(idx)
