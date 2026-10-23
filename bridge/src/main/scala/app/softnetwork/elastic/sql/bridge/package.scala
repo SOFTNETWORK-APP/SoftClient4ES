@@ -564,7 +564,7 @@ package object bridge {
   ): SearchRequest = {
     import request._
 
-    val (aggregations, references) = coalescePercentileAggs(
+    val (emitted, references) = coalescePercentileAggs(
       request.aggregates.map(
         ElasticAggregation(
           _,
@@ -574,6 +574,10 @@ package object bridge {
         )
       )
     )
+
+    // a MIN / MAX of a number is sent with the count of its values beside it where the client
+    // reads a metric's null as 0.0 (Elasticsearch 8): an emitted aggregation, never a reference
+    val aggregations = ElasticAggregation.withValueCounts(emitted, request.sqlAggregations)
 
     val rootAggregations = requestToRootAggregations(request, aggregations, references)
 

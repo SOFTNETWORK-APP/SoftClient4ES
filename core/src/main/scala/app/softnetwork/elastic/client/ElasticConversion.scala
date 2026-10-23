@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.query.{Desc, GroupedRowOrder, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Desc, GroupedRowOrder, SQLAggregation, SingleSearch}
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.json4s.{Extraction, Formats}
@@ -1411,9 +1411,18 @@ trait ElasticConversion {
     *   - a STDDEV / VARIANCE (`extended_stats`) reports its `count`: no value, or one value for a
     *     SAMPLE statistic, which needs two (DuckDB answers NULL for both);
     *   - a `MIN` / `MAX` of a date or a timestamp reports a `value_as_string` exactly when it has a
-    *     value (Elasticsearch formats only a value it has).
+    *     value (Elasticsearch formats only a value it has);
+    *   - a `MIN` / `MAX` of a number is sent with the count of its values beside it where the
+    *     client reads `null` as `0.0` (`SQLAggregation.readsValueCount`): a count of 0 is no value.
+    *     Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no value at all on 9 --
+    *     and the NULL is made explicit, so a whole table of such documents answers its one row.
     */
-  private def withoutValues(value: JsonNode, agg: ClientAggregation): Boolean =
+  private def withoutValues(
+    node: ObjectNode,
+    name: String,
+    value: JsonNode,
+    agg: ClientAggregation
+  ): Boolean =
     if (agg.temporal) {
       val text = value.get("value_as_string")
       text == null || text.isNull
@@ -1424,8 +1433,24 @@ trait ElasticConversion {
           val count = value.path("count")
           count.isNumber && (count.asLong() == 0L ||
           (count.asLong() < 2L && agg.aggResultField.exists(_.endsWith("_sampling"))))
+        case AggregationType.Min | AggregationType.Max =>
+          val metric = value.get("value")
+          metric == null || metric.isNull || valueCountOf(node, name).contains(0.0)
         case _ => false
       }
+
+  /** The count of the values of the aggregation named `name`, from the `value_count` sent beside it
+    * ([[SQLAggregation.valueCountName]]) -- under its own name, or under its typed key, which the
+    * Java client of Elasticsearch 8 answers (`value_count#<name>`). `None` where none was sent.
+    */
+  private def valueCountOf(node: ObjectNode, name: String): Option[Double] = {
+    val countName = SQLAggregation.valueCountName(name)
+    Option(node.get(countName))
+      .orElse(Option(node.get(s"value_count#$countName")))
+      .map(_.path("value"))
+      .filter(_.isNumber)
+      .map(_.asDouble())
+  }
 
   /** The value of a `MIN` / `MAX` of a date or a timestamp: the `value_as_string` Elasticsearch
     * formats, read as a temporal exactly as a date bucket key is; a format no ISO reader takes (a
@@ -1489,7 +1514,7 @@ trait ElasticConversion {
               .get(name)
               .exists(agg =>
                 agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript
-              )) || aggregations.get(name).exists(withoutValues(value, _))
+              )) || aggregations.get(name).exists(withoutValues(n, name, value, _))
           Option(value.get("value"))
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
@@ -1573,8 +1598,12 @@ trait ElasticConversion {
             // null-fills under NativeContext).
             .orElse(if (emptyInput) Some(name -> (null: Any)) else None) match {
             case Some(m) =>
-              // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT)
-              val isAuxiliary = aggregations.get(m._1).exists(_.auxiliary)
+              // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT), and
+              // the value count sent beside a MIN / MAX, which only `withoutValues` reads
+              val isAuxiliary = aggregations.get(m._1) match {
+                case Some(agg) => agg.auxiliary
+                case None      => SQLAggregation.isValueCountName(m._1)
+              }
               if (!isAuxiliary) metrics ++= Seq(m._1 -> m._2)
             case _ =>
           }
@@ -1718,7 +1747,13 @@ trait ElasticConversion {
       case n: ObjectNode =>
         var entries: Seq[(String, Any)] = Seq.empty
         n.forEachEntry { (name, value) =>
-          if (!value.has("buckets") && value.has("value")) {
+          // the value count sent beside a MIN / MAX is no column, and a count of 0 is the NULL of
+          // its MIN / MAX (`withoutValues`), which this reading leaves out as it leaves a null out
+          if (
+            !value.has("buckets") && value.has("value") &&
+            !SQLAggregation.isValueCountName(normalizeAggregationKey(name)) &&
+            !valueCountOf(n, normalizeAggregationKey(name)).contains(0.0)
+          ) {
             val metricValue = value.get("value")
             if (!metricValue.isNull) {
               val value = if (metricValue.isIntegralNumber) {

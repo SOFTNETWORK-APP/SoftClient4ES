@@ -61,6 +61,8 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   FilterAggregation,
   HistogramOrder,
   KeyedFiltersAggregation,
+  MaxAggregation,
+  MinAggregation,
   NestedAggregation,
   StatsAggregation,
   TermsAggregation,
@@ -1044,6 +1046,46 @@ object ElasticAggregation {
         }))
       case _ => aggregation
     }
+
+  /** The aggregations as EMITTED, each `MIN` / `MAX` that answers a number followed by the
+    * `value_count` of the values it computes over -- the same field, the same script -- where the
+    * client module reads a metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`,
+    * Elasticsearch 8). The response parser reads NULL for the `MIN` / `MAX` when that count is 0
+    * (`SQLAggregation.readsValueCount`); nothing else reads it.
+    *
+    * The count is a copy of its aggregation under its own name ([[SQLAggregation.valueCountName]]),
+    * so every placement of the aggregation -- a bucket level, a nested scope, the whole-table
+    * bucket, a window partition -- places the count beside it. It is never a REFERENCE: no
+    * pipeline, `order` or HAVING reads it. Elsewhere, and for every other aggregation, `aggs` is
+    * returned unchanged.
+    */
+  def withValueCounts(
+    aggs: Seq[ElasticAggregation],
+    sqlAggregations: Map[String, SQLAggregation]
+  )(implicit target: PainlessTarget): Seq[ElasticAggregation] =
+    if (!target.readsNullMetricAsZero) aggs
+    else
+      aggs.flatMap { aggregation =>
+        val values: Option[(Option[String], Option[Script])] =
+          if (!sqlAggregations.get(aggregation.aggName).exists(_.readsValueCount)) None
+          else
+            aggregation.agg match {
+              case min: MinAggregation => Some((min.field, min.script))
+              case max: MaxAggregation => Some((max.field, max.script))
+              case _                   => None
+            }
+        aggregation +: values.toSeq.map { case (field, script) =>
+          val name = SQLAggregation.valueCountName(aggregation.agg.name)
+          aggregation.copy(
+            aggName = aggregation.aggName.stripSuffix(aggregation.agg.name) + name,
+            field = name,
+            aggType = COUNT,
+            agg = ValueCountAggregation(name, field = field, script = script),
+            direction = None,
+            nestedAgg = None
+          )
+        }
+      }
 
   /** Extracts the buckets_path for a given bucket
     */

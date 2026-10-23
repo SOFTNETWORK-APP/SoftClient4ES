@@ -317,6 +317,48 @@ trait GroupedAggregateSemanticsSpec
     Map("w" -> Some(7.0), "x" -> Some(-4.0), "y" -> Some(450.0), "z" -> None)
   }
 
+  "MIN / MAX of a number column" should "answer NULL for a group with documents but no value" in {
+    // DuckDB: w 7 7 3.0, x -900 5 1.5, y 0 900 0.5 (a genuine 0), z NULL NULL NULL
+    val rows = rowsOf(
+      s"SELECT g1, MIN(n) AS lo, MAX(n) AS hi, MIN(x) AS xlo FROM $index GROUP BY g1"
+    ).map(r =>
+      String.valueOf(cell(r, "g1")) ->
+      (number(cell(r, "lo")), number(cell(r, "hi")), number(cell(r, "xlo")))
+    ).toMap
+    rows shouldBe Map(
+      "w" -> ((Some(7.0), Some(7.0), Some(3.0))),
+      "x" -> ((Some(-900.0), Some(5.0), Some(1.5))),
+      "y" -> ((Some(0.0), Some(900.0), Some(0.5))),
+      "z" -> ((None, None, None))
+    )
+  }
+
+  it should "answer NULL over a whole table whose documents have no value, in one row" in {
+    def lohi(sql: String): Seq[(Option[Double], Option[Double])] =
+      rowsOf(sql).map(r => (number(cell(r, "lo")), number(cell(r, "hi"))))
+    // DuckDB: one row, NULL NULL
+    lohi(s"SELECT MIN(n) AS lo, MAX(n) AS hi FROM $index WHERE g1 = 'z'") shouldBe
+    Seq((None, None))
+    // the control -- DuckDB: -900 900
+    lohi(s"SELECT MIN(n) AS lo, MAX(n) AS hi FROM $index") shouldBe
+    Seq((Some(-900.0), Some(900.0)))
+  }
+
+  it should "answer NULL over a window partition with no value" in {
+    // DuckDB: a5 and a6 (group z) NULL NULL; a3 and a4 (group y) 0 900
+    val rows = rowsOf(
+      s"SELECT id, g1, MIN(n) OVER (PARTITION BY g1) AS lo, MAX(n) OVER (PARTITION BY g1) AS hi " +
+      s"FROM $index WHERE g1 IN ('y', 'z')"
+    ).map(r => String.valueOf(cell(r, "id")) -> ((number(cell(r, "lo")), number(cell(r, "hi")))))
+      .toMap
+    rows shouldBe Map(
+      "a3" -> ((Some(0.0), Some(900.0))),
+      "a4" -> ((Some(0.0), Some(900.0))),
+      "a5" -> ((None, None)),
+      "a6" -> ((None, None))
+    )
+  }
+
   // ---------------------------------------------------------------------------------------------
   // A multi-key GROUP BY: LIMIT and ORDER BY
   // ---------------------------------------------------------------------------------------------

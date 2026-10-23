@@ -221,6 +221,73 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     valueOf(rs, "es7") shouldBe (null: Any)
   }
 
+  /** The rows `aggregations` answers for `sql` over the whole table: `count` documents. */
+  private def wholeTable(sql: String, count: Long, aggregations: String) = {
+    val single = statement(sql)
+    ElasticConversion
+      .parseResponse(
+        s"""{"hits": {"total": {"value": $count, "relation": "eq"}, "hits": []},
+           | "aggregations": {$aggregations}}""".stripMargin,
+        single.fieldAliases,
+        single.sqlAggregations.map(kv => kv._1 -> implicitly[ClientAggregation](kv._2)),
+        Seq("lo", "hi")
+      )
+      .get
+  }
+
+  it should "answer NULL for a MIN / MAX of a number, read from the value count beside it" in {
+    val rs = rows(
+      "SELECT g1, MIN(n) AS a FROM t GROUP BY g1",
+      // Elasticsearch 8's typed client, typed keys: 0.0 for null, and the count of the values
+      """{"key": "none", "doc_count": 2,
+        |  "min#a": {"value": 0.0}, "value_count#a__value_count": {"value": 0.0}},
+        |{"key": "zero", "doc_count": 2,
+        |  "min#a": {"value": 0.0}, "value_count#a__value_count": {"value": 2.0}},
+        |{"key": "plain", "doc_count": 1, "a": {"value": 0.0}, "a__value_count": {"value": 0}},
+        |{"key": "seven", "doc_count": 3,
+        |  "min#a": {"value": 7.0}, "value_count#a__value_count": {"value": 1.0}}""".stripMargin
+    )
+    valueOf(rs, "none") shouldBe (null: Any)
+    valueOf(rs, "plain") shouldBe (null: Any)
+    // a genuine 0, and a value: the controls
+    valueOf(rs, "zero") shouldBe 0.0
+    valueOf(rs, "seven") shouldBe 7.0
+    // the value count is read, never answered as a column
+    rs.flatMap(_.keys).filter(_.contains("value_count")) shouldBe empty
+  }
+
+  it should "answer NULL for a MIN / MAX of a number without its value count (6.8, 7.17, 9)" in {
+    val rs = rows(
+      "SELECT g1, MAX(n) AS a FROM t GROUP BY g1",
+      // 6.8 / 7.17: the raw null; 9's typed client leaves the null value out
+      """{"key": "es7", "doc_count": 2, "a": {"value": null}},
+        |{"key": "es9", "doc_count": 2, "max#a": {}}""".stripMargin
+    )
+    valueOf(rs, "es7") shouldBe (null: Any)
+    valueOf(rs, "es9") shouldBe (null: Any)
+  }
+
+  it should "answer one row of NULL for a MIN / MAX of a number over a whole table" in {
+    val sql = "SELECT MIN(n) AS lo, MAX(n) AS hi FROM t WHERE g1 = 'z'"
+    // 8: the typed client's 0.0 and the value counts
+    wholeTable(
+      sql,
+      2,
+      """"min#lo": {"value": 0.0}, "value_count#lo__value_count": {"value": 0.0},
+        |"max#hi": {"value": 0.0}, "value_count#hi__value_count": {"value": 0.0}""".stripMargin
+    ) shouldBe Seq(ListMap("lo" -> null, "hi" -> null))
+    // 6.8 / 7.17: null; 9: no value
+    wholeTable(sql, 2, """"lo": {"value": null}, "max#hi": {}""") shouldBe
+    Seq(ListMap("lo" -> null, "hi" -> null))
+    // the control: values
+    wholeTable(
+      sql,
+      2,
+      """"min#lo": {"value": -900.0}, "value_count#lo__value_count": {"value": 2.0},
+        |"max#hi": {"value": 0.0}, "value_count#hi__value_count": {"value": 2.0}""".stripMargin
+    ) shouldBe Seq(ListMap("lo" -> -900.0, "hi" -> 0.0))
+  }
+
   behavior of "a percentile of a group with no value"
 
   it should "answer NULL, not Elasticsearch's map of percents" in {

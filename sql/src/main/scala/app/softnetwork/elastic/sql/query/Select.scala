@@ -228,9 +228,36 @@ case class SQLAggregation(
       case Nil => ""
       case seq => seq.head
     }
+
+  /** The aggregate is a `MIN` / `MAX` that answers a number: where the client reads a metric's
+    * `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`), its value cannot tell a group with
+    * no value of the field from a value of 0, and the group's document count cannot either. The
+    * count of the values it computes over can: the bridge sends that `value_count` beside it, under
+    * [[SQLAggregation.valueCountName]], and the response parser answers NULL when it is 0. A
+    * temporal `MIN` / `MAX` tells it by its `value_as_string`, a STDDEV / VARIANCE by its own
+    * `count`.
+    */
+  lazy val readsValueCount: Boolean =
+    !temporal && (aggType match {
+      case MIN | MAX | _: MinAgg | _: MaxAgg => true
+      case _                                 => false
+    })
 }
 
 object SQLAggregation {
+
+  private val ValueCountSuffix = "__value_count"
+
+  /** The name of the `value_count` sent beside the aggregation named `name` (its name in the
+    * request and in the response: the last segment of its path) -- see
+    * [[SQLAggregation.readsValueCount]]. The one spelling the bridge emits and the response parser
+    * reads.
+    */
+  def valueCountName(name: String): String = name + ValueCountSuffix
+
+  /** Is `name` the name of a `value_count` sent beside an aggregation ([[valueCountName]])? */
+  def isValueCountName(name: String): Boolean = name.endsWith(ValueCountSuffix)
+
   def fromField(field: Field, request: SingleSearch): Option[SQLAggregation] = {
     import field._
 
