@@ -49,6 +49,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   topHitsAgg,
   valueCountAgg
 }
+import com.sksamuel.elastic4s.ValueType
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.searches.DateHistogramInterval
 import com.sksamuel.elastic4s.searches.aggs.{
@@ -647,6 +648,15 @@ object ElasticAggregation {
                   )
                 case _ =>
               }
+              // A scripted key that reports a number is a numeric `terms`, on a level with no key
+              // filter (`Bucket.scriptedKeyValueType`). elastic4s does not write the parameter:
+              // `BucketScriptParams.bind` does, from this field.
+              if (terms.includeExclude.isEmpty)
+                bucket.scriptedKeyValueType.foreach {
+                  case "long"   => terms = terms.valueType(ValueType.LONG)
+                  case "double" => terms = terms.valueType(ValueType.DOUBLE)
+                  case _        =>
+                }
               refusal.foreach { message =>
                 terms =
                   terms.copy(metadata = terms.metadata + (SearchBodySerializer.Refusal -> message))

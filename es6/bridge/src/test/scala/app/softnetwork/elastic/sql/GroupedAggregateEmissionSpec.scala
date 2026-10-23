@@ -95,4 +95,27 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  behavior of "a scripted GROUP BY key"
+
+  /** The `value_type` the level `name` is sent with. */
+  private def valueTypeOf(node: JsonNode, name: String): Option[String] =
+    aggNamed(node, name).flatMap(n => Option(n.path("terms").get("value_type"))).map(_.asText())
+
+  it should "be a numeric terms level when it reports a number" in {
+    Seq(
+      "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 ORDER BY kk DESC" -> Some("long"),
+      "SELECT n * 2 AS kk, COUNT(*) AS c FROM t GROUP BY n * 2"                 -> Some("long"),
+      "SELECT x * 2 AS kk, COUNT(*) AS c FROM t GROUP BY x * 2"                 -> Some("double"),
+      "SELECT g1, n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY g1, n + 0"         -> Some("long"),
+      // the controls: a field key, a key that reports a string, and a key filter on the level
+      "SELECT n AS kk, COUNT(*) AS c FROM t GROUP BY n"                    -> None,
+      "SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"      -> None,
+      "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 HAVING kk <> 0" -> None
+    ).foreach { case (sql, expected) =>
+      withClue(s"[$sql] ") {
+        valueTypeOf(body(sql), "kk") shouldBe expected
+      }
+    }
+  }
 }

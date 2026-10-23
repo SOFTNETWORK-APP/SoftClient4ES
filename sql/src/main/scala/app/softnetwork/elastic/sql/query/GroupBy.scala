@@ -503,6 +503,31 @@ case class Bucket(
     */
   def isTemporalScriptKey: Boolean = isScriptedKey && renderedTypeOf(identifier).isTemporal
 
+  /** The `value_type` a scripted `terms` level is sent with: `long` for a key that reports a whole
+    * number, `double` for one that reports another number, nothing for any other key.
+    *
+    * Without it a scripted `terms` level is a STRING `terms`: each key comes back as the text the
+    * script's value prints and the level orders those texts. MEASURED on Elasticsearch 8.18.3:
+    * `GROUP BY n + 0 ORDER BY kk DESC` answered `'900', '7', ..., '0', '-900', '-4'`, where the field
+    * key `GROUP BY n` answers the numbers in numeric order. With it, Elasticsearch builds a numeric
+    * `terms` (every major takes the parameter with a script), so the keys come back as numbers and
+    * sort as numbers.
+    *
+    * Read by both bridges, which send it only on a level that carries no key filter: a HAVING key
+    * filter is written as the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric
+    * level would parse as numbers (a fractional text read as a whole number, a regular expression
+    * refused). A temporal key is left as it is (`date_histogram` or its own text).
+    */
+  def scriptedKeyValueType: Option[String] =
+    if (!isScriptedKey || isDateHistogram) None
+    else
+      renderedTypeOf(identifier) match {
+        case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => Some("long")
+        case _: SQLDouble | _: SQLReal                                 => Some("double")
+        case SQLTypes.Numeric                                          => Some("double")
+        case _                                                         => None
+      }
+
   /** The columns this level's key reads -- through its functions and its arithmetic, a CASE's
     * branches and its conditions -- each with the functions the key applies to it.
     */
