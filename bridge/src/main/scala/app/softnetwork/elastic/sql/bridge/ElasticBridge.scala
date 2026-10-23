@@ -20,11 +20,14 @@ import app.softnetwork.elastic.sql.{PainlessContextType, PainlessTarget}
 import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
+  Criteria,
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
   ElasticNested,
   ElasticParent,
+  ElasticRelation,
+  Expression,
   GenericExpression,
   InExpr,
   IsNotNullCriteria,
@@ -34,6 +37,7 @@ import app.softnetwork.elastic.sql.query.{
   MatchAllCriteria,
   MatchCriteria,
   MatchNoneCriteria,
+  MultiMatchCriteria,
   NestedElement,
   NestedElements,
   Predicate,
@@ -43,6 +47,21 @@ import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.searches.queries.{InnerHit, Query}
 
 object ElasticBridge {
+
+  /** The nested path of each column a condition reads, the first segment of its dotted name, for a
+    * `NESTED(…)` no JOIN UNNEST declares (`ElasticBridge.query`). A column with no dot has none.
+    */
+  private[bridge] def nestedPaths(criteria: Criteria): List[String] = criteria match {
+    case Predicate(left, _, right, _, _) => nestedPaths(left) ++ nestedPaths(right)
+    case relation: ElasticRelation       => nestedPaths(relation.criteria)
+    case m: MultiMatchCriteria           => nestedPaths(m.criteria)
+    case e: Expression =>
+      e.identifier.name.split('.').toList match {
+        case path :: _ :: _ => List(path)
+        case _              => Nil
+      }
+    case _ => Nil
+  }
 
   /** The columns a MATCH reads, when `filter` is one: a `MATCH (c) AGAINST (…)`, or the group of
     * one per column that `MATCH (c1, c2) AGAINST (…)` is. `None` for any other filter.
@@ -104,7 +123,30 @@ case class ElasticBridge(filter: ElasticFilter) {
 
           NestedElements.buildNestedTrees(criteria.nestedElements) match {
             case Nil =>
-              matchAllQuery()
+              // 🔴 A `NESTED(…)` no JOIN UNNEST declares has no nested element: its path is the
+              // first segment of the columns it names (`items.sku` -> `items`), the segment its
+              // inner-hits name is read from. It rendered `match_all` here, so `WHERE
+              // NESTED(items.sku = 's1')` returned EVERY document, HTTP 200. It is now the nested
+              // query over that path -- the documents one of whose elements satisfies the
+              // condition, as DuckDB answers `EXISTS (SELECT 1 FROM unnest(items) …)` -- with no
+              // inner hits (no element is projected), tolerating an index that does not map the
+              // path, where no element can match. Columns of several paths in one `NESTED` are
+              // refused by name; a condition naming no dotted column is applied as it is.
+              val boolQuery = Option(ElasticBoolQuery(group = true))
+              val q = criteria
+                .asFilter(boolQuery)
+                .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
+              ElasticBridge.nestedPaths(criteria).distinct match {
+                case Nil => q
+                case path :: Nil =>
+                  nestedQuery(path, q).copy(ignoreUnmapped = Some(true))
+                case paths =>
+                  throw new IllegalArgumentException(
+                    s"NESTED(${criteria.sql}) reads the nested paths ${paths.mkString(", ")}: " +
+                    "without a JOIN UNNEST a NESTED condition reads one path. Write one NESTED " +
+                    "per path."
+                  )
+              }
             case nestedTrees =>
               def nestedInner(n: NestedElement): InnerHit = {
                 var inner = innerHits(n.innerHitsName)

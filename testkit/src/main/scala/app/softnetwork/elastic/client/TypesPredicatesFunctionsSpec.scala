@@ -448,4 +448,22 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     // control: the rows the negations leave out
     idsOf(s"SELECT id FROM $index WHERE n IS NULL") shouldBe Set("p4", "p6")
   }
+
+  // -- predicates: NESTED with no JOIN UNNEST ------------------------------------------------------
+
+  /** `WHERE NESTED(items.sku = 's1')` keeps the documents one of whose elements satisfies the
+    * condition (DuckDB: `EXISTS (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`). It
+    * rendered `match_all` and returned every document.
+    */
+  "WHERE NESTED with no JOIN UNNEST" should "filter by its condition, as DuckDB does" in {
+    idsOf(s"SELECT id FROM $index WHERE NESTED(items.sku = 's1')") shouldBe Set("p1", "p3")
+    idsOf(
+      s"SELECT id FROM $index WHERE NESTED(items.sku = 's2' AND items.qty > 2)"
+    ) shouldBe Set("p2")
+    idsOf(s"SELECT id FROM $index WHERE NESTED(items.sku = 's1') AND g1 = 'a'") shouldBe Set("p1")
+    // control: the same condition through a JOIN UNNEST, one row per element
+    rowsOf(s"SELECT t.id FROM $index AS t JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'")
+      .map(r => scalar(r.getOrElse("id", null)))
+      .toSet shouldBe Set("p1", "p3")
+  }
 }
