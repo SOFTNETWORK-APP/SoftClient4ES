@@ -61,7 +61,7 @@ object BucketScriptParams {
     aggs.flatMap {
       case terms: TermsAggregation =>
         terms.valueType.map(t => terms.name -> t.toString.toLowerCase).toSeq ++
-        valueTypes(terms.subaggs)
+          valueTypes(terms.subaggs)
       case parent: Aggregation => valueTypes(parent.subaggs).toSeq
       case _                   => Nil
     }.toMap

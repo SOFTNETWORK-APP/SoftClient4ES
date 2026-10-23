@@ -338,7 +338,8 @@ object UnnestScope {
         .map(_.innerHitsName)
         .distinct
         .filter(name => joined.contains(name) && !projected.contains(name))
-      if (filtered.isEmpty) projected else projected ++ filtered.map(_ -> Seq.empty[(String, String)])
+      if (filtered.isEmpty) projected
+      else projected ++ filtered.map(_ -> Seq.empty[(String, String)])
     }
   }
 }

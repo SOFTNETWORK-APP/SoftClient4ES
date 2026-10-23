@@ -136,7 +136,11 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
         s"SELECT g1, $fn(n) AS a FROM t GROUP BY g1",
         // 7.17 answers the sample statistic of one value as "NaN", 8 as 0.0
         s"""{"key": "es8", "doc_count": 1, "a": ${extendedStats(1, "0.0", "0.0")}},
-           |{"key": "es7", "doc_count": 1, "a": ${extendedStats(1, "0.0", "\"NaN\"")}}""".stripMargin
+           |{"key": "es7", "doc_count": 1, "a": ${extendedStats(
+          1,
+          "0.0",
+          "\"NaN\""
+        )}}""".stripMargin
       )
     Seq("STDDEV", "STDDEV_SAMP", "VARIANCE", "VAR_SAMP").foreach { fn =>
       withClue(s"[$fn] ") {

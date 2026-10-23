@@ -1750,7 +1750,7 @@ class TableExecutor(
 
     run(steps) match {
       case failure @ Left(_) => failure
-      case Right(_) =>
+      case Right(_)          =>
         // A step fails in two ways, and both restore: it THROWS (the exception then propagates),
         // or it answers an error RESULT -- a pipeline Elasticsearch refuses (a `split` or a `join`
         // written without its `separator` answers 400) -- which is returned as it was. The error

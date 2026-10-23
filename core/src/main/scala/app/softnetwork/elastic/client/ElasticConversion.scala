@@ -304,9 +304,9 @@ trait ElasticConversion {
         }
         .map(_ - "bucket_root")
 
-  /** The rows of a GROUP BY of several levels, in the order and to the count the statement asks
-    * for (`GroupedRowOrder`): sorted by its ORDER BY when the levels' own bucket order cannot give
-    * it, then cut to its LIMIT. Run once over the rows of ONE aggregation response, which is already
+  /** The rows of a GROUP BY of several levels, in the order and to the count the statement asks for
+    * (`GroupedRowOrder`): sorted by its ORDER BY when the levels' own bucket order cannot give it,
+    * then cut to its LIMIT. Run once over the rows of ONE aggregation response, which is already
     * whole in memory, and only for a statement that needs it (`GroupedRowOrder.of`).
     *
     * NULL sorts after every value ascending and before every value descending, the engine's default
@@ -328,7 +328,10 @@ trait ElasticConversion {
           var c = 0
           while (c == 0 && i < keys.length) {
             val (column, direction) = keys(i)
-            c = compareGroupedValues(unwrapCell(ra.getOrElse(column, null)), unwrapCell(rb.getOrElse(column, null)))
+            c = compareGroupedValues(
+              unwrapCell(ra.getOrElse(column, null)),
+              unwrapCell(rb.getOrElse(column, null))
+            )
             if (direction == Desc) c = -c
             i += 1
           }
@@ -351,8 +354,10 @@ trait ElasticConversion {
       case (_, null)    => -1
       case (x: java.lang.Number, y: java.lang.Number) =>
         (x, y) match {
-          case (_: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte,
-                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte) =>
+          case (
+                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte,
+                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte
+              ) =>
             java.lang.Long.compare(x.longValue(), y.longValue())
           case _ => java.lang.Double.compare(x.doubleValue(), y.doubleValue())
         }
@@ -655,7 +660,10 @@ trait ElasticConversion {
       val fieldsNode = Option(hit.path("fields"))
         .filter(!_.isMissingNode)
       val fields = fieldsNode
-        .map(n => if (text.isEmpty) jsonNodeToMap(n, fieldAliases) else jsonNodeToMap(n, fieldAliases, text))
+        .map(n =>
+          if (text.isEmpty) jsonNodeToMap(n, fieldAliases)
+          else jsonNodeToMap(n, fieldAliases, text)
+        )
         .getOrElse(ListMap.empty)
       source ++ metadata ++ innerHits ++ fields
     }
@@ -1353,7 +1361,8 @@ trait ElasticConversion {
                 best = Some(kd -> v)
             }
           }
-          best.collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
+          best
+            .collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
             .filter(finite)
         case _ => None
       }
@@ -1362,9 +1371,9 @@ trait ElasticConversion {
 
   private def finite(d: Double): Boolean = !d.isNaN && !d.isInfinite
 
-  /** Whether the aggregation `agg` of this node computed its value over NO value of its field,
-    * read from the field's value count wherever the response states it -- never from the value
-    * itself: Elasticsearch 8's typed client has already turned a `null` value into `0.0`.
+  /** Whether the aggregation `agg` of this node computed its value over NO value of its field, read
+    * from the field's value count wherever the response states it -- never from the value itself:
+    * Elasticsearch 8's typed client has already turned a `null` value into `0.0`.
     *
     *   - a STDDEV / VARIANCE (`extended_stats`) reports its `count`: no value, or one value for a
     *     SAMPLE statistic, which needs two (DuckDB answers NULL for both);
@@ -1477,16 +1486,16 @@ trait ElasticConversion {
               // avoid emitting a stats-shaped struct in place of the null.
               aggregations.get(name).flatMap(_.aggResultField).filter(_ => !emptyInput).flatMap {
                 resultField =>
-                projectAggResultField(value, resultField) match {
-                  case Some(d) => Some(name -> d)
-                  case None =>
-                    conversionLogger.warn(
-                      s"Aggregation '$name' requested result field '$resultField' " +
-                      "which is absent from the response (extended_stats sample variants " +
-                      "require Elasticsearch 7.7+); the column will be null."
-                    )
-                    None
-                }
+                  projectAggResultField(value, resultField) match {
+                    case Some(d) => Some(name -> d)
+                    case None =>
+                      conversionLogger.warn(
+                        s"Aggregation '$name' requested result field '$resultField' " +
+                        "which is absent from the response (extended_stats sample variants " +
+                        "require Elasticsearch 7.7+); the column will be null."
+                      )
+                      None
+                  }
               }
             }
             .orElse {

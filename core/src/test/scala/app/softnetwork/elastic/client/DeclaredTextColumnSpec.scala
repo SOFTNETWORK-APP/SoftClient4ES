@@ -61,7 +61,10 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
   }
 
   "a script column declared VARCHAR" should "answer its text" in {
-    valueOf("SELECT id, DATETIME_FORMAT(ts, '%H:%i:%s') AS v FROM t", "00:00:00") shouldBe "00:00:00"
+    valueOf(
+      "SELECT id, DATETIME_FORMAT(ts, '%H:%i:%s') AS v FROM t",
+      "00:00:00"
+    ) shouldBe "00:00:00"
     valueOf("SELECT id, DATETIME_FORMAT(ts, '%Y-%m-%d') AS v FROM t", "2024-07-04") shouldBe
     "2024-07-04"
   }

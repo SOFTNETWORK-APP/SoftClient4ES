@@ -48,7 +48,10 @@ import scala.language.implicitConversions
   * `x` and no `ts`) and `w` (one row) -- so that a group with documents but no value of a field,
   * and a group of one value, are both there.
   */
-trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
+trait GroupedAggregateSemanticsSpec
+    extends AnyFlatSpecLike
+    with ElasticDockerTestKit
+    with Matchers {
 
   lazy val log: Logger = LoggerFactory.getLogger(getClass.getName)
 
@@ -143,13 +146,13 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
   }
 
   private def instant(value: Any): Option[Instant] = value match {
-    case null                => None
-    case z: ZonedDateTime    => Some(z.toInstant)
-    case l: LocalDateTime    => Some(l.toInstant(ZoneOffset.UTC))
-    case d: LocalDate        => Some(d.atStartOfDay(ZoneOffset.UTC).toInstant)
-    case i: Instant          => Some(i)
-    case Seq(one)            => instant(one)
-    case other               => fail(s"[$other] (${other.getClass.getName}) is not a timestamp")
+    case null             => None
+    case z: ZonedDateTime => Some(z.toInstant)
+    case l: LocalDateTime => Some(l.toInstant(ZoneOffset.UTC))
+    case d: LocalDate     => Some(d.atStartOfDay(ZoneOffset.UTC).toInstant)
+    case i: Instant       => Some(i)
+    case Seq(one)         => instant(one)
+    case other            => fail(s"[$other] (${other.getClass.getName}) is not a timestamp")
   }
 
   private def at(text: String): Option[Instant] = Some(Instant.parse(text))
@@ -166,7 +169,9 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
 
   private def keyCounts(sql: String): Set[(String, String, Option[Double])] =
     rowsOf(sql)
-      .map(r => (String.valueOf(cell(r, "kk")), String.valueOf(cell(r, "g1")), number(cell(r, "c"))))
+      .map(r =>
+        (String.valueOf(cell(r, "kk")), String.valueOf(cell(r, "g1")), number(cell(r, "c")))
+      )
       .toSet
 
   "COUNT(*) under an expression key followed by a column key" should
@@ -200,7 +205,7 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
   private def numericKeys(sql: String): Seq[Double] =
     rowsOf(sql).map(r => cell(r, "kk")).filter(_ != null).map {
       case n: java.lang.Number => n.doubleValue()
-      case other               => fail(s"[$sql] key [$other] (${other.getClass.getName}) is not a number")
+      case other => fail(s"[$sql] key [$other] (${other.getClass.getName}) is not a number")
     }
 
   "a scripted GROUP BY key that reports a number" should "come back as a number, in numeric order" in {
@@ -276,7 +281,12 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
     // DuckDB: w NULL, x 519.9233917928037, y 636.3961030678928, z NULL
     close(
       sampled(
-        Map("w" -> None, "x" -> Some(519.9233917928037), "y" -> Some(636.3961030678928), "z" -> None)
+        Map(
+          "w" -> None,
+          "x" -> Some(519.9233917928037),
+          "y" -> Some(636.3961030678928),
+          "z" -> None
+        )
       )
     )(of("STDDEV_SAMP"))
     // DuckDB: w NULL, x 270320.3333333333, y 405000.0, z NULL
@@ -288,7 +298,9 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
       of("STDDEV_POP")
     )
     // DuckDB: w 0.0, x 180213.55555555553, y 202500.0, z NULL
-    close(Map("w" -> Some(0.0), "x" -> Some(180213.55555555553), "y" -> Some(202500.0), "z" -> None))(
+    close(
+      Map("w" -> Some(0.0), "x" -> Some(180213.55555555553), "y" -> Some(202500.0), "z" -> None)
+    )(
       of("VAR_POP")
     )
   }
@@ -432,7 +444,9 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
       }
     ddl(s"DROP TABLE IF EXISTS $table")
     ddl(s"DROP PIPELINE IF EXISTS $pipeline")
-    ddl(s"CREATE TABLE $table (id KEYWORD, a INT, b INT, c INT SCRIPT AS (a + b), PRIMARY KEY (id))")
+    ddl(
+      s"CREATE TABLE $table (id KEYWORD, a INT, b INT, c INT SCRIPT AS (a + b), PRIMARY KEY (id))"
+    )
 
     // a processor the table does not declare, with the `separator` a `split` requires: the write
     // of the user's pipeline after the migration is the step whose error used to leave the index on
@@ -448,7 +462,9 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
       .get("processors")
       .asInstanceOf[com.fasterxml.jackson.databind.node.ArrayNode]
       .add(mapper.readTree("""{"split":{"field":"tags","separator":",","ignore_missing":true}}"""))
-    client.asInstanceOf[PipelineApi].createPipeline(pipeline, mapper.writeValueAsString(stored)) shouldBe
+    client
+      .asInstanceOf[PipelineApi]
+      .createPipeline(pipeline, mapper.writeValueAsString(stored)) shouldBe
     ElasticSuccess(true)
 
     val altered = Await.result(
@@ -468,7 +484,12 @@ trait GroupedAggregateSemanticsSpec extends AnyFlatSpecLike with ElasticDockerTe
       .asText() shouldBe pipeline
     // and the temporary pipeline the migration created is not left behind
     val (_, pipelines) = rest("GET", "/_ingest/pipeline")
-    mapper.readTree(pipelines).fieldNames().asScala.filter(_.startsWith(s"${table}_tmp_")).toSeq shouldBe
+    mapper
+      .readTree(pipelines)
+      .fieldNames()
+      .asScala
+      .filter(_.startsWith(s"${table}_tmp_"))
+      .toSeq shouldBe
     empty
     ddl(s"DROP TABLE IF EXISTS $table")
   }

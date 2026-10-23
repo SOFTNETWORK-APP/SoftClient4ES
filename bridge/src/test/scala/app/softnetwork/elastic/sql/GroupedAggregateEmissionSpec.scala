@@ -29,7 +29,8 @@ import java.time.ZonedDateTime
 import scala.collection.JavaConverters._
 
 /** What a GROUP BY statement asks Elasticsearch for, level by level: which aggregations hang from
-  * which level, and how each level is keyed. The same rows as the hand-maintained es6 bridge's copy.
+  * which level, and how each level is keyed. The same rows as the hand-maintained es6 bridge's
+  * copy.
   *
   * The answers these requests give are asserted on every major by the shared testkit trait
   * `GroupedAggregateSemanticsSpec`.
@@ -85,7 +86,7 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
       // the defect: the expression key first -- COUNT(*) hung from no level at all
       s"SELECT $caseKey AS kk, g1, COUNT(*) AS c FROM t GROUP BY kk, g1"                  -> "g1",
       s"SELECT $caseKey AS kk, g1, COUNT(*) AS c FROM t GROUP BY kk, g1 HAVING kk <> 'x'" -> "g1",
-      s"SELECT n + 0 AS kk, g1, MAX(x) AS c FROM t GROUP BY n + 0, g1"                     -> "g1",
+      s"SELECT n + 0 AS kk, g1, MAX(x) AS c FROM t GROUP BY n + 0, g1"                    -> "g1",
       // the controls: the expression key last, and two column keys
       s"SELECT g1, $caseKey AS kk, COUNT(*) AS c FROM t GROUP BY g1, kk" -> "kk",
       "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k"                -> "k"
@@ -105,12 +106,12 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
   it should "be a numeric terms level when it reports a number" in {
     Seq(
       "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 ORDER BY kk DESC" -> Some("long"),
-      "SELECT n * 2 AS kk, COUNT(*) AS c FROM t GROUP BY n * 2"                 -> Some("long"),
-      "SELECT x * 2 AS kk, COUNT(*) AS c FROM t GROUP BY x * 2"                 -> Some("double"),
-      "SELECT g1, n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY g1, n + 0"         -> Some("long"),
+      "SELECT n * 2 AS kk, COUNT(*) AS c FROM t GROUP BY n * 2"                  -> Some("long"),
+      "SELECT x * 2 AS kk, COUNT(*) AS c FROM t GROUP BY x * 2"                  -> Some("double"),
+      "SELECT g1, n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY g1, n + 0"          -> Some("long"),
       // the controls: a field key, a key that reports a string, and a key filter on the level
-      "SELECT n AS kk, COUNT(*) AS c FROM t GROUP BY n"                    -> None,
-      "SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"      -> None,
+      "SELECT n AS kk, COUNT(*) AS c FROM t GROUP BY n"                        -> None,
+      "SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"          -> None,
       "SELECT n + 0 AS kk, COUNT(*) AS c FROM t GROUP BY n + 0 HAVING kk <> 0" -> None
     ).foreach { case (sql, expected) =>
       withClue(s"[$sql] ") {
@@ -123,18 +124,20 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
 
   /** The `size` the level `name` is sent with. */
   private def sizeOf(node: JsonNode, name: String): Int =
-    aggNamed(node, name).map(_.path("terms").path("size").asInt()).getOrElse(fail(s"no level $name"))
+    aggNamed(node, name)
+      .map(_.path("terms").path("size").asInt())
+      .getOrElse(fail(s"no level $name"))
 
   it should "send every bucket of every level when its rows are sorted after they are read" in {
     Seq(
       // sorted after they are read: every bucket of every level
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC LIMIT 2"   -> 65536,
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC LIMIT 2"   -> 65536,
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k, g1 LIMIT 2"    -> 65536,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC LIMIT 2" -> 65536,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC LIMIT 2" -> 65536,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k, g1 LIMIT 2"  -> 65536,
       // the controls: no ORDER BY, the levels' own order, one level -- each level keeps the LIMIT
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2"                   -> 2,
-      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k LIMIT 2"    -> 2,
-      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 ORDER BY c DESC LIMIT 2"         -> 2
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2"                -> 2,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k LIMIT 2" -> 2,
+      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 ORDER BY c DESC LIMIT 2"      -> 2
     ).foreach { case (sql, size) =>
       withClue(s"[$sql] ") {
         val request = body(sql)

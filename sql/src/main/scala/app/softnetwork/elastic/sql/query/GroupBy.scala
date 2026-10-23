@@ -508,10 +508,10 @@ case class Bucket(
     *
     * Without it a scripted `terms` level is a STRING `terms`: each key comes back as the text the
     * script's value prints and the level orders those texts. MEASURED on Elasticsearch 8.18.3:
-    * `GROUP BY n + 0 ORDER BY kk DESC` answered `'900', '7', ..., '0', '-900', '-4'`, where the field
-    * key `GROUP BY n` answers the numbers in numeric order. With it, Elasticsearch builds a numeric
-    * `terms` (every major takes the parameter with a script), so the keys come back as numbers and
-    * sort as numbers.
+    * `GROUP BY n + 0 ORDER BY kk DESC` answered `'900', '7', ..., '0', '-900', '-4'`, where the
+    * field key `GROUP BY n` answers the numbers in numeric order. With it, Elasticsearch builds a
+    * numeric `terms` (every major takes the parameter with a script), so the keys come back as
+    * numbers and sort as numbers.
     *
     * Read by both bridges, which send it only on a level that carries no key filter: a HAVING key
     * filter is written as the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric
