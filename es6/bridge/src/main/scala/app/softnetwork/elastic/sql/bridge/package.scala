@@ -201,7 +201,8 @@ package object bridge {
           Map.empty,
           request.having.flatMap(_.criteria),
           None,
-          references
+          references,
+          levelSize = GroupedRowOrder.levelSize(request)
         ) match {
           case Nil  => Seq.empty
           case aggs => aggs
@@ -225,7 +226,8 @@ package object bridge {
           directions,
           request.having.flatMap(_.criteria),
           None,
-          notNestedReferences
+          notNestedReferences,
+          levelSize = GroupedRowOrder.levelSize(request)
         ) match {
           // No buckets. A `HAVING` with no `GROUP BY` filters the ONE implicit whole-table group,
           // so the metric aggregations move inside a synthetic single-bucket `filters` aggregation

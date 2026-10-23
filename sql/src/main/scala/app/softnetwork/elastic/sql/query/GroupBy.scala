@@ -757,13 +757,22 @@ case class BucketPath(buckets: Seq[Bucket]) {
   override def toString: String = path
 }
 
-/** The cut the ROWS of a GROUP BY of several levels take once they are flattened -- what each
-  * level's own size cannot give.
+/** The order and the cut the ROWS of a GROUP BY of several levels take once they are flattened, by
+  * the names the rows carry them under -- what each level's own bucket order and size cannot give.
   *
-  * A level is cut to the statement's LIMIT INSIDE its parent bucket only, so `GROUP BY a, b LIMIT
-  * n` answered up to n rows per parent (n x n rows for two levels): the flattened rows are cut to n
-  * ([[limit]]). Only where the levels already answer the rows in the order the statement asks: no
-  * ORDER BY, or the levels' keys in their order.
+  * A level orders, and is cut to the statement's LIMIT, INSIDE its parent bucket only. So:
+  *   - `GROUP BY a, b LIMIT n` answered up to n rows per parent (n x n rows for two levels): the
+  *     flattened rows are cut to n ([[limit]]);
+  *   - `GROUP BY a, b ORDER BY b` (any ORDER BY that is not the levels' own keys in their order, an
+  *     aggregate included) answered the rows ordered inside each `a` only: the flattened rows are
+  *     sorted by the ORDER BY ([[sortKeys]]), NULLs last ascending and first descending -- the
+  *     engine's default, the statement cannot say otherwise under a GROUP BY -- and then cut. A
+  *     level is then sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside a parent
+  *     would keep groups the global order does not.
+  *
+  * `None` when the levels already answer the rows as the statement asks: one level, or an ORDER BY
+  * that is the levels' keys in their order and no LIMIT. Also `None`, the rows kept as they come,
+  * when a sort key is not a column of the rows (an aggregate the SELECT does not project).
   */
 case class GroupedRowOrder(sortKeys: Seq[(String, SortOrder)], limit: Option[Int]) {
   def sorts: Boolean = sortKeys.nonEmpty
@@ -780,9 +789,30 @@ object GroupedRowOrder {
       def levelOf(sort: FieldSort): Int =
         levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
       val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(sort) == i }
-      if (honoured) request.limit.map(l => GroupedRowOrder(Nil, Some(l.limit))) else None
+      def columnOf(sort: FieldSort): Option[String] =
+        levels
+          .find(b => b.identifier.identifierName == sort.name || b.name == sort.name)
+          .map(_.name)
+          .orElse(
+            request.sqlAggregations.values
+              .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
+              .map(_.field)
+          )
+      val limit = request.limit.map(_.limit)
+      if (honoured) limit.map(n => GroupedRowOrder(Nil, Some(n)))
+      else {
+        val keys = sorts.map(sort => columnOf(sort).map(_ -> sort.direction))
+        if (keys.exists(_.isEmpty)) None
+        else Some(GroupedRowOrder(keys.flatten, limit))
+      }
     }
   }
+
+  /** The size every level of `request` is sent with when its rows are sorted after they are
+    * flattened: every bucket. `None` otherwise -- each level keeps its own (`Bucket.size`).
+    */
+  def levelSize(request: SingleSearch): Option[Int] =
+    of(request).filter(_.sorts).map(_ => Bucket.DefaultSize)
 }
 
 /** What a `HAVING` criterion contributes to a bucket pipeline. THREE values, because `""` used to

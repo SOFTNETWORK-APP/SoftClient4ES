@@ -118,4 +118,29 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  behavior of "a GROUP BY of several levels"
+
+  /** The `size` the level `name` is sent with. */
+  private def sizeOf(node: JsonNode, name: String): Int =
+    aggNamed(node, name).map(_.path("terms").path("size").asInt()).getOrElse(fail(s"no level $name"))
+
+  it should "send every bucket of every level when its rows are sorted after they are read" in {
+    Seq(
+      // sorted after they are read: every bucket of every level
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC LIMIT 2"   -> 65536,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC LIMIT 2"   -> 65536,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k, g1 LIMIT 2"    -> 65536,
+      // the controls: no ORDER BY, the levels' own order, one level -- each level keeps the LIMIT
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2"                   -> 2,
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k LIMIT 2"    -> 2,
+      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 ORDER BY c DESC LIMIT 2"         -> 2
+    ).foreach { case (sql, size) =>
+      withClue(s"[$sql] ") {
+        val request = body(sql)
+        sizeOf(request, "g1") shouldBe size
+        if (sql.contains("g1, k")) sizeOf(request, "k") shouldBe size
+      }
+    }
+  }
 }

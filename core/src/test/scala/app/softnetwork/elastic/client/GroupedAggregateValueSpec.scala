@@ -208,6 +208,23 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     asTheLevelsAnswer.take(2)
   }
 
+  it should "be sorted by an ORDER BY the levels cannot give, NULL last ascending" in {
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC, g1 ASC",
+      asTheLevelsAnswer
+    ).map(r => (r._1, r._2)) shouldBe
+    Seq(("w", "c"), ("y", "c"), ("x", "b"), ("z", "b"), ("x", "a"), ("y", "a"))
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c ASC, g1 ASC LIMIT 4",
+      asTheLevelsAnswer
+    ).map(r => (r._1, r._2)) shouldBe Seq(("w", "c"), ("x", "b"), ("y", "a"), ("z", "b"))
+    // descending, NULL first
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY c DESC, g1 ASC LIMIT 2",
+      asTheLevelsAnswer
+    ).map(r => (r._1, r._2)) shouldBe Seq(("y", "c"), ("x", "a"))
+  }
+
   it should "be left as the levels answer them when they already give the order (the control)" in {
     GroupedRowOrder.of(
       statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k")

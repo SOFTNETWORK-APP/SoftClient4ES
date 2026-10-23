@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.query.{GroupedRowOrder, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Desc, GroupedRowOrder, SingleSearch}
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.json4s.{Extraction, Formats}
@@ -304,14 +304,62 @@ trait ElasticConversion {
         }
         .map(_ - "bucket_root")
 
-  /** The rows of a GROUP BY of several levels, cut to the count the statement asks for
-    * (`GroupedRowOrder`). Run once over the rows of ONE aggregation response, which is already whole
-    * in memory, and only for a statement that needs it (`GroupedRowOrder.of`).
+  /** The rows of a GROUP BY of several levels, in the order and to the count the statement asks
+    * for (`GroupedRowOrder`): sorted by its ORDER BY when the levels' own bucket order cannot give
+    * it, then cut to its LIMIT. Run once over the rows of ONE aggregation response, which is already
+    * whole in memory, and only for a statement that needs it (`GroupedRowOrder.of`).
+    *
+    * NULL sorts after every value ascending and before every value descending, the engine's default
+    * (a NULLS clause is refused under a GROUP BY). Two numbers compare as numbers whatever their
+    * class (a key may come back a Long, a metric a Double), two values of one comparable class by
+    * their order, anything else by its text. The sort is stable.
     */
   def orderGroupedRows[T](items: Seq[T], order: GroupedRowOrder)(
     row: T => ListMap[String, Any]
-  ): Seq[T] =
-    order.limit.fold(items)(n => items.take(math.max(n, 0)))
+  ): Seq[T] = {
+    val sorted =
+      if (!order.sorts) items
+      else {
+        val keys = order.sortKeys.toArray
+        items.sortWith { (a, b) =>
+          val ra = row(a)
+          val rb = row(b)
+          var i = 0
+          var c = 0
+          while (c == 0 && i < keys.length) {
+            val (column, direction) = keys(i)
+            c = compareGroupedValues(unwrapCell(ra.getOrElse(column, null)), unwrapCell(rb.getOrElse(column, null)))
+            if (direction == Desc) c = -c
+            i += 1
+          }
+          c < 0
+        }
+      }
+    order.limit.fold(sorted)(n => sorted.take(math.max(n, 0)))
+  }
+
+  private def unwrapCell(value: Any): Any = value match {
+    case Seq(one) => one
+    case other    => other
+  }
+
+  /** NULL is greater than every value: last ascending, first descending. */
+  private def compareGroupedValues(a: Any, b: Any): Int =
+    (a, b) match {
+      case (null, null) => 0
+      case (null, _)    => 1
+      case (_, null)    => -1
+      case (x: java.lang.Number, y: java.lang.Number) =>
+        (x, y) match {
+          case (_: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte,
+                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte) =>
+            java.lang.Long.compare(x.longValue(), y.longValue())
+          case _ => java.lang.Double.compare(x.doubleValue(), y.doubleValue())
+        }
+      case (x: Comparable[_], y) if x.getClass == y.getClass =>
+        x.asInstanceOf[Comparable[Any]].compareTo(y)
+      case _ => String.valueOf(a).compareTo(String.valueOf(b))
+    }
 
   /** convert JsonNode to Rows
     */

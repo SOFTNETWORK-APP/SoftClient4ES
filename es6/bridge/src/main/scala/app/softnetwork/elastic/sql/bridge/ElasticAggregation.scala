@@ -495,7 +495,10 @@ object ElasticAggregation {
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria],
     nested: Option[NestedElement],
-    allElasticAggregations: Seq[ElasticAggregation]
+    allElasticAggregations: Seq[ElasticAggregation],
+    // the size of EVERY level, over each level's own (`GroupedRowOrder.levelSize`): every bucket,
+    // when the flattened rows are sorted after they are read
+    levelSize: Option[Int] = None
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -636,7 +639,7 @@ object ElasticAggregation {
               // each step must chain on the previous one — restarting from `termsAgg`
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
-              bucket.size.foreach(s => terms = terms.size(s))
+              levelSize.orElse(bucket.size).foreach(s => terms = terms.size(s))
               having match {
                 case Some(criteria) =>
                   // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
