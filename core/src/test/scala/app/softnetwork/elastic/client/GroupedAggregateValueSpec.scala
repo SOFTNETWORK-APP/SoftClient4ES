@@ -288,6 +288,22 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     ) shouldBe Seq(ListMap("lo" -> -900.0, "hi" -> 0.0))
   }
 
+  it should "answer NULL for an AVG of a number, read from the value count beside it" in {
+    val rs = rows(
+      "SELECT g1, AVG(n) AS a FROM t GROUP BY g1",
+      // Elasticsearch 8's typed client: 0.0 for null, and the count of the values
+      """{"key": "none", "doc_count": 2,
+        |  "avg#a": {"value": 0.0}, "value_count#a__value_count": {"value": 0.0}},
+        |{"key": "zero", "doc_count": 2,
+        |  "avg#a": {"value": 0.0}, "value_count#a__value_count": {"value": 2.0}},
+        |{"key": "es7", "doc_count": 2, "a": {"value": null}}""".stripMargin
+    )
+    valueOf(rs, "none") shouldBe (null: Any)
+    valueOf(rs, "es7") shouldBe (null: Any)
+    // a genuine 0: the control
+    valueOf(rs, "zero") shouldBe 0.0
+  }
+
   behavior of "a percentile of a group with no value"
 
   it should "answer NULL, not Elasticsearch's map of percents" in {

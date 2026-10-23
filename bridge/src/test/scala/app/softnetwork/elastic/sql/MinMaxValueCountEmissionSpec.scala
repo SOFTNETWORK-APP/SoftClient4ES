@@ -28,10 +28,10 @@ import org.scalatest.matchers.should.Matchers
 import java.time.ZonedDateTime
 import scala.collection.JavaConverters._
 
-/** The `value_count` a `MIN` / `MAX` of a number is sent with, beside it, where the client module
-  * reads a metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`: Elasticsearch 8): the
-  * count tells a group with no value from a value of 0. The answers are asserted on every major by
-  * the shared testkit trait `GroupedAggregateSemanticsSpec`.
+/** The `value_count` a `MIN` / `MAX` of a number, or an `AVG`, is sent with, beside it, where the
+  * client module reads a metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`:
+  * Elasticsearch 8): the count tells a group with no value from a value of 0. The answers are
+  * asserted on every major by the shared testkit trait `GroupedAggregateSemanticsSpec`.
   */
 class MinMaxValueCountEmissionSpec extends AnyFlatSpec with Matchers {
 
@@ -119,6 +119,19 @@ class MinMaxValueCountEmissionSpec extends AnyFlatSpec with Matchers {
     count.get("script") shouldBe max.get("script")
     count.get("field") shouldBe max.get("field")
   }
+
+  behavior of "an AVG of a number, on Elasticsearch 8"
+
+  it should "be sent with the value count of its values" in {
+    siblingsOf(body("SELECT g1, AVG(n) AS a FROM t GROUP BY g1", es8), "a") shouldBe
+    Seq("a", "a__value_count")
+    siblingsOf(body("SELECT AVG(n) AS a FROM t", es8), "a") shouldBe Seq("a", "a__value_count")
+    // the other majors read the null Elasticsearch answers
+    valueCounts(body("SELECT g1, AVG(n) AS a FROM t GROUP BY g1", PainlessTarget(6))) shouldBe
+    empty
+  }
+
+  behavior of "a MIN / MAX of a date or a timestamp, on Elasticsearch 8"
 
   it should "be sent alone for a date or a timestamp, which tells NULL by its value_as_string" in {
     valueCounts(body("SELECT g1, MAX(ts) AS m, MIN(ts) AS l FROM t GROUP BY g1", es8)) shouldBe

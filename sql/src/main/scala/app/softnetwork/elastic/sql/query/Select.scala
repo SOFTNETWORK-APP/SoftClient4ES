@@ -17,7 +17,9 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.aggregate.{
+  AVG,
   AggregateFunction,
+  AvgAgg,
   BucketScriptAggregation,
   COUNT,
   MAX,
@@ -229,18 +231,18 @@ case class SQLAggregation(
       case seq => seq.head
     }
 
-  /** The aggregate is a `MIN` / `MAX` that answers a number: where the client reads a metric's
-    * `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`), its value cannot tell a group with
-    * no value of the field from a value of 0, and the group's document count cannot either. The
-    * count of the values it computes over can: the bridge sends that `value_count` beside it, under
-    * [[SQLAggregation.valueCountName]], and the response parser answers NULL when it is 0. A
-    * temporal `MIN` / `MAX` tells it by its `value_as_string`, a STDDEV / VARIANCE by its own
-    * `count`.
+  /** The aggregate is a `MIN` / `MAX` that answers a number, or an `AVG`: where the client reads a
+    * metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`), its value cannot tell a
+    * group with no value of the field from a value of 0, and the group's document count cannot
+    * either. The count of the values it computes over can: the bridge sends that `value_count`
+    * beside it, under [[SQLAggregation.valueCountName]], and the response parser answers NULL when
+    * it is 0. A temporal `MIN` / `MAX` tells it by its `value_as_string`, a STDDEV / VARIANCE by
+    * its own `count`.
     */
   lazy val readsValueCount: Boolean =
     !temporal && (aggType match {
-      case MIN | MAX | _: MinAgg | _: MaxAgg => true
-      case _                                 => false
+      case MIN | MAX | AVG | _: MinAgg | _: MaxAgg | _: AvgAgg => true
+      case _                                                   => false
     })
 }
 

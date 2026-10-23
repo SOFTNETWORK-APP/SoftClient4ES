@@ -359,6 +359,25 @@ trait GroupedAggregateSemanticsSpec
     )
   }
 
+  "AVG of a number column" should "answer NULL for a group, a table or a partition with no value" in {
+    // DuckDB: w 7, x -299.666..., y 450, z NULL
+    close(Map("w" -> Some(7.0), "x" -> Some(-899.0 / 3), "y" -> Some(450.0), "z" -> None))(
+      byGroup(s"SELECT g1, AVG(n) AS a FROM $index GROUP BY g1", "a")(number)
+    )
+    // DuckDB: one row, NULL
+    rowsOf(s"SELECT AVG(n) AS a FROM $index WHERE g1 = 'z'").map(r => number(cell(r, "a"))) shouldBe
+    Seq(None)
+    // DuckDB: a3, a4 450; a5, a6 NULL
+    rowsOf(
+      s"SELECT id, g1, AVG(n) OVER (PARTITION BY g1) AS a FROM $index WHERE g1 IN ('y', 'z')"
+    ).map(r => String.valueOf(cell(r, "id")) -> number(cell(r, "a"))).toMap shouldBe Map(
+      "a3" -> Some(450.0),
+      "a4" -> Some(450.0),
+      "a5" -> None,
+      "a6" -> None
+    )
+  }
+
   // ---------------------------------------------------------------------------------------------
   // A multi-key GROUP BY: LIMIT and ORDER BY
   // ---------------------------------------------------------------------------------------------

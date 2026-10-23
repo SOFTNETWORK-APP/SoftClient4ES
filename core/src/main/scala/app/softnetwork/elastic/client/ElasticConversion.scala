@@ -1412,10 +1412,11 @@ trait ElasticConversion {
     *     SAMPLE statistic, which needs two (DuckDB answers NULL for both);
     *   - a `MIN` / `MAX` of a date or a timestamp reports a `value_as_string` exactly when it has a
     *     value (Elasticsearch formats only a value it has);
-    *   - a `MIN` / `MAX` of a number is sent with the count of its values beside it where the
-    *     client reads `null` as `0.0` (`SQLAggregation.readsValueCount`): a count of 0 is no value.
-    *     Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no value at all on 9 --
-    *     and the NULL is made explicit, so a whole table of such documents answers its one row.
+    *   - a `MIN` / `MAX` of a number, and an `AVG`, is sent with the count of its values beside it
+    *     where the client reads `null` as `0.0` (`SQLAggregation.readsValueCount`): a count of 0 is
+    *     no value. Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no value at all
+    *     on 9 -- and the NULL is made explicit, so a whole table of such documents answers its one
+    *     row.
     */
   private def withoutValues(
     node: ObjectNode,
@@ -1433,7 +1434,7 @@ trait ElasticConversion {
           val count = value.path("count")
           count.isNumber && (count.asLong() == 0L ||
           (count.asLong() < 2L && agg.aggResultField.exists(_.endsWith("_sampling"))))
-        case AggregationType.Min | AggregationType.Max =>
+        case AggregationType.Min | AggregationType.Max | AggregationType.Avg =>
           val metric = value.get("value")
           metric == null || metric.isNull || valueCountOf(node, name).contains(0.0)
         case _ => false

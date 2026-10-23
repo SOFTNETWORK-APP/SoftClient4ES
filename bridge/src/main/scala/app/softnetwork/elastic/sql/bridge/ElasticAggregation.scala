@@ -55,6 +55,7 @@ import com.sksamuel.elastic4s.requests.searches.DateHistogramInterval
 import com.sksamuel.elastic4s.requests.searches.aggs.{
   AbstractAggregation,
   Aggregation,
+  AvgAggregation,
   CardinalityAggregation,
   DateHistogramAggregation,
   ExtendedStatsAggregation,
@@ -1047,11 +1048,11 @@ object ElasticAggregation {
       case _ => aggregation
     }
 
-  /** The aggregations as EMITTED, each `MIN` / `MAX` that answers a number followed by the
-    * `value_count` of the values it computes over -- the same field, the same script -- where the
-    * client module reads a metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`,
-    * Elasticsearch 8). The response parser reads NULL for the `MIN` / `MAX` when that count is 0
-    * (`SQLAggregation.readsValueCount`); nothing else reads it.
+  /** The aggregations as EMITTED, each `MIN` / `MAX` that answers a number, and each `AVG`,
+    * followed by the `value_count` of the values it computes over -- the same field, the same
+    * script -- where the client module reads a metric's `null` as `0.0`
+    * (`PainlessTarget.readsNullMetricAsZero`, Elasticsearch 8). The response parser reads NULL for
+    * the aggregate when that count is 0 (`SQLAggregation.readsValueCount`); nothing else reads it.
     *
     * The count is a copy of its aggregation under its own name ([[SQLAggregation.valueCountName]]),
     * so every placement of the aggregation -- a bucket level, a nested scope, the whole-table
@@ -1072,6 +1073,7 @@ object ElasticAggregation {
             aggregation.agg match {
               case min: MinAggregation => Some((min.field, min.script))
               case max: MaxAggregation => Some((max.field, max.script))
+              case avg: AvgAggregation => Some((avg.field, avg.script))
               case _                   => None
             }
         aggregation +: values.toSeq.map { case (field, script) =>
