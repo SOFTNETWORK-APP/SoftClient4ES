@@ -3063,7 +3063,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
         |    "con": {
         |      "script": {
         |        "lang": "painless",
-        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); (param1 == null) ? null : String.valueOf(param1) + \"_test\" + String.valueOf(1)"
+        |        "source": "def param1 = (doc['identifier2'].size() == 0 ? null : doc['identifier2'].value); ((param1 == null ? \"\" : String.valueOf(param1)) + \"_test\" + String.valueOf(1))"
         |      }
         |    },
         |    "l": {
@@ -3154,6 +3154,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll(":arg", " : arg")
       .replaceAll(",java", ", java")
       .replaceAll("\\|java", " | java")
+      .replace("\\\"\\\":", "\\\"\\\" : ")
   }
 
   it should "handle top hits aggregation" in {

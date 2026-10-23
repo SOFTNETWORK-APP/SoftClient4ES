@@ -20,11 +20,14 @@ import app.softnetwork.elastic.sql.{
   query,
   Expr,
   IntValue,
+  LiteralParam,
   PainlessContext,
   PainlessScript,
   TokenRegex,
-  Updateable
+  Updateable,
+  Value
 }
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
   SQLBool,
@@ -203,6 +206,27 @@ package object string {
     }
   }
 
+  /** Whether a `CONCAT` renders, on this thread, in a QUERY, where it skips a NULL argument
+    * (`Concat.toPainlessCall`): set by `Concat.painless` for the duration of its own rendering, and
+    * read by the guard `FunctionN` builds around the call, which takes no context.
+    */
+  private[string] object ConcatNulls {
+    val skipping: scala.util.DynamicVariable[Boolean] = new scala.util.DynamicVariable(false)
+
+    /** A literal value, bare or as the one function of a nameless identifier (the parser wraps an
+      * operand in one): never NULL.
+      */
+    def literal(value: PainlessScript): Boolean = value match {
+      case _: Value[_] => true
+      case i: app.softnetwork.elastic.sql.Identifier =>
+        i.name.trim.isEmpty && (i.functions match {
+          case (_: Value[_]) :: Nil => true
+          case _                    => false
+        })
+      case _ => false
+    }
+  }
+
   case class Concat(values: List[PainlessScript]) extends StringFunction[SQLVarchar] {
     override def outputType: SQLVarchar = SQLTypes.Varchar
     override def stringOp: StringOp = Concat
@@ -221,13 +245,34 @@ package object string {
       }
     }
 
+    /** 🔴 In a QUERY, `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does (`concat(NULL, 'x')` is
+      * `'x'`, `concat(NULL, NULL)` is `''`, measured): each argument that can be NULL renders `""`
+      * when it is, and the call itself is never NULL, so it takes no NULL guard of its own.
+      *
+      * Before, an argument whose NULL nothing flagged -- the `NULL` literal, a `COALESCE`, a `CASE`
+      * or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and the row read the text
+      * `"nullx"`, while a NULL column made the whole call NULL. An ingest processor and a transform
+      * keep their bytes: their source is persisted (`SQLTypeUtils.convertsArms`).
+      */
+    private[this] def skipsNulls(context: Option[PainlessContext]): Boolean =
+      SQLTypeUtils.convertsArms(context)
+
+    /** The guard `FunctionN` puts around the call: none in a query ([[skipsNulls]]), where each
+      * argument answers `""` for its own NULL. Read while this call renders.
+      */
+    override def checkIfNullable: Boolean =
+      !ConcatNulls.skipping.value && super.checkIfNullable
+
+    override def painless(context: Option[PainlessContext]): String =
+      ConcatNulls.skipping.withValue(skipsNulls(context))(super.painless(context))
+
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
       if (callArgs.isEmpty)
         throw new IllegalArgumentException("CONCAT requires at least one argument")
-      else
+      else if (!skipsNulls(context))
         callArgs.zipWithIndex
           .map { case (arg, idx) =>
             SQLTypeUtils.coerce(
@@ -239,6 +284,26 @@ package object string {
             )
           }
           .mkString(stringOp.painless(context))
+      else {
+        val parts = callArgs.zipWithIndex.map { case (arg, idx) =>
+          val value = values(idx)
+          def text(of: String): String =
+            SQLTypeUtils.coerce(of, value.baseType, SQLTypes.Varchar, nullable = false, context)
+          if (ArithmeticExpression.nullLiteral(value) || arg.trim == "null") "\"\""
+          // a literal is never NULL
+          else if (ConcatNulls.literal(value)) text(arg)
+          else {
+            // the argument, bound once: it is read by the NULL test and by its text
+            val one = SQLTypeUtils.asOneValue(arg)
+            val x =
+              if (FunctionN.isName(one)) one
+              else context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+            s"""($x == null ? "" : ${text(x)})"""
+          }
+        }
+        // ONE value: a method a function over it appends applies to the whole text
+        s"(${parts.mkString(stringOp.painless(context))})"
+      }
     }
 
     override def validate(): Either[String, Unit] =

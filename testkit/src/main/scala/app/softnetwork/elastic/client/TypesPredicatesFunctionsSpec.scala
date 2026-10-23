@@ -238,4 +238,45 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
       )
     }
   }
+
+  // -- functions: CONCAT skips a NULL argument --------------------------------------------------
+
+  /** DuckDB's `concat` skips a NULL argument: `concat(NULL, 'x')` is `'x'` and so is `concat(k,
+    * 'x')` over a NULL `k`. Core printed the NULL literal (and a `COALESCE` / `GREATEST` answering
+    * NULL) as the text `null`, and made the call NULL over a NULL column.
+    */
+  "CONCAT" should "skip a NULL argument, as DuckDB does" in {
+    valuesById(s"SELECT id, CONCAT(NULL, 'x') AS v FROM $index") shouldBe allIds
+      .map(_ -> "x")
+      .toMap
+    valuesById(s"SELECT id, CONCAT(GREATEST(NULL, NULL), 'x') AS v FROM $index") shouldBe allIds
+      .map(_ -> "x")
+      .toMap
+    valuesById(s"SELECT id, CONCAT(k, 'x') AS v FROM $index") shouldBe Map(
+      "p1" -> "ax",
+      "p2" -> "bx",
+      "p3" -> "x",
+      "p4" -> "ax",
+      "p5" -> "cx",
+      "p6" -> "x",
+      "p7" -> "abx"
+    )
+    valuesById(s"SELECT id, CONCAT(COALESCE(NULL, k), '-', g1) AS v FROM $index") shouldBe Map(
+      "p1" -> "a-a",
+      "p2" -> "b-a",
+      "p3" -> "-b",
+      "p4" -> "a-b",
+      "p5" -> "c-c",
+      "p6" -> "-d",
+      "p7" -> "ab-e"
+    )
+    // control: no NULL argument
+    valuesById(s"SELECT id, CONCAT(k, '-', g1) AS v FROM $index WHERE k IS NOT NULL") shouldBe Map(
+      "p1" -> "a-a",
+      "p2" -> "b-a",
+      "p4" -> "a-b",
+      "p5" -> "c-c",
+      "p7" -> "ab-e"
+    )
+  }
 }
