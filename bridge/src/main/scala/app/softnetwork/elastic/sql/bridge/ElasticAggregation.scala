@@ -1053,6 +1053,9 @@ object ElasticAggregation {
     * script -- where the client module reads a metric's `null` as `0.0`
     * (`PainlessTarget.readsNullMetricAsZero`, Elasticsearch 8). The response parser reads NULL for
     * the aggregate when that count is 0 (`SQLAggregation.readsValueCount`); nothing else reads it.
+    * The aggregates of one expression at one place share ONE count, the first one's
+    * (`SQLAggregation.valueCountOwner`): `MIN(n + 0)` and `MAX(n + 0)` run their script for one
+    * count, not two.
     *
     * The count is a copy of its aggregation under its own name ([[SQLAggregation.valueCountName]]),
     * so every placement of the aggregation -- a bucket level, a nested scope, the whole-table
@@ -1067,8 +1070,14 @@ object ElasticAggregation {
     if (!target.readsNullMetricAsZero) aggs
     else
       aggs.flatMap { aggregation =>
+        // the count of an aggregate that shares another's (`SQLAggregation.valueCountOwner`) is
+        // that other's: it is sent once
         val values: Option[(Option[String], Option[Script])] =
-          if (!sqlAggregations.get(aggregation.aggName).exists(_.readsValueCount)) None
+          if (
+            !sqlAggregations
+              .get(aggregation.aggName)
+              .exists(a => a.readsValueCount && a.valueCountOwner.isEmpty)
+          ) None
           else
             aggregation.agg match {
               case min: MinAggregation => Some((min.field, min.script))

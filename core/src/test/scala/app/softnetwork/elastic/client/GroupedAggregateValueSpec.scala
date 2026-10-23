@@ -304,6 +304,25 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     valueOf(rs, "zero") shouldBe 0.0
   }
 
+  it should "read the one value count the aggregates of one expression share" in {
+    val sql = "SELECT g1, MIN(n) AS lo, MAX(n) AS a FROM t GROUP BY g1"
+    statement(sql).sqlAggregations.get("a").flatMap(_.valueCountOwner) shouldBe Some("lo")
+    statement(sql).sqlAggregations.get("lo").flatMap(_.valueCountOwner) shouldBe None
+    // another expression keeps its own
+    statement("SELECT g1, MIN(n) AS lo, MAX(n * 2) AS a FROM t GROUP BY g1").sqlAggregations
+      .get("a")
+      .flatMap(_.valueCountOwner) shouldBe None
+    val rs = rows(
+      sql,
+      """{"key": "none", "doc_count": 2, "min#lo": {"value": 0.0}, "max#a": {"value": 0.0},
+        |  "value_count#lo__value_count": {"value": 0.0}},
+        |{"key": "zero", "doc_count": 2, "min#lo": {"value": 0.0}, "max#a": {"value": 0.0},
+        |  "value_count#lo__value_count": {"value": 2.0}}""".stripMargin
+    )
+    valueOf(rs, "none") shouldBe (null: Any)
+    valueOf(rs, "zero") shouldBe 0.0
+  }
+
   behavior of "a percentile of a group with no value"
 
   it should "answer NULL, not Elasticsearch's map of percents" in {

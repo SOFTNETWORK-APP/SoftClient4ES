@@ -90,12 +90,12 @@ class MinMaxValueCountEmissionSpec extends AnyFlatSpec with Matchers {
 
   behavior of "a MIN / MAX of a number, on Elasticsearch 8"
 
-  it should "be sent with the value count of its own values beside it" in {
+  it should "be sent with the value count of its own values beside it, one per expression" in {
     val grouped =
       body("SELECT g1, MIN(n) AS lo, MAX(n) AS hi, MIN(x) AS xlo FROM t GROUP BY g1", es8)
+    // MIN(n) and MAX(n) read ONE count of n, the first one's
     siblingsOf(grouped, "lo") shouldBe Seq(
       "hi",
-      "hi__value_count",
       "lo",
       "lo__value_count",
       "xlo",
@@ -120,12 +120,23 @@ class MinMaxValueCountEmissionSpec extends AnyFlatSpec with Matchers {
     count.get("field") shouldBe max.get("field")
   }
 
+  it should "run a script once for the count of every aggregate of that script" in {
+    val request = body("SELECT g1, MIN(n + 0) AS lo, MAX(n + 0) AS hi FROM t GROUP BY g1", es8)
+    valueCounts(request) should have size 1
+    siblingsOf(request, "lo") shouldBe Seq("hi", "lo", "lo__value_count")
+    // the control: two expressions, two counts
+    valueCounts(body("SELECT g1, MIN(n) AS lo, MAX(n * 2) AS hi FROM t GROUP BY g1", es8)) should
+    have size 2
+  }
+
   behavior of "an AVG of a number, on Elasticsearch 8"
 
-  it should "be sent with the value count of its values" in {
+  it should "be sent with the value count of its values, shared with a MIN / MAX of them" in {
     siblingsOf(body("SELECT g1, AVG(n) AS a FROM t GROUP BY g1", es8), "a") shouldBe
     Seq("a", "a__value_count")
     siblingsOf(body("SELECT AVG(n) AS a FROM t", es8), "a") shouldBe Seq("a", "a__value_count")
+    siblingsOf(body("SELECT g1, MIN(n) AS lo, AVG(n) AS a FROM t GROUP BY g1", es8), "a") shouldBe
+    Seq("a", "lo", "lo__value_count")
     // the other majors read the null Elasticsearch answers
     valueCounts(body("SELECT g1, AVG(n) AS a FROM t GROUP BY g1", PainlessTarget(6))) shouldBe
     empty

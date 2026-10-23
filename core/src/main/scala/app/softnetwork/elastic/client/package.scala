@@ -473,7 +473,11 @@ package object client extends SerializationApi {
     sourceAgg: Option[String] = None,
     // A `MIN` / `MAX` that answers a date or a timestamp (`SQLAggregation.temporal`): its value is
     // the `value_as_string` Elasticsearch formats, and a group with no value answers NULL.
-    temporal: Boolean = false
+    temporal: Boolean = false,
+    // The aggregation whose `value_count` this one's NULL is read from, when it shares the count
+    // of another aggregate of the same expression (`SQLAggregation.valueCountOwner`). None ⇒ its
+    // own.
+    valueCountOwner: Option[String] = None
   ) {
     def multivalued: Boolean =
       aggType == AggregationType.ArrayAgg ||
@@ -578,7 +582,8 @@ package object client extends SerializationApi {
       agg.bucketRoot,
       agg.auxiliary,
       aggResultField,
-      temporal = agg.temporal
+      temporal = agg.temporal,
+      valueCountOwner = agg.valueCountOwner
     )
   }
 

@@ -216,7 +216,13 @@ case class SQLAggregation(
     * is read from the `value_as_string` Elasticsearch formats it as, never from the epoch
     * milliseconds of `value`.
     */
-  temporal: Boolean = false
+  temporal: Boolean = false,
+  /** The aggregation whose `value_count` this one's NULL is read from ([[readsValueCount]]): the
+    * first aggregate of the same expression at the same place, which the MIN, the MAX and the AVG
+    * of that expression share ([[SQLAggregation.sharingValueCounts]]). `None` for an aggregate that
+    * reads its own, or none.
+    */
+  valueCountOwner: Option[String] = None
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val multivalued: Boolean = aggType.multivalued
@@ -259,6 +265,33 @@ object SQLAggregation {
 
   /** Is `name` the name of a `value_count` sent beside an aggregation ([[valueCountName]])? */
   def isValueCountName(name: String): Boolean = name.endsWith(ValueCountSuffix)
+
+  /** The aggregations of `fields` (each with the aggregation built from it), where the aggregates
+    * that read a value count ([[SQLAggregation.readsValueCount]]) of ONE expression at ONE place --
+    * the same column or script, the same bucket path, outside any nested scope and any window --
+    * read the count of the first of them ([[SQLAggregation.valueCountOwner]]), so `MIN(x)`,
+    * `MAX(x)` and `AVG(x)` send one `value_count` of `x`, and a scripted one runs its script once
+    * for the three counts there were.
+    */
+  def sharingValueCounts(fields: Seq[(Field, SQLAggregation)]): Seq[SQLAggregation] = {
+    def expression(field: Field): String =
+      field.identifier.withFunctions(FunctionUtils.transformFunctions(field.identifier)).sql
+    // a plain aggregate is a window function with no window (`MinAgg` ...): a window function
+    // that partitions or orders is left out
+    val eligible = fields.filter { case (_, a) =>
+      a.readsValueCount && a.nestedElement.isEmpty && !a.aggType.isWindowing
+    }
+    val first = eligible.foldLeft(Map.empty[(String, String), String]) { case (acc, (field, a)) =>
+      val key = (expression(field), a.bucketPath)
+      if (acc.contains(key)) acc else acc + (key -> a.aggName)
+    }
+    val owners: Map[String, String] = eligible.flatMap { case (field, a) =>
+      first.get((expression(field), a.bucketPath)).filter(_ != a.aggName).map(a.aggName -> _)
+    }.toMap
+    fields.map { case (_, a) =>
+      owners.get(a.aggName).fold(a)(owner => a.copy(valueCountOwner = Some(owner)))
+    }
+  }
 
   def fromField(field: Field, request: SingleSearch): Option[SQLAggregation] = {
     import field._

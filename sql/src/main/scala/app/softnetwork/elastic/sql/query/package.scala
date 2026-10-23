@@ -1506,9 +1506,14 @@ package object query {
         .map(_.aggName)
         .toSet
       ListMap(
-        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map { a =>
-          a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true) else a)
-        }: _*
+        SQLAggregation
+          .sharingValueCounts(
+            aggregates.flatMap(f => SQLAggregation.fromField(f, this).map(f -> _))
+          )
+          .map { a =>
+            a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true)
+                          else a)
+          }: _*
       )
     }
 

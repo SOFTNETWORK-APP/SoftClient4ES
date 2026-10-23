@@ -437,7 +437,7 @@ trait ElasticConversion {
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations
-        val globalMetrics = extractGlobalMetrics(aggs)
+        val globalMetrics = extractGlobalMetrics(aggs, aggregations)
         val allTopHits = extractAggregationValues(
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
@@ -1413,10 +1413,11 @@ trait ElasticConversion {
     *   - a `MIN` / `MAX` of a date or a timestamp reports a `value_as_string` exactly when it has a
     *     value (Elasticsearch formats only a value it has);
     *   - a `MIN` / `MAX` of a number, and an `AVG`, is sent with the count of its values beside it
-    *     where the client reads `null` as `0.0` (`SQLAggregation.readsValueCount`): a count of 0 is
-    *     no value. Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no value at all
-    *     on 9 -- and the NULL is made explicit, so a whole table of such documents answers its one
-    *     row.
+    *     where the client reads `null` as `0.0` (`SQLAggregation.readsValueCount`) -- its own, or
+    *     the one it shares with the other aggregates of its expression (`valueCountOwner`): a count
+    *     of 0 is no value. Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no
+    *     value at all on 9 -- and the NULL is made explicit, so a whole table of such documents
+    *     answers its one row.
     */
   private def withoutValues(
     node: ObjectNode,
@@ -1436,7 +1437,8 @@ trait ElasticConversion {
           (count.asLong() < 2L && agg.aggResultField.exists(_.endsWith("_sampling"))))
         case AggregationType.Min | AggregationType.Max | AggregationType.Avg =>
           val metric = value.get("value")
-          metric == null || metric.isNull || valueCountOf(node, name).contains(0.0)
+          metric == null || metric.isNull ||
+          valueCountOf(node, agg.valueCountOwner.getOrElse(name)).contains(0.0)
         case _ => false
       }
 
@@ -1743,17 +1745,29 @@ trait ElasticConversion {
 
   /** Extract global metrics from aggregations (for hits + aggs case)
     */
-  def extractGlobalMetrics(aggsNode: JsonNode): ListMap[String, Any] = {
+  def extractGlobalMetrics(aggsNode: JsonNode): ListMap[String, Any] =
+    extractGlobalMetrics(aggsNode, ListMap.empty[String, ClientAggregation])
+
+  /** [[extractGlobalMetrics]], reading the value count an aggregation shares with another of its
+    * expression where `aggregations` says so (`ClientAggregation.valueCountOwner`).
+    */
+  def extractGlobalMetrics(
+    aggsNode: JsonNode,
+    aggregations: ListMap[String, ClientAggregation]
+  ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
         var entries: Seq[(String, Any)] = Seq.empty
         n.forEachEntry { (name, value) =>
-          // the value count sent beside a MIN / MAX is no column, and a count of 0 is the NULL of
-          // its MIN / MAX (`withoutValues`), which this reading leaves out as it leaves a null out
+          // the value count sent beside a MIN / MAX / AVG is no column, and a count of 0 is the
+          // NULL of its aggregate (`withoutValues`), which this reading leaves out as it leaves a
+          // null out
+          val key = normalizeAggregationKey(name)
           if (
             !value.has("buckets") && value.has("value") &&
-            !SQLAggregation.isValueCountName(normalizeAggregationKey(name)) &&
-            !valueCountOf(n, normalizeAggregationKey(name)).contains(0.0)
+            !SQLAggregation.isValueCountName(key) &&
+            !valueCountOf(n, aggregations.get(key).flatMap(_.valueCountOwner).getOrElse(key))
+              .contains(0.0)
           ) {
             val metricValue = value.get("value")
             if (!metricValue.isNull) {
