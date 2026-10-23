@@ -280,7 +280,15 @@ case class Bucket(
   lazy val ordinal: Option[Long] = if (resolved) None else Bucket.ordinalOf(identifier)
 
   def update(request: SingleSearch): Bucket = {
-    val bucketSize = request.limit.map(_.limit).orElse(Some(Bucket.DefaultSize))
+    // `LIMIT n OFFSET m` answers the n groups after the first m: each level holds n + m
+    // (`GroupedRowOrder` skips the m)
+    val bucketSize = request.limit
+      .map(l =>
+        scala.math
+          .min(l.limit.toLong + l.offset.map(_.offset.max(0)).getOrElse(0), Int.MaxValue.toLong)
+          .toInt
+      )
+      .orElse(Some(Bucket.DefaultSize))
     ordinal match {
       case Some(position) =>
         Bucket.selectItem(position, request) match {
@@ -770,20 +778,41 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *     level is then sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside a parent
   *     would keep groups the global order does not.
   *
-  * `None` when the levels already answer the rows as the statement asks: one level, or an ORDER BY
-  * that is the levels' keys in their order and no LIMIT. Also `None`, the rows kept as they come,
-  * when a sort key is not a column of the rows (an aggregate the SELECT does not project).
+  * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): every
+  * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in the
+  * levels' own order -- drop m before they are cut to n. With one level too: its bucket order is the
+  * statement's, only the skip is left to the rows.
+  *
+  * `None` when the levels already answer the rows as the statement asks: one level and no OFFSET,
+  * or an ORDER BY that is the levels' keys in their order and no LIMIT or OFFSET. Also `None`, the
+  * rows kept as they come, when a sort key is not a column of the rows (an aggregate the SELECT
+  * does not project) -- and an OFFSET is then refused ([[offsetRefusal]]).
   */
-case class GroupedRowOrder(sortKeys: Seq[(String, SortOrder)], limit: Option[Int]) {
+case class GroupedRowOrder(
+  sortKeys: Seq[(String, SortOrder)],
+  limit: Option[Int],
+  offset: Option[Int] = None
+) {
   def sorts: Boolean = sortKeys.nonEmpty
 }
 
 object GroupedRowOrder {
 
+  /** The OFFSET of `request`, when it skips at least one group. */
+  private def offsetOf(request: SingleSearch): Option[Int] =
+    request.limit.flatMap(_.offset).map(_.offset).filter(_ > 0)
+
   def of(request: SingleSearch): Option[GroupedRowOrder] = {
-    val levels =
-      BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil)).filterNot(_.nested)
-    if (levels.size < 2 || request.windowFunctions.exists(_.isWindowing)) None
+    val buckets = BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil))
+    val levels = buckets.filterNot(_.nested)
+    // the groups of a key over an UNNEST element are flattened from inside each document: an
+    // OFFSET is not skipped there (refused, `offsetRefusal`)
+    val offset = offsetOf(request).filter(_ => levels.size == buckets.size)
+    if (request.windowFunctions.exists(_.isWindowing)) None
+    else if (levels.size < 2)
+      offset.filter(_ => levels.nonEmpty).map(m =>
+        GroupedRowOrder(Nil, request.limit.map(_.limit), Some(m))
+      )
     else {
       val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
       def levelOf(sort: FieldSort): Int =
@@ -799,14 +828,34 @@ object GroupedRowOrder {
               .map(_.field)
           )
       val limit = request.limit.map(_.limit)
-      if (honoured) limit.map(n => GroupedRowOrder(Nil, Some(n)))
+      if (honoured)
+        if (limit.isEmpty && offset.isEmpty) None else Some(GroupedRowOrder(Nil, limit, offset))
       else {
         val keys = sorts.map(sort => columnOf(sort).map(_ -> sort.direction))
         if (keys.exists(_.isEmpty)) None
-        else Some(GroupedRowOrder(keys.flatten, limit))
+        else Some(GroupedRowOrder(keys.flatten, limit, offset))
       }
     }
   }
+
+  /** Why the OFFSET of a GROUP BY `request` cannot be honoured -- its rows are not skipped in the
+    * order the statement asks for ([[of]]) -- or `None`: no GROUP BY, no OFFSET, or one the rows
+    * skip.
+    */
+  def offsetRefusal(request: SingleSearch): Option[String] =
+    if (request.groupBy.isEmpty || offsetOf(request).isEmpty) None
+    else if (of(request).exists(_.offset.isDefined)) None
+    else {
+      val why =
+        if (request.windowFunctions.exists(_.isWindowing)) "beside a window function"
+        else if (request.groupBy.exists(_.buckets.exists(_.nested)))
+          "over a GROUP BY key of an UNNEST element"
+        else "with an ORDER BY over an aggregate the SELECT does not return"
+      Some(
+        s"OFFSET is not supported $why: the groups cannot be skipped in the order the statement " +
+        "asks for. Remove the OFFSET, or page by key ranges."
+      )
+    }
 
   /** The size every level of `request` is sent with when its rows are sorted after they are
     * flattened: every bucket. `None` otherwise -- each level keeps its own (`Bucket.size`).

@@ -304,10 +304,11 @@ trait ElasticConversion {
         }
         .map(_ - "bucket_root")
 
-  /** The rows of a GROUP BY of several levels, in the order and to the count the statement asks for
+  /** The rows of a GROUP BY, in the order and to the count the statement asks for
     * (`GroupedRowOrder`): sorted by its ORDER BY when the levels' own bucket order cannot give it,
-    * then cut to its LIMIT. Run once over the rows of ONE aggregation response, which is already
-    * whole in memory, and only for a statement that needs it (`GroupedRowOrder.of`).
+    * then past its OFFSET, then cut to its LIMIT. Run once over the rows of ONE aggregation
+    * response, which is already whole in memory, and only for a statement that needs it
+    * (`GroupedRowOrder.of`).
     *
     * NULL sorts after every value ascending and before every value descending, the engine's default
     * (a NULLS clause is refused under a GROUP BY). Two numbers compare as numbers whatever their
@@ -338,7 +339,8 @@ trait ElasticConversion {
           c < 0
         }
       }
-    order.limit.fold(sorted)(n => sorted.take(math.max(n, 0)))
+    val skipped = order.offset.fold(sorted)(m => sorted.drop(math.max(m, 0)))
+    order.limit.fold(skipped)(n => skipped.take(math.max(n, 0)))
   }
 
   private def unwrapCell(value: Any): Any = value match {

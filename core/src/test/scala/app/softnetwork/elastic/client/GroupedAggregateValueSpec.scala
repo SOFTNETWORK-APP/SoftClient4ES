@@ -273,6 +273,60 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     ).map(r => (r._1, r._2)) shouldBe Seq(("y", "c"), ("x", "a"))
   }
 
+  it should "skip the OFFSET's groups, then be cut to the LIMIT" in {
+    // DuckDB: LIMIT n OFFSET m answers the n groups after the first m
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2 OFFSET 1",
+      asTheLevelsAnswer
+    ) shouldBe asTheLevelsAnswer.slice(1, 3)
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY k DESC, g1 ASC LIMIT 2 OFFSET 1",
+      asTheLevelsAnswer
+    ).map(r => (r._1, r._2)) shouldBe Seq(("y", "c"), ("x", "b"))
+    // past the last group: none
+    ordered(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2 OFFSET 10",
+      asTheLevelsAnswer
+    ) shouldBe empty
+    // one level: its buckets come in the statement's order, only the skip is left to the rows
+    val single = asTheLevelsAnswer.map { case (g, _, c) => ListMap[String, Any]("g1" -> g, "c" -> c) }
+    GroupedRowOrder.of(statement("SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2 OFFSET 3")) match {
+      case Some(order) =>
+        order shouldBe GroupedRowOrder(Nil, Some(2), Some(3))
+        ElasticConversion.orderGroupedRows(single, order)(identity) shouldBe single.slice(3, 5)
+      case None => fail("no cut for a one-level OFFSET")
+    }
+    // an OFFSET with no LIMIT skips its groups and keeps every other one
+    ElasticConversion.orderGroupedRows(single, GroupedRowOrder(Nil, None, Some(4)))(identity) shouldBe
+    single.drop(4)
+  }
+
+  it should "send every level with the LIMIT plus the OFFSET" in {
+    statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2 OFFSET 3").groupBy
+      .map(_.buckets.map(_.size))
+      .getOrElse(Nil) shouldBe Seq(Some(5), Some(5))
+    // the control: no OFFSET
+    statement("SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2").groupBy
+      .map(_.buckets.map(_.size))
+      .getOrElse(Nil) shouldBe Seq(Some(2))
+  }
+
+  it should "refuse an OFFSET the rows cannot skip in the statement's order, and no other" in {
+    // an ORDER BY over an aggregate the SELECT does not return: the rows do not carry it
+    Parser(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY MAX(n) DESC LIMIT 2 OFFSET 1"
+    ).swap.map(_.msg).getOrElse(fail("not refused")) should include("OFFSET is not supported")
+    Seq(
+      "SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k LIMIT 2 OFFSET 1",
+      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 ORDER BY MAX(n) DESC LIMIT 2 OFFSET 1",
+      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2 OFFSET 0",
+      "SELECT g1, COUNT(*) AS c FROM t GROUP BY g1 LIMIT 2",
+      "SELECT n FROM t LIMIT 2 OFFSET 1"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") { GroupedRowOrder.offsetRefusal(statement(sql)) shouldBe None }
+    }
+  }
+
   it should "be left as the levels answer them when they already give the order (the control)" in {
     GroupedRowOrder.of(
       statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k")

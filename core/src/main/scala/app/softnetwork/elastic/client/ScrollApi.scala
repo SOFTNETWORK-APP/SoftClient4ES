@@ -351,7 +351,7 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           requestedFields,
           UnnestScope.rowExplosion(single)
         )(system, textContext)
-        // The rows of a GROUP BY of several levels, in the order and to the count the statement
+        // The rows of a GROUP BY, in the order, past the offset and to the count the statement
         // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
         // response, so collecting them holds nothing the response did not already.
         GroupedRowOrder.of(single) match {

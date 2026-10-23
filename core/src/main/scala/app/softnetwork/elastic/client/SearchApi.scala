@@ -2432,7 +2432,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }
   }
 
-  /** `response` with the rows of a GROUP BY of several levels in the order and to the count the
+  /** `response` with the rows of a GROUP BY in the order, past the offset and to the count the
     * statement asks for ([[ElasticConversion.orderGroupedRows]]); itself for every other statement.
     */
   private def inGroupedRowOrder(single: SingleSearch, response: ElasticResponse): ElasticResponse =
