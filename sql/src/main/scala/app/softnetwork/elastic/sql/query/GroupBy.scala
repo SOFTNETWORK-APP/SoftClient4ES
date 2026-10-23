@@ -714,16 +714,20 @@ object BucketPath extends scala.runtime.AbstractFunction1[Seq[Bucket], BucketPat
 
 case class BucketPath(buckets: Seq[Bucket]) {
 
+  /** Every level's path, joined by `>`, exactly as `BucketNode.bucketPath` joins the levels of the
+    * tree the request is built from: the bridges attach an aggregate to the level whose node path
+    * EQUALS this one.
+    *
+    * 🔴 A level whose key is an expression has an EMPTY path (no field name), and it must keep its
+    * place. The path used to skip an empty FIRST level, so `GROUP BY <CASE ...> AS kk, g1` gave
+    * `COUNT(*)` the path `g1` while the leaf node was `>g1`: no level matched, the count was left
+    * out of the request and every group answered NULL, with HTTP 200 -- with or without a HAVING.
+    */
   lazy val path: String =
     BucketPath
       .emissionOrder(buckets)
-      .foldLeft("")((acc, b) => {
-        if (acc.isEmpty) {
-          s"${b.path}"
-        } else {
-          s"$acc>${b.path}"
-        }
-      })
+      .map(_.path)
+      .mkString(">")
 
   override def toString: String = path
 }
