@@ -310,10 +310,12 @@ trait ElasticConversion {
     * response, which is already whole in memory, and only for a statement that needs it
     * (`GroupedRowOrder.of`).
     *
-    * NULL sorts after every value ascending and before every value descending, the engine's default
-    * (a NULLS clause is refused under a GROUP BY). Two numbers compare as numbers whatever their
-    * class (a key may come back a Long, a metric a Double), two values of one comparable class by
-    * their order, anything else by its text. The sort is stable.
+    * NULL sorts where the same ORDER BY over one level puts it, as Elasticsearch orders a group
+    * with no value: below every value for a column of `GroupedRowOrder.lowNulls` (a `MAX`), above
+    * every value otherwise -- last ascending and first descending (a NULLS clause is refused under
+    * a GROUP BY). Two numbers compare as numbers whatever their class (a key may come back a Long,
+    * a metric a Double), two values of one comparable class by their order, anything else by its
+    * text. The sort is stable.
     */
   def orderGroupedRows[T](items: Seq[T], order: GroupedRowOrder)(
     row: T => ListMap[String, Any]
@@ -322,6 +324,7 @@ trait ElasticConversion {
       if (!order.sorts) items
       else {
         val keys = order.sortKeys.toArray
+        val low = keys.map { case (column, _) => order.lowNulls.contains(column) }
         items.sortWith { (a, b) =>
           val ra = row(a)
           val rb = row(b)
@@ -331,7 +334,8 @@ trait ElasticConversion {
             val (column, direction) = keys(i)
             c = compareGroupedValues(
               unwrapCell(ra.getOrElse(column, null)),
-              unwrapCell(rb.getOrElse(column, null))
+              unwrapCell(rb.getOrElse(column, null)),
+              low(i)
             )
             if (direction == Desc) c = -c
             i += 1
@@ -348,12 +352,14 @@ trait ElasticConversion {
     case other    => other
   }
 
-  /** NULL is greater than every value: last ascending, first descending. */
-  private def compareGroupedValues(a: Any, b: Any): Int =
+  /** NULL is greater than every value -- last ascending, first descending -- or, `lowNull`, lower
+    * than every value.
+    */
+  private def compareGroupedValues(a: Any, b: Any, lowNull: Boolean): Int =
     (a, b) match {
       case (null, null) => 0
-      case (null, _)    => 1
-      case (_, null)    => -1
+      case (null, _)    => if (lowNull) -1 else 1
+      case (_, null)    => if (lowNull) 1 else -1
       case (x: java.lang.Number, y: java.lang.Number) =>
         (x, y) match {
           case (

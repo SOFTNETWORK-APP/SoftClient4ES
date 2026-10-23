@@ -445,6 +445,25 @@ class GroupedAggregateValueSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  it should "place a NULL aggregate where the same ORDER BY over one level places it" in {
+    // Elasticsearch orders a MAX with no value below every value (its -Infinity), any other above
+    val maxes = Seq(("z", "a", null), ("y", "a", 900.0), ("x", "a", 5.0), ("w", "c", 7.0))
+    def byMax(direction: String) =
+      ordered(
+        s"SELECT g1, k, MAX(n) AS c FROM t GROUP BY g1, k ORDER BY c $direction",
+        maxes
+      ).map(_._1)
+    byMax("DESC") shouldBe Seq("y", "w", "x", "z")
+    byMax("ASC") shouldBe Seq("z", "x", "w", "y")
+    def byMin(direction: String) =
+      ordered(
+        s"SELECT g1, k, MIN(n) AS c FROM t GROUP BY g1, k ORDER BY c $direction",
+        maxes
+      ).map(_._1)
+    byMin("DESC") shouldBe Seq("z", "y", "w", "x")
+    byMin("ASC") shouldBe Seq("x", "w", "y", "z")
+  }
+
   it should "be left as the levels answer them when they already give the order (the control)" in {
     GroupedRowOrder.of(
       statement("SELECT g1, k, COUNT(*) AS c FROM t GROUP BY g1, k ORDER BY g1, k")

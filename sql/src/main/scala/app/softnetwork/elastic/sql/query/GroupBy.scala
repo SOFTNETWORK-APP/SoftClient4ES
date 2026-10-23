@@ -813,10 +813,12 @@ case class BucketPath(buckets: Seq[Bucket]) {
   *     flattened rows are cut to n ([[limit]]);
   *   - `GROUP BY a, b ORDER BY b` (any ORDER BY that is not the levels' own keys in their order, an
   *     aggregate included) answered the rows ordered inside each `a` only: the flattened rows are
-  *     sorted by the ORDER BY ([[sortKeys]]), NULLs last ascending and first descending -- the
-  *     engine's default, the statement cannot say otherwise under a GROUP BY -- and then cut. A
-  *     level is then sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside a parent
-  *     would keep groups the global order does not.
+  *     sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL aggregate sorts where the same
+  *     ORDER BY over one level puts it, the order Elasticsearch gives a group with no value: below
+  *     every value for a `MAX` ([[lowNulls]], its -Infinity), above every value otherwise -- so last
+  *     ascending and first descending, the engine's default (the statement cannot say otherwise
+  *     under a GROUP BY). A level is then sent with every bucket (`Bucket.DefaultSize`): a LIMIT
+  *     cut inside a parent would keep groups the global order does not.
   *
   * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): every
   * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in
@@ -831,7 +833,8 @@ case class BucketPath(buckets: Seq[Bucket]) {
 case class GroupedRowOrder(
   sortKeys: Seq[(String, SortOrder)],
   limit: Option[Int],
-  offset: Option[Int] = None
+  offset: Option[Int] = None,
+  lowNulls: Set[String] = Set.empty
 ) {
   def sorts: Boolean = sortKeys.nonEmpty
 }
@@ -841,6 +844,11 @@ object GroupedRowOrder {
   /** The OFFSET of `request`, when it skips at least one group. */
   private def offsetOf(request: SingleSearch): Option[Int] =
     request.limit.flatMap(_.offset).map(_.offset).filter(_ > 0)
+
+  private def isMax(aggregation: SQLAggregation): Boolean = aggregation.aggType match {
+    case MAX | _: MaxAgg => true
+    case _               => false
+  }
 
   def of(request: SingleSearch): Option[GroupedRowOrder] = {
     val buckets = BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil))
@@ -858,14 +866,15 @@ object GroupedRowOrder {
       def levelOf(sort: FieldSort): Int =
         levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
       val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(sort) == i }
-      def columnOf(sort: FieldSort): Option[String] =
+      // a sort key as the rows carry it: (its column, its NULL below every value)
+      def columnOf(sort: FieldSort): Option[(String, Boolean)] =
         levels
           .find(b => b.identifier.identifierName == sort.name || b.name == sort.name)
-          .map(_.name)
+          .map(b => (b.name, false))
           .orElse(
             request.sqlAggregations.values
               .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
-              .map(_.field)
+              .map(a => (a.field, isMax(a)))
           )
       val limit = request.limit.map(_.limit)
       if (honoured)
@@ -873,7 +882,17 @@ object GroupedRowOrder {
       else {
         val keys = sorts.map(sort => columnOf(sort).map(_ -> sort.direction))
         if (keys.exists(_.isEmpty)) None
-        else Some(GroupedRowOrder(keys.flatten, limit, offset))
+        else {
+          val resolved = keys.flatten
+          Some(
+            GroupedRowOrder(
+              resolved.map { case ((column, _), direction) => column -> direction },
+              limit,
+              offset,
+              lowNulls = resolved.collect { case ((column, true), _) => column }.toSet
+            )
+          )
+        }
       }
     }
   }

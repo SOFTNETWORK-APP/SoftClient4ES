@@ -456,6 +456,28 @@ trait GroupedAggregateSemanticsSpec
     ) shouldBe twoKeyGroups.toSeq.sortBy(r => (r._1, r._2))
   }
 
+  it should "place a NULL aggregate where the same ORDER BY over one level places it" in {
+    def groups(sql: String): Seq[(String, Option[Double])] =
+      rowsOf(sql).map(r => String.valueOf(cell(r, "g1")) -> number(cell(r, "m")))
+    // over one level: a MAX with no value is last descending and first ascending
+    val oneDesc = groups(s"SELECT g1, MAX(n) AS m FROM $index GROUP BY g1 ORDER BY m DESC")
+    oneDesc.last shouldBe ("z" -> None)
+    val oneAsc = groups(s"SELECT g1, MAX(n) AS m FROM $index GROUP BY g1 ORDER BY m ASC")
+    oneAsc.head shouldBe ("z" -> None)
+    // over two levels, the same places
+    val twoDesc = groups(s"SELECT g1, k, MAX(n) AS m FROM $index GROUP BY g1, k ORDER BY m DESC")
+    twoDesc.takeRight(2) shouldBe Seq("z" -> None, "z" -> None)
+    twoDesc.dropRight(2).map(_._2) shouldBe Seq(
+      Some(900.0),
+      Some(7.0),
+      Some(5.0),
+      Some(0.0),
+      Some(-900.0)
+    )
+    val twoAsc = groups(s"SELECT g1, k, MAX(n) AS m FROM $index GROUP BY g1, k ORDER BY m ASC")
+    twoAsc.take(2) shouldBe Seq("z" -> None, "z" -> None)
+  }
+
   // ---------------------------------------------------------------------------------------------
   // A WHERE over an UNNEST element
   // ---------------------------------------------------------------------------------------------
