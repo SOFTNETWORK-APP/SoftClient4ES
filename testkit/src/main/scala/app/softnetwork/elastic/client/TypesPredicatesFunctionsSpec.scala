@@ -408,6 +408,32 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
     )
   }
 
+  /** `ROUND(r, 1)` over a REAL rounds as DuckDB rounds a FLOAT: the double rounding narrowed to a
+    * float, `ROUND(0.25::FLOAT, 1)` the float `0.3`, the double `0.30000001192092896`. Rounded in
+    * double it was `0.3`, below the float, and `WHERE ROUND(r, 1) < 0.30000001192092896` kept `r
+    * = 0.25` (`p7`).
+    */
+  "ROUND of a REAL to decimal places" should "round in float, as DuckDB does" in {
+    // DuckDB: p1, p3 (the float 0.1 rounds to the float 0.1)
+    idsOf(s"SELECT id FROM $index WHERE ROUND(r, 1) < 0.30000001192092896") shouldBe Set("p1", "p3")
+    // DuckDB: the FLOAT values, read as doubles
+    valuesById(s"SELECT id, ROUND(r, 1) AS v FROM $index").map { case (id, v) =>
+      id -> decimal(v)
+    } shouldBe Map(
+      "p1" -> Some(BigDecimal(0.1f.toDouble)),
+      "p2" -> Some(BigDecimal("0.5")),
+      "p3" -> Some(BigDecimal(0.1f.toDouble)),
+      "p4" -> None,
+      "p5" -> Some(BigDecimal("0.5")),
+      "p6" -> None,
+      "p7" -> Some(BigDecimal(0.3f.toDouble))
+    )
+    // the control: a DOUBLE operand rounds in double (DuckDB: p1, p3, p7)
+    idsOf(
+      s"SELECT id FROM $index WHERE ROUND(CAST(r AS DOUBLE), 1) < 0.30000001192092896"
+    ) shouldBe Set("p1", "p3", "p7")
+  }
+
   // -- predicates: a fractional number against an INTEGER key in HAVING --------------------------
 
   /** The groups of `n` a HAVING keeps, as the decimals their keys denote. */
