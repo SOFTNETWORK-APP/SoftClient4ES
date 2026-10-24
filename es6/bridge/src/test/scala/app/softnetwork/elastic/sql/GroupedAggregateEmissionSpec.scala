@@ -195,6 +195,35 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  behavior of "a GROUP BY key over a field the mapping does not map"
+
+  /** The script of the level `name`. */
+  private def keyScriptOf(node: JsonNode, name: String): String =
+    aggNamed(node, name)
+      .map(_.path("terms").path("script").path("source").asText())
+      .getOrElse(fail(s"no level $name"))
+
+  // MEASURED on Elasticsearch 8.18.3 and 6.8.23: `doc['sd']` of a field no mapping holds failed
+  // every shard ("No field found for [sd] in mapping"), where DuckDB reads `sd` NULL in every row.
+  it should "read that field guarded, and every mapped field as before" in {
+    val unmapped = "(!doc.containsKey('sd') || doc['sd'].size() == 0 ? null : doc['sd'].value)"
+    keyScriptOf(
+      body(
+        "SELECT TO_DATE(sd, 'yyyy-MM-dd') AS kk, COUNT(*) AS c FROM t " +
+        "GROUP BY TO_DATE(sd, 'yyyy-MM-dd')"
+      ),
+      "kk"
+    ) should startWith(s"def param1 = $unmapped; ")
+    val beside =
+      keyScriptOf(body("SELECT COALESCE(sd, k) AS kk, COUNT(*) AS c FROM t GROUP BY kk"), "kk")
+    beside should include(unmapped)
+    beside should include("(doc['k'].size() == 0 ? null : doc['k'].value)")
+    beside should not include "containsKey('k')"
+    // the control: a key over mapped fields alone reads them as before
+    keyScriptOf(body("SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"), "kk") should
+    not include "containsKey"
+  }
+
   behavior of "a GROUP BY of several levels"
 
   /** The `size` the level `name` is sent with. */

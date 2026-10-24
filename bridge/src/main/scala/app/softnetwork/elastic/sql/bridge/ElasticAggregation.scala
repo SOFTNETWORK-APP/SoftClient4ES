@@ -482,7 +482,10 @@ object ElasticAggregation {
     allElasticAggregations: Seq[ElasticAggregation],
     // the size of a level, over its own (`GroupedRowOrder.levelSize`): every bucket for a level
     // whose own cut could leave out a group of the rows' global order
-    levelSize: app.softnetwork.elastic.sql.query.Bucket => Option[Int] = _ => None
+    levelSize: app.softnetwork.elastic.sql.query.Bucket => Option[Int] = _ => None,
+    // the fields a level's key reads that the mapping does not map
+    // (`SingleSearch.unmappedKeyFields`), read guarded by its key script
+    unmappedFields: app.softnetwork.elastic.sql.query.Bucket => Set[String] = _ => Set.empty
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -504,6 +507,7 @@ object ElasticAggregation {
           val aggScript =
             if (bucket.isScriptedKey) {
               val context = PainlessContext(context = contextType, target = target)
+                .readingUnmapped(unmappedFields(bucket))
               val painless = bucket.painless(Some(context))
               Some(now(Script(s"$context$painless").lang("painless")))
             } else {

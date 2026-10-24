@@ -956,6 +956,35 @@ trait GroupedAggregateSemanticsSpec
   }
 
   // ---------------------------------------------------------------------------------------------
+  // A GROUP BY key over a field no mapping holds
+  // ---------------------------------------------------------------------------------------------
+
+  "a GROUP BY key over a field the mapping does not hold" should
+  "read that field NULL, and fail no shard" in {
+    // DuckDB (`sd` a VARCHAR NULL in every row): one NULL group of 8, which a terms level does not
+    // return. Every shard failed: "No field found for [sd] in mapping".
+    rowsOf(
+      s"SELECT TO_DATE(sd, 'yyyy-MM-dd') AS k, COUNT(*) AS c FROM $index " +
+      "GROUP BY TO_DATE(sd, 'yyyy-MM-dd')"
+    ) shouldBe empty
+    // the field beside a mapped one: DuckDB's groups of (g1, k)
+    rowsOf(
+      s"SELECT g1, COALESCE(sd, k) AS kk, COUNT(*) AS c FROM $index GROUP BY g1, COALESCE(sd, k)"
+    ).map(r => (String.valueOf(cell(r, "g1")), String.valueOf(cell(r, "kk")), number(cell(r, "c"))))
+      .toSet shouldBe Set(
+      ("w", "c", Some(1.0)),
+      ("x", "a", Some(2.0)),
+      ("x", "b", Some(1.0)),
+      ("y", "a", Some(1.0)),
+      ("y", "c", Some(1.0)),
+      ("z", "a", Some(1.0)),
+      ("z", "b", Some(1.0))
+    )
+    // the control: the mapped field alone
+    rowsOf(s"SELECT g1, k AS kk, COUNT(*) AS c FROM $index GROUP BY g1, k").size shouldBe 7
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // ALTER TABLE beside a stored-script processor
   // ---------------------------------------------------------------------------------------------
 

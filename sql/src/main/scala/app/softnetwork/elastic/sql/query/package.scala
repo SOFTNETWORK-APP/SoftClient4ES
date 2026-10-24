@@ -2662,6 +2662,23 @@ package object query {
         .toSet
     }
 
+    /** The fields the key of the GROUP BY level `bucket` reads that the mapping this statement was
+      * resolved against does not map: each column of its key ([[Bucket.keyColumns]]) the attached
+      * schema has no column for. None without a schema, where nothing is known.
+      *
+      * Both bridges guard these in the level's key script (`PainlessContext.readingUnmapped`): a
+      * script reading `doc['sd']` of a field no mapping holds fails on every shard ("No field found
+      * for [sd] in mapping", MEASURED on Elasticsearch 8.18.3 and 6.8.23), where DuckDB reads the
+      * column NULL in every row.
+      */
+    def unmappedKeyFields(bucket: Bucket): Set[String] =
+      if (schema.isEmpty && schemas.isEmpty) Set.empty
+      else
+        bucket.keyColumns.collect {
+          case column: GenericIdentifier if column.col.isEmpty && column.path.nonEmpty =>
+            column.path
+        }.toSet
+
     /** Story 22.1 AD-4 — an OUTER reference into a derived table must name a column the derived
       * table PROJECTS (its `outputNames`: the SELECT alias when there is one, else the bare column,
       * so `SELECT amount AS total` exposes `total`, NOT `amount`).
