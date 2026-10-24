@@ -49,6 +49,7 @@ import com.sksamuel.elastic4s.ElasticApi.{
   topHitsAgg,
   valueCountAgg
 }
+import com.sksamuel.elastic4s.ValueType
 import com.sksamuel.elastic4s.script.Script
 import com.sksamuel.elastic4s.searches.DateHistogramInterval
 import com.sksamuel.elastic4s.searches.aggs.{
@@ -494,7 +495,10 @@ object ElasticAggregation {
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria],
     nested: Option[NestedElement],
-    allElasticAggregations: Seq[ElasticAggregation]
+    allElasticAggregations: Seq[ElasticAggregation],
+    // the size of a level, over its own (`GroupedRowOrder.levelSize`): every bucket for a level
+    // whose own cut could leave out a group of the rows' global order
+    levelSize: app.softnetwork.elastic.sql.query.Bucket => Option[Int] = _ => None
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -635,17 +639,25 @@ object ElasticAggregation {
               // each step must chain on the previous one — restarting from `termsAgg`
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
-              bucket.size.foreach(s => terms = terms.size(s))
-              having match {
+              levelSize(bucket).orElse(bucket.size).foreach(s => terms = terms.size(s))
+              val (include, exclude) = having match {
                 case Some(criteria) =>
-                  // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
-                  // string, which Elasticsearch 6.8 reads as a REGEX. See [[TermsIncludeExclude]].
-                  terms = TermsIncludeExclude(
-                    terms,
+                  (
                     criteria.includes(bucket, not = false, BucketIncludesExcludes()),
                     criteria.excludes(bucket, not = false, BucketIncludesExcludes())
                   )
-                case _ =>
+                case _ => (BucketIncludesExcludes(), BucketIncludesExcludes())
+              }
+              // Both sides through ONE writer: elastic4s 6 writes a one-entry list as a bare
+              // string, which Elasticsearch 6.8 reads as a REGEX. See [[TermsIncludeExclude]].
+              if (having.isDefined) terms = TermsIncludeExclude(terms, include, exclude)
+              // A scripted key that reports a number is a numeric `terms`, beside a key filter of
+              // exact numbers of its type too (`Bucket.scriptedKeyValueTypeBeside`). elastic4s does
+              // not write the parameter: `BucketScriptParams.bind` does, from this field.
+              bucket.scriptedKeyValueTypeBeside(include, exclude).foreach {
+                case "long"   => terms = terms.valueType(ValueType.LONG)
+                case "double" => terms = terms.valueType(ValueType.DOUBLE)
+                case _        =>
               }
               refusal.foreach { message =>
                 terms =

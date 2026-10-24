@@ -290,6 +290,30 @@ object SQLTypeUtils {
     SQLTypes.Any
   }
 
+  /** The type a conditional REPORTS over the types its arms report -- `COALESCE`'s arguments, a
+    * `CASE`'s results, `GREATEST` / `LEAST`'s arguments: [[leastCommonSuperType]], with one guard
+    * before its temporal step.
+    *
+    * 🔴 An arm whose type is still UNKNOWN (`Any`: a `date_nanos` column, a column no schema types)
+    * beside a DATE arm makes the node a TIMESTAMP, as DuckDB 1.5.5 types a DATE beside a nanosecond
+    * timestamp (`TIMESTAMP_NS`, measured): such an arm renders its doc value, a timestamp with a
+    * time of day, and the DATE arm is not converted to it either (`armsType` leaves a node with an
+    * unknown arm as it renders). `leastCommonSuperType` reads the DATE first and reported DATE over
+    * rows that are timestamps, so a reader of the type (arrow, JDBC) dropped their time. A NULL arm
+    * is no type, and a DATE beside it stays a DATE.
+    *
+    * The reported type only: a node with an unknown arm renders as it did, and the other readers of
+    * [[leastCommonSuperType]] (a comparison's operands, BETWEEN's bounds, arithmetic) keep theirs.
+    */
+  def armsReportedType(types: List[SQLType]): SQLType = {
+    val distinct = types.distinct
+    val unknownBesideDate =
+      distinct.contains(SQLTypes.Date) &&
+      distinct.exists(t => t.isUnknown && t != SQLTypes.Null) &&
+      !distinct.exists(t => t.isInstanceOf[SQLVarchar] || t.isNumber)
+    if (unknownBesideDate) SQLTypes.Timestamp else leastCommonSuperType(types)
+  }
+
   def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String =
     coerce(in, renderedSourceType(in, context), to, context)
 
@@ -675,6 +699,50 @@ object SQLTypeUtils {
     found
   }
 
+  /** 🔴 An explicit conversion (`CAST`, `CONVERT`, `TRY_CAST`) of a TEMPORAL operand -- a function
+    * that only adjusts its receiver (`DATE_TRUNC`, `DATE_ADD`) over a CASE or a COALESCE whose arms
+    * are a DATE and a date-time -- to a DATE or a BIGINT, decided per row from the runtime class,
+    * as the conversion to a TIME is ([[coerce]]'s TEMPORAL arm): to a DATE, the value's date part,
+    * as DuckDB's `CAST(<timestamp> AS DATE)` (a `LocalDate` is itself, a `LocalDateTime` its date,
+    * a zoned doc value its UTC date); to a BIGINT, the epoch milliseconds of the instant, a DATE's
+    * of its UTC midnight (the rule `Conversion` follows for a DATE operand). Before, no conversion
+    * matched and the cast answered the value itself under its label.
+    *
+    * Only an explicit conversion asks, not every [[coerce]]: a DATE-input function over a TEMPORAL
+    * chain (`DATE_FORMAT(DATE_TRUNC(…), '%H')`) or an arm of a conditional keeps what it rendered.
+    * In a query only ([[convertsArms]]), the operand bound once, and NULL answers NULL; `None` for
+    * any other conversion, the operand then left unrendered (`expr` is read only when it applies).
+    */
+  def temporalByRuntimeClass(
+    expr: => String,
+    to: SQLType,
+    context: Option[PainlessContext]
+  ): Option[String] =
+    if (!convertsArms(context)) None
+    else {
+      def bound: String = {
+        val one = asOneValue(expr)
+        context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+      }
+      to match {
+        case SQLTypes.Date =>
+          val x = bound
+          Some(
+            s"($x == null ? null : $x instanceof LocalDate ? $x : " +
+            s"$x instanceof LocalDateTime ? $x.toLocalDate() : $x$painlessUtcLocalDate)"
+          )
+        case SQLTypes.BigInt =>
+          val x = bound
+          Some(
+            s"($x == null ? null : (def) ($x instanceof LocalDate ? " +
+            s"$x.atStartOfDay(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x instanceof LocalDateTime ? $x.atZone(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x.toInstant().toEpochMilli()))"
+          )
+        case _ => None
+      }
+    }
+
   def coerce(
     expr: String,
     from: SQLType,
@@ -789,6 +857,20 @@ object SQLTypeUtils {
           s"$expr.toLocalDate()"
         case (SQLTypes.DateTime, SQLTypes.Time) =>
           s"$expr.toLocalTime()"
+        // 🔴 A TEMPORAL operand -- a function that only adjusts its receiver (`DATE_TRUNC`,
+        // `DATE_ADD`) over a CASE or a COALESCE whose arms are a DATE and a date-time -- renders
+        // whichever class its row's arm has, so the conversion to a TIME is decided per row, from
+        // the runtime class, as `LAST_DAY` decides its receiver's date (`LastDayOfMonth.dateOf`): a
+        // `LocalDate` is its UTC midnight, a `LocalDateTime` its time, any other temporal (a zoned
+        // doc value) its UTC time of day. Before, no arm matched and the cast answered the value
+        // itself under TIME (`2024-03-01T00:00Z`). In a query only: an ingest processor keeps its
+        // bytes. The operand is bound once, and NULL answers NULL.
+        case (SQLTypes.Temporal, SQLTypes.Time) if convertsArms(context) =>
+          val one = asOneValue(expr)
+          val x = context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+          return s"($x == null ? null : $x instanceof LocalDate ? " +
+          s"$x.atStartOfDay(ZoneId.of('Z')).toLocalTime() : $x instanceof LocalDateTime ? " +
+          s"$x.toLocalTime() : $x$painlessUtcLocalTime)"
 
         // ---- NUMERIQUES ----
         case (SQLTypes.Int, SQLTypes.BigInt) =>

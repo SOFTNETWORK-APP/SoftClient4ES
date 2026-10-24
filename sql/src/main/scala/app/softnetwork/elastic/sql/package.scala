@@ -511,6 +511,17 @@ package object sql {
       * there with `Class.cast` (`query.Expression.painless`); 7 and up hand a `ZonedDateTime`.
       */
     def jodaCompatibleDates: Boolean = elasticsearchMajor.exists(_ < 7)
+
+    /** Does the client module of this major read a metric aggregation's `null` value as `0.0`?
+      * Elasticsearch answers `{"value": null}` for a `MIN` / `MAX` over no value on every major,
+      * but the Java client of 8 holds the value as a primitive `double` that "defaults to 0 if
+      * parsed from a JSON null value" (elasticsearch-java 8.18.3, `SingleMetricAggregateBase`). The
+      * client of 9 holds a nullable `Double` and leaves the value out; the REST clients of 6 and 7
+      * hand the `null` itself. So on 8 a group with no value cannot be told from a value of 0 by
+      * the value, and the bridge sends the count of the values beside it
+      * (`SQLAggregation.readsValueCount`).
+      */
+    def readsNullMetricAsZero: Boolean = elasticsearchMajor.contains(8)
   }
 
   object PainlessTarget {

@@ -118,7 +118,8 @@ class AlterTablePipelineRewriteSpec
     esVersion: String,
     pipelines: Map[String, String],
     failingWrite: Option[String] = None,
-    index: String = indexJson
+    index: String = indexJson,
+    rejectedWrite: Option[String] = None
   ) extends NopeClientApi {
     override protected def logger: Logger = LoggerFactory.getLogger(getClass)
 
@@ -151,6 +152,13 @@ class AlterTablePipelineRewriteSpec
       definition: String
     ): ElasticResult[Boolean] = {
       if (failingWrite.contains(name)) throw new IllegalStateException(s"write of $name failed")
+      if (rejectedWrite.contains(name))
+        return ElasticResult.failure(
+          ElasticError(
+            message = s"[split] required property [separator] is missing ($name)",
+            statusCode = Some(400)
+          )
+        )
       written += name
       live(name) = definition
       ElasticResult.success(true)
@@ -215,6 +223,30 @@ class AlterTablePipelineRewriteSpec
     // the control: the documents were migrated through the temporary pipeline
     cluster.migrated should have size 1
     cluster.migrated.head should startWith("t_tmp_")
+    cluster.restored shouldBe Seq(livePipeline)
+    // and the temporary pipeline it created is not left behind
+    cluster.live.keys.filter(_.startsWith("t_tmp_")) shouldBe empty
+  }
+
+  it should "restore the pipeline setting when a write after the migration answers an error" in {
+    // Elasticsearch refuses the rewritten pipeline (on 6.8 and 7.17 an undeclared `split` or
+    // `join` is written without its `separator`, and the PUT answers 400) after the documents were
+    // migrated through the temporary pipeline
+    val cluster = new Cluster(
+      "7.17.29",
+      Map(livePipeline -> stored(split)),
+      rejectedWrite = Some(livePipeline)
+    )
+    val res = cluster.run("ALTER TABLE t ADD COLUMN x INT SCRIPT AS (a * 2)").futureValue
+    // the statement answers the error Elasticsearch gave
+    withClue(s"$res ") {
+      res.isSuccess shouldBe false
+      res.toEither.left.toOption.map(_.message).getOrElse("") should include("separator")
+    }
+    // the control: the documents were migrated through the temporary pipeline
+    cluster.migrated should have size 1
+    cluster.migrated.head should startWith("t_tmp_")
+    // the index is left on its own pipeline, not on the temporary one
     cluster.restored shouldBe Seq(livePipeline)
     // and the temporary pipeline it created is not left behind
     cluster.live.keys.filter(_.startsWith("t_tmp_")) shouldBe empty

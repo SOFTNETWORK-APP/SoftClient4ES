@@ -388,8 +388,9 @@ carries `"zip_n": null` and no doc value is written, so the row is skipped by
 [DDL statements](ddl_statements.md#computed-columns-script-as-and-stored).
 
 A failed safe cast is a NULL operand for whatever wraps it, following the same rule as a column that
-is null: `CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `NULL` for that row, and so are
-`UPPER(...)`, `LENGTH(...)`, `ABS(...)` and `ROUND(...)` over it.
+is null: `UPPER(...)`, `LENGTH(...)`, `ABS(...)` and `ROUND(...)` over it are `NULL` for that row,
+while `CONCAT(TRY_CAST(zip_code AS BIGINT), '-X')` is `'-X'`, because `CONCAT` skips a NULL
+argument, as DuckDB does.
 
 > Before **0.24.0** a safe cast in a computed column produced a malformed script, so the
 > `CREATE TABLE` itself failed.

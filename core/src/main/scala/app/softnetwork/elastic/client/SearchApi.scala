@@ -29,13 +29,15 @@ import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  GroupedRowOrder,
   Limit,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
   SelectStatement,
   SingleSearch,
-  SubqueryScope
+  SubqueryScope,
+  UnnestScope
 }
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.schema.Schema
@@ -2351,8 +2353,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * ONE boolean per statement, decided on the AST: a bounded `UNION ALL` pays nothing.
     */
   private def unionAllNeedsPerLeg(multiple: MultiSearch): Boolean =
-    this.isInstanceOf[ScrollApi] &&
-    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))
+    (this.isInstanceOf[ScrollApi] &&
+    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))) ||
+    multiple.requests.exists(legNeedsRowWork)
+
+  /** True when core works on the PARSED rows of `leg` before they are its answer, as it does for
+    * the same statement on its own ([[searchResolved]]): the order, the skip and the cut of a GROUP
+    * BY's groups (`GroupedRowOrder`), or one row per element of an UNNEST its WHERE filters and no
+    * column reads (`UnnestScope.rowExplosion`). Such a leg is executed through the per-leg route,
+    * which applies them by construction: the one-shot `_msearch` parse applied neither, so a leg's
+    * `LIMIT 2 OFFSET 1` over its groups answered every group, and an UNNEST leg one row per parent
+    * plus the raw inner hits.
+    *
+    * The columns a leg declares VARCHAR are no such work: they are how the rows are READ, and every
+    * leg carries its own reading into the one-shot parse ([[unionAllLegProjections]]), so a `UNION
+    * ALL` over a VARCHAR column keeps its single `_msearch`. Decided on the AST, once per
+    * statement.
+    */
+  private def legNeedsRowWork(leg: SingleSearch): Boolean =
+    GroupedRowOrder.of(leg).isDefined ||
+    UnnestScope.rowExplosion(leg).keySet != leg.nestedHitsMappings.keySet
 
   /** Story 22.6 — sequential per-leg execution of a `UNION ALL` whose legs cannot all be one-shot.
     *
@@ -2422,13 +2442,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearch(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )
+          )(TextColumns.of(single, context)).map(inGroupedRowOrder(single, _))
     }
   }
+
+  /** `response` with the rows of a GROUP BY in the order, past the offset and to the count the
+    * statement asks for ([[ElasticConversion.orderGroupedRows]]); itself for every other statement.
+    */
+  private def inGroupedRowOrder(single: SingleSearch, response: ElasticResponse): ElasticResponse =
+    GroupedRowOrder.of(single) match {
+      case Some(order) =>
+        response.copy(results =
+          orderGroupedRows(response.results, order)(identity).map(withoutCarried(order))
+        )
+      case None => response
+    }
 
   /** The async twin of [[searchResolved]]. */
   private def searchResolvedAsync(single: SingleSearch)(implicit
@@ -2450,11 +2483,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearchAsync(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )
+          )(ec, TextColumns.of(single, context)).map(_.map(inGroupedRowOrder(single, _)))
     }
   }
 
@@ -2578,7 +2612,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * still nothing to RENAME to (the result has no declared names), so each leg simply keeps its
     * own — which is precisely what `search(leg)` gives the per-leg route, so the two agree.
     */
-  private def unionAllLegProjections(multiple: MultiSearch): Seq[LegProjection] = {
+  private def unionAllLegProjections(
+    multiple: MultiSearch
+  )(implicit context: ConversionContext): Seq[LegProjection] = {
     val outputFields = unionAllOutputFieldNames(multiple)
     // with no declared names there is no column to type, as for the other routes
     // (`unionAllRowMappers`)
@@ -2592,7 +2628,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         leg.nestedHitsMappings,
         // the plan that built THIS leg's request -- never one made from the merged map
         toClientAggregations(leg.sqlAggregations),
-        convert
+        convert,
+        // ...read as THIS leg reads its rows on its own: its VARCHAR columns as their text
+        Some(TextColumns.of(leg, context))
       )
     }
   }

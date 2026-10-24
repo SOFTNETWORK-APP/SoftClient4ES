@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLReal, SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.operator.{
   AND,
   DIFF,
@@ -52,7 +52,6 @@ import app.softnetwork.elastic.sql.schema.{
 import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, FunctionUtils}
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.aggregate.WindowFunction
-import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.DateDiff
 import app.softnetwork.elastic.sql.policy.{EnrichPolicy, EnrichPolicyType}
 import app.softnetwork.elastic.sql.serialization._
@@ -923,14 +922,26 @@ package object query {
       }
     }
 
-    /** The inner hits whose ELEMENTS become rows (the UNNEST row explosion): each UNNEST a
-      * non-aggregated SELECT column reads, and every UNNEST it is nested in — a parent's inner hits
-      * carry its children's, so a parent left at Elasticsearch's default would cap them too.
+    /** The inner hits whose ELEMENTS become rows (the UNNEST row explosion,
+      * `UnnestScope.rowExplosion`): each UNNEST a non-aggregated SELECT column reads, each UNNEST a
+      * row statement's WHERE filters per element, and every UNNEST either is nested in — a parent's
+      * inner hits carry its children's, so a parent left at Elasticsearch's default would cap them
+      * too.
+      *
+      * 🔴 The row explosion is the ONE answer to "which elements are rows", read by the reader and
+      * here. `… JOIN UNNEST(t.items) AS i WHERE i.sku = 's1'`, no column of `i` projected, answers
+      * one row per matching element; its inner hits were left at Elasticsearch's default size of 3,
+      * so a parent with five matching elements answered three rows, HTTP 200.
       */
     private[this] lazy val rowSourceInnerHits: Set[String] = {
       def withAncestors(u: Unnest): Seq[String] =
         u.innerHitsName +: u.parent.toSeq.flatMap(withAncestors)
-      nestedFields.keys.toSeq.flatMap(k => unnests.get(k).toSeq.flatMap(withAncestors)).toSet
+      UnnestScope
+        .rowExplosion(this)
+        .keys
+        .toSeq
+        .flatMap(k => unnests.get(k).toSeq.flatMap(withAncestors))
+        .toSet
     }
 
     def toNestedElement(u: Unnest): NestedElement = {
@@ -939,10 +950,11 @@ package object query {
       NestedElement(
         path = updated.path,
         innerHitsName = updated.innerHitsName,
-        // The statement's LIMIT when it has one (unchanged). Without it, an UNNEST projection asks
-        // for `NestedElements.innerHitsSize` elements per parent (100, or the index's own lower
-        // `index.max_inner_result_window`) instead of inner_hits' own default of 3; a nested filter
-        // or aggregate whose elements are not rows keeps the default.
+        // The statement's LIMIT when it has one (unchanged). Without it, an UNNEST whose elements
+        // are rows ([[rowSourceInnerHits]]) asks for `NestedElements.innerHitsSize` elements per
+        // parent (100, or the index's own lower `index.max_inner_result_window`) instead of
+        // inner_hits' own default of 3; a nested filter or aggregate whose elements are not rows
+        // keeps the default.
         size = limit
           .map(_.limit)
           .orElse(
@@ -982,6 +994,25 @@ package object query {
         }
         .collectFirst { case found => found }
 
+    /** This statement with `original` resolved as its WHERE, against this statement ([[update]]).
+      *
+      * 🔴 An UNNEST element's `inner_hits` size depends on whether its elements are rows
+      * ([[rowSourceInnerHits]]), and a WHERE that filters an UNNEST per element makes them rows
+      * (`UnnestScope.rowExplosion`) — which only the RESOLVED WHERE shows, its columns carrying
+      * their element. Resolved against a statement whose WHERE is not resolved yet (the parse-time
+      * pass), the element kept Elasticsearch's default size of 3. So when resolving the WHERE makes
+      * more elements rows than before, it is resolved once more, against the statement that shows
+      * them. Only a statement with an UNNEST, a WHERE and no LIMIT asks.
+      */
+    private def withWhereResolved(original: Option[Where]): SingleSearch = {
+      val resolved = this.copy(where = original.map(_.update(this)))
+      if (
+        limit.isEmpty && original.isDefined && from.unnests.nonEmpty &&
+        UnnestScope.rowExplosion(resolved).keySet != UnnestScope.rowExplosion(this).keySet
+      ) this.copy(where = original.map(_.update(resolved)))
+      else resolved
+    }
+
     def update(schema: Option[Schema] = None): SingleSearch = {
       schema match {
         case Some(s) => return this.copy(schema = Some(s)).update()
@@ -996,9 +1027,9 @@ package object query {
             having = having.map(_.update(from))
           )
         )
-        where   <- Option(select.copy(where = where.map(_.update(select))))
+        where   <- Option(select.withWhereResolved(where))
         updated <- Option(where.copy(orderBy = orderBy.map(_.update(where))))
-      } yield updated).getOrElse(
+      } yield updated.withFractionalIntegerKeysFolded).getOrElse(
         throw new IllegalStateException("Failed to update SQLSearchRequest")
       )
     }
@@ -1475,9 +1506,14 @@ package object query {
         .map(_.aggName)
         .toSet
       ListMap(
-        aggregates.flatMap(f => SQLAggregation.fromField(f, this)).map { a =>
-          a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true) else a)
-        }: _*
+        SQLAggregation
+          .sharingValueCounts(
+            aggregates.flatMap(f => SQLAggregation.fromField(f, this).map(f -> _))
+          )
+          .map { a =>
+            a.aggName -> (if (auxiliaryAggNames.contains(a.aggName)) a.copy(auxiliary = true)
+                          else a)
+          }: _*
       )
     }
 
@@ -1893,9 +1929,7 @@ package object query {
       *     number whose every whole value the filter sends is written as the integer it prints as
       *     (`1`, never `1.0`); a decimal key over a REAL column (`ABS(r)`, `r * 10`) prints `1.0`
       *     or `1` depending on the column's Java type, and is computed in double where DuckDB
-      *     computes in REAL, so it is closed;
-      *   - and a key holding a `ROUND` to decimal places over a non-integer value stays closed: its
-      *     script rounds to a whole number.
+      *     computes in REAL, so it is closed.
       *
       * Asked by [[validateResolved]] and [[validateUnresolved]], never at parse: there the route is
       * open, and rules (a), (b), (b2) and (c) of `validate()` apply to it as to any key. The named
@@ -1950,14 +1984,6 @@ package object query {
               "as 1.0 depending on the column's type."
             )
           else Some(lead + s"its type ($rendered) has no text a condition is known to spell.")
-        }
-        .orElse {
-          functionsOf(key).collectFirst {
-            case round: Round if Bucket.roundsToAnotherScale(round) =>
-              lead + s"$asText, and that script rounds ${round.arg} to a whole number, ignoring " +
-                s"the scale ${round.scale.getOrElse(0)} of ${round.sql}, so the condition would " +
-                "compare a different value."
-          }
         }
     }
 
@@ -2438,6 +2464,167 @@ package object query {
           .headOption
       }
 
+    /** The first HAVING key filter comparing a `float` (REAL) grouping key with a number a float
+      * does not hold exactly, as the reason it is refused -- or `None`.
+      *
+      * Elasticsearch prints a `float` key as the float WIDENED to a double (`0.10000000149011612`)
+      * and reads an include / exclude value with `Double.parseDouble`, so `HAVING r = 0.1` keeps no
+      * group and `r <> 0.1` removes none, HTTP 200, where DuckDB 1.5.5 casts `0.1` to the key's
+      * FLOAT and keeps the group 0.1 (measured). A value a float holds exactly (`0.5`, `0.25`, `3`)
+      * is compared exactly, and passes. The values judged are the ones the key filter SENDS, read
+      * as Elasticsearch reads them; a value that spells no number is left to Elasticsearch. Asked
+      * of a bare FIELD key, once the mapping types it: a computed REAL key is judged by the
+      * nameless-key gate.
+      *
+      * A `half_float` key is not judged here: the mapping gives such a column no SQL type, so it
+      * cannot be told from a `scaled_float` key, whose filter compares exactly.
+      */
+    private[query] def inexactFloatKeyComparison: Option[String] =
+      if (groupBy.isEmpty) None
+      else {
+        val empty = BucketIncludesExcludes()
+        havingLeaves.view.flatMap { e =>
+          keyBucketOf(e.identifier)
+            .filter(b =>
+              e.identifier.functions.isEmpty && b.identifier.functions.isEmpty &&
+              b.identifier.out.isInstanceOf[SQLReal]
+            )
+            .flatMap { b =>
+              (e.includes(b, not = false, empty).values ++ e.excludes(b, not = false, empty).values)
+                .flatMap(v =>
+                  Try(java.lang.Double.parseDouble(v.trim)).toOption
+                    .filter(d => d.toFloat.toDouble != d)
+                    .map(d => v -> d.toFloat.toDouble)
+                )
+                .headOption
+            }
+            .map { case (value, widened) =>
+              s"HAVING cannot compare the float GROUP BY key ${e.identifier.sql} with $value: " +
+                "Elasticsearch compares the key as the double its float widens to " +
+                s"($widened for the float nearest $value), so the condition would not compare " +
+                "the value SQL compares. Filter the rows in WHERE, where Elasticsearch reads the " +
+                "value as a float, or compare the key with a value a float holds exactly."
+            }
+        }.headOption
+      }
+
+    /** This statement with every HAVING key filter that compares an INTEGER grouping key with a
+      * number that has a fractional part answered as SQL answers it: no integer is equal to such a
+      * number, as DuckDB 1.5.5 and v0.23.0 answer. `k = 1.5` and `k IN (1.5, 2.5)` are FALSE for
+      * every group, `k <> 1.5` and `k NOT IN (1.5)` TRUE; a list holding whole numbers too keeps
+      * them alone. Each constant is folded into the tree around it, so a HAVING that is FALSE keeps
+      * no group -- the statement filters no document in (`MatchNoneCriteria` in its WHERE) -- and
+      * one that is TRUE keeps every group.
+      *
+      * Elasticsearch reads such a value on an integer field as its floor
+      * ([[fractionalIntegerKeyComparison]]), so sent as it is it answered the group 1 for `k =
+      * 1.5`. Comparisons the terms filter cannot express (`k < 1.5`) are refused as they were; a
+      * leaf in a relation, or one the fold cannot place, keeps the refusal. It needs the MAPPING,
+      * read once the schema is attached ([[update]]): without one every column is `Any`, and
+      * nothing folds. Idempotent: a folded statement holds no such leaf.
+      */
+    private[query] def withFractionalIntegerKeysFolded: SingleSearch =
+      if (groupBy.isEmpty) this
+      else
+        having.flatMap(_.criteria) match {
+          case Some(criteria) =>
+            foldFractionalIntegerKeys(criteria) match {
+              case Right(same) if same eq criteria => this
+              case Right(folded) => this.copy(having = having.map(_.copy(criteria = Some(folded))))
+              case Left(true)    => this.copy(having = None)
+              case Left(false) =>
+                val none: Criteria = MatchNoneCriteria()
+                this.copy(
+                  having = None,
+                  where = Some(
+                    Where(Some(where.flatMap(_.criteria).fold(none)(Predicate(_, AND, none))))
+                  )
+                )
+            }
+          case None => this
+        }
+
+    /** [[withFractionalIntegerKeysFolded]]'s fold of one criteria tree: a constant, or the tree. */
+    private[query] def foldFractionalIntegerKeys(c: Criteria): Either[Boolean, Criteria] =
+      c match {
+        case p @ Predicate(left, op, right, not, _) =>
+          val l = foldFractionalIntegerKeys(left)
+          // the predicate's NOT binds its RIGHT operand
+          val r = foldFractionalIntegerKeys(right) match {
+            case Left(b) if not.isDefined => Left(!b)
+            case other                    => other
+          }
+          (op, l, r) match {
+            case (AND, Left(false), _) | (AND, _, Left(false)) => Left(false)
+            case (OR, Left(true), _) | (OR, _, Left(true))     => Left(true)
+            case (_, Left(_), Left(b))                         => Left(b)
+            case (_, Left(_), Right(rc)) =>
+              if (not.isEmpty) Right(rc) else rc.negated.map(Right(_)).getOrElse(Right(p))
+            case (_, Right(lc), Left(_)) => Right(lc)
+            case (_, Right(lc), Right(rc)) =>
+              if ((lc eq left) && (rc eq right)) Right(p)
+              else Right(p.copy(leftCriteria = lc, rightCriteria = rc))
+          }
+        case e: Expression => fractionalIntegerKeyLeaf(e).getOrElse(Right(e))
+        case other         => Right(other)
+      }
+
+    /** A HAVING leaf comparing a bare INTEGER grouping key with numbers that have a fractional
+      * part, as SQL answers it: FALSE where it keeps them (`=`, `IN`), TRUE where it removes them
+      * (`<>`, `NOT IN`), or the IN list of its whole numbers alone. `None` for any other leaf, and
+      * for one the fold does not rebuild (it keeps the refusal). The values are the ones the key
+      * filter SENDS, read as [[fractionalIntegerKeyComparison]] reads them.
+      */
+    private[query] def fractionalIntegerKeyLeaf(e: Expression): Option[Either[Boolean, Criteria]] =
+      keyBucketOf(e.identifier)
+        .filter(b =>
+          !e.nested && e.identifier.functions.isEmpty && b.identifier.functions.isEmpty &&
+          NumericReducer.wholeNumber(b.identifier.out)
+        )
+        .flatMap { b =>
+          val empty = BucketIncludesExcludes()
+          val kept = e.includes(b, not = false, empty).values
+          val removed = e.excludes(b, not = false, empty).values
+          def fractional(v: Any): Boolean =
+            SingleSearch.fractionalReading(String.valueOf(v)).isDefined
+          val values = kept ++ removed
+          if (!values.exists(fractional)) None
+          else if (values.forall(fractional)) Some(Left(removed.nonEmpty))
+          else
+            e match {
+              case in: InExpr[_, _] =>
+                val whole: Option[Criteria] = in.values match {
+                  case DoubleValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        DoubleValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case FloatValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        FloatValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case StringValues(vs) =>
+                    Some(
+                      InExpr(
+                        in.identifier,
+                        StringValues(vs.filterNot(v => fractional(v.value))),
+                        in.maybeNot
+                      )
+                    )
+                  case _ => None
+                }
+                whole.map(Right(_))
+              case _ => None
+            }
+        }
+
     lazy val excludes: Seq[String] = select.except.map(_.fields.map(_.sourceField)).getOrElse(Nil)
 
     lazy val sources: Seq[String] = from.tables.map(_.name)
@@ -2667,6 +2854,10 @@ package object query {
           // level of another kind is judged as before, and a key-filter value names a NUMBER on a
           // numeric field level (`Bucket.keyOf`).
           .orElse(keyKindRefusal)
+          // a key filter the rules above accept, on a float key, with a value no float equals
+          .orElse(inexactFloatKeyComparison)
+          // a WHERE condition over a nested column that no nested query can test
+          .orElse(where.flatMap(_.criteria).flatMap(ImplicitNested.refusal(_, this)))
           .map(Left(_))
           .getOrElse(Right(()))
       }
@@ -3217,21 +3408,12 @@ package object query {
           }
         }
         _ <- {
-          // OFFSET under a GROUP BY was silently DROPPED: the aggregation path emits
-          // `size 0 fetchSource false` whenever `allAggregations.nonEmpty && fields.isEmpty`, which
-          // is every GROUP BY, so the `limit ... from ...` branch that would carry the offset is
-          // never taken and the offset never reached Elasticsearch. A real group offset needs the
-          // `composite` aggregation and `after_key` — explicitly out of scope. Same reasoning as
-          // the NULLS FIRST / NULLS LAST guard above, and applied uniformly to the
-          // aggregate-bearing and aggregate-free forms alike.
-          if (groupBy.isDefined && limit.exists(_.offset.isDefined)) {
-            Left(
-              "OFFSET is not supported when GROUP BY is present: group results are not paginated " +
-              "(the offset used to be ignored silently). Remove the OFFSET, or page by key ranges."
-            )
-          } else {
-            Right(())
-          }
+          // OFFSET under a GROUP BY never reaches Elasticsearch: the aggregation path emits
+          // `size 0 fetchSource false` for every GROUP BY, so no `from` carries it. The groups are
+          // skipped in core instead, once the rows are flattened (`GroupedRowOrder`: each level
+          // holds LIMIT + OFFSET buckets); an OFFSET the rows cannot skip in the order the
+          // statement asks for is refused, by name.
+          GroupedRowOrder.offsetRefusal(this).map(Left(_)).getOrElse(Right(()))
         }
         _ <- {
           // A DATEDIFF-family call over a WINDOW function with no GROUP BY
@@ -3253,6 +3435,13 @@ package object query {
               case None => Right(())
             }
         }
+        // An aggregate whose DISTINCT Elasticsearch would drop (`AVG(DISTINCT x)`): it was
+        // computed over every value on every release. Refused by name, wherever it is written.
+        _ <- UnanswerableAggregate.droppedDistinct(this).map(Left(_)).getOrElse(Right(()))
+        // GREATEST / LEAST over an aggregate that can be NULL, in a calculation over aggregates:
+        // Elasticsearch skips the calculation of a group where the aggregate has no value, and the
+        // group answered NULL where SQL answers the other arguments' largest / smallest.
+        _ <- UnanswerableAggregate.nullSkippingOverNullable(this).map(Left(_)).getOrElse(Right(()))
       } yield ()
     }
 

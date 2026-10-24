@@ -34,12 +34,18 @@ import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.convert.Conversion
-import app.softnetwork.elastic.sql.function.math.Round
 import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.time.TimeUnit
+import scala.collection.immutable.ListMap
 import scala.util.{DynamicVariable, Try}
 import scala.util.matching.Regex
+import app.softnetwork.elastic.sql.function.{
+  Function,
+  FunctionChain,
+  FunctionN,
+  FunctionWithIdentifier
+}
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
   renderedTypeOf,
@@ -96,6 +102,19 @@ object Bucket {
     */
   val DefaultSize: Int = 65536
 
+  /** Whether `text` is a number Elasticsearch reads as exactly one value of `valueType` (`long`: a
+    * whole number within its range, `double`: any decimal number) -- see
+    * [[Bucket.scriptedKeyValueTypeBeside]].
+    */
+  def isExactNumberOf(valueType: String)(text: String): Boolean =
+    Try(BigDecimal(text.trim)).toOption.exists { number =>
+      valueType match {
+        case "long"   => number.isWhole && number.isValidLong
+        case "double" => true
+        case _        => false
+      }
+    }
+
   /** The `DATE_TRUNC` units a `date_histogram` has a calendar interval for. A level is a
     * `date_histogram` only with one of them: Elasticsearch refuses one without an interval.
     */
@@ -136,13 +155,6 @@ object Bucket {
   /** A string type: the type of a text column, or of a value a function renders as text. */
   private[query] def stringType(t: SQLType): Boolean =
     t.isInstanceOf[SQLVarchar] || t.isInstanceOf[SQLChar]
-
-  /** Whether `round` rounds to decimal places a value that is not a whole number: its script rounds
-    * to a whole number (`Long.valueOf(Math.round((x * 10) / 10))`), so its value is not the one SQL
-    * computes.
-    */
-  private[query] def roundsToAnotherScale(round: Round): Boolean =
-    round.scale.exists(_ != 0) && !NumericReducer.wholeNumber(renderedTypeOf(round.arg))
 
   /** Every text a Java number EQUAL to `number` prints, for [[Bucket.keyFilterTexts]]:
     *   - a whole value: its integer text and its `Double` text (`5` and `5.0`, `1.0E7` for ten
@@ -288,7 +300,15 @@ case class Bucket(
   lazy val ordinal: Option[Long] = if (resolved) None else Bucket.ordinalOf(identifier)
 
   def update(request: SingleSearch): Bucket = {
-    val bucketSize = request.limit.map(_.limit).orElse(Some(Bucket.DefaultSize))
+    // `LIMIT n OFFSET m` answers the n groups after the first m: each level holds n + m
+    // (`GroupedRowOrder` skips the m)
+    val bucketSize = request.limit
+      .map(l =>
+        scala.math
+          .min(l.limit.toLong + l.offset.map(_.offset.max(0)).getOrElse(0), Int.MaxValue.toLong)
+          .toInt
+      )
+      .orElse(Some(Bucket.DefaultSize))
     ordinal match {
       case Some(position) =>
         Bucket.selectItem(position, request) match {
@@ -511,6 +531,59 @@ case class Bucket(
     */
   def isTemporalScriptKey: Boolean = isScriptedKey && renderedTypeOf(identifier).isTemporal
 
+  /** The `value_type` a scripted `terms` level is sent with: `long` for a key that reports a whole
+    * number, `double` for one that reports another number, nothing for any other key.
+    *
+    * Without it a scripted `terms` level is a STRING `terms`: each key comes back as the text the
+    * script's value prints and the level orders those texts. MEASURED on Elasticsearch 8.18.3:
+    * `GROUP BY n + 0 ORDER BY kk DESC` answered `'900', '7', ..., '0', '-900', '-4'`, where the
+    * field key `GROUP BY n` answers the numbers in numeric order. With it, Elasticsearch builds a
+    * numeric `terms` (MEASURED with a script on 8.18.3 and 6.8.23), so the keys come back as
+    * numbers and sort as numbers.
+    *
+    * Read by both bridges through [[scriptedKeyValueTypeBeside]]: a HAVING key filter is written as
+    * the TEXTS a string `terms` matches ([[keyFilterTexts]]), which a numeric level parses as its
+    * numbers. A temporal key is left as it is (`date_histogram` or its own text).
+    *
+    * A key that renders a number of no known kind (NUMERIC) is the number it REPORTS: a date part
+    * (`YEAR(d)`, `EXTRACT(HOUR FROM ts)`, ...) renders NUMERIC for the coercions that read it, and
+    * reports the BIGINT DuckDB answers, the whole number its script returns; GREATEST / LEAST cast
+    * to the common type they report. Read as NUMERIC it was a `double` level, and `GROUP BY
+    * YEAR(d)` answered the key `2024.0`, a Double, where DuckDB answers the BIGINT `2024`.
+    */
+  def scriptedKeyValueType: Option[String] =
+    if (!isScriptedKey || isDateHistogram) None
+    else
+      renderedTypeOf(identifier) match {
+        case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => Some("long")
+        case _: SQLDouble | _: SQLReal                                 => Some("double")
+        case SQLTypes.Numeric =>
+          if (NumericReducer.wholeNumber(identifier.reportedType)) Some("long") else Some("double")
+        case _ => None
+      }
+
+  /** [[scriptedKeyValueType]] for a level whose HAVING key filter is `include` / `exclude`: the
+    * type when the filter is exact values only, each an exact number of that type, which a numeric
+    * `terms` parses as the very numbers its keys are; `None` -- a string `terms`, its keys texts --
+    * beside a pattern, or a value that is not one. MEASURED on Elasticsearch 8.18.3 and 6.8.23: a
+    * scripted `terms` with `value_type: long` keeps the groups `include: ["5", "7"]` names, drops
+    * the one `exclude: ["5"]` names, and answers its keys as numbers in numeric order -- but it
+    * reads `"5.5"` as 5, which is why an inexact value keeps the string `terms`.
+    *
+    * 🔴 Without the filter's values a scripted numeric key with a key filter (`GROUP BY n + 0
+    * HAVING kk <> 5 ORDER BY kk DESC`) answered its keys as texts in text order: `'900', '7', '0',
+    * '-900', '-4'`, where DuckDB answers 900, 7, 0, -4, -900.
+    */
+  def scriptedKeyValueTypeBeside(
+    include: BucketIncludesExcludes,
+    exclude: BucketIncludesExcludes
+  ): Option[String] =
+    if (Seq(include, exclude).exists(_.regex.exists(_.nonEmpty))) None
+    else
+      scriptedKeyValueType.filter { valueType =>
+        (include.values ++ exclude.values).forall(Bucket.isExactNumberOf(valueType))
+      }
+
   /** The columns this level's key reads -- through its functions and its arithmetic, a CASE's
     * branches and its conditions -- each with the functions the key applies to it.
     */
@@ -561,8 +634,8 @@ case class Bucket(
     *     a DOUBLE, a string, a date or a BOOLEAN (a date part, a LENGTH, an integer cast of a
     *     string are exact integers of their argument). Not proven: a key reading a REAL or a
     *     NUMERIC column, or converting anything to REAL or NUMERIC, anywhere in its expression
-    *     (Painless computes it in double, DuckDB in REAL or DECIMAL), or holding a `ROUND` to
-    *     decimal places over a non-integer value (its script rounds to a whole number);
+    *     (Painless computes it in double, DuckDB in REAL or DECIMAL). A `ROUND` to decimal places
+    *     is the DOUBLE DuckDB computes (`Round`), and prints as one;
     *   - a key that renders a string computed from strings alone (`UPPER(k)`, `SUBSTRING(k, 1, 3)`,
     *     `CONCAT(k1, k2)`, `TRIM(k)`): every column it reads is a string, and every function and
     *     operand in its expression renders a string, so nothing converts a number, a date or a
@@ -588,8 +661,7 @@ case class Bucket(
       !functions.exists {
         case conversion: Conversion =>
           conversion.targetType.isInstanceOf[SQLReal] || conversion.targetType == SQLTypes.Numeric
-        case round: Round => Bucket.roundsToAnotherScale(round)
-        case _            => false
+        case _ => false
       }
   }
 
@@ -617,10 +689,10 @@ case class Bucket(
     * key prints `5.0`. That holds on a key of a proven kind ([[isExactKeyKind]]), and on a key
     * whose columns no mapping typed, whose printed class is unknown (on a key that renders REAL
     * there, the `Float` text is sent too). A key the mapping shows to be of another kind -- a REAL
-    * computed in double, a `ROUND` to decimal places -- keeps the literal's own text, as before: no
-    * spelling is known to match its value, and the nameless-key gate judges that text as it did.
-    * Everything else is sent as its own text too: Elasticsearch parses a FIELD level's values
-    * itself, and a string or a boolean prints as itself.
+    * computed in double -- keeps the literal's own text, as before: no spelling is known to match
+    * its value, and the nameless-key gate judges that text as it did. Everything else is sent as
+    * its own text too: Elasticsearch parses a FIELD level's values itself, and a string or a
+    * boolean prints as itself.
     *
     * Called once per literal while the request is built.
     */
@@ -723,18 +795,225 @@ object BucketPath extends scala.runtime.AbstractFunction1[Seq[Bucket], BucketPat
 
 case class BucketPath(buckets: Seq[Bucket]) {
 
+  /** Every level's path, joined by `>`, exactly as `BucketNode.bucketPath` joins the levels of the
+    * tree the request is built from: the bridges attach an aggregate to the level whose node path
+    * EQUALS this one.
+    *
+    * 🔴 A level whose key is an expression has an EMPTY path (no field name), and it must keep its
+    * place. The path used to skip an empty FIRST level, so `GROUP BY <CASE ...> AS kk, g1` gave
+    * `COUNT(*)` the path `g1` while the leaf node was `>g1`: no level matched, the count was left
+    * out of the request and every group answered NULL, with HTTP 200 -- with or without a HAVING.
+    */
   lazy val path: String =
     BucketPath
       .emissionOrder(buckets)
-      .foldLeft("")((acc, b) => {
-        if (acc.isEmpty) {
-          s"${b.path}"
-        } else {
-          s"$acc>${b.path}"
-        }
-      })
+      .map(_.path)
+      .mkString(">")
 
   override def toString: String = path
+}
+
+/** The order and the cut the ROWS of a GROUP BY of several levels take once they are flattened, by
+  * the names the rows carry them under -- what each level's own bucket order and size cannot give.
+  *
+  * A level orders, and is cut to the statement's LIMIT, INSIDE its parent bucket only. So:
+  *   - `GROUP BY a, b LIMIT n` answered up to n rows per parent (n x n rows for two levels): the
+  *     flattened rows are cut to n ([[limit]]);
+  *   - `GROUP BY a, b ORDER BY b` (any ORDER BY that is not the levels' own keys in their order, an
+  *     aggregate included, by its alias or by its expression) answered the rows ordered inside each
+  *     `a` only: the flattened rows are sorted by the ORDER BY ([[sortKeys]]) and then cut. A NULL
+  *     aggregate sorts where the same ORDER BY over one level puts it, the order Elasticsearch
+  *     gives a group with no value: below every value for a `MAX` ([[lowNulls]], its -Infinity),
+  *     above every value otherwise -- so last ascending and first descending, the engine's default
+  *     (the statement cannot say otherwise under a GROUP BY). The levels above the first sort key's
+  *     own level are sent with every bucket (`Bucket.DefaultSize`): a LIMIT cut inside their parent
+  *     would keep groups the global order does not ([[levelSize]]);
+  *   - an aggregate the SELECT does not return is read as a column of the rows until they are
+  *     sorted, then left out ([[carried]]).
+  *
+  * `LIMIT n OFFSET m` skips the first m groups, then answers n, as DuckDB does ([[offset]]): a
+  * level is sent with n + m buckets (`Bucket.update`), and the rows -- in the order above, or in
+  * the levels' own order -- drop m before they are cut to n. With one level too: its bucket order
+  * is the statement's, only the skip is left to the rows.
+  *
+  * `None` when the levels already answer the rows as the statement asks: one level and no OFFSET,
+  * or an ORDER BY that is the levels' keys in their order and no LIMIT or OFFSET. Also `None`, the
+  * rows kept as they come, when a sort key is neither a level nor an aggregate -- and an OFFSET is
+  * then refused ([[offsetRefusal]]).
+  */
+case class GroupedRowOrder(
+  sortKeys: Seq[(String, SortOrder)],
+  limit: Option[Int],
+  offset: Option[Int] = None,
+  lowNulls: Set[String] = Set.empty,
+  carried: Set[String] = Set.empty
+) {
+  def sorts: Boolean = sortKeys.nonEmpty
+}
+
+object GroupedRowOrder {
+
+  /** The OFFSET of `request`, when it skips at least one group. */
+  private def offsetOf(request: SingleSearch): Option[Int] =
+    request.limit.flatMap(_.offset).map(_.offset).filter(_ > 0)
+
+  /** The GROUP BY levels of `request` its rows are flattened from, outermost first. */
+  private def levelsOf(request: SingleSearch): Seq[Bucket] =
+    BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil)).filterNot(_.nested)
+
+  /** The level a sort key names, or -1 (an aggregate, or another expression). */
+  private def levelOf(levels: Seq[Bucket], sort: FieldSort): Int =
+    levels.indexWhere(b => b.identifier.identifierName == sort.name || b.name == sort.name)
+
+  /** The aggregation a sort key names: by its alias (or its name), else -- the bridge's own
+    * derivation of the aggregate a terms `order` reads -- the aggregate whose expression the sort
+    * spells (`ORDER BY COUNT(*)`, `ORDER BY MAX(n)`), a returned one before one only the ORDER BY
+    * reads.
+    */
+  private def aggregationOf(request: SingleSearch, sort: FieldSort): Option[SQLAggregation] =
+    request.sqlAggregations.values
+      .find(a => !a.auxiliary && (a.field == sort.name || a.aggName == sort.name))
+      .orElse(
+        request.aggregates
+          .find(_.identifier.identifierName == sort.name)
+          .flatMap(SQLAggregation.fromField(_, request))
+          .flatMap(a => request.sqlAggregations.get(a.aggName))
+      )
+
+  private def isMax(aggregation: SQLAggregation): Boolean = aggregation.aggType match {
+    case MAX | _: MaxAgg => true
+    case _               => false
+  }
+
+  def of(request: SingleSearch): Option[GroupedRowOrder] = {
+    val buckets = BucketPath.emissionOrder(request.groupBy.map(_.buckets).getOrElse(Nil))
+    val levels = buckets.filterNot(_.nested)
+    // the groups of a key over an UNNEST element are flattened from inside each document: an
+    // OFFSET is not skipped there (refused, `offsetRefusal`)
+    val offset = offsetOf(request).filter(_ => levels.size == buckets.size)
+    if (request.windowFunctions.exists(_.isWindowing)) None
+    else if (levels.size < 2)
+      offset
+        .filter(_ => levels.nonEmpty)
+        .map(m => GroupedRowOrder(Nil, request.limit.map(_.limit), Some(m)))
+    else {
+      val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
+      val honoured = sorts.zipWithIndex.forall { case (sort, i) => levelOf(levels, sort) == i }
+      // a sort key as the rows carry it: (its column, its NULL below every value, carried only
+      // until the sort)
+      def columnOf(sort: FieldSort): Option[(String, Boolean, Boolean)] =
+        levels
+          .find(b => b.identifier.identifierName == sort.name || b.name == sort.name)
+          .map(b => (b.name, false, false))
+          .orElse(aggregationOf(request, sort).map { a =>
+            if (a.auxiliary) (a.aggName, isMax(a), true) else (a.field, isMax(a), false)
+          })
+      val limit = request.limit.map(_.limit)
+      if (honoured)
+        if (limit.isEmpty && offset.isEmpty) None else Some(GroupedRowOrder(Nil, limit, offset))
+      else {
+        val keys = sorts.map(sort => columnOf(sort).map(_ -> sort.direction))
+        if (keys.exists(_.isEmpty)) None
+        else {
+          val resolved = keys.flatten
+          Some(
+            GroupedRowOrder(
+              resolved.map { case ((column, _, _), direction) => column -> direction },
+              limit,
+              offset,
+              lowNulls = resolved.collect { case ((column, true, _), _) => column }.toSet,
+              carried = resolved.collect { case ((column, _, true), _) => column }.toSet
+            )
+          )
+        }
+      }
+    }
+  }
+
+  /** The aggregations of `request` as its rows are READ: an aggregate only the ORDER BY reads is
+    * read as a column until the rows are sorted ([[GroupedRowOrder.carried]]), every other one as
+    * it is.
+    */
+  def readAggregations(request: SingleSearch): ListMap[String, SQLAggregation] =
+    of(request).map(_.carried).filter(_.nonEmpty) match {
+      case Some(carried) =>
+        request.sqlAggregations.map { case (name, a) =>
+          name -> (if (a.auxiliary && carried.contains(a.aggName)) a.copy(auxiliary = false) else a)
+        }
+      case None => request.sqlAggregations
+    }
+
+  /** Why the OFFSET of a GROUP BY `request` cannot be honoured -- its rows are not skipped in the
+    * order the statement asks for ([[of]]) -- or `None`: no GROUP BY, no OFFSET, or one the rows
+    * skip.
+    */
+  def offsetRefusal(request: SingleSearch): Option[String] =
+    if (request.groupBy.isEmpty || offsetOf(request).isEmpty) None
+    else if (of(request).exists(_.offset.isDefined)) None
+    else {
+      val why =
+        if (request.windowFunctions.exists(_.isWindowing)) "beside a window function"
+        else if (request.groupBy.exists(_.buckets.exists(_.nested)))
+          "over a GROUP BY key of an UNNEST element"
+        else "with an ORDER BY over an expression that is neither a GROUP BY key nor an aggregate"
+      Some(
+        s"OFFSET is not supported $why: the groups cannot be skipped in the order the statement " +
+        "asks for. Remove the OFFSET, or page by key ranges."
+      )
+    }
+
+  /** The size each level of `request` is sent with when its rows are sorted after they are
+    * flattened: every bucket for a level whose own LIMIT cut inside its parent could leave out a
+    * group of the global order, `None` -- the level keeps its own n + m (`Bucket.size`) -- for the
+    * others.
+    *
+    * Inside one parent, the rows of a level are ordered by the first sort key that does not name a
+    * level above it, and a parent's best n + m rows in THAT order hold every row of the global best
+    * n + m under it. So a level keeps its n + m when that key is:
+    *   - none: nothing orders the rows inside the parent, any n + m of them will do;
+    *   - the level's own key, which the level is sent ordered by (`_key`) -- unless it is the last
+    *     level and an aggregate is sorted too: the last level is then ordered by the aggregate;
+    *   - the only sorted aggregate, on the last level, which is ordered by it, with no later sort
+    *     key on that level (Elasticsearch breaks its ties by the key, ascending), when it is a
+    *     COUNT, a SUM, a MIN or a MAX (a group with no value is then ordered where the rows place
+    *     it, on every major).
+    *
+    * Every other level -- above the first sort key's level, or ordered otherwise -- is sent with
+    * every bucket. `GROUP BY a, b ORDER BY b LIMIT 10` sends `a` with every bucket and `b` with 10.
+    */
+  def levelSize(request: SingleSearch): Bucket => Option[Int] =
+    of(request).filter(_.sorts) match {
+      case None => _ => None
+      case Some(_) =>
+        val levels = levelsOf(request)
+        val sorts = request.orderBy.map(_.sorts).getOrElse(Nil)
+        val aggregateSorts = sorts.filter(levelOf(levels, _) < 0)
+        val last = levels.size - 1
+        def keepsItsOwn(level: Int): Boolean =
+          sorts.zipWithIndex.find { case (sort, _) =>
+            val l = levelOf(levels, sort)
+            l < 0 || l >= level
+          } match {
+            case None => true
+            case Some((sort, i)) =>
+              val l = levelOf(levels, sort)
+              if (l == level) level != last || aggregateSorts.isEmpty
+              else if (l >= 0) false
+              else
+                level == last && aggregateSorts.size == 1 &&
+                sorts.drop(i + 1).forall { later =>
+                  val ll = levelOf(levels, later)
+                  ll >= 0 && ll < level
+                } &&
+                aggregationOf(request, sort).exists(_.aggType match {
+                  case COUNT | SUM | MIN | MAX                         => true
+                  case _: CountAgg | _: SumAgg | _: MinAgg | _: MaxAgg => true
+                  case _                                               => false
+                })
+          }
+        val everyBucket = levels.indices.filterNot(keepsItsOwn).map(levels(_).name).toSet
+        bucket => if (everyBucket.contains(bucket.name)) Some(Bucket.DefaultSize) else None
+    }
 }
 
 /** What a `HAVING` criterion contributes to a bucket pipeline. THREE values, because `""` used to
@@ -837,7 +1116,7 @@ object MetricSelectorScript {
     * this module cannot see the client one -- the core suite asserts that the two agree for every
     * aggregation type.
     */
-  private def nullOverEmptyInput(metric: Identifier): Boolean =
+  private[query] def nullOverEmptyInput(metric: Identifier): Boolean =
     metric.aggregateFunction match {
       case Some(af) => nullOverEmptyInput(af)
       // `Identifier.bucketMetrics`' second arm: the alias of a SELECT `bucket_script` item,
@@ -846,7 +1125,7 @@ object MetricSelectorScript {
     }
 
   /** Deliberately a total match, with no default arm: a new aggregate must be classified here. */
-  private def nullOverEmptyInput(af: AggregateFunction): Boolean = af match {
+  private[query] def nullOverEmptyInput(af: AggregateFunction): Boolean = af match {
     // 0 and 0.0 over no value (#336), never NULL
     case COUNT | SUM | _: CountAgg | _: SumAgg => false
     // multi-valued: no comparison reads them
@@ -1400,4 +1679,116 @@ object BucketTree {
 
     BucketNode(currentBucket, children, parent)
   }
+}
+
+/** The aggregate shapes Elasticsearch cannot answer as SQL does, named so that the statement's
+  * validation refuses them before any request (`SingleSearch.validate`), instead of answering a
+  * different number.
+  */
+object UnanswerableAggregate {
+
+  /** The aggregates of `request` -- in its SELECT, its HAVING, its ORDER BY, or inside a per-group
+    * calculation -- with every identifier they hold, as the request reads them
+    * (`FunctionUtils.funIdentifiers`, the walk the calculation's operands are found by).
+    */
+  private def identifiersOf(request: SingleSearch): Seq[Identifier] =
+    (request.select.fields ++ request.aggregates)
+      .map(_.identifier)
+      .flatMap(id => FunctionUtils.funIdentifiers(id))
+      .distinct
+
+  /** Does Elasticsearch answer something else than `af(DISTINCT x)` once the DISTINCT is dropped?
+    * Every aggregation but a count is computed over every value: a COUNT is a `cardinality` and an
+    * ARRAY_AGG keeps each value once, so they honour it; MIN, MAX, FIRST_VALUE and LAST_VALUE
+    * answer the same with or without it (DuckDB 1.5.5 agrees on each, MEASURED).
+    *
+    * Deliberately a total match, with no default arm: a new aggregate must be classified here.
+    */
+  private def dropsDistinct(af: AggregateFunction): Boolean = af match {
+    case COUNT | _: CountAgg | _: ArrayAgg             => false
+    case MIN | MAX | _: MinAgg | _: MaxAgg             => false
+    case _: FirstValue | _: LastValue                  => false
+    case _: RankingWindow | _: BucketScriptAggregation => false
+    case AVG | SUM | _: AvgAgg | _: SumAgg             => true
+    case STDDEV | STDDEV_POP | STDDEV_SAMP | VARIANCE | VAR_POP | VAR_SAMP | _: ExtendedStatsAgg =>
+      true
+    case PERCENTILE_CONT | PERCENTILE_DISC | _: PercentileAgg => true
+  }
+
+  /** `AVG(DISTINCT x)` and every aggregate whose DISTINCT Elasticsearch would drop
+    * ([[dropsDistinct]]): `SUM`, the STDDEV / VARIANCE family and the percentiles, plain or over a
+    * window. Each was computed over every value, as if DISTINCT were not written, on every release.
+    */
+  def droppedDistinct(request: SingleSearch): Option[String] =
+    identifiersOf(request)
+      .find(id => id.distinct && id.aggregateFunction.exists(dropsDistinct))
+      .map { id =>
+        s"${id.sql} is not supported: Elasticsearch computes this aggregate over every value of " +
+        "its column, not over its distinct values, so DISTINCT would be ignored. Only " +
+        "COUNT(DISTINCT ...) counts distinct values (MIN and MAX answer the same with or without " +
+        "DISTINCT). Remove DISTINCT, or compute the aggregate over the distinct values outside " +
+        "the query."
+      }
+
+  /** The `GREATEST` / `LEAST` calls of `f`, at any depth. */
+  private def reducersIn(f: Function, depth: Int = 0): Seq[NumericReducer] =
+    if (depth > 32) Nil
+    else
+      f match {
+        case r: NumericReducer =>
+          r +: r.values.collect { case g: Function => g }.flatMap(reducersIn(_, depth + 1))
+        case id: Identifier => id.functions.flatMap(reducersIn(_, depth + 1))
+        case fn: FunctionN[_, _] =>
+          fn.args.collect { case g: Function => g }.flatMap(reducersIn(_, depth + 1))
+        case fc: FunctionChain           => fc.functions.flatMap(reducersIn(_, depth + 1))
+        case fwi: FunctionWithIdentifier => reducersIn(fwi.identifier, depth + 1)
+        case _                           => Nil
+      }
+
+  /** The first aggregate an argument of `reducer` reads that is NULL in a group with no value of
+    * its column (`MetricSelectorScript.nullOverEmptyInput`: MIN, MAX, AVG, the STDDEV / VARIANCE
+    * family, the percentiles). A COUNT or a SUM is never NULL there (0 and 0.0 over no value).
+    */
+  private def nullableArgument(reducer: NumericReducer): Option[Identifier] =
+    reducer.values.iterator
+      .collect { case g: Function => g }
+      .flatMap(g => FunctionUtils.funIdentifiers(g))
+      .find(_.aggregateFunction.exists {
+        // an aggregate over a window is computed apart, never by the group's calculation; an
+        // argument `MAX(n)` parses as a window function with no window (`MaxAgg`), and is one of
+        // the group's aggregates
+        case w: WindowFunction if w.isWindowing => false
+        case af                                 => MetricSelectorScript.nullOverEmptyInput(af)
+      })
+
+  /** `GREATEST` / `LEAST` over an aggregate that can be NULL, in a calculation over aggregates of
+    * the SELECT -- computed per group, or in the one whole-table group, by a `bucket_script`.
+    *
+    * Elasticsearch skips the calculation of a group where one of its operands has no value (its gap
+    * policy, `keep_values` included -- MEASURED on 8.18.3), so the group answered NULL, while
+    * GREATEST and LEAST skip a NULL argument: `GREATEST(MAX(n), 2)` is 2 in DuckDB 1.5.5 where `n`
+    * has no value. Every other calculation is NULL when one of its operands is, as SQL is, and
+    * stays answered; so does GREATEST over aggregates that cannot be NULL (a COUNT, a SUM), and in
+    * a HAVING, which reads each aggregate as SELECT does and skips a NULL one.
+    */
+  def nullSkippingOverNullable(request: SingleSearch): Option[String] =
+    request.select.fields.iterator
+      .filter(_.isBucketScript)
+      .flatMap { field =>
+        reducersIn(field.identifier).iterator.flatMap(r =>
+          nullableArgument(r).map(metric => (field, r, metric))
+        )
+      }
+      .toSeq
+      .headOption
+      .map { case (field, reducer, metric) =>
+        val name = reducer.operator.sql
+        val wins = if (name == "GREATEST") "largest" else "smallest"
+        s"$name over ${metric.sql} is not supported in a calculation over aggregates " +
+        s"(${field.identifier.sql}): ${metric.sql} is NULL in a group with no value of its " +
+        "column, and Elasticsearch then skips the calculation, so the group would answer NULL " +
+        s"where SQL answers the $wins of the other arguments. Select the aggregate on its own and " +
+        s"apply $name to the result outside the query; in a HAVING, $name over aggregates is " +
+        "answered."
+      }
 }

@@ -17,9 +17,15 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.function.aggregate.{
+  AVG,
   AggregateFunction,
+  AvgAgg,
   BucketScriptAggregation,
   COUNT,
+  MAX,
+  MIN,
+  MaxAgg,
+  MinAgg,
   WindowFunction
 }
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain, FunctionUtils}
@@ -205,7 +211,18 @@ case class SQLAggregation(
   aggType: AggregateFunction,
   direction: Option[SortOrder] = None,
   nestedElement: Option[NestedElement] = None,
-  bucketPath: String = ""
+  bucketPath: String = "",
+  /** The aggregate answers a date or a timestamp: a `MIN` / `MAX` of a temporal column. Its value
+    * is read from the `value_as_string` Elasticsearch formats it as, never from the epoch
+    * milliseconds of `value`.
+    */
+  temporal: Boolean = false,
+  /** The aggregation whose `value_count` this one's NULL is read from ([[readsValueCount]]): the
+    * first aggregate of the same expression at the same place, which the MIN, the MAX and the AVG
+    * of that expression share ([[SQLAggregation.sharingValueCounts]]). `None` for an aggregate that
+    * reads its own, or none.
+    */
+  valueCountOwner: Option[String] = None
 ) {
   val nested: Boolean = nestedElement.nonEmpty
   val multivalued: Boolean = aggType.multivalued
@@ -219,9 +236,63 @@ case class SQLAggregation(
       case Nil => ""
       case seq => seq.head
     }
+
+  /** The aggregate is a `MIN` / `MAX` that answers a number, or an `AVG`: where the client reads a
+    * metric's `null` as `0.0` (`PainlessTarget.readsNullMetricAsZero`), its value cannot tell a
+    * group with no value of the field from a value of 0, and the group's document count cannot
+    * either. The count of the values it computes over can: the bridge sends that `value_count`
+    * beside it, under [[SQLAggregation.valueCountName]], and the response parser answers NULL when
+    * it is 0. A temporal `MIN` / `MAX` tells it by its `value_as_string`, a STDDEV / VARIANCE by
+    * its own `count`.
+    */
+  lazy val readsValueCount: Boolean =
+    !temporal && (aggType match {
+      case MIN | MAX | AVG | _: MinAgg | _: MaxAgg | _: AvgAgg => true
+      case _                                                   => false
+    })
 }
 
 object SQLAggregation {
+
+  private val ValueCountSuffix = "__value_count"
+
+  /** The name of the `value_count` sent beside the aggregation named `name` (its name in the
+    * request and in the response: the last segment of its path) -- see
+    * [[SQLAggregation.readsValueCount]]. The one spelling the bridge emits and the response parser
+    * reads.
+    */
+  def valueCountName(name: String): String = name + ValueCountSuffix
+
+  /** Is `name` the name of a `value_count` sent beside an aggregation ([[valueCountName]])? */
+  def isValueCountName(name: String): Boolean = name.endsWith(ValueCountSuffix)
+
+  /** The aggregations of `fields` (each with the aggregation built from it), where the aggregates
+    * that read a value count ([[SQLAggregation.readsValueCount]]) of ONE expression at ONE place --
+    * the same column or script, the same bucket path, outside any nested scope and any window --
+    * read the count of the first of them ([[SQLAggregation.valueCountOwner]]), so `MIN(x)`,
+    * `MAX(x)` and `AVG(x)` send one `value_count` of `x`, and a scripted one runs its script once
+    * for the three counts there were.
+    */
+  def sharingValueCounts(fields: Seq[(Field, SQLAggregation)]): Seq[SQLAggregation] = {
+    def expression(field: Field): String =
+      field.identifier.withFunctions(FunctionUtils.transformFunctions(field.identifier)).sql
+    // a plain aggregate is a window function with no window (`MinAgg` ...): a window function
+    // that partitions or orders is left out
+    val eligible = fields.filter { case (_, a) =>
+      a.readsValueCount && a.nestedElement.isEmpty && !a.aggType.isWindowing
+    }
+    val first = eligible.foldLeft(Map.empty[(String, String), String]) { case (acc, (field, a)) =>
+      val key = (expression(field), a.bucketPath)
+      if (acc.contains(key)) acc else acc + (key -> a.aggName)
+    }
+    val owners: Map[String, String] = eligible.flatMap { case (field, a) =>
+      first.get((expression(field), a.bucketPath)).filter(_ != a.aggName).map(a.aggName -> _)
+    }.toMap
+    fields.map { case (_, a) =>
+      owners.get(a.aggName).fold(a)(owner => a.copy(valueCountOwner = Some(owner)))
+    }
+  }
+
   def fromField(field: Field, request: SingleSearch): Option[SQLAggregation] = {
     import field._
 
@@ -306,7 +377,12 @@ object SQLAggregation {
         aggType = aggType,
         direction = direction,
         nestedElement = identifier.nestedElement,
-        bucketPath = bucketPath
+        bucketPath = bucketPath,
+        temporal = aggType match {
+          case MIN | MAX | _: MinAgg | _: MaxAgg =>
+            AggregateFunction.outputTypeOf(identifier).exists(_.isTemporal)
+          case _ => false
+        }
       )
     )
   }

@@ -20,12 +20,14 @@ import app.softnetwork.elastic.sql.{PainlessContextType, PainlessTarget}
 import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.query.{
   BetweenExpr,
+  Criteria,
   ElasticBoolQuery,
   ElasticChild,
   ElasticFilter,
   ElasticNested,
   ElasticParent,
   GenericExpression,
+  ImplicitNested,
   InExpr,
   IsNotNullCriteria,
   IsNotNullExpr,
@@ -42,6 +44,29 @@ import app.softnetwork.elastic.sql.query.{
 import com.sksamuel.elastic4s.ElasticApi._
 import com.sksamuel.elastic4s.requests.searches.queries.{InnerHit, Query}
 
+object ElasticBridge {
+
+  /** The nested path of each column a condition reads, the first segment of its dotted name, for a
+    * `NESTED(…)` no JOIN UNNEST declares, or a condition the resolution wrapped as one
+    * (`ElasticBridge.query`): `ImplicitNested.nestedPathsOf`, the one derivation the wrapping reads
+    * too. A column with no dot has none.
+    */
+  private[bridge] def nestedPaths(criteria: Criteria): List[String] =
+    ImplicitNested.nestedPathsOf(criteria)
+
+  /** The columns a MATCH reads, when `filter` is one: a `MATCH (c) AGAINST (…)`, or the group of
+    * one per column that `MATCH (c1, c2) AGAINST (…)` is. `None` for any other filter.
+    */
+  private[bridge] def matchColumns(filter: ElasticFilter): Option[Seq[String]] = filter match {
+    case m: MatchCriteria => Some(Seq(m.identifier.name))
+    case b: ElasticBoolQuery
+        if b.shouldFilters.nonEmpty && b.innerFilters.isEmpty && b.mustFilters.isEmpty &&
+          b.notFilters.isEmpty && b.shouldFilters.forall(_.isInstanceOf[MatchCriteria]) =>
+      Some(b.shouldFilters.collect { case m: MatchCriteria => m.identifier.name })
+    case _ => None
+  }
+}
+
 case class ElasticBridge(filter: ElasticFilter) {
   def query(
     innerHitsNames: Set[String] = Set.empty,
@@ -54,12 +79,29 @@ case class ElasticBridge(filter: ElasticFilter) {
     filter match {
       case boolQuery: ElasticBoolQuery =>
         import boolQuery._
+        // 🔴 A negated MATCH -- the one leaf that reaches `must_not` as it is, having no negated
+        // spelling of its own -- keeps only the documents where its columns have a value, as SQL
+        // reads `NOT` over a NULL: the negation stands beside each column's `exists`
+        // (`negationOnAll`), in this bool's `filter`. Not where this bool's `should` clauses are
+        // required (no `filter` or `must` beside them), which a `filter` would make optional. A
+        // relation keeps its `must_not`: `NOT NESTED(…)` asks whether NO child matches.
+        val shouldsRequired = shouldFilters.nonEmpty && innerFilters.isEmpty && mustFilters.isEmpty
+        val (negatedMatches, negated) =
+          if (shouldsRequired) (Nil, notFilters)
+          else notFilters.partition(f => ElasticBridge.matchColumns(f).isDefined)
         bool(
           mustFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
           shouldFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery)),
-          notFilters.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery))
+          negated.map(implicitly[ElasticBridge](_).query(innerHitsNames, currentQuery))
         )
-          .filter(innerFilters.map(_.query(innerHitsNames, currentQuery)))
+          .filter(
+            innerFilters.map(_.query(innerHitsNames, currentQuery)) ++ negatedMatches.map(f =>
+              negationOnAll(
+                ElasticBridge.matchColumns(f).getOrElse(Nil),
+                implicitly[ElasticBridge](f).query(innerHitsNames, currentQuery)
+              )
+            )
+          )
       case nested: ElasticNested =>
         import nested._
         if (innerHitsNames.contains(innerHitsName.getOrElse(""))) {
@@ -72,7 +114,41 @@ case class ElasticBridge(filter: ElasticFilter) {
 
           NestedElements.buildNestedTrees(criteria.nestedElements) match {
             case Nil =>
-              matchAllQuery()
+              // 🔴 A `NESTED(…)` no JOIN UNNEST declares has no nested element: its path is the
+              // first segment of the columns it names (`items.sku` -> `items`), the segment its
+              // inner-hits name is read from. It rendered `match_all` here, so `WHERE
+              // NESTED(items.sku = 's1')` returned EVERY document, HTTP 200. It is now the nested
+              // query over that path -- the documents one of whose elements satisfies the
+              // condition, as DuckDB answers `EXISTS (SELECT 1 FROM unnest(items) …)` -- with no
+              // inner hits (no element is projected), tolerating an index that does not map the
+              // path, where no element can match. Columns of several paths in one `NESTED` are
+              // refused by name; a condition naming no dotted column is applied as it is.
+              val boolQuery = Option(ElasticBoolQuery(group = true))
+              val q = criteria
+                .asFilter(boolQuery)
+                .query(innerHitsNames + innerHitsName.getOrElse(""), boolQuery)
+              ElasticBridge.nestedPaths(criteria).distinct match {
+                case Nil => q
+                case path :: Nil =>
+                  nestedQuery(path, q).copy(ignoreUnmapped = Some(true))
+                // conditions over several paths, joined by AND or OR (`items.sku = 's1' AND
+                // tags.v = 'x'`, or two `NESTED(…)` the resolution merged): each operand is the
+                // nested query over its own path -- no element belongs to two paths
+                case _ :: _ if criteria.isInstanceOf[Predicate] =>
+                  val p = criteria.asInstanceOf[Predicate]
+                  val split = p.copy(
+                    leftCriteria = ElasticNested(p.leftCriteria, p.leftCriteria.limit),
+                    rightCriteria = ElasticNested(p.rightCriteria, p.rightCriteria.limit)
+                  )
+                  val splitQuery = Option(ElasticBoolQuery(group = true))
+                  split.asFilter(splitQuery).query(innerHitsNames, splitQuery)
+                case paths =>
+                  throw new IllegalArgumentException(
+                    s"NESTED(${criteria.sql}) reads the nested paths ${paths.mkString(", ")}: " +
+                    "without a JOIN UNNEST a NESTED condition reads one path. Write one NESTED " +
+                    "per path."
+                  )
+              }
             case nestedTrees =>
               def nestedInner(n: NestedElement): InnerHit = {
                 var inner = innerHits(n.innerHitsName)
@@ -153,7 +229,8 @@ case class ElasticBridge(filter: ElasticFilter) {
                       if (negate) not(rightQuery).filter(leftQuery)
                       else must(leftQuery, rightQuery)
                     case _ =>
-                      if (negate) not(rightQuery).should(leftQuery)
+                      // under OR the negated side is one of the alternatives, not a requirement
+                      if (negate) should(leftQuery, not(rightQuery))
                       else should(leftQuery, rightQuery)
                   }
                 case _ =>

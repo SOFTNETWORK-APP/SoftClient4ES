@@ -61,6 +61,10 @@ COUNT(*) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 - `COUNT(*)` includes rows with NULL values
 - `COUNT(expr)` excludes NULL values
 - `COUNT(DISTINCT expr)` excludes NULL values
+- `DISTINCT` is read by `COUNT` (and `ARRAY_AGG`) only. `MIN` and `MAX` answer the same with or
+  without it. Every other aggregate written with `DISTINCT` — `SUM`, `AVG`, the `STDDEV` /
+  `VARIANCE` family, `PERCENTILE_CONT` / `PERCENTILE_DISC`, plain or over a window — is refused by
+  name, since Elasticsearch would compute it over every value.
 
 **Examples:**
 
@@ -198,13 +202,13 @@ Sum of values.
 **Syntax:**
 ```sql
 SUM(expr)
-SUM(DISTINCT expr)
 SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
 - `expr` - Numeric expression (`INT`, `DOUBLE`, `DECIMAL`, etc.)
-- `DISTINCT expr` - Sum of distinct values only
+- ⚠️ `SUM(DISTINCT expr)` is **refused**: Elasticsearch sums every value, so the `DISTINCT` would be
+  ignored.
 
 **Output:**
 - `NUMERIC` - Sum of values (same type as input, or promoted)
@@ -253,15 +257,6 @@ SELECT
 FROM orders
 GROUP BY DATE_TRUNC('month', order_date)
 ORDER BY month;
-```
-
-**SUM DISTINCT:**
-```sql
--- Sum of distinct salaries (removes duplicates)
-SELECT SUM(DISTINCT salary) AS sum_distinct_salaries FROM emp;
-
--- Sum of unique prices
-SELECT SUM(DISTINCT price) AS sum_unique_prices FROM products;
 ```
 
 **SUM with Calculations:**
@@ -346,13 +341,13 @@ Average of values.
 **Syntax:**
 ```sql
 AVG(expr)
-AVG(DISTINCT expr)
 AVG(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 ```
 
 **Inputs:**
 - `expr` - Numeric expression
-- `DISTINCT expr` - Average of distinct values only
+- ⚠️ `AVG(DISTINCT expr)` is **refused**: Elasticsearch averages every value, so the `DISTINCT`
+  would be ignored.
 
 **Output:**
 - `DOUBLE` - Average value
@@ -402,19 +397,6 @@ SELECT
 FROM orders
 GROUP BY DATE_TRUNC('day', order_date)
 ORDER BY day;
-```
-
-**AVG DISTINCT:**
-```sql
--- Average of distinct salaries
-SELECT AVG(DISTINCT salary) AS avg_distinct_salary FROM emp;
-
--- Average of unique prices
-SELECT 
-  category,
-  AVG(DISTINCT price) AS avg_unique_price
-FROM products
-GROUP BY category;
 ```
 
 **AVG with Rounding:**
@@ -1234,16 +1216,17 @@ STDDEV(expr) OVER (PARTITION BY partition_expr, ...)
 
 | SQL                | ES `extended_stats` field  | Min ES version |
 |--------------------|----------------------------|----------------|
-| `STDDEV(x)`        | `std_deviation_sampling`   | **7.7+**       |
-| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | **7.7+**       |
+| `STDDEV(x)`        | `std_deviation_sampling`   | 6+ (computed before 7.7) |
+| `STDDEV_SAMP(x)`   | `std_deviation_sampling`   | 6+ (computed before 7.7) |
 | `STDDEV_POP(x)`    | `std_deviation`            | 6+             |
-| `VARIANCE(x)`      | `variance_sampling`        | **7.7+**       |
-| `VAR_SAMP(x)`      | `variance_sampling`        | **7.7+**       |
+| `VARIANCE(x)`      | `variance_sampling`        | 6+ (computed before 7.7) |
+| `VAR_SAMP(x)`      | `variance_sampling`        | 6+ (computed before 7.7) |
 | `VAR_POP(x)`       | `variance`                 | 6+             |
 
 **Behavior:**
 - `NULL` values are ignored.
-- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Consequently the sample variants — including the default `STDDEV` / `VARIANCE` — require Elasticsearch 7.7+. On older clusters the column is returned as `null` and a warning is logged.
+- The un-suffixed `std_deviation` / `variance` keys are the **population** values (present on Elasticsearch 6+); the `_sampling` keys are the **sample** values (introduced in Elasticsearch 7.7). Before 7.7 the sample variants — including the default `STDDEV` / `VARIANCE` — are computed from the `count`, `sum` and `sum_of_squares` the response reports, as 7.7 computes them, so they answer on every supported release.
+- A group with no value answers `NULL`; a sample variant over one value answers `NULL` too (it needs two).
 - Each call emits its own `extended_stats` aggregation; two stat calls over the same column emit two aggregations.
 - **Transformed operands** (`STDDEV(YEAR(created_at))`, `VARIANCE(ABS(salary))`, `STDDEV_POP(DATE_TRUNC(ts, MONTH))`, plain or windowed) are computed over the transform on **Elasticsearch 7 and later**. The client library the driver builds on used to drop the aggregation script of an `extended_stats` on every line (elastic4s#4100); that is fixed upstream in the 7.x line the driver ships (Elasticsearch 7 emits the script natively); on the 8.x and 9.x lines the driver works around the drop itself; and on 6.x neither is possible:
 

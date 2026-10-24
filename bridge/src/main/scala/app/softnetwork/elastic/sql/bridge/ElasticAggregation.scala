@@ -49,17 +49,21 @@ import com.sksamuel.elastic4s.ElasticApi.{
   topHitsAgg,
   valueCountAgg
 }
+import com.sksamuel.elastic4s.requests.common.ValueType
 import com.sksamuel.elastic4s.requests.script.Script
 import com.sksamuel.elastic4s.requests.searches.DateHistogramInterval
 import com.sksamuel.elastic4s.requests.searches.aggs.{
   AbstractAggregation,
   Aggregation,
+  AvgAggregation,
   CardinalityAggregation,
   DateHistogramAggregation,
   ExtendedStatsAggregation,
   FilterAggregation,
   HistogramOrder,
   KeyedFiltersAggregation,
+  MaxAggregation,
+  MinAggregation,
   NestedAggregation,
   StatsAggregation,
   TermsAggregation,
@@ -475,7 +479,10 @@ object ElasticAggregation {
     aggregationsDirection: Map[String, SortOrder],
     having: Option[Criteria],
     nested: Option[NestedElement],
-    allElasticAggregations: Seq[ElasticAggregation]
+    allElasticAggregations: Seq[ElasticAggregation],
+    // the size of a level, over its own (`GroupedRowOrder.levelSize`): every bucket for a level
+    // whose own cut could leave out a group of the rows' global order
+    levelSize: app.softnetwork.elastic.sql.query.Bucket => Option[Int] = _ => None
   )(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -601,24 +608,36 @@ object ElasticAggregation {
               // each step must chain on the previous one — restarting from `termsAgg`
               // would silently discard the earlier updates (issue #205)
               var terms = termsAgg
-              bucket.size.foreach(s => terms = terms.size(s))
-              having match {
+              levelSize(bucket).orElse(bucket.size).foreach(s => terms = terms.size(s))
+              val (include, exclude) = having match {
                 case Some(criteria) =>
-                  criteria.includes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.includeRegex(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.includeExactValues(values.toArray)
-                    case _ =>
-                  }
-                  criteria.excludes(bucket, not = false, BucketIncludesExcludes()) match {
-                    case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
-                      terms = terms.excludeRegex(regex)
-                    case BucketIncludesExcludes(values, _) if values.nonEmpty =>
-                      terms = terms.excludeExactValues(values.toArray)
-                    case _ =>
-                  }
+                  (
+                    criteria.includes(bucket, not = false, BucketIncludesExcludes()),
+                    criteria.excludes(bucket, not = false, BucketIncludesExcludes())
+                  )
+                case _ => (BucketIncludesExcludes(), BucketIncludesExcludes())
+              }
+              include match {
+                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                  terms = terms.includeRegex(regex)
+                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                  terms = terms.includeExactValues(values.toArray)
                 case _ =>
+              }
+              exclude match {
+                case BucketIncludesExcludes(_, Some(regex)) if regex.nonEmpty =>
+                  terms = terms.excludeRegex(regex)
+                case BucketIncludesExcludes(values, _) if values.nonEmpty =>
+                  terms = terms.excludeExactValues(values.toArray)
+                case _ =>
+              }
+              // A scripted key that reports a number is a numeric `terms`, beside a key filter of
+              // exact numbers of its type too (`Bucket.scriptedKeyValueTypeBeside`). elastic4s does
+              // not write the parameter: `BucketScriptParams.bind` does, from this field.
+              bucket.scriptedKeyValueTypeBeside(include, exclude).foreach {
+                case "long"   => terms = terms.valueType(ValueType.LONG)
+                case "double" => terms = terms.valueType(ValueType.DOUBLE)
+                case _        =>
               }
               agg = terms
             case _ =>
@@ -1028,6 +1047,56 @@ object ElasticAggregation {
         }))
       case _ => aggregation
     }
+
+  /** The aggregations as EMITTED, each `MIN` / `MAX` that answers a number, and each `AVG`,
+    * followed by the `value_count` of the values it computes over -- the same field, the same
+    * script -- where the client module reads a metric's `null` as `0.0`
+    * (`PainlessTarget.readsNullMetricAsZero`, Elasticsearch 8). The response parser reads NULL for
+    * the aggregate when that count is 0 (`SQLAggregation.readsValueCount`); nothing else reads it.
+    * The aggregates of one expression at one place share ONE count, the first one's
+    * (`SQLAggregation.valueCountOwner`): `MIN(n + 0)` and `MAX(n + 0)` run their script for one
+    * count, not two.
+    *
+    * The count is a copy of its aggregation under its own name ([[SQLAggregation.valueCountName]]),
+    * so every placement of the aggregation -- a bucket level, a nested scope, the whole-table
+    * bucket, a window partition -- places the count beside it. It is never a REFERENCE: no
+    * pipeline, `order` or HAVING reads it. Elsewhere, and for every other aggregation, `aggs` is
+    * returned unchanged.
+    */
+  def withValueCounts(
+    aggs: Seq[ElasticAggregation],
+    sqlAggregations: Map[String, SQLAggregation]
+  )(implicit target: PainlessTarget): Seq[ElasticAggregation] =
+    if (!target.readsNullMetricAsZero) aggs
+    else
+      aggs.flatMap { aggregation =>
+        // the count of an aggregate that shares another's (`SQLAggregation.valueCountOwner`) is
+        // that other's: it is sent once
+        val values: Option[(Option[String], Option[Script])] =
+          if (
+            !sqlAggregations
+              .get(aggregation.aggName)
+              .exists(a => a.readsValueCount && a.valueCountOwner.isEmpty)
+          ) None
+          else
+            aggregation.agg match {
+              case min: MinAggregation => Some((min.field, min.script))
+              case max: MaxAggregation => Some((max.field, max.script))
+              case avg: AvgAggregation => Some((avg.field, avg.script))
+              case _                   => None
+            }
+        aggregation +: values.toSeq.map { case (field, script) =>
+          val name = SQLAggregation.valueCountName(aggregation.agg.name)
+          aggregation.copy(
+            aggName = aggregation.aggName.stripSuffix(aggregation.agg.name) + name,
+            field = name,
+            aggType = COUNT,
+            agg = ValueCountAggregation(name, field = field, script = script),
+            direction = None,
+            nestedAgg = None
+          )
+        }
+      }
 
   /** Extracts the buckets_path for a given bucket
     */

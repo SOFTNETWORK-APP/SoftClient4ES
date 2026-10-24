@@ -20,11 +20,14 @@ import app.softnetwork.elastic.sql.{
   query,
   Expr,
   IntValue,
+  LiteralParam,
   PainlessContext,
   PainlessScript,
   TokenRegex,
-  Updateable
+  Updateable,
+  Value
 }
+import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
   SQLBool,
@@ -203,6 +206,23 @@ package object string {
     }
   }
 
+  /** What `Concat.toPainlessCall` reads of its arguments. */
+  private[string] object ConcatNulls {
+
+    /** A literal value, bare or as the one function of a nameless identifier (the parser wraps an
+      * operand in one): never NULL.
+      */
+    def literal(value: PainlessScript): Boolean = value match {
+      case _: Value[_] => true
+      case i: app.softnetwork.elastic.sql.Identifier =>
+        i.name.trim.isEmpty && (i.functions match {
+          case (_: Value[_]) :: Nil => true
+          case _                    => false
+        })
+      case _ => false
+    }
+  }
+
   case class Concat(values: List[PainlessScript]) extends StringFunction[SQLVarchar] {
     override def outputType: SQLVarchar = SQLTypes.Varchar
     override def stringOp: StringOp = Concat
@@ -221,24 +241,46 @@ package object string {
       }
     }
 
+    /** 🔴 `CONCAT` skips a NULL argument, as DuckDB 1.5.5 does (`concat(NULL, 'x')` is `'x'`,
+      * `concat(NULL, NULL)` is `''`, measured): each argument that can be NULL renders `""` when it
+      * is, and the call itself is never NULL, so it takes no NULL guard of its own. ONE rule, in a
+      * query, an ingest processor and a transform alike: a view's computed column answers what the
+      * same expression answers in a SELECT.
+      *
+      * Before, in a query, an argument whose NULL nothing flagged -- the `NULL` literal, a
+      * `COALESCE`, a `CASE` or a `GREATEST` answering NULL -- reached `String.valueOf(null)` and
+      * the row read the text `"nullx"`, while a NULL column made the whole call NULL. An ingest
+      * processor and a transform kept that rule (#382 Ruling B, overturned by the lead's ruling of
+      * 2026-10-23): their bytes move, so a pipeline holding a CONCAT is re-created by `ALTER`.
+      */
+    override def checkIfNullable: Boolean = false
+
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
       if (callArgs.isEmpty)
         throw new IllegalArgumentException("CONCAT requires at least one argument")
-      else
-        callArgs.zipWithIndex
-          .map { case (arg, idx) =>
-            SQLTypeUtils.coerce(
-              arg,
-              values(idx).baseType,
-              SQLTypes.Varchar,
-              nullable = false,
-              context
-            )
+      else {
+        val parts = callArgs.zipWithIndex.map { case (arg, idx) =>
+          val value = values(idx)
+          def text(of: String): String =
+            SQLTypeUtils.coerce(of, value.baseType, SQLTypes.Varchar, nullable = false, context)
+          if (ArithmeticExpression.nullLiteral(value) || arg.trim == "null") "\"\""
+          // a literal is never NULL
+          else if (ConcatNulls.literal(value)) text(arg)
+          else {
+            // the argument, bound once: it is read by the NULL test and by its text
+            val one = SQLTypeUtils.asOneValue(arg)
+            val x =
+              if (FunctionN.isName(one)) one
+              else context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+            s"""($x == null ? "" : ${text(x)})"""
           }
-          .mkString(stringOp.painless(context))
+        }
+        // ONE value: a method a function over it appends applies to the whole text
+        s"(${parts.mkString(stringOp.painless(context))})"
+      }
     }
 
     override def validate(): Either[String, Unit] =

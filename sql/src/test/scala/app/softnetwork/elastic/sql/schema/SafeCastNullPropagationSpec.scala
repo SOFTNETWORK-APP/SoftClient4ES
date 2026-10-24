@@ -156,8 +156,9 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
           "ctx.c = (param1 == null) ? null : param2.length()"
         ),
         (
+          // CONCAT skips a NULL argument in a processor too (lead, 2026-10-23): its bytes moved
           ddlOf("CONCAT(s, 'x')", "KEYWORD"),
-          "def param1 = ctx.s; ctx.c = (param1 == null) ? null : String.valueOf(param1) + \"x\""
+          "def param1 = ctx.s; ctx.c = ((param1 == null ? \"\" : String.valueOf(param1)) + \"x\")"
         ),
         (
           ddlOf("UPPER(s)", "KEYWORD"),
@@ -167,8 +168,10 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
     )((ddl, expected) => withClue(s"[$ddl] ")(processorOf(ddl) shouldBe expected))
   }
 
-  /** The byte pin for the two CONCAT orientations, so the repair itself cannot drift unnoticed —
-    * and so a reader can see that the raw parameter is still tested BESIDE the derived one.
+  /** The byte pin for the two CONCAT orientations, so the repair itself cannot drift unnoticed. A
+    * failed safe cast is a NULL argument, which CONCAT skips, as DuckDB's `concat` does and as a
+    * query's CONCAT does (the lead's ruling of 2026-10-23 overturned Ruling B for CONCAT): the
+    * derived parameter is what the call tests.
     */
   it should "assemble the filed CONCAT shapes exactly (#382 Ruling B)" in {
     processorOf(ddlOf("CONCAT(TRY_CAST(s AS BIGINT), 'x')", "KEYWORD")) shouldBe
@@ -176,14 +179,14 @@ class SafeCastNullPropagationSpec extends AnyFlatSpec with Matchers with TableDr
     "try { safe1 = (param1 != null ? (def)(Long.parseLong(param1).longValue()) : null); } " +
     "catch (Exception e) {} def param2 = safe1; " +
     "def param3 = (param2 != null ? String.valueOf(param2) : null); " +
-    "ctx.c = (param1 == null || param3 == null) ? null : String.valueOf(param3) + \"x\""
+    "ctx.c = ((param3 == null ? \"\" : String.valueOf(param3)) + \"x\")"
 
     processorOf(ddlOf("CONCAT('x', TRY_CAST(s AS BIGINT))", "KEYWORD")) shouldBe
     "def param1 = ctx.s; def safe1 = null; " +
     "try { safe1 = (param1 != null ? (def)(Long.parseLong(param1).longValue()) : null); } " +
     "catch (Exception e) {} def param2 = safe1; " +
     "def param3 = (param2 != null ? String.valueOf(param2) : null); " +
-    "ctx.c = (param1 == null || param3 == null) ? null : \"x\" + String.valueOf(param3)"
+    "ctx.c = (\"x\" + (param3 == null ? \"\" : String.valueOf(param3)))"
   }
 
   /** The same three shapes, now that the gap they RECORDED is closed (issue #382, the NULLIF

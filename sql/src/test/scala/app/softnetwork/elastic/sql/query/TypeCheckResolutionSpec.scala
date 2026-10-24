@@ -179,7 +179,8 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
         "SELECT GREATEST(d, d2) AS v FROM t",
         "SELECT LEAST(d, ts, CURRENT_DATE) AS v FROM t",
         "SELECT id FROM t WHERE GREATEST(d, d2) > CAST('2024-02-01' AS DATE)",
-        "SELECT g, GREATEST(MAX(d), MAX(d2)) AS v FROM t GROUP BY g"
+        // over aggregates, in a HAVING (in a SELECT calculation it is refused, as it can be NULL)
+        "SELECT g FROM t GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2024-02-01' AS DATE)"
       )
     ) { sql => withClue(s"[$sql] ")(resolved(sql) shouldBe Right(())) }
   }

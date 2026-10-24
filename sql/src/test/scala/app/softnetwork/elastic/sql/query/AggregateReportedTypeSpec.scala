@@ -177,12 +177,12 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
 
   /** Every aggregate, with DuckDB's answer over each column kind. */
   private val aggregates: List[(String, Kind => Cell)] = List(
-    "COUNT(%s)"                                       -> count,
-    "COUNT(DISTINCT %s)"                              -> count,
+    "COUNT(%s)"          -> count,
+    "COUNT(DISTINCT %s)" -> count,
+    // (SUM(DISTINCT x) and AVG(DISTINCT x) are refused by name: Elasticsearch would drop the
+    // DISTINCT -- `UnanswerableAggregateSpec`)
     "SUM(%s)"                                         -> sum,
-    "SUM(DISTINCT %s)"                                -> sum,
     "AVG(%s)"                                         -> avg,
-    "AVG(DISTINCT %s)"                                -> avg,
     "MIN(%s)"                                         -> minMax,
     "MAX(%s)"                                         -> minMax,
     "VAR_POP(%s)"                                     -> statistic,

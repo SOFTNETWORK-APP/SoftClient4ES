@@ -201,7 +201,8 @@ package object bridge {
           Map.empty,
           request.having.flatMap(_.criteria),
           None,
-          references
+          references,
+          levelSize = GroupedRowOrder.levelSize(request)
         ) match {
           case Nil  => Seq.empty
           case aggs => aggs
@@ -225,7 +226,8 @@ package object bridge {
           directions,
           request.having.flatMap(_.criteria),
           None,
-          notNestedReferences
+          notNestedReferences,
+          levelSize = GroupedRowOrder.levelSize(request)
         ) match {
           // No buckets. A `HAVING` with no `GROUP BY` filters the ONE implicit whole-table group,
           // so the metric aggregations move inside a synthetic single-bucket `filters` aggregation
@@ -772,6 +774,22 @@ package object bridge {
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
 
+  /** 🔴 The negation of a comparison on a column, as SQL reads it: TRUE only where the comparison
+    * is FALSE, and a column with no value makes it NULL, so such a document is left out -- `n <> 0`
+    * does not keep the rows whose `n` is NULL, as DuckDB 1.5.5 and every SQL engine answer. A
+    * `must_not` alone matched every document the comparison did not, the ones missing the column
+    * included, on every major and every field type. The column's `exists` stands beside it.
+    *
+    * ⚠️ Several `queries` are negated EACH (`must_not` of every one: NOT a AND NOT b). A condition
+    * of two halves -- `NOT BETWEEN`, `NOT (a AND b)` -- is passed as ONE query, `must(a, b)`.
+    */
+  private[bridge] def negationOf(field: String, queries: Query*): Query =
+    not(queries: _*).filter(existsQuery(field))
+
+  /** [[negationOf]] over several columns: a negated MATCH over each of them. */
+  private[bridge] def negationOnAll(fields: Seq[String], query: Query): Query =
+    not(query).filter(fields.map(existsQuery))
+
   implicit def expressionToQuery(expression: GenericExpression)(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -879,8 +897,8 @@ package object bridge {
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
-                  l => not(termQuery(identifier.name, l)),
-                  d => not(termQuery(identifier.name, d))
+                  l => negationOf(identifier.name, termQuery(identifier.name, l)),
+                  d => negationOf(identifier.name, termQuery(identifier.name, d))
                 )
               case _ =>
                 applyNumericOp(n)(
@@ -897,8 +915,8 @@ package object bridge {
                 )
               case _ =>
                 applyNumericOp(n)(
-                  l => not(termQuery(identifier.name, l)),
-                  d => not(termQuery(identifier.name, d))
+                  l => negationOf(identifier.name, termQuery(identifier.name, l)),
+                  d => negationOf(identifier.name, termQuery(identifier.name, d))
                 )
             }
           case _ => matchAllQuery()
@@ -908,14 +926,14 @@ package object bridge {
           case LIKE =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.name, toRegex(l.value)))
+                negationOf(identifier.name, regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
                 regexQuery(identifier.name, toRegex(l.value))
             }
           case RLIKE =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.name, l.value))
+                negationOf(identifier.name, regexQuery(identifier.name, l.value))
               case _ =>
                 regexQuery(identifier.name, l.value)
             }
@@ -950,7 +968,7 @@ package object bridge {
           case EQ =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, l.value))
               case _ =>
                 termQuery(identifier.name, l.value)
             }
@@ -959,7 +977,7 @@ package object bridge {
               case Some(_) =>
                 termQuery(identifier.name, l.value)
               case _ =>
-                not(termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, l.value))
             }
           case _ => matchAllQuery()
         }
@@ -968,7 +986,7 @@ package object bridge {
           case EQ =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, b.value))
+                negationOf(identifier.name, termQuery(identifier.name, b.value))
               case _ =>
                 termQuery(identifier.name, b.value)
             }
@@ -977,7 +995,7 @@ package object bridge {
               case Some(_) =>
                 termQuery(identifier.name, b.value)
               case _ =>
-                not(termQuery(identifier.name, b.value))
+                negationOf(identifier.name, termQuery(identifier.name, b.value))
             }
           case _ => matchAllQuery()
         }
@@ -991,13 +1009,14 @@ package object bridge {
                 // the six below -- runs as a script instead of reaching a `MatchError`.
                 val o = if (maybeNot.isDefined) op.maybeNegated.getOrElse(op) else op
                 o match {
-                  case GT        => rangeQuery(identifier.name) gt script
-                  case GE        => rangeQuery(identifier.name) gte script
-                  case LT        => rangeQuery(identifier.name) lt script
-                  case LE        => rangeQuery(identifier.name) lte script
-                  case EQ        => rangeQuery(identifier.name) gte script lte script
-                  case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
-                  case _         => scriptQueryOf(expression)
+                  case GT => rangeQuery(identifier.name) gt script
+                  case GE => rangeQuery(identifier.name) gte script
+                  case LT => rangeQuery(identifier.name) lt script
+                  case LE => rangeQuery(identifier.name) lte script
+                  case EQ => rangeQuery(identifier.name) gte script lte script
+                  case NE | DIFF =>
+                    negationOf(identifier.name, rangeQuery(identifier.name) gte script lte script)
+                  case _ => scriptQueryOf(expression)
                 }
               case _ =>
                 val context = PainlessContext(context = contextType, target = target)
@@ -1072,7 +1091,7 @@ package object bridge {
         case _ => termsQuery(identifier.name, _values.map(_.toString))
       }
     maybeNot match {
-      case Some(_) => not(t)
+      case Some(_) => negationOf(identifier.name, t)
       case _       => t
     }
   }
@@ -1108,7 +1127,7 @@ package object bridge {
                 )
               )
             maybeNot match {
-              case Some(_) => return not(fq, tq)
+              case Some(_) => return not(must(fq, tq))
               case _       => return must(fq, tq)
             }
           case _ =>
@@ -1137,21 +1156,21 @@ package object bridge {
                   val fq = rangeQuery(identifier.name) gte from
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case (None, Some(to)) =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = rangeQuery(identifier.name) lte to
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case _ =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
               }
@@ -1162,7 +1181,7 @@ package object bridge {
           throw new IllegalArgumentException(s"Unsupported out type for range query: ${fromTo.out}")
       }
     maybeNot match {
-      case Some(_) => not(r)
+      case Some(_) => negationOf(identifier.name, r)
       case _       => r
     }
   }

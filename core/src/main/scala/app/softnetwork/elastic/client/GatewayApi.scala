@@ -1727,33 +1727,47 @@ class TableExecutor(
         case (_, step)      => step()
       }
 
+    // 🔴 From here the documents are migrated and the index runs the migration pipeline. A step
+    // that fails must not leave it there: the pipeline settings are restored, and then the
+    // temporary pipeline this migration created is dropped. It is dropped only once the index no
+    // longer names it.
+    def restorePipelineSettings(reason: String): Unit = {
+      logger.error(
+        s"Index $indexName was migrated but the pipeline update failed: $reason. Restoring its pipeline settings."
+      )
+      val notRestored: Option[String] = scala.util.Try(updateTableSettings()) match {
+        case scala.util.Success(Right(_))  => None
+        case scala.util.Success(Left(err)) => Some(err.message)
+        case scala.util.Failure(t)         => Some(t.getMessage)
+      }
+      notRestored match {
+        case Some(why) =>
+          logger.error(s"Failed to restore the pipeline settings of index $indexName: $why")
+        case None =>
+          dropTmpPipelines.foreach(drop => scala.util.Try(drop()))
+      }
+    }
+
     run(steps) match {
       case failure @ Left(_) => failure
       case Right(_)          =>
-        // 🔴 From here the documents are migrated and the index runs the migration pipeline. A
-        // step that THROWS must not leave it there: the pipeline settings are restored, and then
-        // the temporary pipeline this migration created is dropped, before the exception
-        // propagates. It is dropped only once the index no longer names it.
-        try run(afterMigration)
-        catch {
-          case scala.util.control.NonFatal(e) =>
-            logger.error(
-              s"Index $indexName was migrated but the pipeline update failed: ${e.getMessage}. Restoring its pipeline settings."
-            )
-            val notRestored: Option[String] = scala.util.Try(updateTableSettings()) match {
-              case scala.util.Success(Right(_))  => None
-              case scala.util.Success(Left(err)) => Some(err.message)
-              case scala.util.Failure(t)         => Some(t.getMessage)
-            }
-            notRestored match {
-              case Some(reason) =>
-                logger.error(
-                  s"Failed to restore the pipeline settings of index $indexName: $reason"
-                )
-              case None =>
-                dropTmpPipelines.foreach(drop => scala.util.Try(drop()))
-            }
-            throw e
+        // A step fails in two ways, and both restore: it THROWS (the exception then propagates),
+        // or it answers an error RESULT -- a pipeline Elasticsearch refuses (a `split` or a `join`
+        // written without its `separator` answers 400) -- which is returned as it was. The error
+        // result used to be returned with the index still on the temporary pipeline and the
+        // user's own pipeline, unchanged, no longer attached.
+        val outcome =
+          try run(afterMigration)
+          catch {
+            case scala.util.control.NonFatal(e) =>
+              restorePipelineSettings(e.getMessage)
+              throw e
+          }
+        outcome match {
+          case failure @ Left(err) =>
+            restorePipelineSettings(err.message)
+            failure
+          case success => success
         }
     }
   }

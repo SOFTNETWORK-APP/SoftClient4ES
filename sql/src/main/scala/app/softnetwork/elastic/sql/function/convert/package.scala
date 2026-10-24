@@ -58,6 +58,10 @@ package object convert {
     override def painless(context: Option[PainlessContext] = None): String =
       if (perGroupTemporal(context)) perGroupTemporalOf(value.painless(context))
       else if (convertsDate(context)) dateAtMidnight(value.painless(context), context)
+      else if (sourceType == SQLTypes.Temporal)
+        SQLTypeUtils
+          .temporalByRuntimeClass(value.painless(context), targetType, context)
+          .getOrElse(SQLTypeUtils.coerce(value, targetType, context))
       else SQLTypeUtils.coerce(value, targetType, context)
 
     /** A conversion renders as an expression -- EXCEPT the one case `toPainless` below folds: an
@@ -126,8 +130,14 @@ package object convert {
         case _ => // do nothing
       }
       if (perGroupTemporal(context)) return perGroupTemporalOf(base)
+      // a TEMPORAL operand converted to a DATE or a BIGINT by its runtime class, in a query
+      lazy val byRuntimeClass =
+        if (sourceType == SQLTypes.Temporal)
+          SQLTypeUtils.temporalByRuntimeClass(base, targetType, context)
+        else None
       val ret =
         if (date) dateAtMidnight(base, context)
+        else if (byRuntimeClass.isDefined) byRuntimeClass.get
         else if (caseOperand(context)) {
           // 🔴 A CASE renders an unparenthesised `p ? a : b`: the conversion appended to it
           // converted the ELSE branch only, and `String.valueOf(…)` around it answered the text

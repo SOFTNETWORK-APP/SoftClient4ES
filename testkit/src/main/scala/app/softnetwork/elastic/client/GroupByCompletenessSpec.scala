@@ -2684,50 +2684,55 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   }
 
   "a fractional number compared with an INTEGER GROUP BY key" should
-  "be refused by name on every major -- never rounded by Elasticsearch" in {
+  "answer as SQL does on every major -- no integer is equal to it -- never rounded by Elasticsearch" in {
     keyFilterLoaded
     nestedKeyFilterLoaded
-    // (statement, the key column in the rows, the key as the refusal names it). The SELECT-alias
-    // rows are the spelling whose HAVING leaf carries no column of its own: the rule must read the
-    // BUCKET's type.
+    // (statement, the key column in the rows, DuckDB 1.5.5's groups). The SELECT-alias rows are
+    // the spelling whose HAVING leaf carries no column of its own: the rule must read the BUCKET's
+    // type. Elasticsearch, sent the value, compares the key with its floor: `lval = 1.5` kept the
+    // group 1 and `lval <> 1.5` dropped it.
+    val none: Map[String, Long] = Map.empty
     val rows = Seq(
       (
         s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval = 1.5",
         "lval",
-        "lval"
+        none
       ),
       (
         s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval <> 1.5",
         "lval",
-        "lval"
+        expectedCounts("lval", _ => true)
       ),
       (
         s"SELECT lval, COUNT(*) AS c FROM $keyIndex GROUP BY lval HAVING lval IN (1.5, 2.5)",
         "lval",
-        "lval"
+        none
       ),
-      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = 1.5", "l", "l"),
+      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = 1.5", "l", none),
       // a STRING reaches the filter as the same text, and Elasticsearch parses it as a number
-      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = '1.5'", "l", "l"),
-      // an UNNEST key, whose predicate the resolution wraps in its nested relation
+      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = '1.5'", "l", none)
+    )
+    val wrong = rows.flatMap { case (sql, column, expected) =>
+      val actual = countsBy(sql, column)
+      if (actual == Right(expected)) None else Some(s"[$sql] expected $expected, got $actual")
+    }
+    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+    // an UNNEST key, whose predicate the resolution wraps in its nested relation, is refused by
+    // name, as before: the answer above is folded on the flat HAVING tree only
+    val refused = Seq(
       (unnestedKey("inner_items.qty <> 1.5"), "q", "inner_items.qty"),
       (unnestedKey("inner_items.qty NOT IN (1.5)"), "q", "inner_items.qty")
-    )
-    // COLLECTED, and a row that is answered prints WHAT Elasticsearch answered: that is the premise
-    // of the rule (`lval = 1.5` keeps the group 1, `lval <> 1.5` drops it).
-    val wrong = rows.flatMap { case (sql, column, key) =>
+    ).flatMap { case (sql, column, key) =>
       Await.result(client.run(sql), 60.seconds) match {
         case ElasticFailure(error)
             if error.statusCode.contains(400) &&
               error.message.contains(s"HAVING cannot compare the integer GROUP BY key $key") =>
           None
         case other =>
-          Some(
-            s"[$sql] must be refused, got $other -- the groups answered: ${countsBy(sql, column)}"
-          )
+          Some(s"[$sql] must be refused, got $other -- the groups: ${keysBy(sql, column)}")
       }
     }
-    withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
+    withClue(s"${refused.size} wrong:\n${refused.mkString("\n")}\n") { refused shouldBe empty }
   }
 
   it should "still accept a whole number with a decimal point, and a fraction on a DOUBLE key" in {
@@ -2787,27 +2792,27 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       }
     }
 
-  it should "be refused over an INDEX PATTERN too, whose merged mapping types the key" in {
+  it should "answer no group over an INDEX PATTERN too, whose merged mapping types the key" in {
     keyFilterLoaded
     val sql = s"SELECT lval, COUNT(*) AS c FROM $keyPattern GROUP BY lval HAVING lval = 1.5"
-    Await.result(client.run(sql), 60.seconds) match {
-      case ElasticFailure(error) =>
-        withClue(s"[$sql] ") {
-          error.statusCode shouldBe Some(400)
-          error.message should include("HAVING cannot compare the integer GROUP BY key lval")
-        }
-      case other => fail(s"[$sql] must be refused, got $other")
-    }
+    countsBy(sql, "lval") shouldBe Right(Map.empty[String, Long])
   }
 
-  it should "be left to Elasticsearch where the indices map the key with different types" in {
-    // the merged mapping gives `lval` no type, so no check runs: Elasticsearch rounds 1.5 down
-    // and keeps the group 1 -- the documented boundary of the check
+  it should "answer no group where the indices map the key with two integer types" in {
+    // the merged mapping types `lval` BIGINT, the wider of `integer` and `long`, as DuckDB 1.5.5
+    // types the column: no integer is equal to 1.5, so DuckDB answers no group (sent as it is,
+    // Elasticsearch would round 1.5 down and keep the group 1)
     mixedKeyLoaded
     val sql =
       s"SELECT lval, COUNT(*) AS c FROM $mixedIntIndex, $mixedLongIndex GROUP BY lval " +
       "HAVING lval = 1.5"
-    countsBy(sql, "lval") shouldBe Right(Map("1" -> 3L))
+    countsBy(sql, "lval") shouldBe Right(Map.empty[String, Long])
+    // the control: a whole number keeps its group, counted over both indices (DuckDB: 1 -> 3)
+    countsBy(
+      s"SELECT lval, COUNT(*) AS c FROM $mixedIntIndex, $mixedLongIndex GROUP BY lval " +
+      "HAVING lval = 1",
+      "lval"
+    ) shouldBe Right(Map("1" -> 3L))
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -3319,21 +3324,16 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
       )
   }
 
-  it should "refuse a QUALIFIED integer key compared with a fractional number, like the bare one" in {
+  it should "answer no group for a QUALIFIED integer key compared with a fractional number, like the bare one" in {
     keyFilterLoaded
     val wrong = Seq(
       s"SELECT k.lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY k.lval HAVING k.lval = 1.5",
       s"SELECT k.lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY k.lval HAVING lval = 1.5",
       s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex k GROUP BY lval HAVING k.lval = 1.5"
     ).flatMap { sql =>
-      Await.result(client.run(sql), 60.seconds) match {
-        case ElasticFailure(error)
-            if error.statusCode.contains(400) &&
-              // the refusal names the key as the condition spells it (`lval` or `k.lval`)
-              error.message.contains("HAVING cannot compare the integer GROUP BY key") =>
-          None
-        case other =>
-          Some(s"[$sql] must be refused, got $other -- the groups: ${countsBy(sql, "l")}")
+      countsBy(sql, "l") match {
+        case Right(groups) if groups.isEmpty => None
+        case other                           => Some(s"[$sql] must answer no group, got $other")
       }
     }
     withClue(wrong.mkString("\n")) { wrong shouldBe empty }
@@ -3518,20 +3518,15 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   // ---- the fractional key check over an index pattern (since #412 a pattern is typed) ---------
 
   "IDENT-4: an integer key compared with a fractional number over an index pattern" should
-  "be refused in every spelling" in {
+  "answer no group in every spelling" in {
     keyFilterLoaded
     val wrong = Seq(
       "SELECT lval AS l, COUNT(*) AS c FROM group_by_key_filter* k GROUP BY lval HAVING lval = 1.5",
       "SELECT k.lval AS l, COUNT(*) AS c FROM group_by_key_filter* k GROUP BY k.lval HAVING k.lval = 1.5"
     ).flatMap { sql =>
-      Await.result(client.run(sql), 60.seconds) match {
-        case ElasticFailure(error)
-            if error.message.contains("HAVING cannot compare the integer GROUP BY key") =>
-          None
-        case other =>
-          Some(
-            s"[$sql] must be refused, got ${other.toString.take(300)} -- groups ${countsBy(sql, "l")}"
-          )
+      countsBy(sql, "l") match {
+        case Right(groups) if groups.isEmpty => None
+        case other                           => Some(s"[$sql] must answer no group, got $other")
       }
     }
     withClue(wrong.mkString("\n")) { wrong shouldBe empty }
@@ -4277,6 +4272,12 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         "SELECT UPPER(s) AS k, COUNT(*) AS c FROM VENUE GROUP BY UPPER(s) " +
         "HAVING UPPER(s) = 'AXB' AND UPPER(s) IN ('A', 'B') OR UPPER(s) LIKE 'A%'",
         rows("A" -> 2, "A.B" -> 1, "AXB" -> 1)
+      ),
+      // a ROUND to decimal places is the DOUBLE DuckDB computes, printed as one (DuckDB: (2.5, 1))
+      (
+        "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM VENUE GROUP BY ROUND(x, 1) " +
+        "HAVING ROUND(x, 1) = 2.5",
+        rows("2.5" -> 1)
       )
     )
     // a key IS NOT NULL alone keeps every group on a level of any kind (a date here): it sends
@@ -4321,13 +4322,6 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         "SELECT ABS(CAST(x AS REAL)) AS k, COUNT(*) AS c FROM VENUE " +
         "GROUP BY ABS(CAST(x AS REAL)) HAVING ABS(CAST(x AS REAL)) = 0.1",
         "HAVING cannot filter the GROUP BY key ",
-        "which writes such a number as 1 or as 1.0 depending on the column's type."
-      ),
-      // the script rounds to a whole number (DuckDB: (2.5, 1)); refused as before
-      (
-        "SELECT ROUND(x, 1) AS k, COUNT(*) AS c FROM VENUE GROUP BY ROUND(x, 1) " +
-        "HAVING ROUND(x, 1) = 2.5",
-        "HAVING cannot filter the GROUP BY key ROUND(x, 1)",
         "which writes such a number as 1 or as 1.0 depending on the column's type."
       ),
       // on a numeric field 5 and 5.0 are one key, which the lists keep AND remove (DuckDB: (5, 1))

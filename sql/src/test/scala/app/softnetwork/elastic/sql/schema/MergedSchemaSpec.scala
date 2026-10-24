@@ -19,7 +19,8 @@ package app.softnetwork.elastic.sql.schema
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.StringValue
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.operator.AND
+import app.softnetwork.elastic.sql.query.{Criteria, MatchNoneCriteria, Predicate, SingleSearch}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -81,6 +82,81 @@ class MergedSchemaSpec extends AnyFlatSpec with Matchers {
       "n"  -> SQLTypes.BigInt,
       "ts" -> SQLTypes.Timestamp
     )
+  }
+
+  "indices that map a field with two number types" should
+  "give it the wider one, as DuckDB types the column" in {
+    // DuckDB 1.5.5 (UNION ALL BY NAME of the two types): the later one of
+    // TINYINT < SMALLINT < INTEGER < BIGINT < FLOAT < DOUBLE
+    Seq(
+      ("integer", "long")  -> SQLTypes.BigInt,
+      ("long", "integer")  -> SQLTypes.BigInt,
+      ("byte", "short")    -> SQLTypes.SmallInt,
+      ("short", "integer") -> SQLTypes.Int,
+      ("float", "double")  -> SQLTypes.Double,
+      ("double", "float")  -> SQLTypes.Double,
+      ("integer", "float") -> SQLTypes.Real,
+      ("long", "float")    -> SQLTypes.Real,
+      ("long", "double")   -> SQLTypes.Double,
+      ("byte", "double")   -> SQLTypes.Double
+    ).foreach { case ((a, b), wider) =>
+      withClue(s"[$a + $b] ") {
+        val (merged, disagreements) = mergedSchema(
+          "p_*",
+          Seq(
+            index("p_a", s""""v":{"type":"$a"},"g":{"type":"keyword"}"""),
+            index("p_b", s""""v":{"type":"$b"}""")
+          )
+        )
+        disagreements shouldBe empty
+        merged.find("v").map(_.dataType) shouldBe Some(wider)
+        merged.find("g").map(_.dataType) shouldBe Some(SQLTypes.Keyword)
+      }
+    }
+  }
+
+  it should "leave a pair with no common type untyped, naming every type the indices map" in {
+    Seq(
+      Seq("long", "keyword")            -> "'v' (BIGINT, KEYWORD)",
+      Seq("integer", "long", "keyword") -> "'v' (BIGINT, INT, KEYWORD)",
+      Seq("keyword", "integer", "long") -> "'v' (BIGINT, INT, KEYWORD)",
+      Seq("long", "date")               -> "'v' (BIGINT, TIMESTAMP)",
+      Seq("long", "boolean")            -> "'v' (BIGINT, BOOLEAN)",
+      // a number type the mapping gives no SQL type (half_float, scaled_float) stays untyped
+      Seq("half_float", "float") -> "'v' (REAL)"
+    ).foreach { case (types, disagreement) =>
+      withClue(s"[${types.mkString(" + ")}] ") {
+        val (merged, disagreements) = mergedSchema(
+          "p_*",
+          types.zipWithIndex.map { case (t, i) => index(s"p_$i", s""""v":{"type":"$t"}""") }
+        )
+        disagreements shouldBe Seq(disagreement)
+        merged.find("v").map(_.dataType) shouldBe Some(SQLTypes.Any)
+      }
+    }
+  }
+
+  it should "type an integer GROUP BY key over integer and long indices, so its key filter answers no group for 1.5" in {
+    val pattern = mergedSchema(
+      "mixed_*",
+      Seq(
+        index("mixed_int", """"id":{"type":"keyword"},"lval":{"type":"integer"}"""),
+        index("mixed_long", """"id":{"type":"keyword"},"lval":{"type":"long"}""")
+      )
+    )._1
+    def filtersNothingIn(c: Criteria): Boolean = c match {
+      case _: MatchNoneCriteria          => true
+      case Predicate(l, AND, r, None, _) => filtersNothingIn(l) || filtersNothingIn(r)
+      case _                             => false
+    }
+    Parser(
+      "SELECT lval, COUNT(*) AS c FROM mixed_int, mixed_long GROUP BY lval HAVING lval = 1.5"
+    ) match {
+      case Right(ss: SingleSearch) =>
+        // DuckDB: no group -- no integer is equal to 1.5
+        ss.update(Some(pattern)).where.flatMap(_.criteria).exists(filtersNothingIn) shouldBe true
+      case other => fail(s"$other")
+    }
   }
 
   it should "count a date's format as part of its mapping: a temporal literal is read against it" in {

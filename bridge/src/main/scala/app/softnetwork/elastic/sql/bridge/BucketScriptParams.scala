@@ -26,6 +26,7 @@ import com.sksamuel.elastic4s.requests.searches.aggs.{
   CardinalityAggregation,
   KeyedFiltersAggregation,
   SumAggregation,
+  TermsAggregation,
   ValueCountAggregation
 }
 import com.sksamuel.elastic4s.requests.searches.aggs.pipeline.BucketScriptPipelineAgg
@@ -47,7 +48,9 @@ import scala.jdk.CollectionConverters._
   *
   * The same builder never writes a `gap_policy` either (and elastic4s 7.17 to 9.0 knows only `skip`
   * and `insert_zeros`), so the `keep_values` of a whole-table calculation is written here too
-  * ([[keepingValues]]). Every other body is returned untouched, unparsed.
+  * ([[keepingValues]]), and neither does its `terms` builder write a `value_type`, which a scripted
+  * key that reports a number is sent with ([[valueTypes]]). Every other body is returned untouched,
+  * unparsed.
   */
 object BucketScriptParams {
 
@@ -100,16 +103,30 @@ object BucketScriptParams {
       }
       .getOrElse(Set.empty)
 
-  /** `body`, the JSON of `search`, with the params of its `bucket_script`s bound and the gap policy
-    * of its whole-table calculations written.
+  /** The `value_type` of every `terms` aggregation of `aggs` that carries one, by aggregation name,
+    * at any depth: the scripted keys that report a number (`Bucket.scriptedKeyValueType`).
+    */
+  private def valueTypes(aggs: Seq[AbstractAggregation]): Map[String, String] =
+    aggs.flatMap {
+      case terms: TermsAggregation =>
+        terms.valueType.map(t => terms.name -> t.toString.toLowerCase).toSeq ++
+          valueTypes(terms.subaggs)
+      case parent: Aggregation => valueTypes(parent.subaggs).toSeq
+      case _                   => Nil
+    }.toMap
+
+  /** `body`, the JSON of `search`, with the params of its `bucket_script`s bound, the gap policy of
+    * its whole-table calculations written and the `value_type` of its scripted numeric keys.
     */
   def bind(body: String, search: SearchRequest): String = {
     val params = withParams(search.aggs)
     val keepValues = keepingValues(search.aggs)
-    if (params.isEmpty && keepValues.isEmpty) body
+    val types = valueTypes(search.aggs)
+    if (params.isEmpty && keepValues.isEmpty && types.isEmpty) body
     else {
       val root = mapper.readTree(body)
       if (params.nonEmpty) bind(root, params)
+      if (types.nonEmpty) typed(root, types)
       if (keepValues.nonEmpty)
         root.path("aggs").path(SingleSearch.WholeTableHavingAgg).path("aggs") match {
           case wholeTable: ObjectNode =>
@@ -124,6 +141,21 @@ object BucketScriptParams {
       mapper.writeValueAsString(root)
     }
   }
+
+  private def typed(node: JsonNode, types: Map[String, String]): Unit =
+    node match {
+      case obj: ObjectNode =>
+        obj.fields().asScala.toList.foreach { entry =>
+          (types.get(entry.getKey), entry.getValue.path("terms")) match {
+            case (Some(valueType), terms: ObjectNode) if terms.has("script") =>
+              terms.put("value_type", valueType)
+            case _ =>
+          }
+          typed(entry.getValue, types)
+        }
+      case array: ArrayNode => array.elements().asScala.foreach(typed(_, types))
+      case _                =>
+    }
 
   private def bind(node: JsonNode, params: Map[String, Map[String, Any]]): Unit =
     node match {

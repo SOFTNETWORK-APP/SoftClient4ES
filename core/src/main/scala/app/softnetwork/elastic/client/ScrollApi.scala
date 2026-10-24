@@ -30,11 +30,13 @@ import app.softnetwork.elastic.client.scroll.{
 }
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  GroupedRowOrder,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
   SelectStatement,
-  SingleSearch
+  SingleSearch,
+  UnnestScope
 }
 import org.json4s.{Formats, JNothing, JValue}
 import org.json4s.jackson.JsonMethods.parse
@@ -325,6 +327,8 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           return scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
+        // the columns `single` declares VARCHAR are read as their text (`TextColumns`)
+        val textContext: ConversionContext = TextColumns.of(single, context)
         val elasticQuery =
           ElasticQuery(
             single,
@@ -336,17 +340,35 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             sql = Some(parsed.sql),
             explodeNested = single.explodeNested
           )
-        scrollWithMetrics(
+        val rows = scrollWithMetrics(
           elasticQuery,
           single.fieldAliases,
-          single.sqlAggregations,
+          // an aggregate only the ORDER BY reads is read until the rows are sorted
+          GroupedRowOrder.readAggregations(single),
           // `_id` is injected at parse time only when it will be kept — the streamed rows
           // need no per-row strip on this hot path.
           config0.copy(retainDocumentId = keepsDocumentId(requestedFields)),
           single.sorts.nonEmpty,
           requestedFields,
-          single.nestedHitsMappings
-        )
+          UnnestScope.rowExplosion(single)
+        )(system, textContext)
+        // The rows of a GROUP BY, in the order, past the offset and to the count the statement
+        // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
+        // response, so collecting them holds nothing the response did not already.
+        GroupedRowOrder.of(single) match {
+          case Some(order) =>
+            rows
+              .fold(Vector.empty[(ListMap[String, Any], ScrollMetrics)])(_ :+ _)
+              .mapConcat(all =>
+                ElasticConversion
+                  .orderGroupedRows(all, order)(_._1)
+                  .map { case (row, metrics) =>
+                    (ElasticConversion.withoutCarried(order)(row), metrics)
+                  }
+                  .toList
+              )
+          case None => rows
+        }
 
       // Multi search
       case _: MultiSearch =>

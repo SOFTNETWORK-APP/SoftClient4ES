@@ -18,7 +18,8 @@ package app.softnetwork.elastic
 
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.query.SQLAggregation
+import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
+import app.softnetwork.elastic.sql.renderedTypeOf
 import com.typesafe.scalalogging.LazyLogging
 import org.slf4j.Logger
 
@@ -318,13 +319,17 @@ package object client extends SerializationApi {
     *   aligned with `fields`: how the BRANCH's value at each position reaches the type the result
     *   gives that column (`SetOperationValues`), `null` where it already has it -- `None` for a
     *   branch with nothing to convert, which is every branch of a statement whose columns agree
+    * @param context
+    *   how the BRANCH's rows are read: the context its own search reads them with (`TextColumns`,
+    *   the columns the branch declares VARCHAR) -- `None` for the caller's own
     */
   case class LegProjection(
     fieldAliases: ListMap[String, String],
     fields: Seq[String],
     nestedHits: Map[String, Seq[(String, String)]],
     aggregations: ListMap[String, ClientAggregation],
-    converters: Option[Array[Any => Any]] = None
+    converters: Option[Array[Any => Any]] = None,
+    context: Option[ConversionContext] = None
   )
 
   /** Retry configuration
@@ -465,7 +470,14 @@ package object client extends SerializationApi {
     // aggregation, the delegates name the shared response node here (the owner
     // column's aggName). extractMetrics reads `values[aggResultField]` from that
     // node for the delegate column. None ⇒ this column reads its own node.
-    sourceAgg: Option[String] = None
+    sourceAgg: Option[String] = None,
+    // A `MIN` / `MAX` that answers a date or a timestamp (`SQLAggregation.temporal`): its value is
+    // the `value_as_string` Elasticsearch formats, and a group with no value answers NULL.
+    temporal: Boolean = false,
+    // The aggregation whose `value_count` this one's NULL is read from, when it shares the count
+    // of another aggregate of the same expression (`SQLAggregation.valueCountOwner`). None ⇒ its
+    // own.
+    valueCountOwner: Option[String] = None
   ) {
     def multivalued: Boolean =
       aggType == AggregationType.ArrayAgg ||
@@ -569,7 +581,9 @@ package object client extends SerializationApi {
       agg.bucketPath,
       agg.bucketRoot,
       agg.auxiliary,
-      aggResultField
+      aggResultField,
+      temporal = agg.temporal,
+      valueCountOwner = agg.valueCountOwner
     )
   }
 
@@ -586,4 +600,46 @@ package object client extends SerializationApi {
     * nested (`{"obj": {"a": 1}}`; the row's null `obj.a` cell is not written).
     */
   private[client] case object DocumentContext extends ConversionContext
+
+  /** The rows of a statement read natively (as [[NativeContext]]), except that the columns it
+    * declares VARCHAR are never re-read as a temporal: their text is their value.
+    *
+    * 🔴 A text that looks like a date or a time was parsed into a `java.time` value whatever the
+    * column was declared, so `DATETIME_FORMAT(ts, '%H:%i:%s')`, whose script returns `"00:00:00"`,
+    * answered `LocalTime` `00:00`: another class than the VARCHAR it reports, and another text.
+    * Built once per statement by [[TextColumns.of]], only around a [[NativeContext]].
+    */
+  private[client] final case class TextColumns(columns: Set[String]) extends ConversionContext
+
+  private[client] object TextColumns {
+
+    /** `context` for the rows of `single`: [[TextColumns]] when it is native and `single` declares
+      * a VARCHAR column, `context` itself otherwise.
+      *
+      * The columns are named from the types the statement declares, each under the name its row
+      * carries it by:
+      *   - a column the SELECT reads bare (no function, no script), by its output name and by the
+      *     source column its document holds;
+      *   - a computed column (a function, a script field), by its output name ONLY: the column it
+      *     reads keeps its own type. Naming that column too re-read `ts` of `SELECT ts,
+      *     DATE_FORMAT(ts, '%Y') AS y` and `d` of `CAST(d AS VARCHAR) AS s` as texts;
+      *   - `*`, the columns the resolved schema declares VARCHAR.
+      */
+    def of(single: SingleSearch, context: ConversionContext): ConversionContext =
+      context match {
+        case NativeContext =>
+          val columns = single.select.fieldsWithComputedAliases.flatMap { field =>
+            if (field.identifier.identifierName == "*")
+              single.schema.toSeq.flatMap(_.columns.collect {
+                case column if column.dataType.isText => column.name
+              })
+            else if (!renderedTypeOf(field.identifier).isText) Nil
+            else if (field.identifier.functions.isEmpty && !field.isScriptField)
+              Seq(field.outputName, field.identifier.name).filter(_.nonEmpty)
+            else Seq(field.outputName).filter(_.nonEmpty)
+          }.toSet
+          if (columns.isEmpty) context else TextColumns(columns)
+        case other => other
+      }
+  }
 }

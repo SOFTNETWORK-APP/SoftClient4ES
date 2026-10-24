@@ -310,9 +310,10 @@ package object cond {
       * super type of the arms — the same derivation as [[baseType]], over the arms' own reported
       * types. This is where widening legitimately happens, and DuckDB 0.10.1 agrees:
       * `COALESCE(NULLIF(<DATE col>, <TIMESTAMP>), CURRENT_DATE)` is `DATE`, while the same over a
-      * `TIMESTAMP` column is `TIMESTAMP`.
+      * `TIMESTAMP` column is `TIMESTAMP`. An arm of a still-unknown type (a `date_nanos` column)
+      * beside a DATE makes it a TIMESTAMP (`SQLTypeUtils.armsReportedType`).
       */
-    override def reportedType: SQLType = SQLTypeUtils.leastCommonSuperType(reportedArgTypes)
+    override def reportedType: SQLType = SQLTypeUtils.armsReportedType(reportedArgTypes)
 
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
@@ -1204,10 +1205,11 @@ package object cond {
 
     /** The least common supertype of the BRANCHES' reported types -- the THEN results and the ELSE,
       * never the `CASE <expr>` operand -- as `COALESCE` reports its arms': `CASE … THEN d ELSE d2
-      * END` is a DATE when both are.
+      * END` is a DATE when both are, and a TIMESTAMP when a result of a still-unknown type (a
+      * `date_nanos` column) is beside a DATE one (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(
+      SQLTypeUtils.armsReportedType(
         conditions.map { case (_, result) => result.reportedType } ++ default.map(_.reportedType)
       )
 
@@ -1800,10 +1802,10 @@ package object cond {
 
     /** Over numbers, [[numericType]] -- the type every row answers, so DESCRIBE, a `CREATE TABLE …
       * AS SELECT` and JDBC metadata declare what is stored; otherwise the least common supertype of
-      * the arguments' REPORTED types, as `COALESCE` reports.
+      * the arguments' REPORTED types, as `COALESCE` reports (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      numericType.getOrElse(SQLTypeUtils.leastCommonSuperType(reportedArgTypes))
+      numericType.getOrElse(SQLTypeUtils.armsReportedType(reportedArgTypes))
 
     /** NULL where every argument is; a NULL literal argument is NULL, and folded away in a query
       * ([[toPainlessCall]]): `LEAST(NULL, x)` is `x`. An ingest processor renders it as before.

@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.operator.AND
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
@@ -131,33 +132,78 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
 
   private val fractionalRefusal = "HAVING cannot compare the integer GROUP BY key"
 
+  /** The statement as core runs it, resolved once and a second time (the fold is idempotent). */
+  private def resolvedTwice(sql: String): Seq[SingleSearch] =
+    Parser(sql) match {
+      case Right(s: SingleSearch) =>
+        val once = s.update(Some(keySchema))
+        Seq(once, once.update(Some(keySchema)))
+      case other => fail(s"[$sql] expected a SingleSearch, got $other")
+    }
+
+  /** What a resolved HAVING over the key answers: `None` for no group (a WHERE that filters no
+    * document in, the HAVING gone), `Some(None)` for every group (no HAVING), `Some(Some(sql))` for
+    * the HAVING left.
+    */
+  private def answered(s: SingleSearch): Option[Option[String]] = {
+    def filtersNothingIn(c: Criteria): Boolean = c match {
+      case _: MatchNoneCriteria          => true
+      case Predicate(l, AND, r, None, _) => filtersNothingIn(l) || filtersNothingIn(r)
+      case _                             => false
+    }
+    if (s.where.flatMap(_.criteria).exists(filtersNothingIn)) None
+    else Some(s.having.flatMap(_.criteria).map(_.sql))
+  }
+
   "a key filter comparing an INTEGER key with a fractional number" should
-  "be refused once the mapping is known, whatever the operator and however the key is spelled" in {
-    // (statement, the key as the refusal names it) -- collected, so a red run lists EVERY cell
-    val refused = Seq(
-      keyed("n", "n = 1.5")         -> "n",
-      keyed("n", "n <> 1.5")        -> "n",
-      keyed("n", "n IN (1.5, 2.5)") -> "n",
-      keyed("n", "n NOT IN (0.5)")  -> "n",
-      keyed("n", "n IN (1.0, 2.5)") -> "n",
-      keyed("i", "i = -1.5")        -> "i",
+  "answer as SQL does once the mapping is known: no integer is equal to it" in {
+    // (statement, DuckDB 1.5.5's answer as `answered` reads it) -- collected, so a red run lists
+    // EVERY cell
+    val none: Option[Option[String]] = None
+    val every: Option[Option[String]] = Some(None)
+    val cases = Seq(
+      keyed("n", "n = 1.5")         -> none,
+      keyed("n", "n <> 1.5")        -> every,
+      keyed("n", "n IN (1.5, 2.5)") -> none,
+      keyed("n", "n NOT IN (0.5)")  -> every,
+      // a list holding a whole number too keeps it alone
+      keyed("n", "n IN (1.0, 2.5)") -> Some(Some("n IN (1.0)")),
+      keyed("i", "i = -1.5")        -> none,
       // `PI` is a Value[Double] the equality grammar admits -- not a DoubleValue
-      keyed("n", "n = PI") -> "n",
+      keyed("n", "n = PI") -> none,
       // the SELECT alias: the leaf `k` carries no column, its BUCKET does
-      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 1.5" -> "k",
+      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 1.5" -> none,
       // a STRING reaches the filter as the same text, which Elasticsearch reads as a number
-      keyed("n", "n = '1.5'")                                                -> "n",
-      keyed("n", "n <> '1.5'")                                               -> "n",
-      keyed("n", "n IN ('1.5')")                                             -> "n",
-      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = '1.5'"      -> "k",
-      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k <> 'NaN'"     -> "k",
-      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 'Infinity'" -> "k",
+      keyed("n", "n = '1.5'")                                                -> none,
+      keyed("n", "n <> '1.5'")                                               -> every,
+      keyed("n", "n IN ('1.5')")                                             -> none,
+      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = '1.5'"      -> none,
+      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k <> 'NaN'"     -> every,
+      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 'Infinity'" -> none,
       // the GROUP BY position
-      "SELECT n, COUNT(*) AS c FROM t GROUP BY 1 HAVING n = 1.5" -> "n",
-      // beside a metric, and under a NOT
-      keyed("n", "n <> 1.5 AND COUNT(*) > 1") -> "n",
-      keyed("n", "NOT n = 1.5")               -> "n",
-      // an UNNEST key: its predicate sits inside the nested relation the resolution wraps it in
+      "SELECT n, COUNT(*) AS c FROM t GROUP BY 1 HAVING n = 1.5" -> none,
+      // beside a metric, and under a NOT: the constant folds into the tree
+      keyed("n", "n <> 1.5 AND COUNT(*) > 1")    -> Some(Some("COUNT(*) > 1")),
+      keyed("n", "n = 1.5 AND COUNT(*) > 1")     -> none,
+      keyed("n", "COUNT(*) > 1 AND n <> 1.5")    -> Some(Some("COUNT(*) > 1")),
+      keyed("n", "n = 2 OR n = 1.5")             -> Some(Some("n = 2")),
+      keyed("n", "COUNT(*) > 1 AND NOT n = 1.5") -> Some(Some("COUNT(*) > 1")),
+      keyed("n", "NOT n = 1.5")                  -> every
+    )
+    val wrong = for {
+      (sql, expected) <- cases
+      resolved        <- resolvedTwice(sql)
+      verdict = resolved.validateResolved()
+      if verdict != Right(()) || answered(resolved) != expected
+    } yield s"[$sql] expected $expected, got ${answered(resolved)} ($verdict)"
+    withClue(s"${wrong.size} of ${cases.size * 2} wrong:\n${wrong.mkString("\n")}\n") {
+      wrong shouldBe empty
+    }
+  }
+
+  it should "stay refused where the fold does not reach: a key inside a nested relation" in {
+    // an UNNEST key: its predicate sits inside the nested relation the resolution wraps it in
+    val refused = Seq(
       unnested("inner_items.qty <> 1.5")       -> "inner_items.qty",
       unnested("inner_items.qty NOT IN (1.5)") -> "inner_items.qty",
       unnested("inner_items.qty = 1.5")        -> "inner_items.qty"
@@ -170,15 +216,11 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
     withClue(s"${wrong.size} of ${refused.size * 2} wrong:\n${wrong.mkString("\n")}\n") {
       wrong shouldBe empty
     }
-  }
-
-  it should "name the value and the number Elasticsearch would compare the key with" in {
-    verdicts(keyed("n", "n = 1.5")).head._2 shouldBe Left(
-      "HAVING cannot compare the integer GROUP BY key n with 1.5: no integer is equal to it, and " +
-      "Elasticsearch would compare the key with 1 instead. Compare it with a whole number."
+    verdicts(unnested("inner_items.qty = 1.5")).head._2 shouldBe Left(
+      "HAVING cannot compare the integer GROUP BY key inner_items.qty with 1.5: no integer is " +
+      "equal to it, and Elasticsearch would compare the key with 1 instead. Compare it with a " +
+      "whole number."
     )
-    verdicts(keyed("i", "i = -1.5")).head._2.left.map(_.contains("with -2 instead")) shouldBe
-    Left(true)
   }
 
   it should "accept a whole number, an integer, a fraction on a DOUBLE key, and a keyword key" in {
@@ -227,30 +269,30 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
     }
 
   "a QUALIFIED integer key compared with a fractional number (IDENT-4)" should
-  "be refused once the mapping is known, in every spelling, and left alone before it" in {
-    // R1 has no mapping (every column is ANY), so the fractional-key check cannot fire there -- the boundary IDENT-3
+  "answer no group once the mapping is known, in every spelling, and be left alone before it" in {
+    // R1 has no mapping (every column is ANY), so nothing folds there -- the boundary IDENT-3
     // states, inherited by the qualified spelling. R2 is `SearchApi.resolveWithSchema`.
-    val refusedAfterResolution = Seq(
+    val noGroupAfterResolution = Seq(
       "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING tb.n = 1.5",
       "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING n = 1.5",
       "SELECT n, COUNT(*) AS c FROM t tb GROUP BY n HAVING tb.n = 1.5",
       "SELECT tb.n, COUNT(*) AS c FROM t tb GROUP BY tb.n HAVING tb.n IN (1.5, 2.5)",
       "SELECT tb.n AS k, COUNT(*) AS c FROM t tb GROUP BY k HAVING k = 1.5"
     )
-    val wrong = refusedAfterResolution.flatMap { sql =>
+    val wrong = noGroupAfterResolution.flatMap { sql =>
       val atParse = Parser(sql) match {
-        case Right(_: SingleSearch) => None
+        case Right(s: SingleSearch) if s.having.isDefined => None
         case other => Some(s"[$sql] R1: expected accepted (no mapping), got $other")
       }
       val afterResolution =
         if (atParse.isDefined) None // reported by atParse
         else
-          resolvedVerdict(sql) match {
-            case Left(reason)
-                if reason.contains("HAVING cannot compare the integer GROUP BY key") =>
-              None
-            case other => Some(s"[$sql] R2: expected the fractional-key refusal, got $other")
-          }
+          resolvedTwice(sql).flatMap { resolved =>
+            (resolved.validateResolved(), answered(resolved)) match {
+              case (Right(()), None) => None
+              case other             => Some(s"[$sql] R2: expected no group, got $other")
+            }
+          }.headOption
       atParse.toSeq ++ afterResolution.toSeq
     }
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
