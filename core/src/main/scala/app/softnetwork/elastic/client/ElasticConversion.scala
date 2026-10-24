@@ -431,6 +431,12 @@ trait ElasticConversion {
     // hold a nested `_source` shape, so they keep the projector alone.
     val fromHits = hitsNode.exists(_.nonEmpty)
 
+    // the levels the statement sends as a numeric `terms` of doubles (`SingleSearch.doubleKeyLevels`)
+    val doubleKeys: Set[String] = context match {
+      case TextColumns(_, keys) => keys
+      case _                    => Set.empty
+    }
+
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
@@ -440,12 +446,28 @@ trait ElasticConversion {
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
+        val ret =
+          parseAggregations(
+            aggs,
+            rowInvariants,
+            fieldAliases,
+            aggregations,
+            rootDocCount,
+            doubleKeys
+          )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
+        val ret =
+          parseAggregations(
+            aggs,
+            rowInvariants,
+            fieldAliases,
+            aggregations,
+            rootDocCount,
+            doubleKeys
+          )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
@@ -650,8 +672,8 @@ trait ElasticConversion {
     val withDocumentId = retainDocumentId || keepsDocumentId(requestedFields)
     // ...and none for the columns declared VARCHAR unless the statement declares some
     val text: Set[String] = context match {
-      case TextColumns(columns) => columns
-      case _                    => Set.empty
+      case TextColumns(columns, _) => columns
+      case _                       => Set.empty
     }
     hits.map { hit =>
       var source =
@@ -1085,13 +1107,17 @@ trait ElasticConversion {
     *   how many documents the enclosing scope aggregated over, threaded so an aggregate over ZERO
     *   documents can answer ANSI NULL (story 22.2). `hits.total` at the root, a bucket's
     *   `doc_count` inside one, a wrapper aggregation's own `doc_count` under that.
+    * @param doubleKeys
+    *   the names of the levels the statement sends as a numeric `terms` of doubles, whose
+    *   non-finite keys a response writes as text ([[extractBucketKey]]).
     */
   def parseAggregations(
     aggsNode: JsonNode,
     parentContext: ListMap[String, Any],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation],
-    docCount: Option[Long] = None
+    docCount: Option[Long] = None,
+    doubleKeys: Set[String] = Set.empty
   ): Seq[ListMap[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
@@ -1178,7 +1204,8 @@ trait ElasticConversion {
           currentContext,
           fieldAliases,
           aggregations,
-          docCountOf(aggValue, "doc_count").orElse(docCount)
+          docCountOf(aggValue, "doc_count").orElse(docCount),
+          doubleKeys
         )
       }
     } else if (bucketAggs.isEmpty) {
@@ -1201,7 +1228,7 @@ trait ElasticConversion {
           val metrics = extractMetrics(bucket, aggregations, bucketDocCount)
           val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
 
-          val bucketKey = extractBucketKey(bucket)
+          val bucketKey = extractBucketKey(bucket, doubleKeys.contains(aggName))
 
           // The synthetic whole-table bucket a `HAVING` with no `GROUP BY` is wrapped in is
           // TRANSPARENT: it exists only to give the `having_filter` bucket_selector a multi-bucket
@@ -1239,7 +1266,8 @@ trait ElasticConversion {
               currentContext,
               fieldAliases,
               aggregations,
-              bucketDocCount
+              bucketDocCount,
+              doubleKeys
             )
           } else {
             Seq(currentContext)
@@ -1266,7 +1294,18 @@ trait ElasticConversion {
 
   /** Extract the bucket key with proper typing (String, Long, Double, DateTime, etc.)
     */
-  def extractBucketKey(bucket: JsonNode): Any = {
+  def extractBucketKey(bucket: JsonNode): Any = extractBucketKey(bucket, doubleLevel = false)
+
+  /** [[extractBucketKey]] on a level that is, or is not, a numeric `terms` of doubles
+    * (`SingleSearch.doubleKeyLevels`).
+    *
+    * On such a level a non-finite key is the Double it is. JSON has no number for it, so a response
+    * writes it as the text Java prints (`"Infinity"`, `"-Infinity"`, `"NaN"`): MEASURED on
+    * Elasticsearch 6.8.23, `GROUP BY EXP(n)` answered the String `"Infinity"` beside Doubles, a
+    * column of two classes, where DuckDB answers the DOUBLE `inf`. On any other level the text is
+    * the key's value, whatever it spells.
+    */
+  def extractBucketKey(bucket: JsonNode, doubleLevel: Boolean): Any = {
     // Préférer key_as_string pour les dates
     val keyAsString = Option(bucket.get("key_as_string"))
       .map(_.asText())
@@ -1280,7 +1319,9 @@ trait ElasticConversion {
         Option(bucket.get("key")).map { keyNode =>
           if (keyNode.isTextual) {
             val text = keyNode.asText()
-            tryParseAsDateTime(text).getOrElse(text)
+            if (doubleLevel && ElasticConversion.NonFiniteKeys.contains(text))
+              java.lang.Double.valueOf(text)
+            else tryParseAsDateTime(text).getOrElse(text)
           } else if (keyNode.isIntegralNumber) {
             val longValue = keyNode.asLong()
             // If it looks like a timestamp in milliseconds, convert to Instant
@@ -1929,6 +1970,9 @@ object ElasticConversion extends ElasticConversion {
     * `elastic.include-document-id` is enabled.
     */
   val DocumentIdField: String = "_id"
+
+  /** The texts a response writes a non-finite double key as (`extractBucketKey`). */
+  private[client] val NonFiniteKeys: Set[String] = Set("Infinity", "-Infinity", "NaN")
 
   /** SCHEMA-12 — the reader of ONE projection's un-aliased dotted columns, built once per stream by
     * `nestedPathColumns` and composed BEFORE the projector, so `SELECT obj.a FROM t` carries the

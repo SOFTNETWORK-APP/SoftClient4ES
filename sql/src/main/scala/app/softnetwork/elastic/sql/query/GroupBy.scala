@@ -32,7 +32,7 @@ import app.softnetwork.elastic.sql.`type`.{
 }
 import app.softnetwork.elastic.sql.function.FunctionUtils
 import app.softnetwork.elastic.sql.function.aggregate._
-import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NumericReducer}
+import app.softnetwork.elastic.sql.function.cond.{functionsOf, AnswersArms, Case, NumericReducer}
 import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.time.{DateTrunc, FormatsDateDocValue}
 import app.softnetwork.elastic.sql.operator._
@@ -550,17 +550,49 @@ case class Bucket(
     * reports the BIGINT DuckDB answers, the whole number its script returns; GREATEST / LEAST cast
     * to the common type they report. Read as NUMERIC it was a `double` level, and `GROUP BY
     * YEAR(d)` answered the key `2024.0`, a Double, where DuckDB answers the BIGINT `2024`.
+    *
+    * Only a key that IS that number in every row ([[answersNumbersOf]]): a level a numeric `terms`
+    * reads otherwise truncates or fails, where the string `terms` answers the values.
     */
   def scriptedKeyValueType: Option[String] =
     if (!isScriptedKey || isDateHistogram) None
     else
-      renderedTypeOf(identifier) match {
+      (renderedTypeOf(identifier) match {
         case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => Some("long")
         case _: SQLDouble | _: SQLReal                                 => Some("double")
         case SQLTypes.Numeric =>
           if (NumericReducer.wholeNumber(identifier.reportedType)) Some("long") else Some("double")
         case _ => None
-      }
+      }).filter(answersNumbersOf)
+
+  /** Does every conditional of this key -- a `COALESCE`, a `NULLIF`, a `GREATEST` / `LEAST`, a
+    * `CASE`, at any depth ([[functionsOf]]) -- answer, in every row, a value a numeric `terms` of
+    * `valueType` reads as the number the key reports? Each arm it answers must report a whole
+    * number for a `long` level, a number for a `double` one, or a BOOLEAN (read as 1 or 0, the
+    * INTEGER DuckDB types it); a NULL arm answers no value.
+    *
+    * 🔴 A conditional REPORTS the common type of its typed arms
+    * (`SQLTypeUtils.leastCommonSuperType` lets any number win), so an arm of a type no mapping says
+    * (`scaled_float`, `ip`, `unsigned_long`: `Any`) or of another kind (`geo_point`) beside an
+    * integer literal reports BIGINT while its values are not whole numbers, or not numbers.
+    * MEASURED on Elasticsearch 8.18.3: `GROUP BY COALESCE(num, 2)` over a `scaled_float` sent as a
+    * `long` level grouped -3.75 with -3 and 0.1 with 0, and `COALESCE(ip, 2)` failed every shard
+    * ("Unsupported script value [10.0.0.1], expected a number, date, or boolean"). Such a key keeps
+    * its string `terms`, whose keys are its values; `COALESCE(CAST(num AS DOUBLE), 2)` is a
+    * `double` level.
+    */
+  private[this] def answersNumbersOf(valueType: String): Boolean = {
+    def readsAs(t: SQLType): Boolean =
+      t == SQLTypes.Null || t.isBoolean || (valueType match {
+        case "long" => NumericReducer.wholeNumber(t)
+        case _      => t.isNumber
+      })
+    (functionsOf(identifier) ++ keyColumns.flatMap(functionsOf)).forall {
+      case conditional: AnswersArms =>
+        conditional.answeredArms.forall(arm => readsAs(arm.reportedType))
+      case _ => true
+    }
+  }
 
   /** [[scriptedKeyValueType]] for a level whose HAVING key filter is `include` / `exclude`: the
     * type when the filter is exact values only, each an exact number of that type, which a numeric

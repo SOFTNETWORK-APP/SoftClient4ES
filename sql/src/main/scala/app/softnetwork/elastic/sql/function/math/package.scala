@@ -265,6 +265,13 @@ package object math {
       * which the call's NULL guard does not test -- is bound once, and its NULL answers NULL:
       * `ROUND(ABS(x))` multiplied the NULL `ABS` of a document missing `x` and failed the shard.
       * One form in a query, an ingest processor and a transform alike.
+      *
+      * An operand that REPORTS a REAL (the FLOAT DuckDB types it) is rounded to decimal places as
+      * DuckDB rounds a FLOAT: the same double rounding, then narrowed to a float
+      * (`ROUND(7.75::FLOAT, 1)` is the float `7.8`, the double `7.800000190734863`). Answered as
+      * the double, it was `7.8`, below the float: `WHERE ROUND(r, 1) < 7.800000190734863` kept `r =
+      * 7.75`, where DuckDB keeps none. A DOUBLE operand, and every operand rounded to a whole
+      * number, keep their bytes.
       */
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
@@ -276,7 +283,11 @@ package object math {
           val x = bound.getOrElse(one)
           val rounded = s"Math.signum($x) * ${mathOp.painless(context)}(Math.abs($x) * $p) / $p"
           val value =
-            if (scale.exists(_ != 0)) s"Double.valueOf($rounded)"
+            if (scale.exists(_ != 0))
+              arg.reportedType match {
+                case _: SQLReal => s"Double.valueOf((double) (float) ($rounded))"
+                case _          => s"Double.valueOf($rounded)"
+              }
             else s"Long.valueOf((long) ($rounded))"
           bound.fold(value)(b => s"($b == null ? null : $value)")
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")

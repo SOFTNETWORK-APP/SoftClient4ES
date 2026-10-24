@@ -780,6 +780,20 @@ package object sql {
     // Last parameter name added
     private[this] var _lastParam: Option[String] = None
 
+    // The fields the mapping does not map, whose doc values this script reads guarded
+    private[this] var _unmapped: Set[String] = Set.empty
+
+    /** This context, its script reading each field of `fields` -- fields the mapping the statement
+      * was resolved against does not map (`SingleSearch.unmappedKeyFields`) -- through a guard: a
+      * document of an index that does not map the field answers NULL for it
+      * ([[Identifier.checkMappedNotNull]]), where `doc['sd']` fails the shard ("No field found for
+      * [sd] in mapping"). Set by both bridges on a GROUP BY level's key script, before it renders.
+      */
+    def readingUnmapped(fields: Set[String]): PainlessContext = {
+      _unmapped = fields
+      this
+    }
+
     def isProcessor: Boolean = context == PainlessContextType.Processor
 
     def isTransform: Boolean = context == PainlessContextType.Transform
@@ -936,10 +950,14 @@ package object sql {
     }
 
     private[this] def paramValue(param: PainlessParam): String =
-      if (param.nullable && param.checkNotNull.nonEmpty)
-        param.checkNotNull
-      else
-        s"${param.param}${param.painlessMethods.mkString("")}"
+      param match {
+        case unmapped: Identifier if _unmapped.contains(unmapped.path) =>
+          unmapped.checkMappedNotNull
+        case _ if param.nullable && param.checkNotNull.nonEmpty =>
+          param.checkNotNull
+        case _ =>
+          s"${param.param}${param.painlessMethods.mkString("")}"
+      }
 
     override def toString: String =
       _declarations
@@ -2147,6 +2165,17 @@ package object sql {
       if (path.isEmpty) ""
       else
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
+
+    /** [[checkNotNull]] for a field the mapping may not hold (`PainlessContext.readingUnmapped`):
+      * NULL in a document whose index does not map it. `doc.containsKey` answers whether the field
+      * is mapped, on every major (6.8's `LeafDocLookup` as 9's), and a mapped field reads as
+      * before.
+      */
+    def checkMappedNotNull: String =
+      if (path.isEmpty) ""
+      else
+        s"(!doc.containsKey('$path') || doc['$path'].size() == 0 ? $nullValue : " +
+        s"doc['$path'].value${painlessMethods.mkString("")})"
 
     lazy val processParamName: String = {
       if (path.nonEmpty) {

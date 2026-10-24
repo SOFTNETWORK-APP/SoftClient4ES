@@ -35,7 +35,8 @@ class RoundScaleSpec extends AnyFlatSpec with Matchers {
 
   private val schema: Table = Table(
     "t",
-    columns = List(Column("x", SQLTypes.Double), Column("n", SQLTypes.Int))
+    columns =
+      List(Column("x", SQLTypes.Double), Column("n", SQLTypes.Int), Column("r", SQLTypes.Real))
   )
 
   private def scriptOf(
@@ -85,6 +86,33 @@ class RoundScaleSpec extends AnyFlatSpec with Matchers {
       "def param3 = ((param2 == null) ? null : Double.valueOf(Math.abs(param2))); " +
       "(param1 == null) ? null : (param3 == null ? null : " +
       "Double.valueOf(Math.signum(param3) * Math.round(Math.abs(param3) * param1) / param1))"
+    )
+  }
+
+  /** DuckDB 1.5.5 rounds a FLOAT in double and narrows the result to a float: `ROUND(0.25::FLOAT,
+    * 1)` is the float `0.3`, whose double is `0.30000001192092896`.
+    */
+  private def roundedReal(x: Float, d: Int): Double = rounded(x.toDouble, d).toFloat.toDouble
+
+  it should "round a REAL in float, as DuckDB rounds a FLOAT" in {
+    scriptOf("SELECT ROUND(r, 1) FROM t") should endWith(
+      "Double.valueOf((double) (float) " +
+      "(Math.signum(param1) * Math.round(Math.abs(param1) * param2) / param2))"
+    )
+    // DuckDB 1.5.5: round(r, 1)::DOUBLE over these floats
+    Seq(
+      0.25f -> 0.30000001192092896,
+      0.1f  -> 0.10000000149011612,
+      7.75f -> 7.800000190734863,
+      0.5f  -> 0.5
+    ).foreach { case (r, duck) => withClue(r)(roundedReal(r, 1) shouldBe duck) }
+    // in double, 7.8 is below DuckDB's float: `ROUND(r, 1) < 7.800000190734863` kept r = 7.75
+    rounded(7.75f.toDouble, 1) should be < 7.800000190734863
+    // the controls: a DOUBLE operand, a cast to DOUBLE, and a REAL to no decimal place
+    scriptOf("SELECT ROUND(x, 1) FROM t") should not include "(float)"
+    scriptOf("SELECT ROUND(CAST(r AS DOUBLE), 1) FROM t") should not include "(float)"
+    scriptOf("SELECT ROUND(r) FROM t") should endWith(
+      "Long.valueOf((long) (Math.signum(param1) * Math.round(Math.abs(param1) * param2) / param2))"
     )
   }
 

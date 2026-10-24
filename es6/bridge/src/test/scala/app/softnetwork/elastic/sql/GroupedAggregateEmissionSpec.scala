@@ -54,12 +54,12 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     ).schema
 
   /** The request of `sql`, with the mapping attached as core attaches it. */
-  private def body(sql: String): JsonNode = {
+  private def body(sql: String, over: Schema = schema): JsonNode = {
     val parsed: SingleSearch = Parser(sql) match {
       case Right(s: SingleSearch) => s
       case other                  => fail(s"[$sql] did not parse as a SingleSearch: $other")
     }
-    val request: ElasticSearchRequest = parsed.update(Some(schema))
+    val request: ElasticSearchRequest = parsed.update(Some(over))
     mapper.readTree(request.query)
   }
 
@@ -158,6 +158,70 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     ).foreach { case (sql, expected) =>
       withClue(s"[$sql] ") { valueTypeOf(body(sql), "kk") shouldBe expected }
     }
+  }
+
+  // `num` a scaled_float and `ip` an ip, which no SQL type names; `g` a geo_point, no number
+  private val untyped: Schema =
+    Index(
+      "u",
+      """{"u": {"aliases": {}, "mappings": {"properties": {"n": {"type": "integer"},
+        | "b": {"type": "boolean"}, "num": {"type": "scaled_float", "scaling_factor": 100},
+        | "ip": {"type": "ip"}, "g": {"type": "geo_point"}}},
+        | "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
+    ).schema
+
+  // A conditional REPORTS the common type of its typed arms, which any number wins: beside an
+  // integer literal a scaled_float, an ip or a geo_point arm reported BIGINT. MEASURED on
+  // Elasticsearch 8.18.3: sent as a `long` level, `COALESCE(num, 2)` grouped -3.75 with -3, and
+  // `COALESCE(ip, 2)` failed every shard.
+  it should "keep its string terms when an arm it answers is no number of its type" in {
+    Seq(
+      "COALESCE(num, 2)"            -> None,
+      "GREATEST(num, 2)"            -> None,
+      "LEAST(num, 2)"               -> None,
+      "COALESCE(ip, 2)"             -> None,
+      "NULLIF(ip, 2)"               -> None,
+      "COALESCE(g, 2)"              -> None,
+      "COALESCE(NULLIF(num, 0), 2)" -> None,
+      // the controls: a cast to a number, a whole-number arm, a BOOLEAN arm (1 or 0, the INTEGER
+      // DuckDB types it), and arithmetic over the scaled_float, a string terms already
+      "COALESCE(CAST(num AS DOUBLE), 2)" -> Some("double"),
+      "COALESCE(n, 2)"                   -> Some("long"),
+      "COALESCE(n, b)"                   -> Some("long"),
+      "num + 0"                          -> None
+    ).foreach { case (key, expected) =>
+      val sql = s"SELECT $key AS kk, COUNT(*) AS c FROM u GROUP BY $key"
+      withClue(s"[$sql] ") { valueTypeOf(body(sql, untyped), "kk") shouldBe expected }
+    }
+  }
+
+  behavior of "a GROUP BY key over a field the mapping does not map"
+
+  /** The script of the level `name`. */
+  private def keyScriptOf(node: JsonNode, name: String): String =
+    aggNamed(node, name)
+      .map(_.path("terms").path("script").path("source").asText())
+      .getOrElse(fail(s"no level $name"))
+
+  // MEASURED on Elasticsearch 8.18.3 and 6.8.23: `doc['sd']` of a field no mapping holds failed
+  // every shard ("No field found for [sd] in mapping"), where DuckDB reads `sd` NULL in every row.
+  it should "read that field guarded, and every mapped field as before" in {
+    val unmapped = "(!doc.containsKey('sd') || doc['sd'].size() == 0 ? null : doc['sd'].value)"
+    keyScriptOf(
+      body(
+        "SELECT TO_DATE(sd, 'yyyy-MM-dd') AS kk, COUNT(*) AS c FROM t " +
+        "GROUP BY TO_DATE(sd, 'yyyy-MM-dd')"
+      ),
+      "kk"
+    ) should startWith(s"def param1 = $unmapped; ")
+    val beside =
+      keyScriptOf(body("SELECT COALESCE(sd, k) AS kk, COUNT(*) AS c FROM t GROUP BY kk"), "kk")
+    beside should include(unmapped)
+    beside should include("(doc['k'].size() == 0 ? null : doc['k'].value)")
+    beside should not include "containsKey('k')"
+    // the control: a key over mapped fields alone reads them as before
+    keyScriptOf(body("SELECT UPPER(k) AS kk, COUNT(*) AS c FROM t GROUP BY UPPER(k)"), "kk") should
+    not include "containsKey"
   }
 
   behavior of "a GROUP BY of several levels"
