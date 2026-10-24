@@ -119,6 +119,7 @@ trait GroupedAggregateSemanticsSpec
     client.deleteIndex(index)
     client.deleteIndex("grouped_aggregate_mixed_int")
     client.deleteIndex("grouped_aggregate_mixed_long")
+    client.deleteIndex("grouped_aggregate_untyped_keys")
     super.afterAll()
   }
 
@@ -846,6 +847,86 @@ trait GroupedAggregateSemanticsSpec
     counts("lval = 1.5") shouldBe empty
     // the control: a whole number keeps its group, counted over both indices (DuckDB: 1 -> 3)
     counts("lval = 1") shouldBe Map("1" -> Some(3.0))
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A conditional key over a column of a type that is no number of its kind
+  // ---------------------------------------------------------------------------------------------
+
+  private val untyped = "grouped_aggregate_untyped_keys"
+
+  /** The keys of `sql`'s level `k` with their counts, each key read as the decimal it prints. */
+  private def decimalKeys(sql: String): Map[BigDecimal, Option[Double]] =
+    rowsOf(sql).map(r => BigDecimal(String.valueOf(cell(r, "k"))) -> number(cell(r, "c"))).toMap
+
+  "a conditional key over a scaled_float, an ip or a geo_point beside an integer" should
+  "answer its values, and fail no shard" in {
+    client.createIndex(untyped, mappings = None, aliases = Nil).get shouldBe true
+    client
+      .setMapping(
+        untyped,
+        """{"properties": {"id": {"type": "keyword"}, "n": {"type": "integer"},
+          | "num": {"type": "scaled_float", "scaling_factor": 100}, "ip": {"type": "ip"},
+          | "g": {"type": "geo_point"}}}""".stripMargin
+      )
+      .get shouldBe true
+    locally {
+      implicit val bulkOptions: BulkOptions = BulkOptions(defaultIndex = untyped, logEvery = 10)
+      implicit def listToSource[T](list: List[T]): Source[T, NotUsed] =
+        Source.fromIterator(() => list.iterator)
+      client.bulk[String](
+        List(
+          """{"id": "u1", "n": 1, "num": -3.75, "ip": "10.0.0.1", "g": "48.85,2.35"}""",
+          """{"id": "u2", "n": 2, "num": 0.1, "ip": "8.8.8.8", "g": "40.7,-74.0"}""",
+          """{"id": "u3", "n": 3, "num": 0.1, "ip": "10.0.0.1"}""",
+          """{"id": "u4", "n": 4}""",
+          """{"id": "u5", "n": 5, "num": -3, "g": "48.85,2.35"}"""
+        ),
+        identity,
+        idKey = Some(Set("id"))
+      ) match {
+        case ElasticSuccess(_)     => client.refresh(untyped)
+        case ElasticFailure(error) => fail(s"Bulk indexing $untyped failed: ${error.message}")
+      }
+    }
+    // DuckDB (`num` a DECIMAL): -3.75 -> 1, -3.00 -> 1, 0.10 -> 2, 2.00 -> 1, for both. Sent as a
+    // whole-number level, -3.75 was grouped with -3 and 0.1 answered 0.
+    val duck: Map[BigDecimal, Option[Double]] = Map(
+      BigDecimal("-3.75") -> Some(1.0),
+      BigDecimal("-3")    -> Some(1.0),
+      BigDecimal("0.1")   -> Some(2.0),
+      BigDecimal("2")     -> Some(1.0)
+    )
+    decimalKeys(
+      s"SELECT COALESCE(num, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(num, 2)"
+    ) shouldBe duck
+    decimalKeys(
+      s"SELECT LEAST(num, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY LEAST(num, 2)"
+    ) shouldBe duck
+    // the control: cast to a DOUBLE, a numeric level whose keys are those numbers (DuckDB alike)
+    val cast = rowsOf(
+      s"SELECT COALESCE(CAST(num AS DOUBLE), 2) AS k, COUNT(*) AS c FROM $untyped " +
+      "GROUP BY COALESCE(CAST(num AS DOUBLE), 2)"
+    )
+    cast.map(r => number(cell(r, "k")) -> number(cell(r, "c"))).toMap shouldBe Map(
+      Some(-3.75) -> Some(1.0),
+      Some(-3.0)  -> Some(1.0),
+      Some(0.1)   -> Some(2.0),
+      Some(2.0)   -> Some(1.0)
+    )
+    // DuckDB refuses both ("Cannot mix values of type VARCHAR and INTEGER_LITERAL in COALESCE
+    // operator"); they answered here before, a value per group, and failed every shard as a
+    // whole-number level ("Unsupported script value [10.0.0.1]")
+    rowsOf(
+      s"SELECT COALESCE(ip, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(ip, 2)"
+    ).map(r => String.valueOf(cell(r, "k")) -> number(cell(r, "c"))).toMap shouldBe Map(
+      "10.0.0.1" -> Some(2.0),
+      "8.8.8.8"  -> Some(1.0),
+      "2"        -> Some(2.0)
+    )
+    rowsOf(
+      s"SELECT COALESCE(g, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(g, 2)"
+    ).flatMap(r => number(cell(r, "c"))).sum shouldBe 5.0
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -54,12 +54,12 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
     ).schema
 
   /** The request of `sql`, with the mapping attached as core attaches it. */
-  private def body(sql: String): JsonNode = {
+  private def body(sql: String, over: Schema = schema): JsonNode = {
     val parsed: SingleSearch = Parser(sql) match {
       case Right(s: SingleSearch) => s
       case other                  => fail(s"[$sql] did not parse as a SingleSearch: $other")
     }
-    val request: ElasticSearchRequest = parsed.update(Some(schema))
+    val request: ElasticSearchRequest = parsed.update(Some(over))
     mapper.readTree(request.query)
   }
 
@@ -157,6 +157,41 @@ class GroupedAggregateEmissionSpec extends AnyFlatSpec with Matchers {
       Some("double")
     ).foreach { case (sql, expected) =>
       withClue(s"[$sql] ") { valueTypeOf(body(sql), "kk") shouldBe expected }
+    }
+  }
+
+  // `num` a scaled_float and `ip` an ip, which no SQL type names; `g` a geo_point, no number
+  private val untyped: Schema =
+    Index(
+      "u",
+      """{"u": {"aliases": {}, "mappings": {"properties": {"n": {"type": "integer"},
+        | "b": {"type": "boolean"}, "num": {"type": "scaled_float", "scaling_factor": 100},
+        | "ip": {"type": "ip"}, "g": {"type": "geo_point"}}},
+        | "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
+    ).schema
+
+  // A conditional REPORTS the common type of its typed arms, which any number wins: beside an
+  // integer literal a scaled_float, an ip or a geo_point arm reported BIGINT. MEASURED on
+  // Elasticsearch 8.18.3: sent as a `long` level, `COALESCE(num, 2)` grouped -3.75 with -3, and
+  // `COALESCE(ip, 2)` failed every shard.
+  it should "keep its string terms when an arm it answers is no number of its type" in {
+    Seq(
+      "COALESCE(num, 2)"            -> None,
+      "GREATEST(num, 2)"            -> None,
+      "LEAST(num, 2)"               -> None,
+      "COALESCE(ip, 2)"             -> None,
+      "NULLIF(ip, 2)"               -> None,
+      "COALESCE(g, 2)"              -> None,
+      "COALESCE(NULLIF(num, 0), 2)" -> None,
+      // the controls: a cast to a number, a whole-number arm, a BOOLEAN arm (1 or 0, the INTEGER
+      // DuckDB types it), and arithmetic over the scaled_float, a string terms already
+      "COALESCE(CAST(num AS DOUBLE), 2)" -> Some("double"),
+      "COALESCE(n, 2)"                   -> Some("long"),
+      "COALESCE(n, b)"                   -> Some("long"),
+      "num + 0"                          -> None
+    ).foreach { case (key, expected) =>
+      val sql = s"SELECT $key AS kk, COUNT(*) AS c FROM u GROUP BY $key"
+      withClue(s"[$sql] ") { valueTypeOf(body(sql, untyped), "kk") shouldBe expected }
     }
   }
 
