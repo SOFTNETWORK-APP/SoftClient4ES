@@ -2637,6 +2637,31 @@ package object query {
 
     lazy val buckets: Seq[Bucket] = bucketTree.allBuckets.flatten
 
+    /** The names of the levels this statement sends as a numeric `terms` of DOUBLE values: the
+      * `value_type` each level's key is sent with beside the include / exclude its HAVING writes
+      * (`Bucket.scriptedKeyValueTypeBeside`), as both bridges decide it for a level at the root.
+      *
+      * Read by the client's response parser (`TextColumns.of`): JSON has no number for a non-finite
+      * double, so such a level's `Infinity` / `-Infinity` / `NaN` key comes back as that text.
+      */
+    lazy val doubleKeyLevels: Set[String] = {
+      val criteria = having.flatMap(_.criteria)
+      buckets
+        .filter { bucket =>
+          val (include, exclude) = criteria match {
+            case Some(c) =>
+              (
+                c.includes(bucket, not = false, BucketIncludesExcludes()),
+                c.excludes(bucket, not = false, BucketIncludesExcludes())
+              )
+            case None => (BucketIncludesExcludes(), BucketIncludesExcludes())
+          }
+          bucket.scriptedKeyValueTypeBeside(include, exclude).contains("double")
+        }
+        .map(_.name)
+        .toSet
+    }
+
     /** Story 22.1 AD-4 — an OUTER reference into a derived table must name a column the derived
       * table PROJECTS (its `outputNames`: the SELECT alias when there is one, else the bare column,
       * so `SELECT amount AS total` exposes `total`, NOT `amount`).

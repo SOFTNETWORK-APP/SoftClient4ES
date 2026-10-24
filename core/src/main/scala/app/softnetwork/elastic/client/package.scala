@@ -608,13 +608,21 @@ package object client extends SerializationApi {
     * column was declared, so `DATETIME_FORMAT(ts, '%H:%i:%s')`, whose script returns `"00:00:00"`,
     * answered `LocalTime` `00:00`: another class than the VARCHAR it reports, and another text.
     * Built once per statement by [[TextColumns.of]], only around a [[NativeContext]].
+    *
+    * `doubleKeys` names the levels the statement sends as a numeric `terms` of doubles
+    * (`SingleSearch.doubleKeyLevels`), whose non-finite keys a response writes as text
+    * (`ElasticConversion.extractBucketKey`).
     */
-  private[client] final case class TextColumns(columns: Set[String]) extends ConversionContext
+  private[client] final case class TextColumns(
+    columns: Set[String],
+    doubleKeys: Set[String] = Set.empty
+  ) extends ConversionContext
 
   private[client] object TextColumns {
 
     /** `context` for the rows of `single`: [[TextColumns]] when it is native and `single` declares
-      * a VARCHAR column, `context` itself otherwise.
+      * a VARCHAR column or sends a level as a numeric `terms` of doubles, `context` itself
+      * otherwise.
       *
       * The columns are named from the types the statement declares, each under the name its row
       * carries it by:
@@ -638,7 +646,8 @@ package object client extends SerializationApi {
               Seq(field.outputName, field.identifier.name).filter(_.nonEmpty)
             else Seq(field.outputName).filter(_.nonEmpty)
           }.toSet
-          if (columns.isEmpty) context else TextColumns(columns)
+          val doubleKeys = single.doubleKeyLevels
+          if (columns.isEmpty && doubleKeys.isEmpty) context else TextColumns(columns, doubleKeys)
         case other => other
       }
   }

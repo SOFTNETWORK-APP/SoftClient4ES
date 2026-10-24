@@ -930,6 +930,32 @@ trait GroupedAggregateSemanticsSpec
   }
 
   // ---------------------------------------------------------------------------------------------
+  // A non-finite key on a numeric level
+  // ---------------------------------------------------------------------------------------------
+
+  "a GROUP BY key that answers an infinite number" should "answer it as the Double it is" in {
+    // DuckDB: exp(n) per row -- 148.41.. (5), 0.0 (-900), inf (900), 1.0 (0), 1096.63.. (7),
+    // 0.0183.. (-4), and the NULL group of `z`, which a terms level does not return. JSON has no
+    // number for an infinite double: Elasticsearch 6.8 wrote the key "Infinity", read back as a
+    // String beside Doubles.
+    val keys = rowsOf(s"SELECT EXP(n) AS kk, COUNT(*) AS c FROM $index GROUP BY EXP(n)")
+      .map(r => cell(r, "kk"))
+    keys.foreach(k => withClue(s"[$k] ")(k shouldBe a[java.lang.Double]))
+    keys.map(_.asInstanceOf[java.lang.Double].doubleValue()).toSet shouldBe Set(
+      Math.exp(5),
+      Math.exp(-900),
+      Double.PositiveInfinity,
+      1.0,
+      Math.exp(7),
+      Math.exp(-4)
+    )
+    // the control: the finite keys of the same level, ordered as numbers
+    rowsOf(s"SELECT EXP(n) AS kk, COUNT(*) AS c FROM $index GROUP BY EXP(n) ORDER BY kk DESC")
+      .map(r => number(cell(r, "kk")))
+      .headOption shouldBe Some(Some(Double.PositiveInfinity))
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // ALTER TABLE beside a stored-script processor
   // ---------------------------------------------------------------------------------------------
 
