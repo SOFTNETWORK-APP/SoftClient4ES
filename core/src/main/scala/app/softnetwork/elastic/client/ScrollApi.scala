@@ -327,8 +327,18 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
           return scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
-        // the columns `single` declares VARCHAR are read as their text (`TextColumns`)
-        val textContext: ConversionContext = TextColumns.of(single, context)
+        // the columns `single` declares VARCHAR are read as their text (`TextColumns`), and each
+        // conversion of a bare UNNEST element column by its reader, its dates as the cluster's
+        // major reads them (`ElementConversions`)
+        val textContext: ConversionContext =
+          TextColumns.of(
+            single,
+            context,
+            this match {
+              case api: VersionApi => api.dateDialectVersion
+              case _               => None
+            }
+          )
         val elasticQuery =
           ElasticQuery(
             single,

@@ -226,8 +226,9 @@ trait UnnestFunctionRefusalExecutionSpec
       s"SELECT id, YEAR(i.d) AS c ${u("i")}",
       s"SELECT id, UPPER(i.s) AS c ${u("i")}",
       s"SELECT id, i.n + 2 AS c ${u("i")}",
-      // right only by coincidence before (the value survives the RAW overwrite): refused uniformly
-      s"SELECT id, CAST(i.n AS BIGINT) AS c ${u("i")}",
+      // a conversion the reader does not answer: a BOOLEAN target, a chain of two functions
+      s"SELECT id, CAST(i.n AS BOOLEAN) AS c ${u("i")}",
+      s"SELECT id, CAST(YEAR(i.d) AS VARCHAR) AS c ${u("i")}",
       s"SELECT id, COALESCE(i.s, 'z') AS c ${u("i")} LIMIT 100",
       // IDENT-1 makes WEEKDAY resolve its receiver; the projection must be refused under BOTH
       // spellings -- a script error under `AS i` before, the RAW value under `AS items`
@@ -238,8 +239,171 @@ trait UnnestFunctionRefusalExecutionSpec
       // beside a window function the rows come from the window-free statement, whose script field
       // is evaluated per parent (MEASURED: NULL for UPPER, the raw dates for YEAR, 6 rows)
       s"SELECT id, i.k AS k, UPPER(i.s) AS c, SUM(i.n) OVER (PARTITION BY id) AS tot ${u("i")}",
-      s"SELECT id, YEAR(i.d) AS y, SUM(i.n) OVER (PARTITION BY id) AS tot ${u("i")} LIMIT 100"
+      s"SELECT id, YEAR(i.d) AS y, SUM(i.n) OVER (PARTITION BY id) AS tot ${u("i")} LIMIT 100",
+      // ...and so is a conversion of the bare element: that route reads its rows unconverted
+      s"SELECT id, CAST(i.n AS VARCHAR) AS c, SUM(i.n) OVER (PARTITION BY id) AS tot ${u("i")}"
     )
+  }
+
+  /** `id|k|value|class` of each row's `c`, sorted. */
+  private def typed(rows: Seq[ListMap[String, Any]]): Seq[String] =
+    rows.map { r =>
+      val v = r.getOrElse("c", null)
+      val key = s"${scalar(r.getOrElse("id", null))}|${scalar(r.getOrElse("k", null))}"
+      s"$key|${Option(v).fold("null")(_.toString)}|${Option(v).fold("null")(_.getClass.getName)}"
+    }.sorted
+
+  /** Every statement must answer, at the client API and at the gateway, the value AND the class
+    * DuckDB answers for `c` (`oracle`, computed from the fixture) on every element `where` keeps;
+    * the wrong ones are COLLECTED and asserted once.
+    */
+  private def assertAllConvert(cases: (String, Item => Boolean, Item => Any)*): Unit = {
+    val wrong = cases.flatMap { case (sql, where, oracle) =>
+      val expected = parents.flatMap { p =>
+        p.items.filter(where).map { it =>
+          val v = oracle(it)
+          s"${p.id}|${it.k}|${Option(v).fold("null")(_.toString)}|" +
+          Option(v).fold("null")(_.getClass.getName)
+        }
+      }.sorted
+      expected should not be empty // the oracle selects something
+      Seq("client" -> viaClient(sql), "gateway" -> viaGateway(sql)).collect {
+        case (venue, answer) if answer.map(typed) != Right(expected) =>
+          s"[$sql] $venue answered ${answer.map(typed)}, DuckDB ${expected}"
+      }
+    }
+    wrong shouldBe empty
+  }
+
+  private def utcDay(d: String): _root_.java.time.LocalDate =
+    _root_.java.time.ZonedDateTime
+      .parse(d)
+      .withZoneSameInstant(_root_.java.time.ZoneOffset.UTC)
+      .toLocalDate
+
+  private val every: Item => Boolean = _ => true
+
+  "a conversion of a bare UNNEST element column" should "answer DuckDB's value and class, at the client and at the gateway" in {
+    // `d` is an Elasticsearch `date` no `_meta` declares: a TIMESTAMP column, its value its UTC
+    // instant. Each statement with and without a LIMIT (the PIT / scroll route and the one-shot one).
+    val utc = _root_.java.time.ZoneOffset.UTC
+    def instant(it: Item): _root_.java.time.ZonedDateTime =
+      _root_.java.time.ZonedDateTime.parse(it.d).withZoneSameInstant(utc)
+    def timestampText(it: Item): String =
+      instant(it).toLocalDateTime.toString.replace('T', ' ') match {
+        case t if t.length == 16 => t + ":00" // DuckDB writes the seconds
+        case t                   => t
+      }
+    assertAllConvert(
+      // text forms
+      (
+        s"SELECT id, i.k AS k, CAST(i.n AS VARCHAR) AS c ${u("i")}",
+        every,
+        (it: Item) => it.n.toString
+      ),
+      (
+        s"SELECT id, i.k AS k, CONVERT(i.s, CHAR) AS c ${u("i")} LIMIT 100",
+        every,
+        (it: Item) => it.s
+      ),
+      (
+        s"SELECT id, i.k AS k, CONVERT(VARCHAR, i.d) AS c ${u("i")}",
+        every,
+        (it: Item) => timestampText(it)
+      ),
+      (
+        s"SELECT id, i.k AS k, i.x::VARCHAR AS c ${u("i")} LIMIT 100",
+        every,
+        (it: Item) => it.x.toString
+      ),
+      // numeric forms
+      (
+        s"SELECT id, i.k AS k, SAFE_CAST(i.n AS SHORT) AS c ${u("i")}",
+        every,
+        (it: Item) => _root_.java.lang.Short.valueOf(it.n.toShort)
+      ),
+      (
+        s"SELECT id, i.k AS k, TRY_CAST(i.n AS SIGNED) AS c ${u("i")} LIMIT 100",
+        every,
+        (it: Item) => _root_.java.lang.Long.valueOf(it.n)
+      ),
+      (
+        s"SELECT id, i.k AS k, i.n::DOUBLE AS c ${u("i")}",
+        every,
+        (it: Item) => _root_.java.lang.Double.valueOf(it.n.toDouble)
+      ),
+      // a DOUBLE rounded half to even, as DuckDB rounds it (12.5 is 12)
+      (
+        s"SELECT id, i.k AS k, CONVERT(i.x, BIGINT) AS c ${u("i")}",
+        every,
+        (it: Item) => _root_.java.lang.Long.valueOf(math.rint(it.x).toLong)
+      ),
+      // no text of `s` is a number: NULL under TRY_CAST, as DuckDB's
+      (s"SELECT id, i.k AS k, TRY_CAST(i.s AS INTEGER) AS c ${u("i")}", every, (_: Item) => null),
+      // date forms
+      (
+        s"SELECT id, i.k AS k, i.d::DATE AS c ${u("i")} LIMIT 100",
+        every,
+        (it: Item) => utcDay(it.d)
+      ),
+      (
+        s"SELECT id, i.k AS k, CAST(i.d AS TIMESTAMP) AS c ${u("i")}",
+        every,
+        (it: Item) => instant(it)
+      ),
+      (
+        s"SELECT id, i.k AS k, DATE_TRUNC(MONTH, i.d) AS c ${u("i")}",
+        every,
+        (it: Item) => utcDay(it.d).withDayOfMonth(1).atStartOfDay(utc)
+      ),
+      (
+        s"SELECT id, i.k AS k, DATE_TRUNC(HOUR, i.d) AS c ${u("i")} LIMIT 100",
+        every,
+        (it: Item) => instant(it).truncatedTo(_root_.java.time.temporal.ChronoUnit.HOURS)
+      ),
+      // DuckDB implements no DATE -> BIGINT: NULL under TRY_CAST
+      (s"SELECT id, i.k AS k, TRY_CAST(i.d AS BIGINT) AS c ${u("i")}", every, (_: Item) => null),
+      // SELECT and WHERE: the WHERE leaf is evaluated per element, the projection by the reader
+      (
+        s"SELECT id, i.k AS k, CAST(i.n AS VARCHAR) AS c ${u("i")} WHERE CAST(i.n AS VARCHAR) = '7'",
+        (it: Item) => it.n == 7L,
+        _.n.toString
+      ),
+      // the self-named alias
+      (
+        s"SELECT id, items.k AS k, CAST(items.n AS VARCHAR) AS c ${u("items")}",
+        every,
+        _.n.toString
+      )
+    )
+  }
+
+  it should "be refused where DuckDB refuses it, and fail where DuckDB's CAST fails on a value" in {
+    def refusal(sql: String): String =
+      viaGateway(sql) match {
+        case Left(e)  => s"${e.statusCode.getOrElse("")} ${e.message}"
+        case Right(r) => s"answered ${r.size} row(s)"
+      }
+    refusal(s"SELECT id, CAST(i.d AS INTEGER) AS c ${u("i")}") should include(
+      "Unimplemented type for cast (TIMESTAMP -> INT)"
+    )
+    refusal(s"SELECT id, CAST(i.s AS DATE) AS c ${u("i")}") should include(
+      "the way DuckDB reads it is not reproduced"
+    )
+    viaClient(s"SELECT id, CAST(i.s AS INTEGER) AS c ${u("i")}") match {
+      case Left(e)  => e.message should include("Could not convert string")
+      case Right(r) => fail(s"answered ${r.size} row(s) where DuckDB fails")
+    }
+    refusal(s"SELECT id, CAST(i.s AS INTEGER) AS c ${u("i")} LIMIT 100") should include(
+      "Could not convert string"
+    )
+  }
+
+  it should "leave a conversion of a PARENT column beside it to its script" in {
+    val expected = parents.flatMap(p => p.items.map(it => s"${p.id}|${it.k}|${p.name}")).sorted
+    val sql = s"SELECT id, i.k AS k, CAST(t.name AS VARCHAR) AS c ${u("i")} LIMIT 100"
+    viaClient(sql).map(keys(_, "id", "k", "c")) shouldBe Right(expected)
+    viaGateway(sql).map(keys(_, "id", "k", "c")) shouldBe Right(expected)
   }
 
   "a WHERE function over an UNNEST column with no nested carrier" should "be refused by name" in {

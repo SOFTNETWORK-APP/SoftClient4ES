@@ -171,14 +171,24 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
   }
 
   "a function projected over an UNNEST column" should "be refused by name, under both aliases" in {
-    var refused, accepted = 0
+    var refused, accepted, byReader = 0
     for {
       c     <- exercised.filterNot(_.family == "aggregate")
       alias <- aliases
     } {
       val sql = selectSql(c, alias)
       val ss = unvalidated(sql)
-      if (ss.scriptFields.nonEmpty) { // not an aggregate / window: a script field
+      if (UnnestScope.elementConversions(ss).nonEmpty) {
+        // ONE conversion of the bare element column: the READER answers it -- no script field,
+        // and not this rule's refusal
+        withClue(s"[$sql] ") {
+          ss.scriptFields shouldBe empty
+          verdict(sql) match {
+            case Right(Some(msg)) => fail(s"an element conversion refused by this rule: $msg")
+            case _                => byReader += 1
+          }
+        }
+      } else if (ss.scriptFields.nonEmpty) { // not an aggregate / window: a script field
         withClue(s"[$sql] ") {
           selectEscapes(ss) shouldBe Some(true) // the oracle: the script reads the UNNEST column
           verdict(sql) match {
@@ -191,8 +201,11 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
         }
       } else accepted += 1
     }
-    info(s"SELECT refused $refused, not a script field $accepted")
+    info(s"SELECT refused $refused, answered by the reader $byReader, not a script field $accepted")
     refused should be >= 4500
+    // CAST / TRY_CAST / SAFE_CAST / CONVERT to a text, a number, a DATE or a TIMESTAMP, `::` and
+    // DATE_TRUNC, over the five element columns under two aliases
+    byReader should be >= 100
   }
 
   it should "not be refused when the same function reads the PARENT's column" in {
@@ -227,7 +240,10 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
       val ss = unvalidated(sql)
       withClue(s"[$sql] ") {
         ss.windowRowQuery shouldBe true
-        selectEscapes(ss.withoutWindows) shouldBe Some(true) // the oracle, on the query that runs
+        // the oracle, on the query that runs -- an element conversion there has no script: the
+        // window-enriched route reads its rows without the reader's conversion, so it stays refused
+        if (UnnestScope.elementConversions(ss.withoutWindows).isEmpty)
+          selectEscapes(ss.withoutWindows) shouldBe Some(true)
         verdict(sql) match {
           case Right(Some(msg)) =>
             refused += 1
@@ -579,6 +595,108 @@ class UnnestFunctionRefusalSpec extends AnyFlatSpec with Matchers {
     verdict(live).toOption.flatten.getOrElse(fail("not refused by name")) should include(
       "where i.k is not visible"
     )
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // A conversion of a bare element column: answered by the READER
+  // ---------------------------------------------------------------------------------------------
+
+  "a conversion of a bare UNNEST element column" should "be no script field, its element placed by the row explosion and converted by the reader" in {
+    Seq(
+      // text, numeric and date forms; each spelling of a conversion; with and without a LIMIT
+      (s"SELECT id, CAST(i.s AS CHAR) AS v $u", "s", "items.s", Some("CHAR"), false, None),
+      (s"SELECT id, i.n::VARCHAR AS v $u LIMIT 100", "n", "items.n", Some("VARCHAR"), false, None),
+      (s"SELECT id, CONVERT(TEXT, i.n) AS v $u", "n", "items.n", Some("TEXT"), false, None),
+      (s"SELECT id, CONVERT(i.n, KEYWORD) AS v $u", "n", "items.n", Some("KEYWORD"), false, None),
+      (s"SELECT id, SAFE_CAST(i.n AS SHORT) AS v $u", "n", "items.n", Some("SMALLINT"), true, None),
+      (s"SELECT id, TRY_CAST(i.n AS SIGNED) AS v $u", "n", "items.n", Some("BIGINT"), true, None),
+      (s"SELECT id, CAST(i.n AS BYTE) AS v $u", "n", "items.n", Some("TINYINT"), false, None),
+      (s"SELECT id, i.n::DOUBLE AS v $u LIMIT 100", "n", "items.n", Some("DOUBLE"), false, None),
+      // DECIMAL is core's DOUBLE (the parser's `decimal_type`)
+      (s"SELECT id, CONVERT(i.n, DECIMAL) AS v $u", "n", "items.n", Some("DOUBLE"), false, None),
+      (s"SELECT id, CONVERT(VARCHAR, i.d) AS v $u", "d", "items.d", Some("VARCHAR"), false, None),
+      (s"SELECT id, i.d::DATE AS v $u LIMIT 100", "d", "items.d", Some("DATE"), false, None),
+      (s"SELECT id, CAST(i.d AS DATETIME) AS v $u", "d", "items.d", Some("DATETIME"), false, None),
+      (s"SELECT id, DATE_TRUNC(HOUR, i.d) AS v $u", "d", "items.d", None, false, Some("HOUR")),
+      (s"SELECT id, DATE_TRUNC(i.d, MONTH) AS v $u", "d", "items.d", None, false, Some("MONTH")),
+      // the self-named alias
+      (
+        "SELECT id, CAST(items.n AS VARCHAR) AS v FROM t JOIN UNNEST(t.items) AS items",
+        "n",
+        "items.n",
+        Some("VARCHAR"),
+        false,
+        None
+      )
+    ).foreach { case (sql, column, path, target, safe, unit) =>
+      withClue(s"[$sql] ") {
+        verdict(sql) shouldBe Right(None)
+        val ss = Parser(sql) match {
+          case Right(s: SingleSearch) => s
+          case other                  => fail(s"not a SingleSearch: $other")
+        }
+        ss.scriptFields shouldBe empty
+        val conversions = UnnestScope.elementConversions(ss)
+        conversions.map(c =>
+          (c.output, c.path, c.target.map(_.typeId), c.safe, c.truncation.map(_.sql))
+        ) shouldBe Seq(("v", path, target, safe, unit))
+        // the explosion places the element's value under the column, the reader converts it
+        ss.nestedHitsMappings.values.flatten.toSeq should contain(column -> "v")
+      }
+    }
+  }
+
+  it should "leave every other function, conversion target and chain refused by this rule" in {
+    Seq(
+      // not a conversion
+      s"SELECT id, UPPER(i.s) AS c $u",
+      s"SELECT id, YEAR(i.d) AS c $u",
+      // a target the reader does not convert to
+      s"SELECT id, CAST(i.n AS BOOLEAN) AS c $u",
+      s"SELECT id, CAST(i.d AS TIME) AS c $u",
+      // a chain of two functions, a conversion of an expression
+      s"SELECT id, CAST(CAST(i.n AS INT) AS VARCHAR) AS c $u",
+      s"SELECT id, CAST(YEAR(i.d) AS VARCHAR) AS c $u",
+      // beside a window: the window-enriched route reads its rows without the reader's conversion
+      s"SELECT id, CAST(i.n AS VARCHAR) AS c, SUM(i.n) OVER (PARTITION BY id) AS tot $u",
+      s"SELECT id, i.d::DATE AS c, COUNT(*) OVER (PARTITION BY id) AS w $u LIMIT 100"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        verdict(sql).toOption.flatten.getOrElse(fail("not refused by name")) should startWith(
+          s"${Phrase}SELECT: "
+        )
+      }
+    }
+  }
+
+  it should "never take a conversion of an EXPRESSION over the element for one of the bare column" in {
+    // `CAST(i.n + 1 AS VARCHAR)` does not parse (the grammar's own limit, not this rule's)
+    val parsed = Seq(
+      s"SELECT id, CAST(i.n + 1 AS VARCHAR) AS c $u",
+      s"SELECT id, (i.n + 1)::VARCHAR AS c $u",
+      s"SELECT id, CAST(COALESCE(i.s, 'z') AS VARCHAR) AS c $u",
+      s"SELECT id, CAST(UPPER(i.s) AS VARCHAR) AS c $u"
+    ).flatMap { sql =>
+      Parser.parseUnvalidated(sql) match {
+        case Right(ss: SingleSearch) =>
+          withClue(s"[$sql] ") {
+            UnnestScope.elementConversions(ss) shouldBe empty
+            verdict(sql) should not be Right(None)
+          }
+          Some(sql)
+        case _ => None
+      }
+    }
+    parsed.size should be >= 2
+  }
+
+  it should "leave a conversion of a PARENT column a script field" in {
+    val ss = Parser(s"SELECT id, i.k AS k, CAST(t.m AS VARCHAR) AS c $u") match {
+      case Right(s: SingleSearch) => s
+      case other                  => fail(s"not a SingleSearch: $other")
+    }
+    UnnestScope.elementConversions(ss) shouldBe empty
+    ss.scriptFields.map(_.outputName) shouldBe Seq("c")
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -1059,8 +1059,15 @@ package object query {
       // block used to be asked for now come from `rowInvariantProjection` on the result side.
       if (aggregates.nonEmpty || groupBy.isDefined)
         Seq.empty
-      else
-        select.fieldsWithComputedAliases.filter(_.isScriptField)
+      else {
+        // ONE conversion of a bare UNNEST element column is answered by the READER
+        // (`UnnestScope.elementConversions`): a script is evaluated once per PARENT, where the
+        // element is not visible, and answered NULL under the element's raw value
+        val byReader = UnnestScope.elementConversions(this).map(_.output).toSet
+        select.fieldsWithComputedAliases
+          .filter(_.isScriptField)
+          .filterNot(f => byReader.contains(f.outputName))
+      }
     }
 
     lazy val fields: Seq[String] = {
@@ -2900,6 +2907,8 @@ package object query {
           .orElse(inexactFloatKeyComparison)
           // a WHERE condition over a nested column that no nested query can test
           .orElse(where.flatMap(_.criteria).flatMap(ImplicitNested.refusal(_, this)))
+          // a conversion of an UNNEST element its column's type decides (DuckDB's refusals)
+          .orElse(UnnestScope.elementConversionRefusal(this))
           .map(Left(_))
           .getOrElse(Right(()))
       }

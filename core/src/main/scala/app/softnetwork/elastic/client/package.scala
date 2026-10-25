@@ -587,7 +587,14 @@ package object client extends SerializationApi {
     )
   }
 
-  sealed trait ConversionContext
+  sealed trait ConversionContext {
+
+    /** The reader of each conversion of a bare UNNEST element column, keyed by its row column
+      * (`ElementConversions`), applied where the row explosion places the element's value. Empty
+      * for every context but the one [[TextColumns.of]] builds for such a statement.
+      */
+    private[client] def elementConversions: Map[String, Any => Any] = Map.empty
+  }
 
   case object NativeContext extends ConversionContext
 
@@ -616,7 +623,10 @@ package object client extends SerializationApi {
   private[client] final case class TextColumns(
     columns: Set[String],
     doubleKeys: Set[String] = Set.empty
-  ) extends ConversionContext
+  )(val elements: Map[String, Any => Any] = Map.empty)
+      extends ConversionContext {
+    override private[client] def elementConversions: Map[String, Any => Any] = elements
+  }
 
   private[client] object TextColumns {
 
@@ -632,8 +642,16 @@ package object client extends SerializationApi {
       *     reads keeps its own type. Naming that column too re-read `ts` of `SELECT ts,
       *     DATE_FORMAT(ts, '%Y') AS y` and `d` of `CAST(d AS VARCHAR) AS s` as texts;
       *   - `*`, the columns the resolved schema declares VARCHAR.
+      *
+      * It also carries the reader of each conversion of a bare UNNEST element column `single`
+      * projects (`ElementConversions`), whose dates are read as the Elasticsearch `version` reads
+      * them (asked only when a date is read).
       */
-    def of(single: SingleSearch, context: ConversionContext): ConversionContext =
+    def of(
+      single: SingleSearch,
+      context: ConversionContext,
+      version: => Option[String] = None
+    ): ConversionContext =
       context match {
         case NativeContext =>
           val columns = single.select.fieldsWithComputedAliases.flatMap { field =>
@@ -647,7 +665,9 @@ package object client extends SerializationApi {
             else Seq(field.outputName).filter(_.nonEmpty)
           }.toSet
           val doubleKeys = single.doubleKeyLevels
-          if (columns.isEmpty && doubleKeys.isEmpty) context else TextColumns(columns, doubleKeys)
+          val elements = ElementConversions.of(single, version)
+          if (columns.isEmpty && doubleKeys.isEmpty && elements.isEmpty) context
+          else TextColumns(columns, doubleKeys)(elements)
         case other => other
       }
   }
