@@ -11,7 +11,7 @@ DQL supports:
 
 - `SELECT` with expressions, aliases, nested fields, STRUCT and ARRAY<STRUCT>
 - `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`
-- `UNION ALL`
+- set operators: `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`
 - cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) across indices and clusters — see [Cross-Index JOIN](joins.md)
 - `JOIN UNNEST` on `ARRAY<STRUCT>` (the single-index nested form, handled natively inside one index)
 - aggregations, parent-level aggregations on nested arrays
@@ -29,7 +29,9 @@ DQL supports:
 - [WHERE](#where)
 - [ORDER BY](#order-by)
 - [LIMIT / OFFSET](#limit--offset)
-- [UNION ALL](#union-all)
+- [Set operators](#set-operators)
+- [Subqueries and derived tables](#subqueries-and-derived-tables)
+- [Common table expressions](#common-table-expressions)
 - [JOIN UNNEST](#join-unnest)
 - [Aggregations](#aggregations)
 - [Parent-Level Aggregations on Nested Arrays](#parent-level-aggregations-on-nested-arrays)
@@ -202,9 +204,9 @@ spelling, and may carry a qualifier:
 ```sql
 SELECT category FROM `bi_events`;
 SELECT category FROM "bi_events";
-SELECT category FROM `elastic`.`bi_events` `bi_events`;
-SELECT category FROM "elastic"."bi_events" AS e;
-SELECT o.id FROM `elastic`.`orders` o JOIN `elastic`.`customers` c ON o.cid = c.id;
+SELECT category FROM `prod_eu`.`bi_events` `bi_events`;
+SELECT category FROM "prod_eu"."bi_events" AS e;
+SELECT o.id FROM `prod_eu`.`orders` o JOIN `prod_eu`.`customers` c ON o.cid = c.id;
 ```
 
 ### Quoting is what makes a dot a qualifier
@@ -216,11 +218,11 @@ dot; the index name is everything after that run.** Nothing else separates the t
 | Written | Index read | Qualifier |
 | ------- | ---------- | --------- |
 | `FROM bi_events` | `bi_events` | — |
-| `FROM elastic.bi_events` | `elastic.bi_events` | — (a bare dot is part of the name) |
+| `FROM prod_eu.bi_events` | `prod_eu.bi_events` | — (a bare dot is part of the name) |
 | `FROM logs-2025.03` | `logs-2025.03` | — |
-| `FROM "elastic".bi_events` | `bi_events` | `elastic` |
-| ``FROM `elastic`.bi_events`` | `bi_events` | `elastic` |
-| `FROM "elastic"."bi_events"` | `bi_events` | `elastic` |
+| `FROM "prod_eu".bi_events` | `bi_events` | `prod_eu` |
+| ``FROM `prod_eu`.bi_events`` | `bi_events` | `prod_eu` |
+| `FROM "prod_eu"."bi_events"` | `bi_events` | `prod_eu` |
 | `FROM "logs-2025.03"` | `logs-2025.03` | — (the dot is *inside* the quotes) |
 | `FROM "elasticsearch"."prod-cluster"."bi_events"` | `bi_events` | `elasticsearch`, `prod-cluster` |
 
@@ -261,9 +263,9 @@ Qualifiers used to be dropped from the re-rendered SQL. They are not any more �
 statement carries the qualifier the original had, canonicalised to the ANSI double quote:
 
 ```sql
-SELECT category FROM `elastic`.`bi_events`
+SELECT category FROM `prod_eu`.`bi_events`
 -- renders as
-SELECT category FROM "elastic"."bi_events"
+SELECT category FROM "prod_eu"."bi_events"
 ```
 
 Unlike a column name, a table name is quoted as **one lexeme** — `FROM "logs-2025.03"`, never
@@ -396,7 +398,7 @@ functions of literals. Rejected with a named reason (`... requires a FROM clause
 - `EXCEPT(...)`, duplicate output column names, unbound `?` parameters, array literals,
   negative `LIMIT`/`OFFSET`
 
-Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / `UNION ALL`
+Rejected at the grammar level: `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` / a set operator
 after a FROM-less select-list, and `DISTINCT` literals. A constant cast works in every
 spelling — `CAST('125' AS BIGINT)`, `CONVERT('125', BIGINT)` and `'125'::BIGINT` all parse.
 Prefer `TRY_CAST('125' AS BIGINT)` when the value may not convert: `::` is always the
@@ -621,22 +623,52 @@ ORDER BY age DESC
 LIMIT 10 OFFSET 20;
 ```
 
+### SELECT TOP n — the same bound, spelled the T-SQL way
+
+`SELECT TOP n` is accepted as a **spelling of `LIMIT n`**, because it is what BI tools emit in their
+SQL-92 dialect. It is not a second row bound: the parser folds it into the statement's `LIMIT`, so
+the two statements below are the same statement, and the engine renders both as `LIMIT`.
+
+```sql
+SELECT TOP 10 id, name FROM dql_users ORDER BY age DESC;
+SELECT TOP (10) id, name FROM dql_users ORDER BY age DESC;   -- parenthesised, also T-SQL
+SELECT id, name FROM dql_users ORDER BY age DESC LIMIT 10;   -- identical to both
+```
+
+Four things to know:
+
+- **`TOP` is not reserved.** `SELECT top FROM t` still selects a column called `top`, and
+  `SELECT top - 1 AS x FROM t` still computes it.
+- **`TOP` and `LIMIT` together are refused by name.** They are two spellings of one bound, and
+  guessing a precedence would be worse than saying so.
+- **`TOP` carries no `OFFSET`.** For paging, use `LIMIT n OFFSET m`.
+- **`TOP n PERCENT` and `TOP n WITH TIES` are refused by name** — they are real T-SQL that this
+  engine does not implement. See [Known limitations](known_limitations.md).
+
+`SELECT DISTINCT TOP n` is **not** accepted (write `SELECT DISTINCT … LIMIT n`); the order
+`SELECT TOP n DISTINCT` happens to parse but is not valid T-SQL, so do not rely on it.
+
 ---
 
-## UNION ALL
+## Set operators
 
-`UNION ALL` combines the results of multiple `SELECT` queries **without removing duplicates**.
+A set operator combines the rows of two or more `SELECT` branches. Seven spellings are accepted:
 
-> Bare `UNION` (with row de-duplication) is **not supported** and is rejected at parse time — the
-> two are not synonyms. It used to be accepted silently, returning only the first leg's rows.
+| Spelling | Rows | Duplicates | Where it runs |
+| --- | --- | --- | --- |
+| `UNION ALL` | every row of every branch | kept | **Elasticsearch** (`_msearch`, or one search per branch) — every venue |
+| `UNION` / `UNION DISTINCT` | rows in either branch | removed | relational engine |
+| `INTERSECT` | rows in **both** branches | removed | relational engine |
+| `INTERSECT ALL` | rows in both branches | kept (per-branch multiplicity) | relational engine |
+| `EXCEPT` | rows in the first branch and not the second | removed | relational engine |
+| `EXCEPT ALL` | rows in the first branch and not the second | kept | relational engine |
 
-All SELECT statements in a UNION ALL must project:
+`UNION` and `UNION DISTINCT` are the same operator — SQL's default for a bare `UNION` is
+de-duplication, and `DISTINCT` just says so out loud. `UNION ALL` is the one that keeps duplicates,
+and it is the only one Elasticsearch can answer by itself.
 
-- the **same number of columns**, matched **by position** (the result takes the first SELECT's
-  column names);
-- **types that combine**, column by column (see [Column types](#column-types) below).
-
-If these conditions are not met, the Gateway raises a validation error before executing the query.
+> **The `EXCEPT` set operator is not the `SELECT * EXCEPT(col, …)` column-exclusion clause.** The
+> first removes *rows*, the second removes *columns* from `SELECT *`. Both work; they are unrelated.
 
 **Example**
 
@@ -646,20 +678,109 @@ UNION ALL
 SELECT id, name FROM dql_users WHERE age <= 30;
 ```
 
+```sql
+-- Customers who ordered in both quarters, de-duplicated
+SELECT customer_id FROM orders_q1
+INTERSECT
+SELECT customer_id FROM orders_q2;
+```
+
+### Columns match by position, not by name
+
+Branches are matched **column by column, left to right** — SQL-92 §7.10 — and the result takes the
+**first branch's** column names. The names the other branches use play no part in the matching:
+
+```sql
+SELECT id AS x FROM left_index
+UNION ALL
+SELECT id AS y FROM right_index;
+-- One column, named x, carrying both branches' ids.
+```
+
+Two consequences worth knowing:
+
+- Reordering a branch's `SELECT` list changes the result, even though the column names still look
+  right. `SELECT a, b … UNION ALL SELECT b, a …` interleaves the two.
+- A branch written as a bare `SELECT *` declares no column list, so there is nothing to match
+  positionally. Such a branch is matched by name instead, and the engine cannot check its width.
+  Name the columns explicitly whenever a branch's shape matters.
+
+> **Changed in `0.24.0`:** before this release the engine matched branches **by name**,
+> so a column the other branch did not name came back `NULL`. Positional matching is both the
+> standard's rule and what every other SQL engine does.
+
+### Compatibility rules
+
+- **Same number of columns.** Checked at parse time, between the branches that declare a column list
+  — a mismatch is rejected before anything runs, naming both branches and their projections.
+- **Types that combine, position by position,** by the rule of [Column types](#column-types) below:
+  a text branch beside any other type makes a `VARCHAR` column, a number beside a date with no text
+  branch is refused. A bare column has no type until the index mapping is read, so the parser lets
+  it through; the check runs again once the schema is attached, and a refused pair is refused
+  **before any request is sent**.
+- **Column names are never compared.** They are output labels, taken from the first branch.
+
+### Precedence and grouping
+
+`INTERSECT` binds tighter than `UNION` and `EXCEPT`; otherwise branches associate left to right
+(SQL-92 §7.10). So this:
+
+```sql
+SELECT a FROM t1 UNION SELECT a FROM t2 INTERSECT SELECT a FROM t3
+```
+
+is `t1 UNION (t2 INTERSECT t3)`.
+
+**Parenthesising a set operation is rejected** — both as a branch (`(a UNION b) INTERSECT c`) and as
+a whole statement. To group differently, use a derived table:
+
+```sql
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g
+INTERSECT
+SELECT a FROM t3;
+```
+
+### ORDER BY and LIMIT
+
+For `UNION ALL` they apply **per branch**, exactly as they always have — each `SELECT` is its own
+Elasticsearch request, and the results are concatenated in branch order.
+
+For every other operator a trailing `ORDER BY` / `LIMIT` after the **last** branch is **rejected**,
+because a set has no branch order to inherit and an analyst writing it almost certainly meant the
+whole result. Say which you meant:
+
+```sql
+-- this branch only
+SELECT a FROM t1 UNION (SELECT a FROM t2 ORDER BY a LIMIT 10);
+
+-- the whole result
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g ORDER BY a LIMIT 10;
+```
+
+A first or middle branch carrying its own `ORDER BY` / `LIMIT` is unambiguous and is accepted without
+parentheses.
+
 ### Execution model
 
-The SQL Gateway executes `UNION ALL` using **Elasticsearch Multi‑Search (`_msearch`)**:
+`UNION ALL` is answered by Elasticsearch, branch by branch:
 
-1. Each SELECT query is translated into an independent ES search request.
-2. All requests are sent in a single `_msearch` call.
-3. The Gateway concatenates the results **in order**, without deduplication.
-4. ORDER BY, LIMIT, OFFSET apply **per SELECT**, not globally (unless wrapped in a subquery, which is not supported).
+1. Each branch is translated into an independent ES search request.
+2. When every branch is bounded — a `LIMIT` within `index.max_result_window` (10,000), or an
+   aggregation — the requests are sent in one **Multi-Search (`_msearch`)** call.
+3. A branch that returns rows with no `LIMIT` (or with one past that window) is read in full by its
+   own paged search, and a branch whose rows the engine still orders, skips or cuts once they are
+   read (a `GROUP BY` of several keys with an `ORDER BY`, a `LIMIT` or an `OFFSET`; a `WHERE` over an
+   `UNNEST` element) runs as its own search too, so each branch answers what the same `SELECT`
+   answers on its own. The branches then run one after the other.
+4. Results are concatenated **in branch order**, without de-duplication or sorting. Within a branch
+   read by a paged search, rows that no `ORDER BY` orders may come back in another order.
 
-### Notes
-
-- `UNION ALL` does **not** sort or deduplicate results.
-- Column names in the final output are taken from the **first SELECT**; the columns of the other
-  SELECTs are matched by position, whatever they are called.
+Every other operator needs de-duplication or set arithmetic across branches, which Elasticsearch has
+no operation for, so the statement runs on the **relational engine** — engine `0.24.0` with
+arrow-extensions `0.3.4`, the same engine that executes cross-index JOINs and derived tables. Each
+branch is executed as its own Elasticsearch query and the set operation is applied to the results. A
+venue without that engine refuses the statement with a clear error rather than answering from one
+branch. See [Known Limitations & Roadmap](known_limitations.md#set-operators).
 
 ### Column types
 
@@ -852,6 +973,280 @@ text, in a column of another type, stays that text.
 The types are compared once each branch's mapping is read; with no mapping to read, nothing is
 refused on types and Elasticsearch answers.
 
+A branch may carry anything a `SELECT` can carry — `GROUP BY`, a `JOIN`, a derived table, a CTE, a
+correlated subquery. A branch that needs the relational engine on its own account is planned as its
+own nested query, so the whole statement routes there.
+
+### What is not supported
+
+- **A set operation as a `WHERE` subquery body.** `WHERE a IN (SELECT … UNION SELECT …)` is rejected;
+  write one subquery per branch.
+- **A set operation across catalogs.** Combining branches with catalog-qualified names
+  (`` `cluster_b`.orders ``) is refused by name: catalogs are resolved by their position in the SQL
+  text, so a branch could silently run on the wrong cluster. Run each branch as its own statement, or
+  drop the catalog prefix.
+- **`CORRESPONDING` / `CORRESPONDING BY`** — SQL's opt-in for name-based matching. Not implemented;
+  positional matching is the only mode.
+
+---
+
+## Subqueries and derived tables
+
+*Since engine `0.24.0`.* A subquery is a `SELECT` nested inside another statement. Two positions are
+accepted, and they behave very differently — one runs on Elasticsearch, the other on the relational
+engine:
+
+| Position | Spelling | Where it runs |
+| --- | --- | --- |
+| `FROM` / `JOIN` — a **derived table** | `FROM (SELECT …) AS d`, `JOIN (SELECT …) AS d ON …` | relational engine (arrow-extensions `0.3.4`) |
+| `WHERE`, **uncorrelated** | `IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified | **Elasticsearch**, in two phases — every venue, the plain REPL included |
+| `WHERE`, **correlated** (the body reads an outer alias) | the same spellings | relational engine |
+
+That middle row is the one worth remembering: *"subqueries are supported"* is true everywhere for the
+uncorrelated `WHERE` forms and only at an engine venue for the other two. See
+[Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine) for the
+per-venue table.
+
+### Derived tables
+
+A derived table is a `SELECT` in `FROM` or `JOIN` position. **The alias is mandatory** — SQL-92 calls
+it a correlation name — and leaving it off is refused by name rather than guessed at:
+
+```sql
+SELECT d.country, d.total
+FROM (SELECT country, SUM(amount) AS total FROM orders GROUP BY country) AS d
+WHERE d.total > 1000;
+```
+
+`AS` is optional (`… ) d` is the same thing), so the SQL the BI tools generate on their own —
+Tableau's connection and row-count probes, Superset's series limit — is accepted as written.
+
+```sql
+-- in JOIN position
+SELECT o.id, d.total
+FROM orders o
+JOIN (SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id) AS d
+  ON o.customer_id = d.customer_id;
+```
+
+Bodies **nest to any depth**, and a body may itself carry a `JOIN`, a `GROUP BY`, its own `ORDER BY`
+/ `LIMIT`, or a set operation:
+
+```sql
+-- a set operation grouped by a derived table, the spelling that replaces parentheses
+SELECT * FROM (SELECT a FROM t1 UNION SELECT a FROM t2) AS g;
+
+-- the body's LIMIT bounds the body; the outer statement is ordered and limited separately
+SELECT d.total FROM (SELECT SUM(amount) AS total FROM orders GROUP BY country) AS d
+ORDER BY d.total DESC LIMIT 5;
+```
+
+A body written as `SELECT *` is **opaque**: it declares no column list, so the engine cannot know its
+width until the index mapping is read. That is legal and is exactly what the BI probes emit:
+
+```sql
+SELECT MAX(1) AS TblMax FROM (SELECT * FROM orders) t;
+```
+
+#### How an unqualified name resolves — a deliberate deviation from SQL-92
+
+When a name in the outer query is **not** qualified with an alias, it resolves to the sole plain
+index in the `FROM` clause, **not** to the derived table — even though the derived table is also in
+scope:
+
+```sql
+SELECT country, SUM(amount) AS total
+FROM orders
+JOIN (SELECT country AS c2 FROM orders GROUP BY country) AS d ON country = c2
+GROUP BY country;
+-- `country` and `amount` resolve against `orders`; `c2` is the only name `d` projects.
+```
+
+Strict SQL-92 would call `country` ambiguous. Resolving it this way is what makes Superset's
+series-limit query — which projects renamed columns from its inner query precisely so the outer names
+stay unambiguous — run as written. **Qualify the name** (`orders.country`, `d.c2`) whenever you want
+to be explicit; a qualified name always wins.
+
+#### Column aliases on the derived table itself
+
+`FROM (SELECT id FROM orders) AS d (x)` — a column list on the correlation name — is **not
+supported**. Alias the columns inside the body instead: `(SELECT id AS x FROM orders) AS d`.
+
+### Subqueries in `WHERE`
+
+Six spellings, all accepted in a `SELECT`, a `DELETE` and an `UPDATE`:
+
+```sql
+SELECT name FROM employees WHERE department_id IN     (SELECT id FROM departments WHERE region = 'EU');
+SELECT name FROM employees WHERE department_id NOT IN (SELECT id FROM departments WHERE region = 'EU');
+SELECT name FROM customers c WHERE EXISTS     (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+SELECT name FROM employees WHERE salary > (SELECT AVG(salary) FROM employees);
+SELECT name FROM employees WHERE department_id = ANY  (SELECT id FROM departments);
+SELECT name FROM employees WHERE department_id <> ALL (SELECT id FROM departments);
+```
+
+`SOME` is a synonym for `ANY`. The ordering quantifiers (`> ALL`, `>= ANY`, `< ALL`, `<= SOME`, …) are
+accepted too and are reduced against the value list rather than sent to Elasticsearch as such.
+
+```sql
+DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+UPDATE orders SET status = 'eu' WHERE customer_id IN (SELECT id FROM customers WHERE region = 'EU');
+```
+
+#### The comparison must be written subquery-on-the-right
+
+A scalar or quantified subquery is accepted only on the **right-hand side** of the comparison.
+`WHERE (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) > 5` is rejected — and the message
+it produces (`Unbalanced parentheses`) does not say why. Flip the comparison:
+
+```sql
+-- rejected
+-- SELECT c.name FROM customers c WHERE (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) > 5;
+
+-- accepted, same meaning
+SELECT c.name FROM customers c WHERE 5 < (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id);
+```
+
+#### How an uncorrelated `WHERE` subquery executes
+
+In **two phases**, both on Elasticsearch, which is why these forms work at every venue including the
+plain REPL:
+
+1. The inner query runs first, and its distinct values are collected.
+2. Those values are injected into the outer query as a literal `terms` filter, and the outer query
+   runs as an ordinary search.
+
+The inner result set is therefore **bounded**: past `index.max_terms_count` (65,536 by default) the
+statement fails loudly rather than truncating silently. Narrow the inner query, or raise the index
+setting.
+
+Elasticsearch's own `terms` lookup is not what this uses and could not be: it reads **one document by
+id**, and cannot express a query.
+
+#### `NOT IN` and `NULL`
+
+Standard SQL three-valued logic applies. If the inner query returns **any** `NULL`, `x NOT IN
+(SELECT …)` is UNKNOWN for every row and the statement returns nothing. That is correct SQL and a
+frequent surprise — add `WHERE <col> IS NOT NULL` to the inner query when the column is nullable.
+
+> **One carve-out, and it fails the other way.** The engine detects the `NULL` by re-running the
+> inner query with an `IS NULL` filter. When the inner query carries a `GROUP BY`, that probe is a
+> grouped query too, and Elasticsearch's `terms` aggregation **drops the missing-value group** — so
+> a `NULL` in a `GROUP BY` body is invisible and `NOT IN` returns rows the rule above says it
+> should not. Filter the `NULL` out explicitly in that body rather than relying on the detection.
+
+### Correlated subqueries
+
+A subquery whose body reads a column from the enclosing query is **correlated**, and it runs on the
+relational engine:
+
+```sql
+SELECT c.name FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+```
+
+One rule the engine enforces by name, and one convention nothing can enforce for you:
+
+- ⚠️ **The outer reference must be QUALIFIED — and this one is not refused.** A bare name inside the
+  body is read as the body's own column, which is a perfectly legal statement, so nothing rejects it:
+  `… WHERE o.customer_id = id` stops being correlated and runs as an ordinary uncorrelated subquery,
+  returning **different rows with HTTP 200**. It is the only mistake in this family that fails
+  silently. Always write the outer alias — `… WHERE o.customer_id = c.id`.
+- **The outer reference must be UNQUOTED** — `"c"."id"` is refused by name. The engine rewrites an
+  outer reference onto the extracted leg, and a quoted identifier is not rewritten.
+- **The body must be a single Elasticsearch source.** Its own `JOIN`, a comma-separated `FROM`, a
+  `JOIN UNNEST`, a derived table or a window function inside the body are refused; move the construct
+  to the outer `FROM` and correlate against it.
+
+A correlated subquery costs one relational operation against your plan's `maxJoins` allowance; a
+derived table costs nothing on its own. See
+[Known Limitations & Roadmap](known_limitations.md#licensing).
+
+### What is not supported
+
+- **A subquery in the `SELECT` list** — `SELECT (SELECT MAX(amount) FROM orders) AS m …` does not
+  parse.
+- **A subquery in `HAVING`** — any subquery, correlated or not, refused by name. Compute the value
+  separately or move the condition to `WHERE`.
+- **`LATERAL`** — a derived table that reads an alias from the enclosing `FROM`. Refused by name, with
+  the rewrite in the message.
+- **A set-operation body** — `IN (SELECT … UNION ALL SELECT …)`. Write one subquery per branch.
+- **A `FROM`-less body** — `IN (SELECT 1)`. Write the literal list.
+- **More than one projected column** in an `IN` / quantified / scalar body.
+- **A subquery in a `CASE WHEN` condition** — refused by name; filter in `WHERE`, or compute the flag
+  in a separate query.
+- **A subquery in a `JOIN … ON` clause.** ⚠️ Its message names neither subqueries nor a rewrite — it
+  reads *"ON clause … must use either equality operator or AND predicate"*. Join on a plain equality
+  and move the subquery to `WHERE`.
+- **A `WHERE` subquery inside `CREATE MATERIALIZED VIEW`** — refused by name: an Elasticsearch
+  transform cannot run the inner query. Resolve it into the view's source, or keep it in the queries
+  you run against the view.
+- **A `FROM`-less `SELECT` used as a set-operation branch** — `SELECT 1 UNION ALL SELECT id FROM t`
+  is a syntax error. Worth knowing because `SELECT 1` is the connection-handshake idiom; it does not
+  compose into a set operation.
+
+---
+
+## Common table expressions
+
+*Since engine `0.24.0`.* A `WITH` clause names one or more subqueries at the top of a `SELECT`:
+
+```sql
+WITH monthly AS (SELECT category, SUM(amount) AS total FROM orders GROUP BY category)
+SELECT category, total FROM monthly;
+```
+
+A CTE reference **is** a derived table — the same construct under a name — so a statement carrying a
+`WITH` runs where derived tables run: on the relational engine, at a venue that has it.
+
+### Scope is left to right
+
+Each CTE may reference the CTEs declared **before** it, never itself and never a later one:
+
+```sql
+WITH a AS (SELECT id FROM orders),
+     b AS (SELECT id FROM a)
+SELECT id FROM b;
+```
+
+A CTE may be referenced wherever the statement reads a table — in `FROM` and in a `JOIN`:
+
+```sql
+WITH eu AS (SELECT id FROM departments WHERE region = 'EU')
+SELECT e.name FROM employees e JOIN eu ON e.department_id = eu.id;
+```
+
+Naming a CTE inside a **`WHERE` subquery body** parses but does **not** run: the reference inside the
+body is never resolved, so the body reaches Elasticsearch asking for an index with the CTE's name and
+the statement fails with a `404 index_not_found_exception` naming it. Loud, never silent. Read the
+CTE in `FROM` or `JOIN` instead.
+
+### A CTE referenced twice is executed twice
+
+The semantics are **inline**, not materialised: naming a CTE does not cache it. A CTE referenced
+twice runs twice, which costs twice and — on a changing index — may not return identical rows both
+times.
+
+```sql
+WITH m AS (SELECT category, SUM(amount) AS total FROM orders GROUP BY category)
+SELECT l.category, l.total, r.total AS again FROM m l JOIN m r ON l.category = r.category;
+```
+
+### What is not supported
+
+- **`WITH RECURSIVE`** — refused by name. There is no rewrite that recovers arbitrary-depth
+  recursion; flatten the hierarchy at index time (store a path or a level on each document), or run
+  one statement per level.
+- **CTE column lists** — `WITH a (x, y) AS (…)`. Alias the columns in the CTE's own `SELECT` list.
+- **A body that names the CTE itself** — `WITH orders AS (SELECT … FROM orders)` is refused, with a
+  rename suggested in the message. PostgreSQL binds such a name to the base table; this engine does
+  not guess. Give the CTE a different name.
+- **`WITH` anywhere but the top of a `SELECT`** — not in a subquery body, not in `CREATE TABLE … AS
+  SELECT`, not in `INSERT … SELECT`, not in a materialized view.
+
+A column or alias genuinely named `recursive` still works — quote it (`WITH "recursive" AS (…)`).
+
 ---
 
 ## JOIN UNNEST
@@ -967,6 +1362,26 @@ elements per parent, or up to the index's own `index.max_inner_result_window` wh
 lower. A parent holding more elements is cut without an error: measured on Elasticsearch 6.8,
 7.17, 8.18 and 9.0, a 101-element parent returns 100 rows, its last element dropped.
 
+### A condition over a nested column, without JOIN UNNEST
+
+Without a `JOIN UNNEST`, a `WHERE` condition over a column of a `nested` field keeps the **documents**
+one of whose elements satisfies it, as `EXISTS` over the unnested list does in SQL — one row per
+document, not one per element (*since `0.24.0`*):
+
+```sql
+-- the orders that hold at least one item with a quantity of 2 or more
+SELECT id FROM dql_orders WHERE items.quantity >= 2;
+```
+
+Conditions over the same nested path, joined by `AND` or `OR`, are tested on **one** element, as over
+a `JOIN UNNEST`; conditions over different paths are each tested on their own path, and so are two
+`NESTED(…)` conditions over two paths. A function over the column (`UPPER(items.product) = 'A'`)
+is tested on the element too. A condition no single nested query can test — one that reads two
+nested paths, or a nested column beside a column of the document, or a path nested below another —
+is refused by name before any request. Before `0.24.0`, such a condition matched no document, and a
+`WHERE NESTED(…)` written without a `JOIN UNNEST` matched every document. In a materialized view's
+`WHERE`, write the `NESTED(…)` condition: the implicit form matches nothing there.
+
 ---
 
 ## Aggregations
@@ -1055,8 +1470,13 @@ ORDER BY COUNT(*) DESC;
 
   The key of such a function reads back as the type it reports: a number for a function that
   answers one (`YEAR(created_at)` answers `2024`, `n + 0` a number), ordered as a number
-  (`ORDER BY DAY(created_at) DESC` answers `31, 20, 11, 5, 3`), and text otherwise. A level that
-  carries a `HAVING` condition on its key keeps reading it as text. A bare
+  (`ORDER BY DAY(created_at) DESC` answers `31, 20, 11, 5, 3`), beside a `HAVING` condition on the
+  key too, and text otherwise. A conditional
+  key (`COALESCE(n, 2)`, `GREATEST`, `LEAST`, a `CASE`) is grouped as a number only when every one
+  of its arguments is that kind of number: over a `scaled_float`, `ip` or `geo_point` column, or a
+  column no mapping types, it keeps text keys, so no two values are merged. A key over a field the
+  index does not map reads that field as `NULL`, and its rows form no group (a `GROUP BY` level forms
+  no `NULL` group). A bare
   `DATE` column's key reads back as a timestamp at midnight UTC. On Elasticsearch 6, a key that
   formats a date column as stored (`DATE_FORMAT(created_at, …)`, `DATETIME_FORMAT(created_at, …)`)
   is refused: truncate the column first, `DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m')` or
@@ -1145,14 +1565,20 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   is a column or a function of columns written as in `GROUP BY`
   (`GROUP BY UPPER(city) HAVING UPPER(city) = 'PARIS'`, `GROUP BY LENGTH(code) HAVING LENGTH(code)
   IN (2, 3)`). Elasticsearch compares a function key with the condition as the text of its value,
-  so such a condition is applied where that text is known: the type of every column the function
-  reads comes from the index mapping, no column is a date, and the function returns text, a
-  boolean or a whole number written as an integer (`LENGTH(code) = 2`, not `2.0`). Otherwise it is
-  refused by name — a function over a date column (`CONCAT(created, '')`), a function whose result
-  is a decimal number or of a precision not known in advance (`ABS(amount)`, `SQRT(x)`,
-  `price * 1.5`), a whole number written with a decimal part (`LENGTH(code) = 2.0`), or any such
-  condition where no mapping of the source can be read (an index that did not exist when it was
-  last queried, a client that reads no mapping).
+  so such a condition is applied where that text is known, from the index mapping:
+  - a function that returns a **number**, over whole-number, `double`, text, date or boolean
+    columns, matches the number however it is written, quoted or not: the condition is sent in
+    every text a number of that value prints (`5` as `"5"` and `"5.0"`), so `GROUP BY SQRT(n)
+    HAVING SQRT(n) = 2`, `GROUP BY LENGTH(code) HAVING LENGTH(code) = 2.0` and `GROUP BY MONTH(d)
+    HAVING MONTH(d) IN (1.0, 3.0)` are answered (*since `0.24.0`*);
+  - a function that returns **text** computed from text columns alone (`UPPER`, `LOWER`,
+    `SUBSTRING`, `CONCAT`, `TRIM` of text columns) matches the text written.
+
+  Otherwise it is refused by name — a function over a `REAL` (`float`) column or a cast to `REAL`
+  (`ABS(r) = 0.1`, `r * 10 = 1`), whose script computes in double where SQL computes in single
+  precision; a function that returns text from a date or a number (`CONCAT(created, '')`); a key
+  that returns a date (below); or any such condition where no mapping of the source can be read (an
+  index that did not exist when it was last queried, a client that reads no mapping).
   On a `keyword`, `integer`, `long`, `double` or `boolean` key, `=`, `<>`, `IN` and `NOT IN` keep or
   remove **exactly** the values written, on every supported release: a `.`, `*`, `(`, `\` or `'` in a
   value is an ordinary character, and a numeric or boolean key is compared as a number or a boolean.
@@ -1220,6 +1646,22 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 
   The refused rows previously returned a plausible-looking but WRONG set of groups. Otherwise:
   split the query, or restate the condition as an `OR` of equalities or an `AND` of inequalities.
+
+  On a `keyword`, integer or `double` key, and on a function key of the kinds above, a combination
+  is decided on the two lists Elasticsearch actually receives (*since `0.24.0`*): it is answered
+  when they keep exactly the groups SQL keeps, whatever its shape, and refused by name otherwise.
+  So `HAVING city = 'Lyon' OR city LIKE 'L%'` is answered — the pattern already covers the value —
+  while `city = 'Paris' OR city LIKE 'L%'` stays refused. On an integer or `double` key, values are
+  compared as numbers there: `HAVING n = 5 AND (n <> 7 OR NOT n = 5.0)` is refused, because the lists
+  would keep and remove the same group. An `RLIKE` beside another condition on the key is refused
+  (see [Known limitations](known_limitations.md#group-by-the-null-group-and-keys-over-unnest)).
+- **`HAVING city IS NOT NULL` keeps every group**, on any key (*since `0.24.0`*; it was refused),
+  and so do `ISNOTNULL(city)` and `NOT ISNULL(city)` written after an operator: a `GROUP BY` level
+  forms no `NULL` group, so no group is removed. Beside an aggregate condition it drops out
+  (`HAVING city IS NOT NULL AND COUNT(*) > 1` is the group filter alone). Beside a value of the same
+  key it is decided like any combination below: `city IS NOT NULL AND city = 'Paris'` keeps
+  `Paris`, while `city IS NOT NULL OR city = 'Paris'` is refused — it keeps every group, so remove
+  the `OR`. `HAVING city IS NULL` is refused.
 - ⚠️ **A FUNCTION of the key is refused when the `GROUP BY` key is the column itself**
   (`GROUP BY city HAVING UPPER(city) = 'PARIS'`, `GROUP BY status HAVING LENGTH(status) = 1`). The
   terms filter can only express a direct comparison, and the alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
@@ -1269,6 +1711,30 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 > over the `MIN`, `MAX`, `AVG` or a percentile of a group with no value could keep or drop the wrong groups:
 > the group filter was handed Elasticsearch's placeholder for an aggregate over no value (`NaN`),
 > not NULL.
+
+#### Keys from `JOIN UNNEST`
+
+- An aggregate over the array is answered **per group**, including an aggregate of the grouping
+  field itself: `MIN(items.quantity)` grouped by `items.quantity` returns each group's own value
+  (since **0.24.0**; it answered NULL on every group before).
+- When the index mapping is known, an `UNNEST` key listed **before** a root key is grouped exactly
+  as the root-first spelling: `GROUP BY items.quantity, o.customer_id` and
+  `GROUP BY o.customer_id, items.quantity` return the same groups and the same aggregates of the
+  array (since **0.24.0**).
+- ⚠️ An aggregate of a **root** field (`COUNT(*)`, `COUNT(o.id)`) beside an `UNNEST` key is not
+  answered per group yet. Aggregate a field of the array instead (`COUNT(items.quantity)`).
+- ⚠️ With two `UNNEST`s in one statement, an aggregate counts the entries of its own array only:
+  the other array does not multiply its rows.
+
+```sql
+SELECT items.quantity, MIN(items.quantity) AS lowest, SUM(items.price) AS total
+FROM dql_orders o JOIN UNNEST(o.items) AS items
+GROUP BY items.quantity;
+
+SELECT items.quantity, o.customer_id, COUNT(items.quantity) AS cnt, SUM(items.price) AS total
+FROM dql_orders o JOIN UNNEST(o.items) AS items
+GROUP BY items.quantity, o.customer_id;
+```
 
 #### GROUP BY without an aggregate
 
@@ -1632,7 +2098,9 @@ FROM dql_users;
 | `DATE_SUB(date, INTERVAL n unit)`   | Subtract interval                                                                             |
 | `DATETIME_ADD(ts, INTERVAL n unit)` | Add interval to timestamp                                                                     |
 | `DATETIME_SUB(ts, INTERVAL n unit)` | Subtract interval from timestamp                                                              |
+| `TIMESTAMPADD(unit, n, ts)`         | Add `n` units, ODBC unit-first order; `n` may be negative, `SQL_TSI_*` unit names accepted    |
 | `DATE_DIFF(date1, date2, unit)`     | `date1 - date2` in units: the calendar boundaries crossed (UTC, weeks start on Monday)        |
+| `TIMESTAMPDIFF(unit, date1, date2)` | `date2 - date1` in units: the whole units elapsed, as MySQL counts them                       |
 | `DATE_TRUNC(date, unit)`            | Truncate to unit                                                                              |
 
 ##### **Formatting & parsing:**
@@ -1677,6 +2145,12 @@ FROM dql_users;
 ```sql
 POINT(latitude, longitude)
 ```
+
+Latitude comes first and longitude second — **not** the GeoJSON order. Latitude runs from -90 to 90,
+longitude from -180 to 180, in the WGS84 (EPSG:4326) reference system. `POINT` has no standalone
+form: it is only accepted as an argument to `ST_DISTANCE`. Each coordinate must be written with a
+decimal point — `POINT(1.0, 2.0)` is accepted, `POINT(1, 2)` is not. Supported distance units: `km`,
+`m`, `cm`, `mm`, `mi`, `yd`, `ft`, `in`, `nmi`.
 
 ##### **ST_DISTANCE:**
 
@@ -1816,8 +2290,32 @@ Notes:
 
 - `LIMIT` and `OFFSET` are applied by the SQL engine after retrieving documents from Elasticsearch
 - Deep pagination may require scroll
-- When using `search_after`, an explicit `ORDER BY` clause is required for deterministic pagination
+- `search_after` (Elasticsearch 6, and 7 before 7.12) needs no `ORDER BY`: without one the rows are
+  paged in `_id` order, and with one `_id` is the tie-breaker. Since `0.24.0`, on Elasticsearch 6,
+  a statement without `LIMIT` over a pattern that includes an index created without any mapping is
+  read in full, even when that index is empty: the `_id` order no longer fails that index's shards
 - Without `ORDER BY`, result ordering is not guaranteed
+
+### When some shards fail
+
+Elasticsearch answers a search on which **some** shards fail with HTTP 200 and the rows of the
+shards that succeeded. Since `0.24.0` such a search **answers an error instead**, never the partial
+rows — a one-shot search, a `UNION ALL` branch, and every scroll, `search_after` or point-in-time
+page alike:
+
+- the message reads `n of m shards failed: <type>: <reason> (caused by <type>: <reason>)`, and a
+  search on which every shard fails ends with the failed shard's own reason
+  (`… all shards failed; runtime error: For input string: "x"`);
+- the status is `400` when every failure is the query's own — a script error, a query that does not
+  apply to a mapping — and is otherwise not set; such a page fails at once and is not retried;
+- there is no setting that returns the partial rows.
+
+Three shapes that would otherwise fail over an index pattern or a list are answered instead: a sort
+over a column some of the indices do not map sorts their documents as `NULL`; a nested, `UNNEST`,
+`CHILD(…)` or `PARENT(…)` condition matches none of the documents of an index that does not map its
+path or relation, when another index of the pattern does; and a distance filter over a geo column
+some indices do not map matches none of theirs. An un-`LIMIT`ed query with a window function whose
+window computation fails answers an error too, instead of rows without their window values.
 
 ---
 
@@ -1827,7 +2325,11 @@ Notes:
 |--------------------------------|-----|-----|-----|-----|
 | Basic SELECT                   | ✔   | ✔   | ✔   | ✔   |
 | Nested fields                  | ✔   | ✔   | ✔   | ✔   |
-| UNION ALL                      | ✔   | ✔   | ✔   | ✔   |
+| Set operators                  | ✔   | ✔   | ✔   | ✔   |
+| Derived tables                 | ✔   | ✔   | ✔   | ✔   |
+| `WHERE` subqueries             | ✔   | ✔   | ✔   | ✔   |
+| Correlated subqueries          | ✔   | ✔   | ✔   | ✔   |
+| CTEs (non-recursive)           | ✔   | ✔   | ✔   | ✔   |
 | Cross-index JOINs              | ✔   | ✔   | ✔   | ✔   |
 | JOIN UNNEST                    | ✔   | ✔   | ✔   | ✔   |
 | Aggregations                   | ✔   | ✔   | ✔   | ✔   |
@@ -1837,17 +2339,23 @@ Notes:
 | Date/time functions            | ✔   | ✔   | ✔   | ✔   |
 | String / math functions        | ✔   | ✔   | ✔   | ✔   |
 
+A ✔ here means the Elasticsearch major does not stand in the way — every row was executed against
+that version. It is not a statement about the venue: derived tables, CTEs, correlated subqueries and
+the set operators other than `UNION ALL` need the relational engine wherever they run, on every one
+of these versions alike. See
+[Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine).
+
 ---
 
 ## Limitations
 
-For the full picture of what works in R1, what's coming in R2a/R2b, and BI-tool workarounds, see [Known Limitations & Roadmap](known_limitations.md).
+For the full picture of what works in this release, what is refused and why, and BI-tool notes, see [Known Limitations & Roadmap](known_limitations.md).
 
 Even though the DQL engine is powerful, some SQL features are not (yet) supported:
 
 - Cross-index JOINs (`INNER` / `LEFT` / `RIGHT` / `FULL OUTER`) are supported across indices and clusters — see [Cross-Index JOIN](joins.md). `JOIN UNNEST` on `ARRAY<STRUCT>` is the single-index nested form, handled natively inside one index.
-- No correlated subqueries
-- No arbitrary subqueries in `SELECT` or `WHERE` (except `INSERT ... AS SELECT` in DML)
+- **Since engine `0.24.0`**, subqueries in `WHERE` (`IN` / `NOT IN` / `EXISTS` / `NOT EXISTS` / scalar / quantified) and derived tables in `FROM` / `JOIN` are supported, correlated or not — see [Subqueries and derived tables](#subqueries-and-derived-tables) for the reference and [Known Limitations & Roadmap](known_limitations.md#subqueries-and-derived-tables) for the venue requirements. Set operators — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported too; see [Set operators](#set-operators). Still not supported: a subquery in the `SELECT` list, a subquery in `HAVING`, `LATERAL`, and a set operation used as a subquery body.
+- **Since engine `0.24.0`**, non-recursive CTEs (`WITH name AS (SELECT …)`) are supported at the top of a `SELECT`, each one able to reference the CTEs declared before it — see [Common table expressions](#common-table-expressions). Still not supported: `WITH RECURSIVE`, CTE column lists (`WITH a (x, y) AS …`), a CTE body that names the CTE itself, and a `WITH` clause anywhere other than the top of a `SELECT` (not in a subquery body, CTAS, `INSERT … SELECT` or a materialized view).
 - No `GROUPING SETS`, `CUBE`, `ROLLUP`
 - No `DISTINCT ON`
 - No explicit window frame clauses (`ROWS BETWEEN ...`)
