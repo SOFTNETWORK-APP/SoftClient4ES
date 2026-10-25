@@ -1000,14 +1000,20 @@ trait ElasticConversion {
   protected def flattenInnerHits(
     rows: Seq[ListMap[String, Any]],
     nestedHits: Map[String, Seq[(String, String)]]
-  ): Seq[ListMap[String, Any]] = {
+  )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     if (nestedHits.isEmpty) rows
-    else rows.flatMap(row => explodeRow(row, nestedHits))
+    else {
+      // the reader of each conversion of a bare element column (`ElementConversions`), decided
+      // once per call: an empty map adds no per-row work
+      val conversions = context.elementConversions
+      rows.flatMap(row => explodeRow(row, nestedHits, conversions))
+    }
   }
 
   private def explodeRow(
     row: ListMap[String, Any],
-    nestedHits: Map[String, Seq[(String, String)]]
+    nestedHits: Map[String, Seq[(String, String)]],
+    conversions: Map[String, Any => Any]
   ): Seq[ListMap[String, Any]] = {
     // Find first inner hit array in the row that matches nestedHits keys
     nestedHits.find { case (hitName, _) =>
@@ -1021,17 +1027,27 @@ trait ElasticConversion {
         if (innerHitsList.isEmpty) Seq(baseRow)
         else
           innerHitsList.flatMap { innerHitElement =>
-            // Map sub-fields to output field names
-            val mappedFields = fieldMappings.map { case (subField, outputName) =>
-              outputName -> innerHitElement.getOrElse(subField, null)
-            }
+            // Map sub-fields to output field names -- a converted column through its reader
+            val mappedFields =
+              if (conversions.isEmpty)
+                fieldMappings.map { case (subField, outputName) =>
+                  outputName -> innerHitElement.getOrElse(subField, null)
+                }
+              else
+                fieldMappings.map { case (subField, outputName) =>
+                  val value = innerHitElement.getOrElse(subField, null)
+                  outputName -> (conversions.get(outputName) match {
+                    case Some(convert) => convert(value)
+                    case None          => value
+                  })
+                }
             // Carry forward any nested inner hit arrays from this element for recursive processing
             val subInnerHits = remainingNestedHits.keys.flatMap { subHitName =>
               innerHitElement.get(subHitName).map(subHitName -> _)
             }
             val newRow = baseRow ++ ListMap(mappedFields: _*) ++ subInnerHits
             // Recurse for deeper nesting levels
-            explodeRow(newRow, remainingNestedHits)
+            explodeRow(newRow, remainingNestedHits, conversions)
           }
 
       case None => Seq(row) // No more inner hits to explode

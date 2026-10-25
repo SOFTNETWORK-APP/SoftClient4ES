@@ -17,9 +17,14 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.{FromTo, Identifier, PainlessScript, Token, Value}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.function.{FunctionChain, FunctionN}
 import app.softnetwork.elastic.sql.function.cond.{Case, Coalesce}
+import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
+import app.softnetwork.elastic.sql.function.time.DateTrunc
+import app.softnetwork.elastic.sql.schema.Column
+import app.softnetwork.elastic.sql.time.TimeUnit
 
 /** Is a value the engine computes with a Painless script evaluated against a document that holds
   * the columns it reads?
@@ -66,7 +71,13 @@ import app.softnetwork.elastic.sql.function.geo.Distance
   *     leaf the nested-query machinery places itself;
   *   - in a top-level WHERE leaf only, a bare UNNEST column after a non-null literal in `COALESCE`
   *     (`COALESCE('x', i.s) = 'x'`): never the answer, so not a read ([[whereReadsOf]]);
-  *   - GROUP BY / HAVING / ORDER BY: other mechanisms, not part of this rule.
+  *   - GROUP BY / HAVING / ORDER BY: other mechanisms, not part of this rule;
+  *   - ONE conversion of a BARE element column projected in a row statement ([[ElementConversion]]:
+  *     `CAST(i.n AS VARCHAR)`, `TRY_CAST(i.n AS SMALLINT)`, `i.d::DATE`, `CONVERT(VARCHAR, i.d)`,
+  *     `DATE_TRUNC(HOUR, i.d)`): no script is emitted for it. The row explosion places the
+  *     element's value, read as every UNNEST column is read, and the READER converts it, as DuckDB
+  *     converts it. Beside a window function it stays refused: the window-enriched route reads its
+  *     rows without that conversion.
   */
 object UnnestScope {
 
@@ -274,7 +285,11 @@ object UnnestScope {
       // that RUNS: a window-enriched row query executes `withoutWindows` (its own `scriptFields` is
       // empty beside a window, which counts as an aggregate).
       val runs = if (ss.windowRowQuery) ss.withoutWindows else ss
-      val select = runs.scriptFields.flatMap { f =>
+      // an element conversion is no script field ([[elementConversions]]): the reader answers it,
+      // except beside a window, whose rows are read without it
+      val besideWindow =
+        if (ss.windowRowQuery) elementConversions(runs).map(_.field) else Nil
+      val select = (runs.scriptFields ++ besideWindow).flatMap { f =>
         outside(None)(readsOf(f.identifier)).map(Violation("SELECT", f.identifier.sql, _, None))
       }
       // WINDOW -- its VALUE argument (never its PARTITION BY / ORDER BY) is evaluated by the
@@ -315,6 +330,169 @@ object UnnestScope {
 
   /** The refusal `SingleSearch.validate()` returns, if any. */
   def refusal(ss: SingleSearch): Option[String] = violations(ss).headOption.map(_.message)
+
+  /** ONE conversion of a BARE UNNEST element column, projected by a row statement, that the READER
+    * answers: the element's value is placed by the row explosion, read as every UNNEST column is
+    * read (`SingleSearch.nestedHitsMappings`), and converted there, as DuckDB converts it -- never
+    * by a script, which Elasticsearch evaluates once per PARENT, where the element is not visible.
+    *
+    * MEASURED on v0.23.0 (ES 8.18.3): the script answered NULL and the row explosion wrote the RAW
+    * element over it, so `CAST(i.qty AS VARCHAR)` answered the right digits as an Integer, and
+    * `TRY_CAST(i.sku AS INTEGER)` answered `'s1'` where DuckDB answers NULL.
+    *
+    * @param field
+    *   the SELECT item, as `fieldsWithComputedAliases` names it
+    * @param output
+    *   the row's column ([[Field.outputName]])
+    * @param path
+    *   the element column's full path in the index (`items.qty`), which its schema column is found
+    *   by
+    * @param target
+    *   the conversion's target type; `None` for a `DATE_TRUNC`
+    * @param safe
+    *   `TRY_CAST` / `SAFE_CAST`: a value the conversion cannot convert is NULL, not a failure
+    * @param truncation
+    *   the unit of a `DATE_TRUNC`
+    */
+  final case class ElementConversion(
+    field: Field,
+    output: String,
+    path: String,
+    target: Option[SQLType],
+    safe: Boolean,
+    truncation: Option[TimeUnit]
+  ) {
+    def expression: String = field.identifier.sql
+  }
+
+  /** The targets the reader converts an element to: text, a number, a DATE, a TIMESTAMP. Any other
+    * (`BOOLEAN`, `TIME`, a binary, a structure) stays refused by this rule.
+    */
+  private def readerTarget(t: SQLType): Boolean =
+    t match {
+      case SQLTypes.Varchar | SQLTypes.Char | SQLTypes.Text | SQLTypes.Keyword   => true
+      case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt => true
+      case SQLTypes.Double | SQLTypes.Real                                       => true
+      case SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.DateTime                => true
+      case _                                                                     => false
+    }
+
+  /** The units the reader truncates a date to: every unit of `DATE_TRUNC`. */
+  private def readerUnit(u: TimeUnit): Boolean =
+    u match {
+      case TimeUnit.YEARS | TimeUnit.QUARTERS | TimeUnit.MONTHS | TimeUnit.WEEKS | TimeUnit.DAYS |
+          TimeUnit.HOURS | TimeUnit.MINUTES | TimeUnit.SECONDS =>
+        true
+      case _ => false
+    }
+
+  /** `field` as an [[ElementConversion]], when it is ONE conversion -- `CAST`, `TRY_CAST` /
+    * `SAFE_CAST`, `::`, `CONVERT` -- or ONE `DATE_TRUNC` of a bare column of one of
+    * `unnestAliases`' elements, placed by the row explosion. A chain of two functions, a conversion
+    * of an expression, an aggregate and a window are not.
+    */
+  private def elementConversion(
+    field: Field,
+    unnestAliases: Map[String, (String, Option[Limit])]
+  ): Option[ElementConversion] =
+    field.identifier match {
+      case id: Identifier
+          if id.name.nonEmpty && !id.isAggregation && !id.hasWindow && field.nested =>
+        scopeOf(id, unnestAliases.keySet).flatMap { alias =>
+          // resolved (`GenericIdentifier.update`), the name IS the element column's full path;
+          // a copy `update` never reached keeps the alias as written in its name
+          val path =
+            if (id.tableAlias.contains(alias)) id.name
+            else s"${unnestAliases(alias)._1}.${id.name.substring(id.name.indexOf('.') + 1)}"
+          id.functions match {
+            case (c: Conversion) :: Nil if readerTarget(c.targetType) =>
+              Some(
+                ElementConversion(field, field.outputName, path, Some(c.targetType), c.safe, None)
+              )
+            case (t: DateTrunc) :: Nil if readerUnit(t.unit) =>
+              Some(
+                ElementConversion(field, field.outputName, path, None, safe = false, Some(t.unit))
+              )
+            case _ => None
+          }
+        }
+      case _ => None
+    }
+
+  /** Every [[ElementConversion]] of a row statement, in SELECT order: none for a statement without
+    * UNNEST, one the relational engine plans, and an aggregation statement (whose rows are its
+    * groups). The ONE derivation `SingleSearch.scriptFields` (which emits no script for them),
+    * [[violations]] and the reader (core's `ElementConversions`) read.
+    */
+  def elementConversions(ss: SingleSearch): Seq[ElementConversion] = {
+    val aliases = ss.unnestAliases
+    if (
+      aliases.isEmpty || ss.aggregates.nonEmpty || ss.groupBy.isDefined ||
+      ss.relationalClosureRequired
+    ) Nil
+    else ss.select.fieldsWithComputedAliases.flatMap(elementConversion(_, aliases))
+  }
+
+  /** The schema column of an element conversion's element, from the statement's resolved schema;
+    * `None` without one.
+    */
+  def elementColumn(ss: SingleSearch, c: ElementConversion): Option[Column] =
+    ss.schema.flatMap(_.find(c.path))
+
+  /** The type an element conversion reads its element as: its schema column's DECLARED type, every
+    * text type a `VARCHAR` and a `DATETIME` a `TIMESTAMP`; `ANY` without a schema.
+    */
+  def elementSourceType(ss: SingleSearch, c: ElementConversion): SQLType =
+    elementColumn(ss, c).map(_.dataType).map(foldedSource).getOrElse(SQLTypes.Any)
+
+  private def foldedSource(t: SQLType): SQLType =
+    t match {
+      case SQLTypes.Char | SQLTypes.Text | SQLTypes.Keyword | SQLTypes.Varchar => SQLTypes.Varchar
+      case SQLTypes.DateTime                                                   => SQLTypes.Timestamp
+      case other                                                               => other
+    }
+
+  /** The refusal of an element conversion the column TYPES decide -- asked once the schema is
+    * attached (`SingleSearch.validateResolved`), as every type rule is:
+    *
+    *   - a conversion DuckDB does not implement -- a date to a number, a number or a `BOOLEAN` to a
+    *     date, a `DATE_TRUNC` of no date -- as DuckDB refuses it (`Conversion Error: Unimplemented
+    *     type for cast (DATE -> INTEGER)`); `TRY_CAST` answers NULL instead, as DuckDB's does;
+    *   - a TEXT converted to a `DATE` or a `TIMESTAMP`: DuckDB reads dates out of texts by rules of
+    *     its own (separators, lone digits, a time part, `infinity`) that the reader does not
+    *     reproduce, so its answer would not be exact for every element value.
+    */
+  def elementConversionRefusal(ss: SingleSearch): Option[String] =
+    elementConversions(ss).iterator
+      .flatMap { c =>
+        val source = elementSourceType(ss, c)
+        def unimplemented(target: String): Option[String] =
+          if (c.safe) None
+          else
+            Some(
+              s"Conversion Error: Unimplemented type for cast (${source.typeId} -> $target) in " +
+              s"${c.expression}: ${c.path} is a ${source.typeId} column."
+            )
+        (c.target, c.truncation) match {
+          case (Some(t), _) if t.isTemporal && source.isText =>
+            Some(
+              s"${c.expression} is not supported over an UNNEST column: reading a ${t.typeId} out " +
+              s"of the text of ${c.path} the way DuckDB reads it is not reproduced. Select the " +
+              "column and convert the returned rows."
+            )
+          case (Some(t), _) if t.isTemporal && (source.isNumber || source.isBoolean) =>
+            unimplemented(t.typeId)
+          case (Some(t), _) if t.isNumber && source.isTemporal => unimplemented(t.typeId)
+          case (None, Some(_)) if source != SQLTypes.Any && !source.isTemporal =>
+            Some(
+              s"${c.expression} is not supported: DATE_TRUNC truncates a date, and ${c.path} is " +
+              s"a ${source.typeId} column."
+            )
+          case _ => None
+        }
+      }
+      .toSeq
+      .headOption
 
   /** The inner hits whose ELEMENTS are the rows of a row statement, with the columns each element
     * places in its row: the statement's own row explosion (`SingleSearch.nestedHitsMappings`, an

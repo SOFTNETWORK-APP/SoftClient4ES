@@ -2447,7 +2447,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )(TextColumns.of(single, context)).map(inGroupedRowOrder(single, _))
+          )(TextColumns.of(single, context, setOperationVersion)).map(inGroupedRowOrder(single, _))
     }
   }
 
@@ -2488,7 +2488,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )(ec, TextColumns.of(single, context)).map(_.map(inGroupedRowOrder(single, _)))
+          )(ec, TextColumns.of(single, context, setOperationVersion))
+            .map(_.map(inGroupedRowOrder(single, _)))
     }
   }
 
@@ -2582,7 +2583,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * mapping format (`SetOperationValues.converters`, which asks for it at most once per statement,
     * and only when a position reads a date field: a converting position, or one whose branches
     * agree and hold a date field with a mapping format of its own). For a user denied `GET /`, the
-    * major the client module is built for; `None` for a client that can tell neither.
+    * major the client module is built for; `None` for a client that can tell neither. The reader of
+    * an UNNEST element conversion reads its dates as that version reads them too
+    * (`ElementConversions`).
     */
   private def setOperationVersion: Option[String] =
     this match {
@@ -2630,7 +2633,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         toClientAggregations(leg.sqlAggregations),
         convert,
         // ...read as THIS leg reads its rows on its own: its VARCHAR columns as their text
-        Some(TextColumns.of(leg, context))
+        Some(TextColumns.of(leg, context, setOperationVersion))
       )
     }
   }

@@ -1091,6 +1091,29 @@ private[elastic] object SetOperationValues {
     }
   }
 
+  /** How an UNNEST element's value is READ AS its column's declared type ([[readAs]]) before the
+    * reader converts it (`ElementConversions`): a date by its field's mapping `format`, as the
+    * Elasticsearch major `dates` names reads it, FAILING the statement where that format does not
+    * read it; a number as its field indexes it; a type read as it comes, as it comes. One value
+    * ([[scalarOf]]): an empty array is NULL, an element field holding several values fails with
+    * `nonScalar`.
+    */
+  private[client] def elementReader(
+    source: SQLType,
+    format: Option[String],
+    field: String,
+    column: String,
+    dates: DateReading,
+    nonScalar: String
+  ): Any => Any =
+    readAs(source, format, field, column, dates, keepUnreadable = false) match {
+      case Some(read) => scalarOf(read, nonScalar)
+      case None       => scalarOf(identity, nonScalar)
+    }
+
+  /** A value of `source` as DuckDB spells it when it casts it to `VARCHAR` ([[text]]). */
+  private[client] def textOfType(source: SQLType): Any => Any = text(source)
+
   /** How a value of a branch is READ AS the type the branch declares, before it is converted: as
     * Elasticsearch indexed it -- what its queries and aggregations see -- whatever the JSON
     * `_source` holds (MEASURED, field type by field type, `docvalue_fields` against `_source`):
