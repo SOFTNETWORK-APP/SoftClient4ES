@@ -215,10 +215,11 @@ install.cmd -ListVersions -EsVersion 8
 
   Versions:
 
+    • 0.21.0
     • 0.22.0
     • 0.23.0
 
-  Total: 2 version(s)
+  Total: 3 version(s)
 
   To install a specific version:
     ./install.sh --es-version 8 --version <version>
