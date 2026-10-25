@@ -1298,10 +1298,17 @@ This means:
 Each array element is a separate (nested) Elasticsearch document, and a computed value is evaluated
 against ONE document — so:
 
-- **In SELECT**, a function over an UNNEST column (`UPPER(items.product)`,
-  `items.price * items.quantity`, `CAST(items.product AS VARCHAR)`) is **refused**, beside a window
-  function too: it would be computed once per parent document, where the element's columns are not
-  visible. Select the columns and compute the value from the returned rows.
+- **In SELECT**, a cast or conversion of a bare UNNEST column — `CAST`, `TRY_CAST`, `SAFE_CAST`,
+  `::`, `CONVERT` or `DATE_TRUNC` of the column itself (`CAST(items.product AS VARCHAR)`,
+  `SAFE_CAST(items.quantity AS SHORT)`, `items.quantity::DOUBLE`, `items.date::DATE`) — is
+  **answered**: each element's value is converted as DuckDB does (text, `TINYINT` … `BIGINT`,
+  `DOUBLE` / `REAL`, `DATE`, `TIMESTAMP`; `TRY_CAST` answers NULL where `CAST` fails). A date to a
+  number, a number to a `TIMESTAMP`, a text to a `DATE` / `TIMESTAMP`, a `BOOLEAN` or `TIME` target,
+  a chain of functions, a conversion beside a window function and an `ORDER BY` over a conversion are
+  refused. Any other function over an UNNEST column (`UPPER(items.product)`,
+  `items.price * items.quantity`) is **refused**, beside a window function too: it would be computed
+  once per parent document, where the element's columns are not visible. Select the columns and
+  compute the value from the returned rows.
 - **In WHERE**, a condition whose function is applied directly to the UNNEST column —
   `CAST(items.quantity AS VARCHAR) = '2'`, `ISNULL(items.price) = FALSE`, a date part such as
   `YEAR(<column>) = 2025` or `EXTRACT(MONTH FROM <column>) = 2` — is evaluated on each element and

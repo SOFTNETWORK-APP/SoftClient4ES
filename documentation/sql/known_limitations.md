@@ -538,6 +538,12 @@ column is only a `COALESCE` argument after a non-null literal, which `COALESCE` 
 Both used to answer HTTP 200 with wrong rows — the raw value, NULL, zero rows or every row — and are
 now refused with a `400`: *"A function over an UNNEST column is not supported in …"*.
 
+Answered: a cast or conversion of a bare UNNEST column (`CAST`, `TRY_CAST`, `SAFE_CAST`, `::`,
+`CONVERT`, `DATE_TRUNC` of the column itself), its value converted as DuckDB does. A conversion
+DuckDB refuses by type (a date to a number, a number to a `TIMESTAMP`, a text to a `DATE` /
+`TIMESTAMP`), a `BOOLEAN` or `TIME` target, a chain of functions, a conversion beside a window
+function, and an `ORDER BY` over a conversion stay unsupported.
+
 ```sql
 -- refused
 SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.items) AS items;
