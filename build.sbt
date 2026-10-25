@@ -468,12 +468,11 @@ def cliProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         case _                           => MergeStrategy.first
       },
 
-      Compile / assembly / artifact := {
-        val art: Artifact = (Compile / packageBin / artifact).value
-        art.withClassifier(Some("assembly"))
-      },
-
-      addArtifact(Compile / assembly / artifact, assembly),
+      // The assembly is a downloadable application, published to GitHub Releases by the release
+      // workflow (scripts/publish.sh of SOFTNETWORK-APP/softclient4es-releases), never to JFrog.
+      // An application needs one Scala build only.
+      crossScalaVersions := Seq(scala213),
+      Publish.noPublishSettings,
 
     )
     .settings(ss: _*)

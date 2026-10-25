@@ -86,7 +86,11 @@ On Linux and macOS `install.sh` still expects a suitable Java to be present.
 
 ### Network Requirements
 
-- Network access to JFrog repository (`softnetwork.jfrog.io`)
+- Network access to GitHub (`github.com`, `api.github.com`): the REPL jars are release assets of
+  [softclient4es-releases](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases)
+- On the fallback path only (no `-all` bundle), network access to JFrog (`softnetwork.jfrog.io`)
+  for the extension jars
+- Set `GITHUB_TOKEN` if the anonymous GitHub API limit (60 requests per hour) is reached
 
 ---
 
@@ -206,20 +210,16 @@ install.cmd -ListVersions -EsVersion 8
   Available SoftClient4ES Versions for Elasticsearch 8
 ═══════════════════════════════════════════════════════════════
 
-  Artifact: softclient4es8-cli-all_2.13
+  Artifact: softclient4es8-cli-all
   Java required: 11+
 
   Versions:
 
-    • 0.20.1
-    • 0.20.2
-    • 0.20.3
-    • 0.20.4
     • 0.21.0
     • 0.22.0
     • 0.23.0
 
-  Total: 7 version(s)
+  Total: 3 version(s)
 
   To install a specific version:
     ./install.sh --es-version 8 --version <version>
@@ -232,7 +232,6 @@ install.cmd -ListVersions -EsVersion 8
 | Target directory  | `-t, --target <dir>`     | `-Target <dir>`       | `$HOME/softclient4es`         |
 | ES version        | `-e, --es-version <n>`   | `-EsVersion <n>`      | `8`                           |
 | Software version  | `-v, --version <ver>`    | `-Version <ver>`      | `latest`                      |
-| Scala version     | `-s, --scala <ver>`      | `-ScalaVersion <ver>` | `2.13`                        |
 | List versions     | `-l, --list-versions`    | `-ListVersions`       | —                             |
 
 ### Installation Examples
@@ -297,7 +296,7 @@ softclient4es/
 │   ├── application.conf        # Application configuration
 │   └── logback.xml             # Logging configuration
 ├── lib/
-│   └── softclient4es8-cli-all_2.13-x.y.z-assembly.jar   # self-contained -all bundle
+│   └── softclient4es8-cli-all-x.y.z-assembly.jar   # self-contained -all bundle
 │                               # (fallback/--no-extensions installs: plain cli jar
 │                               #  + extension jars and dependencies, see Extensions)
 ├── logs/                       # Log files directory

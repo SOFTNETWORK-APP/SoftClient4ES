@@ -13,9 +13,15 @@ set -e
 DEFAULT_TARGET_DIR="$HOME/softclient4es"
 DEFAULT_ES_VERSION="8"
 DEFAULT_SOFT_VERSION="latest"
+# The Scala build of the extension jars resolved on the fallback path (the REPL jars are 2.13 only)
 DEFAULT_SCALA_VERSION="2.13"
 
-JFROG_REPO_URL="https://softnetwork.jfrog.io/artifactory/releases/app/softnetwork/elastic"
+# The REPL jars (plain engine and -all bundle) are GitHub release assets: tags cli-vX.Y.Z and
+# cli-all-vX.Y.Z. Set GITHUB_TOKEN to lift the anonymous GitHub API limit (60 requests/hour).
+RELEASES_REPO="${SOFTCLIENT4ES_RELEASES_REPO:-SOFTNETWORK-APP/softclient4es-releases}"
+RELEASES_DOWNLOAD_URL="https://github.com/${RELEASES_REPO}/releases/download"
+RELEASES_API_URL="https://api.github.com/repos/${RELEASES_REPO}/releases"
+# The extension jars (fallback path) are Maven artifacts on JFrog
 JFROG_API_URL="https://softnetwork.jfrog.io/artifactory/api/storage/releases/app/softnetwork/elastic"
 
 GITHUB_RAW_URL="https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/refs/heads/main"
@@ -143,7 +149,6 @@ Options:
                            path this selects a BUNDLE version (the -all artifact
                            has its own version line); with --no-extensions (or
                            when no bundle matches) it selects an ENGINE version.
-  -s, --scala <ver>        Scala version (default: $DEFAULT_SCALA_VERSION)
   -l, --list-versions      List available versions for the specified ES version
                            (bundle versions by default, engine versions with
                            --no-extensions)
@@ -174,7 +179,7 @@ Examples:
   $0
   $0 --list-versions --es-version 8
   $0 --target /opt/softclient4es --es-version 8 --no-extensions
-  $0 -t ~/tools/softclient4es -e 7 -v 0.20.4 --no-extensions
+  $0 -t ~/tools/softclient4es -e 7 -v 0.23.0 --no-extensions
 
 Detected OS: $OS_TYPE
 
@@ -207,10 +212,6 @@ while [[ $# -gt 0 ]]; do
             SOFT_VERSION="$2"
             shift 2
             ;;
-        -s|--scala)
-            SCALA_VERSION="$2"
-            shift 2
-            ;;
         -l|--list-versions)
             LIST_VERSIONS=true
             shift
@@ -227,8 +228,8 @@ while [[ $# -gt 0 ]]; do
             show_help
             ;;
         *)
-            error "Unknown option: $1"
-            show_help
+            error "Unknown option: $1 (see $0 --help)"
+            exit 1
             ;;
     esac
 done
@@ -246,12 +247,15 @@ fi
 # Derived Variables
 # =============================================================================
 
-# Plain artifact: the pure Apache-2.0 engine assembly (published by elasticsql).
-PLAIN_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli_${SCALA_VERSION}"
+# Plain artifact: the pure Apache-2.0 engine assembly (published by elasticsql),
+# release tags cli-vX.Y.Z.
+PLAIN_PRODUCT="cli"
+PLAIN_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli"
 # Bundle artifact: the self-contained -all assembly (engine + community
 # extensions + arrow JOIN extension + all dependencies), published by the
-# softclient4es-repl packaging repo on its OWN version line.
-BUNDLE_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli-all_${SCALA_VERSION}"
+# softclient4es-repl packaging repo on its OWN version line, release tags cli-all-vX.Y.Z.
+BUNDLE_PRODUCT="cli-all"
+BUNDLE_ARTIFACT_NAME="softclient4es${ES_VERSION}-cli-all"
 # ARTIFACT_NAME is finalized by the bundle-selection block below; until then it
 # refers to the plain artifact (fallback/legacy paths).
 ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
@@ -275,11 +279,61 @@ get_required_java_version() {
 REQUIRED_JAVA_VERSION=$(get_required_java_version "$ES_VERSION")
 
 # =============================================================================
-# Fetch Versions from Repository
+# Fetch Versions from GitHub Releases (REPL jars)
+# =============================================================================
+
+# Prints the released versions of a product (tags <product>-vX.Y.Z), sorted.
+fetch_release_versions() {
+    local product="$1"
+    local page=1 response page_tags tags=""
+
+    while [[ $page -le 10 ]]; do
+        local url="${RELEASES_API_URL}?per_page=100&page=${page}"
+        if command -v curl &> /dev/null; then
+            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                response=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$url" 2>/dev/null) || response=""
+            else
+                response=$(curl -fsSL "$url" 2>/dev/null) || response=""
+            fi
+        elif command -v wget &> /dev/null; then
+            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                response=$(wget -qO- --header="Authorization: Bearer $GITHUB_TOKEN" "$url" 2>/dev/null) || response=""
+            else
+                response=$(wget -qO- "$url" 2>/dev/null) || response=""
+            fi
+        else
+            error "curl or wget is required"
+            return 1
+        fi
+
+        if [[ -z "$response" ]]; then
+            if [[ $page -eq 1 ]]; then
+                error "Failed to fetch versions from $RELEASES_API_URL"
+                error "(GitHub API rate limit, or an invalid GITHUB_TOKEN? Set a valid GITHUB_TOKEN and retry)"
+                return 1
+            fi
+            break
+        fi
+
+        page_tags=$(echo "$response" \
+            | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+            | grep -oE '"[^"]+"$' | tr -d '"' || true)
+        [[ -z "$page_tags" ]] && break
+        tags="${tags}${page_tags}"$'\n'
+        # a page of fewer than 100 releases is the last one
+        [[ $(echo "$page_tags" | wc -l) -lt 100 ]] && break
+        page=$((page + 1))
+    done
+
+    echo "$tags" | sed -n "s/^${product}-v\([0-9][0-9.]*\)\$/\1/p" | sort_versions
+}
+
+# =============================================================================
+# Fetch Versions from Repository (extension jars on JFrog)
 # =============================================================================
 
 fetch_versions() {
-    local artifact="${1:-$PLAIN_ARTIFACT_NAME}"
+    local artifact="$1"
     local api_url="${JFROG_API_URL}/${artifact}"
     local response=""
 
@@ -316,16 +370,19 @@ list_available_versions() {
     local listed_artifact versions
     if [[ "$WITH_EXTENSIONS" == true ]]; then
         listed_artifact="$BUNDLE_ARTIFACT_NAME"
-        # `|| true`: an empty bundle listing must fall through (set -e is active)
-        versions=$(fetch_versions "$listed_artifact" 2>/dev/null || true)
+        # A listing that FAILED stops here (its error is printed); only an empty listing falls
+        # through to the plain artifact
+        if ! versions=$(fetch_release_versions "$BUNDLE_PRODUCT"); then
+            exit 1
+        fi
         if [[ -z "$versions" ]]; then
             warn "No -all bundle versions found for $listed_artifact — listing the plain artifact instead"
             listed_artifact="$PLAIN_ARTIFACT_NAME"
-            versions=$(fetch_versions "$listed_artifact")
+            versions=$(fetch_release_versions "$PLAIN_PRODUCT")
         fi
     else
         listed_artifact="$PLAIN_ARTIFACT_NAME"
-        versions=$(fetch_versions "$listed_artifact")
+        versions=$(fetch_release_versions "$PLAIN_PRODUCT")
     fi
 
     if [[ -z "$versions" ]]; then
@@ -379,7 +436,7 @@ resolve_latest_version() {
     # fallback/--no-extensions paths; the bundle path resolves its latest
     # from the bundle listing in the bundle-selection block below.
     local versions
-    versions=$(fetch_versions "$PLAIN_ARTIFACT_NAME")
+    versions=$(fetch_release_versions "$PLAIN_PRODUCT")
 
     if [[ -z "$versions" ]]; then
         error "Could not fetch versions"
@@ -387,14 +444,9 @@ resolve_latest_version() {
         return 1
     fi
 
-    # Prefer non-snapshot versions
+    # Release tags only (snapshots live in the separate cli-snapshot pre-release)
     local latest
-    latest=$(echo "$versions" | grep -v 'SNAPSHOT' | tail -1)
-
-    # Fallback to any version if no release found
-    if [[ -z "$latest" ]]; then
-        latest=$(echo "$versions" | tail -1)
-    fi
+    latest=$(echo "$versions" | tail -1)
 
     if [[ -z "$latest" ]]; then
         error "Could not determine latest version"
@@ -419,9 +471,13 @@ REQUESTED_VERSION="$SOFT_VERSION"
 
 USE_BUNDLE=false
 if [[ "$WITH_EXTENSIONS" == true ]]; then
-    # NOTE: the trailing `|| true` matters — with `set -e` an empty listing
-    # (no bundles published yet → grep exits 1) must fall back, not abort.
-    bundle_versions=$(fetch_versions "$BUNDLE_ARTIFACT_NAME" 2>/dev/null | grep -v 'SNAPSHOT' || true)
+    # A listing that FAILED (GitHub unreachable, rate limit, invalid GITHUB_TOKEN) stops the
+    # install: falling back would silently install the plain engine instead of the bundle. Only
+    # an EMPTY listing (no bundle published yet) falls back.
+    if ! bundle_versions=$(fetch_release_versions "$BUNDLE_PRODUCT"); then
+        error "Could not list the -all bundles: not falling back to the plain engine"
+        exit 1
+    fi
     if [[ -n "$bundle_versions" ]]; then
         if [[ "$SOFT_VERSION" == "latest" ]]; then
             SOFT_VERSION=$(echo "$bundle_versions" | tail -1)   # bundle-version line (0.20.1, 0.20.2, 0.20.3, ...)
@@ -461,12 +517,14 @@ if [[ "$USE_BUNDLE" != true ]] && [[ "$SOFT_VERSION" == "latest" ]]; then
 fi
 
 if [[ "$USE_BUNDLE" == true ]]; then
+    PRODUCT="$BUNDLE_PRODUCT"
     ARTIFACT_NAME="$BUNDLE_ARTIFACT_NAME"
 else
+    PRODUCT="$PLAIN_PRODUCT"
     ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
 fi
 JAR_NAME="${ARTIFACT_NAME}-${SOFT_VERSION}-assembly.jar"
-DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
+DOWNLOAD_URL="${RELEASES_DOWNLOAD_URL}/${PRODUCT}-v${SOFT_VERSION}/${JAR_NAME}"
 
 # ── Existence probe (belt-and-braces over the listing check: covers a pruned
 #    scala variant or a listing/artifact race). Self-contained — never rely on
@@ -496,9 +554,10 @@ if [[ "$USE_BUNDLE" == true ]]; then
             fi
             success "Resolved latest version: $SOFT_VERSION"
         fi
+        PRODUCT="$PLAIN_PRODUCT"
         ARTIFACT_NAME="$PLAIN_ARTIFACT_NAME"
         JAR_NAME="${ARTIFACT_NAME}-${SOFT_VERSION}-assembly.jar"
-        DOWNLOAD_URL="${JFROG_REPO_URL}/${ARTIFACT_NAME}/${SOFT_VERSION}/${JAR_NAME}"
+        DOWNLOAD_URL="${RELEASES_DOWNLOAD_URL}/${PRODUCT}-v${SOFT_VERSION}/${JAR_NAME}"
     fi
 fi
 
@@ -622,6 +681,41 @@ download_jar() {
     fi
 
     success "Downloaded to $dest"
+    verify_jar_checksum "$dest"
+}
+
+# Every release jar has a <jar>.sha256 asset next to it: a jar that does not match it is
+# deleted and the install stops.
+verify_jar_checksum() {
+    local jar="$1"
+    local expected="" actual=""
+
+    if [[ "$DOWNLOADER" == "curl" ]]; then
+        expected=$(curl -fsSL "${DOWNLOAD_URL}.sha256" 2>/dev/null | cut -d' ' -f1) || expected=""
+    else
+        expected=$(wget -qO- "${DOWNLOAD_URL}.sha256" 2>/dev/null | cut -d' ' -f1) || expected=""
+    fi
+    if [[ -z "$expected" ]]; then
+        rm -f "$jar"
+        error "Could not download the checksum ${DOWNLOAD_URL}.sha256"
+        exit 1
+    fi
+
+    if command -v sha256sum &> /dev/null; then
+        actual=$(sha256sum "$jar" | cut -d' ' -f1)
+    elif command -v shasum &> /dev/null; then
+        actual=$(shasum -a 256 "$jar" | cut -d' ' -f1)
+    else
+        warn "Neither sha256sum nor shasum is installed: the checksum of $JAR_NAME is not verified"
+        return 0
+    fi
+
+    if [[ "$actual" != "$expected" ]]; then
+        rm -f "$jar"
+        error "Checksum mismatch for $JAR_NAME (expected $expected, got $actual): download deleted"
+        exit 1
+    fi
+    success "Checksum verified (sha256)"
 }
 
 # =============================================================================
