@@ -33,7 +33,7 @@ Cross-index JOIN ships in three shapes ("rows"). Pick by where your data lives:
 
 The rule the engine actually applies: it counts the **distinct source catalogs** in the rewritten `FROM` / `JOIN` clauses versus the target catalog. Same (or no) catalog → Row 1; exactly one source catalog different from the target → Row 2; two or more source catalogs → Row 3.
 
-> **What does NOT work yet:** Cross-index JOINs are first-class in this release, but two things are intentionally **not** here yet: arbitrary **subqueries / CTEs** in a JOIN query land in **the next release (Quarter 4 2026)**, and **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …) land in **the upcoming release (Quarter 1 2027)** — this release's Row 3 is multi-**Elasticsearch** only. See [Known limitations](known_limitations.md) for the full list.
+> **What does NOT work yet:** Cross-index JOINs are first-class, and since engine **`0.24.0`** so are **subqueries, derived tables, non-recursive CTEs and set operators** — including a derived table as a JOIN leg, a JOIN inside a derived body, and a JOIN inside a set-operation branch (see [Known limitations](known_limitations.md#subqueries-and-derived-tables)). One thing is intentionally **not** here yet: **heterogeneous Row-3 sources** (joining ES with Postgres, MySQL, Snowflake, …), which land in **the upcoming release (Quarter 1 2027)** — this release's Row 3 is multi-**Elasticsearch** only.
 
 ---
 
@@ -133,6 +133,13 @@ JOIN orders b ON a.customer_id = b.customer_id;
 ```
 
 > **Since engine `0.23.0` with arrow-extensions `0.3.3`.** Before that, the alias map kept only the *last* alias of a repeated index, so the first leg's columns never resolved, the `ON` clause lost its join key and DuckDB answered `Parser Error: syntax error at end of input` (softclient4es-arrow#144). Four rules follow, each enforced with a message that says why: **qualify every column** (a bare `id` is ambiguous between the two legs); **alias a column you select from both legs** (`SELECT a.id AS left_id, b.id AS right_id` — `SELECT a.id, b.id`, `SELECT *` and `a.*` over a self-join are rejected, because the result would carry the same column name twice and keep only one value — over two *different* indices that share a column name the REPL names the colliding columns `<alias>.<column>` (`o.id`, `c.id`) and leaves the others bare, while JDBC / ADBC / Flight SQL keep Arrow's duplicate labels; and `SELECT *` over a JOIN omits object and nested columns and their sub-fields — list them explicitly to select sub-fields); **give each leg its own alias** — aliases compare case-insensitively, so `FROM orders a JOIN orders a`, `FROM orders A JOIN orders a` and `FROM orders JOIN orders` are all rejected; and write a self-join with `JOIN … ON` — the comma form `FROM orders a, orders b` is a multi-index *search* with no join engine behind it and is rejected with a message pointing at the `JOIN` spelling.
+
+**A condition on one table inside `ON`.** Beside the join key, an `ON` clause may compare two columns
+of the **same** table when both are qualified — `JOIN t2 AS b ON a.k = b.k AND a.g = a.n`, or
+`ON a.g = a.n` alone, for `INNER` and `LEFT JOIN` (*since arrow-extensions `0.3.4`*). An
+**unqualified** self-comparison, `ON country = country` or the mixed `ON d.country = country`, is
+refused: the bare name resolves to one table on both sides and would match every row, and DuckDB
+refuses that reference as ambiguous too.
 
 ### JOIN cardinality — fan-out on a non-unique key
 
@@ -389,7 +396,8 @@ For the full price matrix and editions, see the licensing & pricing page on the 
 
 ## What does NOT work yet
 
-- **Arbitrary subqueries and CTEs** inside a JOIN query — coming in **the next release (Quarter 4 2026)**.
+- **Set operators, subqueries, derived tables and non-recursive CTEs all work since engine `0.24.0`**: a derived table can be a JOIN leg, a derived body can itself carry a JOIN, a CTE reference is a derived table and so can be a JOIN leg too, and a set-operation branch may carry a JOIN of its own. A correlated `WHERE` subquery counts as **one** unit against `maxJoins`; a derived table, a CTE reference and a set operation count none. See [Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables) and [Set operators](known_limitations.md#set-operators).
+- **A correlated subquery body that is not a single Elasticsearch source** — it may not carry its own `JOIN`, comma-separated `FROM`, `JOIN UNNEST`, derived table or window function. Move the construct to the outer `FROM` and correlate against it.
 - **Heterogeneous Row-3 sources** (joining Elasticsearch with Postgres, MySQL, Snowflake, …) — coming in **the upcoming release (Quarter 1 2027)**; this release's Row 3 is multi-Elasticsearch only.
 - **JOIN inside a watcher input** (`CREATE WATCHER … FROM a JOIN b ON …`) — a watcher input is a single Elasticsearch `search` request over a list of indices, so the join is rejected at parse time. Pre-join the sources with a [materialized view](materialized_views.md) and have the watcher search the view.
 
