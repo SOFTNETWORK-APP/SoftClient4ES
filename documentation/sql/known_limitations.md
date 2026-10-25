@@ -540,7 +540,7 @@ now refused with a `400`: *"A function over an UNNEST column is not supported in
 
 Answered: a cast or conversion of a bare UNNEST column (`CAST`, `TRY_CAST`, `SAFE_CAST`, `::`,
 `CONVERT`, `DATE_TRUNC` of the column itself), its value converted as DuckDB does. A conversion
-DuckDB refuses by type (a date to a number, a number to a `TIMESTAMP`, a text to a `DATE` /
+DuckDB refuses by type (a date to a number, a number to a `DATE` or `TIMESTAMP`, a text to a `DATE` /
 `TIMESTAMP`), a `BOOLEAN` or `TIME` target, a chain of functions, a conversion beside a window
 function, and an `ORDER BY` over a conversion stay unsupported.
 
@@ -658,6 +658,12 @@ partition column in the `SELECT` list.
 - **Transcendental results can differ from DuckDB's by one unit in the last place** — `EXP(1)` is
   `2.7182818284590455` here and `2.718281828459045` in DuckDB — so an equality written with
   DuckDB's printed value can match nothing.
+- **A materialized view computes over a `REAL` column's written value**: a function the view
+  computes (`ROUND(r, 1)`, or a `GROUP BY ROUND(r, 1)` key) reads a `REAL` value as the number
+  written in the document, a `DOUBLE`, not as the `REAL` the column stores. A value whose written
+  text and stored value round differently then differs from DuckDB: `0.35` rounds to `0.4` in the
+  view, where DuckDB rounds the `REAL` `0.35` (`0.3499999940…`) to `0.3`. A plain query over the
+  same column answers as DuckDB. Declare the column `DOUBLE` to avoid it.
 - **JDBC and Arrow Flight read a plain query's column types from its values**, not from the type the
   column declares: a `BIGINT` column holding small whole numbers is reported as an `INTEGER`
   (`Int32`), and a computed column whose rows carry whole and decimal numbers alike can mix

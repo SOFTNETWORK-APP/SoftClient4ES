@@ -1303,7 +1303,7 @@ against ONE document — so:
   `SAFE_CAST(items.quantity AS SHORT)`, `items.quantity::DOUBLE`, `items.date::DATE`) — is
   **answered**: each element's value is converted as DuckDB does (text, `TINYINT` … `BIGINT`,
   `DOUBLE` / `REAL`, `DATE`, `TIMESTAMP`; `TRY_CAST` answers NULL where `CAST` fails). A date to a
-  number, a number to a `TIMESTAMP`, a text to a `DATE` / `TIMESTAMP`, a `BOOLEAN` or `TIME` target,
+  number, a number to a `DATE` or `TIMESTAMP`, a text to a `DATE` / `TIMESTAMP`, a `BOOLEAN` or `TIME` target,
   a chain of functions, a conversion beside a window function and an `ORDER BY` over a conversion are
   refused. Any other function over an UNNEST column (`UPPER(items.product)`,
   `items.price * items.quantity`) is **refused**, beside a window function too: it would be computed
