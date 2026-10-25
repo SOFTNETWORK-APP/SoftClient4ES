@@ -2225,7 +2225,7 @@ where Elasticsearch would skip a group with no value and answer NULL for it.
 
 ```sql
 SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;
-SELECT LEAST(0, base_price - rebate)          AS net       FROM orders;
+SELECT LEAST(base_price, promo_price)          AS best_price FROM orders;
 ```
 
 **Example:**
