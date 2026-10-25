@@ -44,8 +44,10 @@ import scala.util.Try
 
 /** Issue #413 -- a calculation over aggregates with NO `GROUP BY` answers ONE row, the whole table
   * being one implicit group: `SELECT MAX(n) - MIN(n) FROM t`, `COUNT(*) * 2`, `MAX(d) + 1`,
-  * `GREATEST(MAX(d), MAX(d2))`, `DATEDIFF(MAX(d), MIN(d))`. Elasticsearch refused every one of them
-  * on every major (a `bucket_script` at the top level of `aggs`).
+  * `DATEDIFF(MAX(d), MIN(d))`. Elasticsearch refused every one of them on every major (a
+  * `bucket_script` at the top level of `aggs`). `GREATEST(MAX(d), MAX(d2))` is refused by name: the
+  * calculation is skipped where an aggregate has no value, so it would answer NULL where SQL
+  * answers the other argument.
   *
   * Every expected value is computed HERE, from the fixture, as DuckDB 1.5.5 and PostgreSQL 16
   * compute it (MEASURED over the same rows), with the date rules of the engine (a DATE moved by
@@ -184,8 +186,6 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
     Some(Seq("v" -> num(for (a <- max(ns); b <- min(ns)) yield (a - b).toDouble))),
     s"SELECT COUNT(*) * 2 AS v FROM $table" -> Some(Seq("v" -> Num(all.size * 2.0))),
     s"SELECT MAX(d) + 1 AS v FROM $table"   -> Some(Seq("v" -> date(max(ds).map(_.plusDays(1))))),
-    s"SELECT GREATEST(MAX(d), MAX(d2)) AS v FROM $table" ->
-    Some(Seq("v" -> date(max(Seq(max(ds), max(all.map(_.d2))))))),
     s"SELECT DATEDIFF(MAX(d), MIN(d)) AS v FROM $table" ->
     Some(
       Seq("v" -> num(for (a <- max(ds); b <- min(ds)) yield ChronoUnit.DAYS.between(b, a).toDouble))
@@ -209,7 +209,7 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
     Some(Seq("v" -> num(for (a <- max(ns); b <- min(ns)) yield (a - b).toDouble))),
     s"SELECT MAX(n) - MIN(n) AS v FROM $table ORDER BY v" ->
     Some(Seq("v" -> num(for (a <- max(ns); b <- min(ns)) yield (a - b).toDouble))),
-    // a fractional result, a DATE - DATE, a DATE moved back, a LEAST
+    // a fractional result, a DATE - DATE, a DATE moved back
     s"SELECT MAX(x) - MIN(x) AS v FROM $table" ->
     Some(Seq("v" -> num(for (a <- max(all.map(_.x)); b <- min(all.map(_.x))) yield a - b))),
     s"SELECT AVG(n) * 2 AS v FROM $table" ->
@@ -219,8 +219,6 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
       Seq("v" -> num(for (a <- max(ds); b <- min(ds)) yield ChronoUnit.DAYS.between(b, a).toDouble))
     ),
     s"SELECT MIN(d) - 1 AS v FROM $table" -> Some(Seq("v" -> date(min(ds).map(_.minusDays(1))))),
-    s"SELECT LEAST(MIN(d), MIN(d2)) AS v FROM $table" ->
-    Some(Seq("v" -> date(min(Seq(min(ds), min(all.map(_.d2))))))),
     s"SELECT COUNT(DISTINCT g) * 10 AS v FROM $table" ->
     Some(Seq("v" -> Num(all.map(_.g).distinct.size * 10.0))),
     // over no document: a MAX is NULL, and so is the calculation
@@ -298,7 +296,6 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
       s"SELECT COUNT(*) + MAX(n) AS v $none"            -> Some(Seq("v" -> Null)),
       s"SELECT AVG(n) * 2 AS v $none"                   -> Some(Seq("v" -> Null)),
       s"SELECT DATEDIFF(MAX(d), MIN(d)) AS v $none"     -> Some(Seq("v" -> Null)),
-      s"SELECT GREATEST(MAX(d), MAX(d2)) AS v $none"    -> Some(Seq("v" -> Null)),
       s"SELECT COUNT(*) AS c $none HAVING COUNT(*) = 0" -> Some(Seq("c" -> Num(0))),
       s"SELECT COUNT(*) AS c $none HAVING COUNT(*) > 0" -> None,
       s"SELECT COUNT(*) * 2 AS v $none HAVING COUNT(*) = 0" -> Some(Seq("v" -> Num(0))),
@@ -332,5 +329,19 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
 
   it should "answer the counts of no document, and NULL for a MIN or a MAX of none" in {
     mismatches(overNothing) shouldBe empty
+  }
+
+  it should "refuse by name a GREATEST / LEAST over an aggregate that can be NULL" in {
+    Seq(
+      s"SELECT GREATEST(MAX(d), MAX(d2)) AS v FROM $table",
+      s"SELECT LEAST(MIN(d), MIN(d2)) AS v FROM $table",
+      s"SELECT GREATEST(MAX(d), MAX(d2)) AS v FROM $table WHERE g = 'none'"
+    ).flatMap { sql =>
+      rows(sql) match {
+        case Left(error) if error.contains("is not supported in a calculation over aggregates") =>
+          None
+        case other => Some(s"[$sql] $other")
+      }
+    } shouldBe empty
   }
 }

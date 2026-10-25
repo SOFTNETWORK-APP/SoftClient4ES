@@ -500,9 +500,15 @@ FROM orders
 
 **4. Per group, over aggregates:**
 ```sql
-SELECT region, GREATEST(MAX(ordered_on), MAX(shipped_on)) AS last_activity
+SELECT region, GREATEST(COUNT(*), 10) AS at_least_ten
 FROM orders
 GROUP BY region
+
+-- the regions whose last activity is this year (a group filter)
+SELECT region
+FROM orders
+GROUP BY region
+HAVING GREATEST(MAX(ordered_on), MAX(shipped_on)) >= CAST('2025-01-01' AS DATE)
 ```
 
 **Notes:**
@@ -511,10 +517,14 @@ GROUP BY region
   argument, or numbers mixed with dates, is refused by name once the column types are known.
 - Dates compare as instants, a `DATE` as the start of its day (UTC); the result is a date like any
   other: `GREATEST(d, d2) - d` is a number of days (see [Date arithmetic](operators.md)).
-- Over aggregates it is computed per group. In a SELECT, a group missing one of the aggregates'
-  values answers NULL: Elasticsearch does not run a per-group calculation there (its
-  `bucket_script` skips a group with a missing metric), as for any per-group calculation. Written
-  inline in `HAVING`, the group filter reads every aggregate and skips a NULL one.
+- Over aggregates it is computed per group. ⚠️ In a `SELECT`, over an aggregate that can be NULL —
+  `MAX`, `MIN`, `AVG`, the `STDDEV` / `VARIANCE` family, a percentile — it is **refused**, per
+  group as over the whole table (`GREATEST(MAX(n), 2)`): in a group with no value of the column,
+  Elasticsearch does not run the calculation (its `bucket_script` skips a group with a missing
+  metric), so the group would answer NULL where SQL answers the other arguments' largest. Select
+  the aggregate on its own and apply `GREATEST` to the result outside the query. Over a `COUNT` or
+  a `SUM` (`0` and `0.0` over no value) it is answered. Written inline in `HAVING`, the group
+  filter reads every aggregate and skips a NULL one, and is answered.
 - See also: `LEAST`, `COALESCE`.
 
 ---

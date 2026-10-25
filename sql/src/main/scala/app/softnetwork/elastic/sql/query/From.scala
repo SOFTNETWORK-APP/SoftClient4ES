@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.`type`.SQLTypeUtils
 import app.softnetwork.elastic.sql.operator.{AND, EQ}
 import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql.{
@@ -706,6 +707,17 @@ case class From(tables: Seq[Table]) extends Updateable {
     */
   lazy val mainTableKey: String = aliasKey(mainTable.name, mainTable.qualifiedName)
 
+  /** Story IDENT-4 -- the CORRELATION NAME of the main table: its SQL alias, else its bare name
+    * (the value [[tableAliases]] records for it). What an UNQUALIFIED column is correlated with,
+    * since an unqualified name resolves against the main table (`GenericIdentifier.update`).
+    *
+    * 🔴 NOT [[mainTableKey]]. That is the alias-map KEY -- the INDEX in `aliasKey`'s language --
+    * and both legs of a self-join (`FROM orders a JOIN orders b`) share it. Something comparing two
+    * COLUMNS of one statement keys on the correlation; only something addressing a MAPPING keys on
+    * the index.
+    */
+  lazy val mainTableCorrelation: String = effectiveAlias(mainTable)
+
   /** 🔴 FIX (story BIDC-8, softclient4es-arrow#144) — alias -> table key, built DIRECTLY and
     * LOSSLESS. It used to be `tableAliases.map(_.swap)`.
     *
@@ -953,8 +965,15 @@ case class NestedElement(
   size: Option[Int],
   children: Seq[NestedElement] = Nil, // TODO remove and use parent instead
   sources: Seq[String] = Nil,
-  parent: Option[NestedElement]
+  parent: Option[NestedElement],
+  mappedAsNested: Boolean = false
 ) {
+
+  /** `ignore_unmapped` of this element's nested query: only when the statement's schema maps `path`
+    * as nested.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (mappedAsNested) Some(true) else None
+
   lazy val root: NestedElement = {
     parent match {
       case Some(p) => p.root
@@ -1006,6 +1025,16 @@ object NestedElements {
       .flatMap(v => Try(String.valueOf(v.value).trim.toInt).toOption)
       .filter(_ > 0)
       .fold(DefaultInnerHitsSize)(math.min(DefaultInnerHitsSize, _))
+
+  /** Whether `schema` maps `path` (the full dotted path) as `nested`. Over an index pattern or list
+    * the schema is the members' merge: a path one member maps keeps that member's type, and members
+    * that disagree merge to no type. So `true` means some index maps the path as nested and none
+    * maps it otherwise; an index that does not map it holds no element, and its nested query may
+    * then tolerate it (`ignore_unmapped`). Without a schema, or for a path no index maps as nested,
+    * `false`: the statement fails as before.
+    */
+  def mappedAsNested(schema: Option[Schema], path: String): Boolean =
+    schema.flatMap(_.find(path)).exists(c => SQLTypeUtils.elasticType(c.dataType) == "nested")
 
   def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
     if (nestedElements.isEmpty) return Nil

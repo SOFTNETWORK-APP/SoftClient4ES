@@ -139,7 +139,8 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
     // ---- fix round 2 (G1): GREATEST / LEAST over dates and timestamps ----
     Operand("GREATEST(d, d2)", DateKind, "DATE"),
     Operand("LEAST(ts, d)", InstantKind, "TIMESTAMP"),
-    Operand("GREATEST(MAX(d), MAX(d2))", DateKind, "DATE", aggregate = true, ddl = false),
+    // (GREATEST / LEAST over aggregates that can be NULL is refused in a SELECT calculation:
+    // `UnanswerableAggregateSpec`)
     // ---- fix round 3 (T1): a string literal that spells a date or a timestamp ----
     Operand("'2024-01-31'", TemporalText, "VARCHAR"),
     Operand("'2024-01-31T10:00:00Z'", TemporalText, "VARCHAR")
@@ -410,12 +411,11 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
     // GREATEST / LEAST over dates and timestamps (the lead's ruling of 2026-10-05): a DATE for
     // dates, a TIMESTAMP when they mix -- and a date difference of one and a date is days
     Seq(
-      "SELECT GREATEST(d, d2) AS x FROM ev"                         -> SQLTypes.Date,
-      "SELECT LEAST(d, ts) AS x FROM ev"                            -> SQLTypes.Timestamp,
-      "SELECT GREATEST(d, CURRENT_DATE) AS x FROM ev"               -> SQLTypes.Date,
-      "SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM ev GROUP BY g" -> SQLTypes.Date,
-      "SELECT GREATEST(d, d2) - d AS x FROM ev"                     -> SQLTypes.BigInt,
-      "SELECT LEAST(d, ts) - d AS x FROM ev"                        -> SQLTypes.Double
+      "SELECT GREATEST(d, d2) AS x FROM ev"           -> SQLTypes.Date,
+      "SELECT LEAST(d, ts) AS x FROM ev"              -> SQLTypes.Timestamp,
+      "SELECT GREATEST(d, CURRENT_DATE) AS x FROM ev" -> SQLTypes.Date,
+      "SELECT GREATEST(d, d2) - d AS x FROM ev"       -> SQLTypes.BigInt,
+      "SELECT LEAST(d, ts) - d AS x FROM ev"          -> SQLTypes.Double
     ).foreach { case (sql, t) =>
       val (resolved, item) = resolvedItem(sql)
       withClue(s"[$sql] ") {
@@ -449,7 +449,7 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
       resolved.transformBucketScripts.get("x").map(_.script) shouldBe Some(script)
       script
     }
-    Seq("(MAX(d) + 1)", "(MAX(ts) - 0.5)", "GREATEST(MAX(d), MAX(d2))").foreach { calc =>
+    Seq("(MAX(d) + 1)", "(MAX(ts) - 0.5)").foreach { calc =>
       val timestamp = rendered(s"$calc::TIMESTAMP")
       val date = rendered(s"$calc::DATE")
       withClue(s"[$calc] TIMESTAMP $timestamp DATE $date ") {

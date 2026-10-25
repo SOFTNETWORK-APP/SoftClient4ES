@@ -25,6 +25,14 @@ import app.softnetwork.elastic.sql.{
   PainlessScript
 }
 import app.softnetwork.elastic.sql.`type`.SQLTypes._
+import app.softnetwork.elastic.sql.function.{Function, FunctionUtils, TransformFunction}
+import app.softnetwork.elastic.sql.function.cond.{
+  AnswersArms,
+  Case,
+  Coalesce,
+  NullIf,
+  NumericReducer
+}
 import app.softnetwork.elastic.sql.function.time.DateDiff
 
 object SQLTypeUtils {
@@ -92,6 +100,27 @@ object SQLTypeUtils {
     case Struct                     => "object"
     case VarBinary                  => "binary"
     case _                          => "object"
+  }
+
+  /** The Elasticsearch types a field sort may name as its `unmapped_type`: each one sorts without
+    * any mapping parameter of its own.
+    */
+  private[this] val sortableUnmappedTypes: Set[String] =
+    Set("keyword", "boolean", "byte", "short", "integer", "long", "float", "double", "date")
+
+  /** The `unmapped_type` a field sort over a column of type `t` carries, so that an index of a
+    * pattern or list that does not map the column sorts its documents as having no value instead of
+    * failing its shards (`No mapping found for [c] in order to sort on`).
+    *
+    * Defined only for a SCALAR type whose Elasticsearch type sorts without a parameter. `None` for
+    * `Any` (no schema: the request keeps its bytes, and a column nobody maps still fails loudly),
+    * for character types (`text` has no doc values), for `Numeric` (`scaled_float` needs its
+    * `scaling_factor`), for `Struct`, nested, `GeoPoint`, `VarBinary` and every `Array`.
+    */
+  def sortUnmappedType(t: SQLType): Option[String] = t match {
+    case _: SQLArray => None
+    case _ =>
+      Some(elasticType(t)).filter(sortableUnmappedTypes.contains)
   }
 
   /** The type a column's value has AT RUNTIME, as opposed to the type the user DECLARED.
@@ -261,7 +290,48 @@ object SQLTypeUtils {
     SQLTypes.Any
   }
 
-  def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
+  /** The type a conditional REPORTS over the types its arms report -- `COALESCE`'s arguments, a
+    * `CASE`'s results, `GREATEST` / `LEAST`'s arguments: [[leastCommonSuperType]], with one guard
+    * before its temporal step.
+    *
+    * 🔴 An arm whose type is still UNKNOWN (`Any`: a `date_nanos` column, a column no schema types)
+    * beside a DATE arm makes the node a TIMESTAMP, as DuckDB 1.5.5 types a DATE beside a nanosecond
+    * timestamp (`TIMESTAMP_NS`, measured): such an arm renders its doc value, a timestamp with a
+    * time of day, and the DATE arm is not converted to it either (`armsType` leaves a node with an
+    * unknown arm as it renders). `leastCommonSuperType` reads the DATE first and reported DATE over
+    * rows that are timestamps, so a reader of the type (arrow, JDBC) dropped their time. A NULL arm
+    * is no type, and a DATE beside it stays a DATE.
+    *
+    * The reported type only: a node with an unknown arm renders as it did, and the other readers of
+    * [[leastCommonSuperType]] (a comparison's operands, BETWEEN's bounds, arithmetic) keep theirs.
+    */
+  def armsReportedType(types: List[SQLType]): SQLType = {
+    val distinct = types.distinct
+    val unknownBesideDate =
+      distinct.contains(SQLTypes.Date) &&
+      distinct.exists(t => t.isUnknown && t != SQLTypes.Null) &&
+      !distinct.exists(t => t.isInstanceOf[SQLVarchar] || t.isNumber)
+    if (unknownBesideDate) SQLTypes.Timestamp else leastCommonSuperType(types)
+  }
+
+  def coerce(in: PainlessScript, to: SQLType, context: Option[PainlessContext]): String =
+    coerce(in, renderedSourceType(in, context), to, context)
+
+  /** [[coerce]] converting FROM a type the caller names rather than [[renderedSourceType]].
+    *
+    * A `CASE` converts its operand and its `WHEN` values from their `baseType` to the type they are
+    * compared in, as 0.23.0 did; its results are converted from what they render to the type it
+    * reports ([[convertArm]]), and from their `baseType` only where the CASE keeps its old
+    * conversion (an ingest processor, arms with no common type).
+    *
+    * `from` is by-name: it is read after `in` renders, where the form above reads its own.
+    */
+  def coerce(
+    in: PainlessScript,
+    from: => SQLType,
+    to: SQLType,
+    context: Option[PainlessContext]
+  ): String = {
     context match {
       case Some(ctx) =>
         in match {
@@ -291,10 +361,387 @@ object SQLTypeUtils {
       case _ => // do nothing
     }
     val expr = in.painless(context)
-    val from = in.baseType
-    val nullable = in.nullable
-    coerce(expr, from, to, nullable, context)
+    coerce(expr, from, to, in.nullable, context)
   }
+
+  /** The type `coerce` converts FROM: what the operand's rendering IS, not what its column was.
+    *
+    * A schema-resolved identifier reports its COLUMN's runtime type as `baseType` (TIMESTAMP for
+    * every `date` field) whatever functions wrap it, so over `CAST(d AS DATE)` the consumer
+    * converted TIMESTAMP -> DATE a second time, onto the `LocalDate` the cast had already produced
+    * (`param2.toInstant()` on a `LocalDate`: the shard fails). `DATE_FORMAT(CAST(d AS DATE), …)`
+    * and `LAST_DAY(CAST(d AS DATE))` failed at a concrete index, and at a pattern or a list once
+    * those resolve a mapping too.
+    *
+    * The answer is [[Identifier.renderedType]] only where the chain holds a temporal PRODUCER (the
+    * #384 scan, [[Identifier.temporalProducerType]]) and renders a temporal value; everything else
+    * keeps `baseType`, byte for byte. An INGEST script keeps it too: there the operand is the raw
+    * `ctx.<field>`, whose conversion follows the declared type (see `isProcessorContext` below).
+    */
+  def renderedSourceType(in: PainlessScript, context: Option[PainlessContext]): SQLType =
+    in match {
+      case identifier: Identifier
+          if identifier.functions.nonEmpty && !identifier.isAggregation &&
+            !context.exists(_.isProcessor) && identifier.temporalProducerType.isDefined &&
+            identifier.renderedType.isInstanceOf[SQLTemporal] =>
+        identifier.renderedType
+      case _ => in.baseType
+    }
+
+  /** Is `context` a QUERY script, the one context the arm conversion ([[convertArm]]) applies in?
+    *
+    * 🔴 An INGEST processor's source is persisted (SCRIPT AS columns, CTAS pipelines, materialized
+    * view computed fields) and diffed by `ALTER`, so its bytes do not move: rendering it
+    * differently re-creates a processor nobody changed. Its operand is the raw `ctx.<field>`, which
+    * a processor reads by its runtime class already. A TRANSFORM script computes per group, where a
+    * value is the number its metric is. Neither renders a `doc[...]` value's class, so neither is
+    * converted.
+    */
+  def convertsArms(context: Option[PainlessContext]): Boolean =
+    context.exists(c => !c.isProcessor && !c.isTransform)
+
+  /** Is a script OTHER than a query rendering on this thread -- an ingest processor or a transform
+    * ([[convertsArms]])? Set for the duration of that rendering by [[renderingIn]].
+    *
+    * 🔴 A type is a context-free answer, and a conditional's type is what its arms are converted
+    * to, which only a query does. So a `CASE` of two DATE arms answers DATE in a query and renders
+    * the arms' doc values (TIMESTAMP) in an ingest processor, whose bytes do not move (the
+    * ALTER-churn rule). Every consumer reads the type (`DATE_TRUNC` decides on it whether to
+    * truncate the time, a `CAST` what to convert from): answering DATE there moved 500 processor
+    * renders of the 13,000-statement corpus, and some of them to a wrong answer --
+    * `CAST(COALESCE(CAST(d AS DATE), …) AS BIGINT)` lost its epoch milliseconds. While such a
+    * script renders, a conditional and `LAST_DAY` answer the type they rendered before, and every
+    * consumer of the rendering reads it.
+    */
+  private[this] val outsideQuery = new scala.util.DynamicVariable[Boolean](false)
+
+  def rendersOutsideQuery: Boolean = outsideQuery.value
+
+  /** Renders `body` in the scope of `context`: a processor or a transform script sets
+    * [[rendersOutsideQuery]] for its whole rendering. The entry points of a rendering call it
+    * (`Identifier.painless`, `FunctionN.painless`, `Case.painless`, `ScriptProcessor.fromScript`).
+    */
+  def renderingIn[T](context: Option[PainlessContext])(body: => T): T =
+    if (!outsideQuery.value && context.exists(c => c.isProcessor || c.isTransform))
+      outsideQuery.withValue(true)(body)
+    else body
+
+  /** The type an INGEST PROCESSOR (or a transform) writes for `expr`: its `out`, read in the scope
+    * that script renders in ([[renderingIn]]), the type it rendered before a conditional answered
+    * its reported type in a query.
+    *
+    * 🔴 Every reader of a type that serves a processor or a transform reads it HERE (#292): read
+    * after the render had closed, the type was the QUERY's, while the processor wrote the legacy
+    * bytes -- `COALESCE(CAST(n AS DOUBLE), 2)` declared DOUBLE over a script writing a BIGINT, and
+    * the description of an UPDATE's pipeline (`c NUMERIC SCRIPT AS (LEAST(NULL, n))`) moved to `c
+    * ANY SCRIPT AS …`. `ScriptProcessor.fromScript` and a materialized view's scripted fields read
+    * it.
+    */
+  def processorType(expr: PainlessScript): SQLType =
+    if (outsideQuery.value) expr.out else outsideQuery.withValue(true)(expr.out)
+
+  /** The type the ARMS of a conditional answer once each is converted to it ([[convertArm]]): the
+    * node's reported type `reported`, DuckDB's common type of what the arms report -- DATE + DATE =
+    * DATE, DATE + TIMESTAMP = TIMESTAMP, INT + DOUBLE = DOUBLE -- when the arms have one.
+    *
+    * `None` when they have none, and the node renders as it always did: numbers beside dates, text
+    * beside numbers, a TIME beside a date (DuckDB refuses all three: `Cannot mix values of type
+    * …`), an arm that is an aggregate (its value is the metric Elasticsearch computed, per group),
+    * or an arm whose type is still unknown (no schema attached, a `date_nanos`, `ip` or unmapped
+    * column): its common type with the others is unknown too -- DuckDB types a DATE beside a
+    * nanosecond timestamp a TIMESTAMP, which converting it to the DATE beside it would truncate. A
+    * NULL arm has no type and is left out.
+    */
+  def armsType(arms: List[PainlessScript], reported: SQLType): Option[SQLType] = {
+    val known = arms.map(_.reportedType).filterNot(_ == SQLTypes.Null)
+    def all(family: SQLType => Boolean): Boolean = known.forall(family)
+    def dateCarrying(t: SQLType): Boolean =
+      t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp ||
+      t == SQLTypes.Temporal
+    if (
+      known.isEmpty || known.exists(_.isUnknown) || reported.isUnknown ||
+      arms.exists(_.hasAggregation)
+    ) None
+    else if (
+      all(_.isNumber) || all(dateCarrying) || all(_ == SQLTypes.Time) || all(_.isText) ||
+      all(_.isBoolean)
+    ) Some(reported)
+    else None
+  }
+
+  /** The type a conditional answers in EVERY row, once each arm it answers is converted to it
+    * ([[convertArm]]): [[armsType]] over those arms, when none of them is still of an unknown type
+    * -- such an arm is left as it renders, and the node renders no single class. A NULL arm renders
+    * NULL. `None` for a function that is no conditional.
+    *
+    * 🔴 The ONE arm decision a consumer of a conditional reads (#292): the arms are the
+    * conditional's own (`AnswersArms.answeredArms`), the decision [[armsType]], which the
+    * conditional converts its arms by.
+    */
+  def armsAnswer(f: Function): Option[SQLType] = f match {
+    case c: AnswersArms =>
+      val arms = c.answeredArms
+      armsType(arms, f.reportedType).filterNot(_ =>
+        arms.exists(a => a.reportedType != SQLTypes.Null && armTypeUnknown(a))
+      )
+    case _ => None
+  }
+
+  /** What a chain of functions (outermost first) RENDERS, read from the chain itself -- never from
+    * an `out` (a cast over it sets it to its target) nor a `baseType` (a schema-resolved operand's
+    * is its column's type whatever function it wears):
+    *   - a conditional renders the type it answers in every row ([[armsAnswer]]), and nothing
+    *     single otherwise (`Any`);
+    *   - a function that only adjusts a date (`DATE_ADD`, `DATE_TRUNC`, an interval) renders its
+    *     receiver's class (#368): the function under it decides;
+    *   - any other function renders its own type: a cast its target, `CURRENT_DATE` and `LAST_DAY`
+    *     a DATE, `DATETIME_ADD` a date-time, `DATE_FORMAT` a string;
+    *   - a bare column renders its doc value (`Any` here).
+    *
+    * 🔴 The one derivation (#292) of the consumers that must know whether their operand is a
+    * `LocalDate`: a cast to BIGINT / TIME, a time-of-day part (`HOUR`, `OFFSET_SECONDS`, …) and a
+    * sub-day interval ([[operandRendersDate]]).
+    */
+  def chainRendered(functions: List[Function]): SQLType = functions match {
+    case (c: AnswersArms) :: _ => armsAnswer(c).map(_ => c.baseType).getOrElse(SQLTypes.Any)
+    case (f: TransformFunction[_, _]) :: receiver
+        if !f.producesOutputJavaType &&
+          (f.baseType == SQLTypes.Date || f.baseType == SQLTypes.Temporal) =>
+      chainRendered(receiver)
+    case f :: _ => f.baseType
+    case Nil    => SQLTypes.Any
+  }
+
+  /** The functions under `f` in its chain, outermost first: its operand's chain. */
+  private def operandChain(f: Function): List[Function] = f.expr match {
+    case _: Identifier => Nil
+    case g: Function   => g :: operandChain(g)
+    case _             => Nil
+  }
+
+  /** Does the OPERAND of `f` render a DATE, a `java.time.LocalDate` ([[chainRendered]])? */
+  def operandRendersDate(f: Function): Boolean =
+    chainRendered(operandChain(f)) == SQLTypes.Date
+
+  /** What an ARM renders -- a `THEN` / `ELSE` result of a `CASE`, an argument of `COALESCE`, the
+    * value `NULLIF` answers, the date `GREATEST` / `LEAST` choose, the receiver of `LAST_DAY` --
+    * once it has rendered as `rendered`.
+    *
+    *   - A parameter whose methods have already narrowed it to a `LocalDate` / `LocalTime` (a
+    *     comparison against a DATE literal narrows it) renders that: converting it again from its
+    *     column's type would call `toInstant()` on a `LocalDate`.
+    *   - An expression renders what its chain renders ([[Identifier.renderedType]]): a cast its
+    *     target, `CAST(d AS DATE)` a `LocalDate` over a TIMESTAMP-typed column, `CAST(n AS DOUBLE)`
+    *     a double over an INT one, a nested conditional the type it answers. [[renderedSourceType]]
+    *     answers the column's type there for everything but a temporal producer, which is right for
+    *     the consumers that read it and wrong for an arm, whose class is the question.
+    *   - A bare column renders its doc value: its column's runtime type (TIMESTAMP for every
+    *     `date`), or `Any` when no schema says ([[armTypeUnknown]]).
+    *   - A nameless chain whose outermost functions only adjust their receiver (`DATE_TRUNC(CASE …
+    *     END, MONTH)`) declares the un-narrowed TEMPORAL (#368): it renders what the first function
+    *     under them that does not preserve its receiver renders -- a producer its output type, a
+    *     conditional the type it answers.
+    *
+    * An aggregate keeps its `baseType`: per group it is the metric Elasticsearch computed.
+    */
+  def armSourceType(
+    arm: PainlessScript,
+    rendered: String,
+    context: Option[PainlessContext]
+  ): SQLType = {
+    val param = context.flatMap(_.find(rendered.trim))
+    if (param.exists(_.rendersLocalDate)) SQLTypes.Date
+    else if (param.exists(_.rendersLocalTime)) SQLTypes.Time
+    else
+      arm match {
+        case i: Identifier if i.functions.nonEmpty && !i.isAggregation =>
+          val chain = i.renderedType
+          if (chain != SQLTypes.Temporal) chain
+          else
+            FunctionUtils
+              .transformFunctions(i)
+              .collectFirst {
+                case f: TransformFunction[_, _]
+                    if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
+                  f.outputType
+                case c @ (_: Case | _: Coalesce | _: NullIf | _: NumericReducer) => c.baseType
+              }
+              .getOrElse(chain)
+        case other => other.baseType
+      }
+  }
+
+  /** The ONE conversion of an arm to the type its node REPORTS (#292): FROM what the arm renders
+    * ([[armSourceType]]), TO `to`, exactly once. `CASE`, `COALESCE`, `NULLIF`, `GREATEST` / `LEAST`
+    * over dates and `LAST_DAY`'s receiver all convert through it, in a QUERY script
+    * ([[convertsArms]]).
+    *
+    * 🔴 FROM what the arm RENDERS, never from its column's type: a schema-resolved identifier's
+    * `baseType` is its column's runtime type whatever function it wears, so `CAST(d AS DATE)` was
+    * converted from TIMESTAMP (nothing to do, it stayed a `LocalDate`) beside a bare `d` (a
+    * `ZonedDateTime`, converted from TIMESTAMP to TIMESTAMP: nothing either), and a column typed
+    * DATE answered two classes.
+    *
+    * 🔴 The string overload of [[coerce]], NOT the one over a [[PainlessScript]]: that one appends
+    * `.toLocalDate()` to any named column's parameter OBJECT on its way to a DATE (the no-schema
+    * rule, "an untyped column is a `ZonedDateTime`") before the conversion from a TIMESTAMP appends
+    * `.toInstant()…toLocalDate()` onto that `LocalDate` -- two conversions, and the shard fails. It
+    * also drops the UTC normalisation Elasticsearch 6.8's `JodaCompatibleZonedDateTime` needs,
+    * which the TIMESTAMP -> DATE arm keeps (`painlessUtcLocalDate`). An arm whose type is still
+    * unknown is left as it renders ([[armTypeUnknown]]).
+    */
+  def convertArm(arm: PainlessScript, to: SQLType, context: Option[PainlessContext]): String = {
+    val rendered = arm.painless(context)
+    convertRendered(
+      rendered,
+      armSourceType(arm, rendered, context),
+      to,
+      mayRenderNull(arm, context),
+      context
+    )
+  }
+
+  /** Can what `operand` renders be NULL where a conversion is applied to it?
+    *
+    * Its own nullability, or -- in a query ([[convertsArms]]) -- its function's: the nameless
+    * identifier the parser wraps a `CASE`, a `COALESCE`, a `NULLIF`, a `GREATEST` or a `LEAST` in
+    * answers `nullable = false` whatever its arguments hold. Read off that identifier alone, a
+    * conversion was appended to the conditional's own NULL guard rather than placed inside one, and
+    * ran on its NULL: `GREATEST(d, d2) > d` rendered `(lv3 == null ? null :
+    * …toLocalDate()).atStartOfDay(…)` and every document missing both dates failed the statement
+    * (MEASURED on Elasticsearch 8.18.3 and 9.0.3). Told the truth, [[coerce]] binds the operand
+    * once and converts it inside its guard.
+    *
+    * The ONE answer every converting consumer reads -- a comparison's operand, an arm, a NULLIF's
+    * answer, a reducer's argument, `LAST_DAY`'s receiver. An ingest processor and a transform keep
+    * their bytes.
+    */
+  def mayRenderNull(operand: PainlessScript, context: Option[PainlessContext]): Boolean =
+    operand.nullable || (convertsArms(context) && (operand match {
+      case identifier: Identifier => identifier.functions.headOption.exists(_.nullable)
+      case _                      => false
+    }))
+
+  /** Is what `arm` renders still unknown (`Any`: no schema attached, a `date_nanos` or unmapped
+    * column)? Such an arm is NOT converted ([[convertArm]] leaves it as it renders): converting it
+    * would guess its class, and the guess the no-schema path makes (`.toLocalDate()` on an untyped
+    * column) drops the UTC normalisation a date doc value needs and a `date_nanos` value's time. A
+    * node converts it as it did before.
+    */
+  def armTypeUnknown(arm: PainlessScript): Boolean = armSourceType(arm, "", None).isUnknown
+
+  /** [[convertArm]] of an arm the caller has rendered already (a function's argument, `rendered`);
+    * `nullable` is whether that rendering can be NULL where it is converted.
+    */
+  def convertArm(
+    arm: PainlessScript,
+    rendered: String,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String =
+    convertRendered(rendered, armSourceType(arm, rendered, context), to, nullable, context)
+
+  /** [[convertArm]] for a rendering whose type the caller knows: the instant `GREATEST` / `LEAST`
+    * over dates renders, a UTC `ZonedDateTime` whatever its arguments were. A rendering of unknown
+    * type is left as it is, and so is a text one meant as another text type.
+    *
+    * 🔴 A COMPOUND rendering is converted as ONE operand: a conversion is appended to it
+    * (`….toInstant()…`), and appended to an unparenthesised conditional (`p3 ? p2 : p4`) it
+    * converted the last branch only. A rendering the conversion leaves alone keeps its bytes.
+    */
+  def convertRendered(
+    rendered: String,
+    from: SQLType,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String =
+    // a string is a `String` whatever its text type: `String.valueOf` would only cost a call
+    if (from.isUnknown || (from.isText && to.isText)) rendered
+    else {
+      val operand = asOneValue(rendered)
+      val converted = coerce(operand, from, to, nullable, context)
+      if (converted == operand) rendered else converted
+    }
+
+  /** `rendered` as ONE value a method can be appended to: itself when it is a name, a literal, one
+    * parenthesised group (`NumericReducer.oneValue`) or a chain of calls on one (`p.toInstant()…`:
+    * an operator stands between spaces outside any parenthesis, a call does not), parenthesised
+    * otherwise.
+    */
+  def asOneValue(rendered: String): String = {
+    val r = rendered.trim
+    if (NumericReducer.oneValue(r) || !hasTopLevelSpace(r)) r else s"($r)"
+  }
+
+  /** Does `r` hold a space outside every parenthesis, bracket and string literal? */
+  private def hasTopLevelSpace(r: String): Boolean = {
+    var depth = 0
+    var quote: Char = 0
+    var i = 0
+    var found = false
+    while (!found && i < r.length) {
+      val c = r.charAt(i)
+      if (quote != 0) {
+        if (c == '\\') i += 1
+        else if (c == quote) quote = 0
+      } else
+        c match {
+          case '"' | '\'' => quote = c
+          case '(' | '['  => depth += 1
+          case ')' | ']'  => depth -= 1
+          case ' '        => found = depth == 0
+          case _          =>
+        }
+      i += 1
+    }
+    found
+  }
+
+  /** 🔴 An explicit conversion (`CAST`, `CONVERT`, `TRY_CAST`) of a TEMPORAL operand -- a function
+    * that only adjusts its receiver (`DATE_TRUNC`, `DATE_ADD`) over a CASE or a COALESCE whose arms
+    * are a DATE and a date-time -- to a DATE or a BIGINT, decided per row from the runtime class,
+    * as the conversion to a TIME is ([[coerce]]'s TEMPORAL arm): to a DATE, the value's date part,
+    * as DuckDB's `CAST(<timestamp> AS DATE)` (a `LocalDate` is itself, a `LocalDateTime` its date,
+    * a zoned doc value its UTC date); to a BIGINT, the epoch milliseconds of the instant, a DATE's
+    * of its UTC midnight (the rule `Conversion` follows for a DATE operand). Before, no conversion
+    * matched and the cast answered the value itself under its label.
+    *
+    * Only an explicit conversion asks, not every [[coerce]]: a DATE-input function over a TEMPORAL
+    * chain (`DATE_FORMAT(DATE_TRUNC(…), '%H')`) or an arm of a conditional keeps what it rendered.
+    * In a query only ([[convertsArms]]), the operand bound once, and NULL answers NULL; `None` for
+    * any other conversion, the operand then left unrendered (`expr` is read only when it applies).
+    */
+  def temporalByRuntimeClass(
+    expr: => String,
+    to: SQLType,
+    context: Option[PainlessContext]
+  ): Option[String] =
+    if (!convertsArms(context)) None
+    else {
+      def bound: String = {
+        val one = asOneValue(expr)
+        context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+      }
+      to match {
+        case SQLTypes.Date =>
+          val x = bound
+          Some(
+            s"($x == null ? null : $x instanceof LocalDate ? $x : " +
+            s"$x instanceof LocalDateTime ? $x.toLocalDate() : $x$painlessUtcLocalDate)"
+          )
+        case SQLTypes.BigInt =>
+          val x = bound
+          Some(
+            s"($x == null ? null : (def) ($x instanceof LocalDate ? " +
+            s"$x.atStartOfDay(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x instanceof LocalDateTime ? $x.atZone(ZoneId.of('Z')).toInstant().toEpochMilli() : " +
+            s"$x.toInstant().toEpochMilli()))"
+          )
+        case _ => None
+      }
+    }
 
   def coerce(
     expr: String,
@@ -362,6 +809,29 @@ object SQLTypeUtils {
     def temporalGuard(body: String): String =
       if (nullable) s"($expr != null ? $body : null)" else body
 
+    /** 🔴 A date-only string is the midnight it starts, as DuckDB and PostgreSQL cast
+      * `'2024-01-03'` to a TIMESTAMP: `ISO_DATE_TIME` requires a time, so `CAST(kd AS TIMESTAMP)`
+      * over a keyword holding `2024-01-03` threw on every document and failed the statement.
+      *
+      * In a query, ONE length test on the operand, bound once (a parameter is its own name): no
+      * formatter is built per document. A string literal is decided when the script is rendered. An
+      * ingest processor keeps its bytes, so a pipeline does not churn on ALTER: there a date-only
+      * string still fails this cast, as before (`processorTemporal` reads a date-only value of a
+      * DATE column).
+      */
+    def midnightOfDate(operand: String): String =
+      context match {
+        case Some(ctx) if convertsArms(context) =>
+          operand match {
+            case StringLiteral(text) if text.length == 10 => "\"" + text + "T00:00:00\""
+            case StringLiteral(_)                         => operand
+            case _ =>
+              val s = ctx.addParam(LiteralParam(operand)).getOrElse(operand)
+              s"($s.length() == 10 ? $s + 'T00:00:00' : $s)"
+          }
+        case _ => operand
+      }
+
     val ret = {
       (from, to) match {
         // ---- DATE & TIME ----
@@ -387,6 +857,20 @@ object SQLTypeUtils {
           s"$expr.toLocalDate()"
         case (SQLTypes.DateTime, SQLTypes.Time) =>
           s"$expr.toLocalTime()"
+        // 🔴 A TEMPORAL operand -- a function that only adjusts its receiver (`DATE_TRUNC`,
+        // `DATE_ADD`) over a CASE or a COALESCE whose arms are a DATE and a date-time -- renders
+        // whichever class its row's arm has, so the conversion to a TIME is decided per row, from
+        // the runtime class, as `LAST_DAY` decides its receiver's date (`LastDayOfMonth.dateOf`): a
+        // `LocalDate` is its UTC midnight, a `LocalDateTime` its time, any other temporal (a zoned
+        // doc value) its UTC time of day. Before, no arm matched and the cast answered the value
+        // itself under TIME (`2024-03-01T00:00Z`). In a query only: an ingest processor keeps its
+        // bytes. The operand is bound once, and NULL answers NULL.
+        case (SQLTypes.Temporal, SQLTypes.Time) if convertsArms(context) =>
+          val one = asOneValue(expr)
+          val x = context.flatMap(_.addParam(LiteralParam(one))).getOrElse(one)
+          return s"($x == null ? null : $x instanceof LocalDate ? " +
+          s"$x.atStartOfDay(ZoneId.of('Z')).toLocalTime() : $x instanceof LocalDateTime ? " +
+          s"$x.toLocalTime() : $x$painlessUtcLocalTime)"
 
         // ---- NUMERIQUES ----
         case (SQLTypes.Int, SQLTypes.BigInt) =>
@@ -545,7 +1029,7 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.DateTime) =>
           val guarded = temporalGuard(
-            "LocalDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            "LocalDateTime.parse(" + temporalSeparator(midnightOfDate(expr), " ", "T") +
             ", DateTimeFormatter.ISO_DATE_TIME)"
           )
           context match {
@@ -559,7 +1043,7 @@ object SQLTypeUtils {
           return guarded
         case (_: SQLVarchar, SQLTypes.Timestamp) =>
           val guarded = temporalGuard(
-            "ZonedDateTime.parse(" + temporalSeparator(expr, " ", "T") +
+            "ZonedDateTime.parse(" + temporalSeparator(midnightOfDate(expr), " ", "T") +
             ", DateTimeFormatter.ISO_DATE_TIME.withZone(ZoneId.of('Z')))"
           )
           context match {
@@ -674,6 +1158,9 @@ object SQLTypeUtils {
     */
   private def temporalSeparator(expr: String, from: String, to: String): String =
     s"""($expr).replace("$from", "$to")"""
+
+  /** A double-quoted Painless string literal with no escape in it, and its text. */
+  private val StringLiteral = "\"([^\"\\\\]*)\"".r
 
   private val numericRank: Map[Class[_], Int] = Map(
     classOf[SQLTinyInt]  -> 1,

@@ -157,6 +157,63 @@ package object cond {
   case object ELSE extends Expr("ELSE") with TokenRegex
   case object END extends Expr("END") with TokenRegex
 
+  /** A conditional whose value is the value of one of its ARMS: `CASE` (its results and its
+    * `ELSE`), `COALESCE` (every argument), `NULLIF` (its first argument), `GREATEST` / `LEAST`
+    * (every argument). Each converts the arms it answers to the type it reports, in a query
+    * (`SQLTypeUtils.convertArm`), and a consumer that must know the class it answers reads the ONE
+    * decision over these same arms (`SQLTypeUtils.armsAnswer`, #292).
+    */
+  trait AnswersArms extends Function {
+    def answeredArms: List[PainlessScript]
+  }
+
+  /** 🔴 DuckDB 1.5.5's refusal of a conditional whose arms have NO common type, asked once the
+    * column types are known: a date (DATE, TIMESTAMP) or a TIME beside a number, a date beside a
+    * TIME, text beside a number or a date, a BOOLEAN beside a date (`Cannot mix values of type
+    * INTEGER and DATE in CASE expression - an explicit cast is required`, measured). Rendered, such
+    * a node answered two classes in one column, or failed in Painless.
+    *
+    * Read on what each arm REPORTS. A BOOLEAN beside a number is accepted, as DuckDB types it an
+    * INTEGER. Left out, as DuckDB reads them by the other arms: a NULL, a string literal (read as
+    * the type beside it), an arm of a type still unknown (no schema, `date_nanos`); and an
+    * aggregate arm, whose per-group value Elasticsearch computes. `expression` names the node as
+    * DuckDB does (`CASE expression`, `COALESCE operator`); DuckDB names the newer arm first in a
+    * CASE and the earlier one first in a COALESCE.
+    */
+  private[cond] def mixedArmsError(
+    arms: List[PainlessScript],
+    expression: String,
+    newerFirst: Boolean
+  ): Option[String] = {
+    def family(t: SQLType): Int =
+      if (t.isNumber) 0
+      else if (t == SQLTypes.Boolean) 1
+      else if (
+        t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp ||
+        t == SQLTypes.Temporal
+      ) 2
+      else if (t == SQLTypes.Time) 3
+      else if (t.isText) 4
+      else -1
+    // a BOOLEAN and a number have a common type, INTEGER
+    def common(a: Int, b: Int): Boolean = a == b || Set(a, b) == Set(0, 1)
+    if (arms.exists(_.hasAggregation)) None
+    else {
+      val typed = arms
+        .filterNot(a => ComparisonRule.stringLiteral(a).isDefined)
+        .map(_.reportedType)
+        .filterNot(t => t == SQLTypes.Null || t.isUnknown)
+        .filter(family(_) >= 0)
+      typed.headOption.flatMap { first =>
+        typed.tail.find(t => !common(family(first), family(t))).map { other =>
+          val (a, b) = if (newerFirst) (other, first) else (first, other)
+          s"Cannot mix values of type ${a.typeId} and ${b.typeId} in $expression - an explicit " +
+          "cast is required"
+        }
+      }
+    }
+  }
+
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]
       with FunctionWithIdentifier {
@@ -216,7 +273,10 @@ package object cond {
 
   case class Coalesce(values: List[PainlessScript])
       extends TransformFunction[SQLAny, SQLType]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with AnswersArms {
+    override def answeredArms: List[PainlessScript] = values
+
     def operator: ConditionalOp = Coalesce
 
     override def fun: Option[ConditionalOp] = Some(operator)
@@ -232,46 +292,122 @@ package object cond {
 
     override def sql: String = s"$Coalesce(${values.map(_.sql).mkString(", ")})"
 
-    // Reprend l’idée de SQLValues mais pour n’importe quel token
-    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
+    /** The type of the value `COALESCE` answers: the type it REPORTS, which every arm is converted
+      * to in a query ([[toPainlessCall]]), as a `CASE` converts its results. The arms were not
+      * converted at all, so a column answered the class of whichever arm was not NULL:
+      * `COALESCE(CAST(n AS DOUBLE), 2)` the double of `n` or the integer 2, `COALESCE(CAST(d AS
+      * DATE), ts)` a `LocalDate` or a `ZonedDateTime`. Arms with no common type keep the least
+      * common supertype of their `out` and render as they did (`SQLTypeUtils.armsType`).
+      */
+    override def baseType: SQLType =
+      if (SQLTypeUtils.rendersOutsideQuery) SQLTypeUtils.leastCommonSuperType(argTypes)
+      else
+        SQLTypeUtils
+          .armsType(answeredArms, reportedType)
+          .getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes))
 
     /** `COALESCE` returns whichever arm is first non-null, so the type it REPORTS is the common
       * super type of the arms — the same derivation as [[baseType]], over the arms' own reported
       * types. This is where widening legitimately happens, and DuckDB 0.10.1 agrees:
       * `COALESCE(NULLIF(<DATE col>, <TIMESTAMP>), CURRENT_DATE)` is `DATE`, while the same over a
-      * `TIMESTAMP` column is `TIMESTAMP`.
+      * `TIMESTAMP` column is `TIMESTAMP`. An arm of a still-unknown type (a `date_nanos` column)
+      * beside a DATE makes it a TIMESTAMP (`SQLTypeUtils.armsReportedType`).
       */
-    override def reportedType: SQLType = SQLTypeUtils.leastCommonSuperType(reportedArgTypes)
+    override def reportedType: SQLType = SQLTypeUtils.armsReportedType(reportedArgTypes)
 
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
       else Right(())
     }
 
+    /** Arms with no common type are refused, as DuckDB refuses them ([[mixedArmsError]]). */
+    override def typeError: Option[String] =
+      mixedArmsError(answeredArms, "COALESCE operator", newerFirst = false)
+
     override def checkIfNullable: Boolean = false
 
     override def toPainlessCall(callArgs: List[String], context: Option[PainlessContext]): String =
       callArgs match {
         case Nil => throw new IllegalArgumentException("COALESCE requires at least one argument")
+        // 🔴 In a query a NULL literal arm is FOLDED away: it can never be the first
+        // non-NULL value, and rendered it is a NULL constant -- `(param2 != null ? param2 : null)`,
+        // on which `DATE_ADD` called `.plus` (a NullPointerException on every NULL row). The arms
+        // left are what COALESCE answers, and with none left it answers NULL. The statement, its
+        // `.sql` and an ingest processor's bytes are unchanged.
+        case _
+            if SQLTypeUtils.convertsArms(context) &&
+              values.exists(ArithmeticExpression.nullLiteral) =>
+          callArgs
+            .map(_.trim)
+            .zip(values)
+            .filterNot(a => ArithmeticExpression.nullLiteral(a._2)) match {
+            case Nil                    => "null"
+            case (single, value) :: Nil => arm(single, value, last = true, context)
+            case args                   => folded(args, context)
+          }
         // 🔴 `COALESCE(x)` IS `x`. Without this arm the fold below took `values.length - 1 = 0`
         // arguments, so the `" : "` join produced nothing and the tail appended a closing paren that
         // opened nowhere: `String.valueOf( : param1))`, which Painless cannot parse. Degenerate SQL,
         // legal SQL, and UNREACHABLE until issue #367 stopped predicates from dropping the operand's
         // transform — `WHERE COALESCE(d) = 'x'` compared the raw column before and emits this now.
-        case single :: Nil => single.trim
+        case single :: Nil => arm(single.trim, values.head, last = true, context)
         // 🔴 A RIGHT fold, because the old one opened `values.length - 1` parentheses and closed
         // exactly ONE: at two arguments that balances by luck, and at three or more it emitted
         // `(a != null ? a : (b != null ? b : c)` — Painless cannot parse it, so `COALESCE(a, b, c)`
         // was a shard failure in EVERY venue, SELECT included, and no test had ever looked. Found by
         // the delimiter check in `PredicateTransformSurvivalSpec`. Byte-identical at two arguments,
         // which is what every existing fixture pins.
-        case _ =>
-          callArgs.init.foldRight(callArgs.last.trim) { (arg, rest) =>
-            s"(${arg.trim} != null ? ${arg.trim} : $rest)"
-          }
+        case _ => folded(callArgs.map(_.trim).zip(values), context)
       }
 
-    override def nullable: Boolean = values.forall(_.nullable)
+    private[this] def folded(
+      args: List[(String, PainlessScript)],
+      context: Option[PainlessContext]
+    ): String =
+      args.init.foldRight(arm(args.last._1, args.last._2, last = true, context)) {
+        case ((rendered, value), rest) =>
+          s"($rendered != null ? ${arm(rendered, value, last = false, context)} : $rest)"
+      }
+
+    /** An arm as COALESCE answers it: in a query, the type COALESCE reports, converted once from
+      * what the arm renders (`SQLTypeUtils.convertArm`, the conversion of a CASE's results). A
+      * tested arm is not NULL where it is answered; the last one may be. An ingest processor, and
+      * arms with no common type, keep their bytes.
+      */
+    private[this] def arm(
+      rendered: String,
+      value: PainlessScript,
+      last: Boolean,
+      context: Option[PainlessContext]
+    ): String =
+      if (
+        !SQLTypeUtils.convertsArms(context) ||
+        SQLTypeUtils.armsType(answeredArms, reportedType).isEmpty
+      ) rendered
+      else {
+        val converted =
+          SQLTypeUtils.convertArm(
+            value,
+            rendered,
+            baseType,
+            last && SQLTypeUtils.mayRenderNull(value, context),
+            context
+          )
+        // a primitive (`((double) x)`) opposite a branch that can be NULL is boxed, as every
+        // conversion behind a NULL guard is (`SQLTypeUtils.coerce`)
+        if (last || converted == rendered || !baseType.isNumber) converted
+        else s"(def)($converted)"
+      }
+
+    /** NULL where every arm is: a NULL literal arm is NULL, and in a query it is folded away
+      * ([[toPainlessCall]]), so COALESCE is NULL where the arms left are. `COALESCE(x, NULL)` is
+      * `x`, which a consumer must guard (`DATE_ADD(COALESCE(CAST(d AS DATE), NULL), …)` called
+      * `.plus` on the NULL of every document missing `d`). An ingest processor renders it as
+      * before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) values.forall(_.nullable)
+      else values.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
 
     override def update(request: query.SingleSearch): Coalesce = {
       this.copy(values = values.map {
@@ -301,7 +437,10 @@ package object cond {
   private[cond] case object WhenNumbers extends WhenComparison
 
   case class NullIf(expr1: PainlessScript, expr2: PainlessScript)
-      extends ConditionalFunction[SQLAny] {
+      extends ConditionalFunction[SQLAny]
+      with AnswersArms {
+    override def answeredArms: List[PainlessScript] = List(expr1)
+
     override def conditionalOp: ConditionalOp = NullIf
 
     override def args: List[PainlessScript] = List(expr1, expr2)
@@ -310,7 +449,28 @@ package object cond {
 
     override def inputType: SQLAny = SQLTypes.Any
 
-    override def baseType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
+    /** The type of the value `NULLIF` answers: the type it REPORTS, its first argument's, which
+      * that argument is converted to in a query where it is the answer ([[toPainlessCall]]), as a
+      * `CASE` converts its results. `NULLIF(d, x)` over a DATE `d` answered `d`'s doc value, a
+      * `ZonedDateTime`, in a DATE column. A first argument READ beside the second (`firstReading`)
+      * renders that reading already, and keeps [[comparedType]].
+      */
+    override def baseType: SQLType =
+      (if (firstReading.isDefined || SQLTypeUtils.rendersOutsideQuery) None
+       else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(comparedType)
+
+    /** The type the two arguments are COMPARED in -- what [[toPainlessCall]] switches on to pick a
+      * comparison, unless a cast over the `NULLIF` sets one: the least common supertype of what
+      * they render ([[argTypes]]). It was `out` while `out` was this type.
+      */
+    private[this] def comparedType: SQLType = SQLTypeUtils.leastCommonSuperType(argTypes)
+
+    private[this] var castType: Option[SQLType] = None
+
+    override def cast(targetType: SQLType): SQLType = {
+      castType = Some(targetType)
+      super.cast(targetType)
+    }
 
     /** The type an argument's rendering really PRODUCES -- the question [[receiverIsTime]] three
       * lines below already asks of the receiver, asked here of BOTH arguments (issue #382).
@@ -433,12 +593,12 @@ package object cond {
       * }}}
       * i.e. the answer follows the FIRST argument in both, never the pair.
       *
-      * ⚠️ Deliberately NOT applied to [[baseType]]. `out` is what [[toPainlessCall]] switches on to
-      * pick a COMPARISON, and comparing is the one thing that really does involve both operands --
+      * ⚠️ The COMPARISON is not derived from it: [[toPainlessCall]] picks the comparison by
+      * [[comparedType]], and comparing is the one thing that really does involve both operands --
       * `NULLIF(CAST(s AS BIGINT), 0)` must take the numeric arm because BOTH sides render numbers.
-      * Two questions, two derivations: `out` says how to compare, `reportedType` says what comes
-      * out. A pair that cannot be compared at all is refused by [[typeMismatchError]] before either
-      * matters.
+      * Two questions, two derivations: `comparedType` says how to compare, `reportedType` says what
+      * comes out (and [[baseType]], the type the answer is converted to, follows it). A pair that
+      * cannot be compared at all is refused by [[typeMismatchError]] before either matters.
       *
       * A first argument that is a string literal READ beside the second (`firstReading`) is the
       * value it is read as, and is rendered as one: `NULLIF('2024-01-31', ts)` answers that
@@ -637,6 +797,17 @@ package object cond {
     override def checkIfNullable: Boolean =
       false //checkIfExpressionNullable(expr1) || checkIfExpressionNullable(expr2)
 
+    /** NULLIF answers NULL where its arguments are equal, so a consumer must guard it:
+      * `CAST(NULLIF(ts, NULL) AS TIME)` called `.toInstant()` on the NULL of every document missing
+      * `ts`. Folded (`NULLIF(x, NULL)`, [[toPainlessCall]]) it is `x`, as NULL as `x` is: a number
+      * literal is never NULL, and `0 != null` does not compile. An ingest processor renders it as
+      * before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) super.nullable
+      else if (ArithmeticExpression.nullLiteral(expr2)) expr1.nullable
+      else true
+
     /** Bind an argument's rendering to a prologue local unless it is already a simple operand.
       *
       * 🔴 Issue #382. `arg0` appears THREE times in the guarded template and `arg1` twice, both
@@ -695,12 +866,36 @@ package object cond {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
+        // 🔴 In a query a NULL literal argument is FOLDED: `NULLIF(NULL, x)` is NULL and
+        // `NULLIF(x, NULL)` is `x` (a comparison with NULL is unknown, so never equal). Rendered,
+        // it was a comparison of NULL constants (`null != null && param1.isEqual(null)`), which
+        // Painless refuses to compile: the whole statement failed. The statement, its `.sql` and an
+        // ingest processor's bytes are unchanged.
+        case List(_, _)
+            if SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr1) =>
+          bound("null", context)
         case List(rendered0, rendered1) =>
           // A string literal argument is the value the other argument READS it as -- the number
           // or the boolean it spells, rendered as one (`secondReading` / `firstReading`).
           def scalar(reading: Option[ComparisonRule.Reading], rendered: String): String =
             reading.flatMap(ComparisonRule.scalarPainless).getOrElse(rendered)
           val arg0 = operand(scalar(firstReading, rendered0), context)
+          val typedAnswer =
+            SQLTypeUtils.convertsArms(context) && firstReading.isEmpty &&
+            SQLTypeUtils.armsType(answeredArms, reportedType).isDefined
+          if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr2))
+            return bound(
+              if (typedAnswer)
+                SQLTypeUtils.convertArm(
+                  expr1,
+                  arg0,
+                  baseType,
+                  SQLTypeUtils.mayRenderNull(expr1, context),
+                  context
+                )
+              else arg0,
+              context
+            )
           // A second argument READ as a temporal is compared as the instant it denotes
           // (`comparedMillis`) and is never the answer, so its value is not bound: it would be
           // evaluated on every document for nothing.
@@ -716,8 +911,15 @@ package object cond {
           // 🔴 And the guard means NOT-EQUAL, not null. SQL says `NULLIF(a, b)` is NULL when
           // `a = b`; with `b` NULL the comparison is UNKNOWN, so the rows are NOT equal and the
           // answer is `a`. Short-circuiting `arg1 == null` to the NULL branch would invert that.
+          // In a query the answer is converted to the type NULLIF reports, once, from what it
+          // renders (`SQLTypeUtils.convertArm`, the conversion of a CASE's results); it is not NULL
+          // there. An ingest processor keeps its bytes.
+          val answer =
+            if (typedAnswer)
+              SQLTypeUtils.convertArm(expr1, arg0, baseType, nullable = false, context)
+            else arg0
           def nullIf(comparison: String): String =
-            s"$arg0 == null || ($arg1 != null && $comparison) ? null : $arg0"
+            s"$arg0 == null || ($arg1 != null && $comparison) ? null : $answer"
           // Two temporals that do not render the same java.time type -- a DATE column's
           // `ZonedDateTime` against a cast's `LocalDate` -- or a string literal READ as a temporal
           // are compared as the instants they denote, a DATE as the instant its UTC day starts at
@@ -745,12 +947,12 @@ package object cond {
             s"${ArithmeticExpression.comparedMillis(expr2, secondReading, arg1, context)}"
           val expr =
             if (secondReading.exists(_.isInstanceOf[ComparisonRule.TemporalReading]))
-              s"$arg0 == null || ($instants) ? null : $arg0"
+              s"$arg0 == null || ($instants) ? null : $answer"
             else if (temporalLiteral)
-              s"$arg0 == null || ($arg1 != null && $instants) ? null : $arg0"
+              s"$arg0 == null || ($arg1 != null && $instants) ? null : $answer"
             else if (mixedTemporals) nullIf(instants)
             else
-              out match {
+              castType.getOrElse(comparedType) match {
                 // 🔴 `String.compareTo` takes a `String` and NOTHING else, so this arm is right only
                 // when BOTH operands render text -- and `leastCommonSuperType` answers VARCHAR for a
                 // MIXED pair too (`[BOOLEAN, KEYWORD]`, `[TIMESTAMP, KEYWORD]`). Without the guard
@@ -786,21 +988,23 @@ package object cond {
                     s".isEqual(${SQLTypeUtils.processorInstant(arg1)})"
                   )
                 case _: SQLTemporal => nullIf(s"$arg0.isEqual($arg1)")
-                // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard.
-                case _ => s"$arg0 == $arg1 ? null : $arg0"
+                // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard --
+                // but a CONVERTED answer does: `NULLIF(d, 2)` rendered `p1 == 2 ? null :
+                // p1.toInstant()…`, which ran on the NULL of every document missing `d`.
+                case _ if answer != arg0 && SQLTypeUtils.mayRenderNull(expr1, context) =>
+                  s"$arg0 == null || $arg0 == $arg1 ? null : $answer"
+                case _ => s"$arg0 == $arg1 ? null : $answer"
               }
-          context match {
-            case Some(ctx) =>
-              ctx.addParam(LiteralParam(expr)) match {
-                case Some(e) => return e
-                case _       =>
-              }
-            case _ =>
-          }
-          expr
+          bound(expr, context)
         case _ => throw new IllegalArgumentException("NULLIF requires exactly two arguments")
       }
     }
+
+    /** The answer bound to a parameter of its own, the name a consumer reads -- a literal answer
+      * too, which a consumer's NULL guard could not test (`0 != null` does not compile).
+      */
+    private[this] def bound(expr: String, context: Option[PainlessContext]): String =
+      context.flatMap(_.addParam(LiteralParam(expr))).getOrElse(expr)
 
     override def validate(): Either[String, Unit] = {
       for {
@@ -847,7 +1051,8 @@ package object cond {
     expression: Option[PainlessScript],
     conditions: List[(PainlessScript, PainlessScript)],
     default: Option[PainlessScript]
-  ) extends TransformFunction[SQLAny, SQLAny] {
+  ) extends TransformFunction[SQLAny, SQLAny]
+      with AnswersArms {
     override def args: List[PainlessScript] = expression.toList ++
       conditions.map { case (_, res) => res } ++
       default.toList
@@ -865,17 +1070,71 @@ package object cond {
       s"$exprPart $whenThen$elsePart $END"
     }
 
-    /** The type of the CASE's VALUE: the least common supertype of its `THEN` results and its
-      * `ELSE` -- never the `CASE <expr>` operand, which is only compared ([[comparisonType]]), as
-      * [[reportedType]] already reads it. With the operand in, `CASE s WHEN 'a' THEN 1 ELSE 0 END`
-      * over a KEYWORD `s` answered the strings `"1"` / `"0"` and `CASE x WHEN 1.5 THEN 1 ELSE 0
-      * END` over a DOUBLE `x` the doubles `1.0` / `0.0` while reporting BIGINT; PostgreSQL answers
-      * the integers 1 and 0.
+    /** The THEN results and the ELSE: the arms whose value the CASE answers. */
+    override def answeredArms: List[PainlessScript] = conditions.map(_._2) ++ default.toList
+
+    private[this] def arms: List[PainlessScript] = answeredArms
+
+    /** The type of the CASE's VALUE: the type it REPORTS, the common type of what its `THEN`
+      * results and its `ELSE` report, which each of them is converted to ([[armOf]]) -- never the
+      * `CASE <expr>` operand, which is only compared ([[comparisonType]]). With the operand in,
+      * `CASE s WHEN 'a' THEN 1 ELSE 0 END` over a KEYWORD `s` answered the strings `"1"` / `"0"`
+      * and `CASE x WHEN 1.5 THEN 1 ELSE 0 END` over a DOUBLE `x` the doubles `1.0` / `0.0` while
+      * reporting BIGINT; PostgreSQL answers the integers 1 and 0.
+      *
+      * 🔴 The REPORTED type, not the arms' `out`: a schema-resolved arm's `out` is its COLUMN's
+      * runtime type whatever function it wears, so a CASE of two DATE arms was a TIMESTAMP, its
+      * `CAST(… AS DATE)` arm stayed a `LocalDate` and its DATE literal was widened to a
+      * `ZonedDateTime` beside it -- two classes in a column reported DATE. A consumer reads this
+      * type for the class the CASE answers: `DATE_TRUNC(CASE … END, MONTH)` called `truncatedTo` on
+      * the `LocalDate` rows.
+      *
+      * Arms with no common type keep the arms' `out` ([[legacyType]]), and render as they did.
       */
     override def baseType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(
-        conditions.map { case (_, res) => res.out } ++ default.map(_.out)
-      )
+      if (SQLTypeUtils.rendersOutsideQuery) legacyType
+      else SQLTypeUtils.armsType(arms, reportedType).getOrElse(legacyType)
+
+    /** The type of the CASE's value where its arms have no common type ([[SQLTypeUtils.armsType]])
+      * and in an ingest processor, whose persisted bytes do not move: the least common supertype of
+      * the arms' `out`, which each arm is converted to from its own `baseType`.
+      */
+    private[this] def legacyType: SQLType =
+      SQLTypeUtils.leastCommonSuperType(arms.map(_.out))
+
+    /** The type a cast over the CASE sets (`CAST(CASE … END AS DATE)`): a simple CASE compares in
+      * it, and the arms are converted to it where the CASE keeps its old conversion
+      * ([[legacyOut]]). Recorded here because [[baseType]] no longer tells it apart from `out` when
+      * the two agree.
+      */
+    private[this] var castType: Option[SQLType] = None
+
+    override def cast(targetType: SQLType): SQLType = {
+      castType = Some(targetType)
+      super.cast(targetType)
+    }
+
+    /** The type a processor converts each arm to: a cast's over the CASE, or [[legacyType]]. */
+    private[this] def legacyOut: SQLType = castType.getOrElse(legacyType)
+
+    /** An arm -- a `THEN` result or the `ELSE` -- converted to the type the CASE answers: in a
+      * query, FROM what the arm renders TO [[baseType]], the type the CASE reports, through the one
+      * arm conversion (`SQLTypeUtils.convertArm`) `COALESCE`, `NULLIF`, `GREATEST` / `LEAST` and
+      * `LAST_DAY` share. In an ingest processor, where the arms have no common type, and for an arm
+      * whose type is still unknown (`SQLTypeUtils.armTypeUnknown`), from the arm's `baseType` to
+      * [[legacyOut]], as before.
+      *
+      * 🔴 To [[baseType]] even under a cast (`CAST(CASE … END AS DATE)`): the cast converts the
+      * CASE FROM its `baseType` (`SQLTypeUtils.renderedSourceType`), so arms already converted to
+      * the cast's target were converted a second time -- `.toInstant()` on the `LocalDate` they had
+      * become.
+      */
+    private[this] def armOf(arm: PainlessScript, context: Option[PainlessContext]): String =
+      if (
+        SQLTypeUtils.convertsArms(context) && !SQLTypeUtils.armTypeUnknown(arm) &&
+        SQLTypeUtils.armsType(arms, reportedType).isDefined
+      ) SQLTypeUtils.convertArm(arm, baseType, context)
+      else SQLTypeUtils.coerce(arm, arm.baseType, legacyOut, context)
 
     /** The type a simple CASE compares its operand and each `WHEN` value in: the common supertype
       * of the operand and the results -- what [[baseType]] answered while it included the operand
@@ -883,7 +1142,7 @@ package object cond {
       * Only the VALUE's type moved ([[baseType]]).
       */
     private[this] def comparisonType: SQLType =
-      if (out != baseType) out else SQLTypeUtils.leastCommonSuperType(argTypes)
+      castType.filter(_ != legacyType).getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes))
 
     override def validate(): Either[String, Unit] = {
       // Story 22.2 (AD-6) — a CASE-WHEN condition is parsed by `case_condition`, which shares
@@ -911,6 +1170,9 @@ package object cond {
       * type that is still unknown is accepted: Elasticsearch answers.
       */
     override def typeError: Option[String] =
+      conditionsTypeError.orElse(mixedArmsError(answeredArms, "CASE expression", newerFirst = true))
+
+    private[this] def conditionsTypeError: Option[String] =
       expression match {
         case None if conditions.exists { case (cond, _) =>
               val t = renderedTypeOf(cond)
@@ -943,10 +1205,11 @@ package object cond {
 
     /** The least common supertype of the BRANCHES' reported types -- the THEN results and the ELSE,
       * never the `CASE <expr>` operand -- as `COALESCE` reports its arms': `CASE … THEN d ELSE d2
-      * END` is a DATE when both are.
+      * END` is a DATE when both are, and a TIMESTAMP when a result of a still-unknown type (a
+      * `date_nanos` column) is beside a DATE one (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(
+      SQLTypeUtils.armsReportedType(
         conditions.map { case (_, result) => result.reportedType } ++ default.map(_.reportedType)
       )
 
@@ -1144,9 +1407,9 @@ package object cond {
       boxWhenNoDefault(res match {
         case i: Identifier if i.name == name && name.nonEmpty =>
           i.withNullable(false)
-          SQLTypeUtils.coerce(i, out, context)
+          armOf(i, context)
         case _ =>
-          SQLTypeUtils.coerce(res, out, context)
+          armOf(res, context)
       })
     }
 
@@ -1187,7 +1450,15 @@ package object cond {
         .mkString(" : ")
     }
 
-    override def painless(context: Option[PainlessContext] = None): String = {
+    /** The results and the `ELSE` are converted to the type the CASE answers, once, from what each
+      * renders ([[armOf]]). The operand, the `WHEN` values and the conditions are converted FROM
+      * their `baseType` (the `SQLTypeUtils.coerce` overload that names it), to the type they are
+      * compared in ([[comparisonType]]) or to BOOLEAN: those comparisons keep 0.23.0's conversion.
+      */
+    override def painless(context: Option[PainlessContext] = None): String =
+      SQLTypeUtils.renderingIn(context)(casePainless(context))
+
+    private[this] def casePainless(context: Option[PainlessContext]): String = {
       context match {
         case Some(ctx) =>
           var cases =
@@ -1198,7 +1469,7 @@ package object cond {
                 // the operand and each value are converted to the type they are COMPARED in; the
                 // results, below, to the CASE's own (`out`)
                 val compared = comparisonType
-                val e = SQLTypeUtils.coerce(expr, compared, context)
+                val e = SQLTypeUtils.coerce(expr, expr.baseType, compared, context)
                 val expParam = ctx.addParam(
                   LiteralParam(e)
                 )
@@ -1237,19 +1508,15 @@ package object cond {
                                     .coerce(_, reading.sqlType, compared, nullable = false, context)
                                 )
                             )
-                            .getOrElse(SQLTypeUtils.coerce(cond, compared, context))
+                            .getOrElse(SQLTypeUtils.coerce(cond, cond.baseType, compared, context))
                         )
                     val r =
                       boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
-                          SQLTypeUtils.coerce(
-                            i,
-                            out,
-                            context
-                          )
+                          armOf(i, context)
                         case _ =>
-                          SQLTypeUtils.coerce(res, out, context)
+                          armOf(res, context)
                       })
                     expParam match {
                       case Some(e) =>
@@ -1290,18 +1557,14 @@ package object cond {
                           i.name
                         case _ => ""
                       }
-                    val c = SQLTypeUtils.coerce(cond, SQLTypes.Boolean, context)
+                    val c = SQLTypeUtils.coerce(cond, cond.baseType, SQLTypes.Boolean, context)
                     val r =
                       boxWhenNoDefault(res match {
                         case i: Identifier if i.name == name && name.nonEmpty =>
                           i.withNullable(false)
-                          SQLTypeUtils.coerce(
-                            i,
-                            out,
-                            context
-                          )
+                          armOf(i, context)
                         case _ =>
-                          SQLTypeUtils.coerce(res, out, context)
+                          armOf(res, context)
                       })
                     if (!cond.isInstanceOf[CriteriaWithConditionalFunction[_]] && cond.nullable) {
                       ctx.addParam(LiteralParam(c)) match {
@@ -1322,7 +1585,7 @@ package object cond {
             }
           default match {
             case Some(df) =>
-              val d = SQLTypeUtils.coerce(df, out, context)
+              val d = armOf(df, context)
               if (df.nullable) {
                 ctx.addParam(LiteralParam(d)) match {
                   case Some(d) => cases = s"$cases : $d"
@@ -1398,8 +1661,10 @@ package object cond {
     */
   sealed trait NumericReducer
       extends TransformFunction[SQLAny, SQLNumeric]
-      with FunctionWithIdentifier {
+      with FunctionWithIdentifier
+      with AnswersArms {
     def values: List[PainlessScript]
+    override def answeredArms: List[PainlessScript] = values
     def operator: ConditionalOp
     protected def mathFn: String // "Math.max" | "Math.min"
     protected def greatest: Boolean // GREATEST (the larger wins) or LEAST
@@ -1456,13 +1721,37 @@ package object cond {
       else Some(SQLTypes.Double)
     }
 
+    /** Over dates, the type the reducer REPORTS -- DATE when every argument is a date, TIMESTAMP
+      * when they mix, as DuckDB types them -- which the instant that wins is converted to in a
+      * query ([[overDatesPainless]]); a TIMESTAMP where the arguments have no common type
+      * (`SQLTypeUtils.armsType`). Over numbers, [[numericType]], which every row is converted to
+      * ([[typedResult]]): ONE rule, an argument answers the type the reducer reports, from what it
+      * renders.
+      */
     override def baseType: SQLType =
-      if (overDates) SQLTypes.Timestamp
+      if (overDates)
+        (if (SQLTypeUtils.rendersOutsideQuery) None
+         else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(SQLTypes.Timestamp)
       else
-        numericType.getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes) match {
-          case n: SQLNumeric => n
-          case _             => outputType
+        numericType.getOrElse(foldedArgument.getOrElse {
+          SQLTypeUtils.leastCommonSuperType(argTypes) match {
+            case n: SQLNumeric => n
+            case _             => outputType
+          }
         })
+
+    /** The type of the one argument a query renders once NULL literals are folded away
+      * ([[toPainlessCall]]), when exactly one is left -- what it renders
+      * (`SQLTypeUtils.armSourceType`): the reducer IS that argument (`LEAST(NULL, x)` is `x`). An
+      * ingest processor renders the reducer as it did, and keeps its type.
+      */
+    private def foldedArgument: Option[SQLType] =
+      if (SQLTypeUtils.rendersOutsideQuery) None
+      else
+        values.filterNot(ArithmeticExpression.nullLiteral) match {
+          case only :: Nil if values.size > 1 => Some(SQLTypeUtils.armSourceType(only, "", None))
+          case _                              => None
+        }
 
     override def sql: String = s"$operator(${values.map(_.sql).mkString(", ")})"
 
@@ -1513,12 +1802,17 @@ package object cond {
 
     /** Over numbers, [[numericType]] -- the type every row answers, so DESCRIBE, a `CREATE TABLE …
       * AS SELECT` and JDBC metadata declare what is stored; otherwise the least common supertype of
-      * the arguments' REPORTED types, as `COALESCE` reports.
+      * the arguments' REPORTED types, as `COALESCE` reports (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      numericType.getOrElse(SQLTypeUtils.leastCommonSuperType(reportedArgTypes))
+      numericType.getOrElse(SQLTypeUtils.armsReportedType(reportedArgTypes))
 
-    override def nullable: Boolean = values.forall(_.nullable)
+    /** NULL where every argument is; a NULL literal argument is NULL, and folded away in a query
+      * ([[toPainlessCall]]): `LEAST(NULL, x)` is `x`. An ingest processor renders it as before.
+      */
+    override def nullable: Boolean =
+      if (SQLTypeUtils.rendersOutsideQuery) values.forall(_.nullable)
+      else values.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
 
     /** Can this argument's rendering be NULL here?
       *
@@ -1533,9 +1827,15 @@ package object cond {
       * Asked of the group filter alone ([[query.MetricSelectorScript.rendersGroupFilter]]): the
       * SELECT list's `bucket_script` renders this same function context-free, and its gap policy
       * never hands it a NULL metric, so its script does not move.
+      *
+      * Per document in a query, a conditional argument is asked through
+      * `SQLTypeUtils.mayRenderNull`: its nameless identifier answers `false`, and
+      * `GREATEST(COALESCE(d, d2), ts)` converted the COALESCE to epoch milliseconds unguarded, on
+      * its NULL.
       */
     private def nullableArgument(argument: PainlessScript, context: Option[PainlessContext]) =
-      argument.nullable || (context.isEmpty && query.MetricSelectorScript.rendersGroupFilter &&
+      SQLTypeUtils.mayRenderNull(argument, context) ||
+      (context.isEmpty && query.MetricSelectorScript.rendersGroupFilter &&
       (argument match {
         case id: Identifier => id.bucketMetrics.nonEmpty
         case _              => false
@@ -1594,10 +1894,11 @@ package object cond {
       */
     private def overWholeNumbers(
       callArgs: List[String],
+      arguments: List[PainlessScript],
       context: Option[PainlessContext]
     ): Boolean =
       context.exists(!_.isTransform) && numericType.exists(NumericReducer.wholeNumber) &&
-      !values.exists(ArithmeticExpression.bareNull) &&
+      !arguments.exists(ArithmeticExpression.bareNull) &&
       callArgs.forall(a => NumericReducer.oneValue(a.trim))
 
     /** The value converted to [[numericType]], per document: ONE conversion every path goes through
@@ -1667,8 +1968,17 @@ package object cond {
     ): String =
       if (overDates) overDatesPainless(callArgs, context)
       else {
+        // 🔴 In a query a NULL literal argument is FOLDED away, as it is over dates: DuckDB
+        // and PostgreSQL skip a NULL, and rendered it was `Math.min(null, param1)`, which Painless
+        // refuses to compile. With none left the reducer is NULL. An ingest processor keeps its
+        // bytes.
+        val arguments =
+          callArgs.zip(values).filterNot { case (_, argument) =>
+            SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(argument)
+          }
+        if (arguments.isEmpty && callArgs.nonEmpty) return "null"
         val typedArgs =
-          callArgs.zip(values).map { case (rendered, argument) =>
+          arguments.map { case (rendered, argument) =>
             typedArgument(rendered, argument, context)
           }
         typedResult(
@@ -1678,8 +1988,8 @@ package object cond {
             case x :: Nil => x
             case _ =>
               fold(
-                typedArgs.zip(values.map(nullableArgument(_, context))),
-                overWholeNumbers(typedArgs, context)
+                typedArgs.zip(arguments.map(a => nullableArgument(a._2, context))),
+                overWholeNumbers(typedArgs, arguments.map(_._2), context)
               )._1
           },
           context
@@ -1736,7 +2046,15 @@ package object cond {
       perDocument match {
         case Some(ctx) =>
           val name = if (nullable) ctx.bindLocal(winner, "lv") else s"($winner)"
-          val instant = s"Instant.ofEpochMilli((long) $name).atZone(ZoneId.of('Z'))"
+          // in a query the instant that wins answers the type the reducer reports -- a DATE when
+          // every argument is one -- converted once, from the TIMESTAMP it renders
+          val instant = SQLTypeUtils.convertRendered(
+            s"Instant.ofEpochMilli((long) $name).atZone(ZoneId.of('Z'))",
+            SQLTypes.Timestamp,
+            if (SQLTypeUtils.convertsArms(context)) baseType else SQLTypes.Timestamp,
+            nullable = false,
+            context
+          )
           if (nullable) s"($name == null ? null : $instant)" else instant
         case None => winner
       }
@@ -1798,7 +2116,7 @@ package object cond {
     /** A rendering that is ONE value wherever it is placed: a name, a literal, or a single
       * parenthesised group.
       */
-    private[cond] def oneValue(rendered: String): Boolean =
+    private[sql] def oneValue(rendered: String): Boolean =
       simpleOperand.pattern.matcher(rendered).matches() || (rendered.startsWith("(") && {
         var depth = 0
         var i = 0

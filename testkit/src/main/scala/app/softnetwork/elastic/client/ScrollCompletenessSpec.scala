@@ -25,7 +25,9 @@ import app.softnetwork.elastic.client.scroll.ScrollConfig
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
 import app.softnetwork.persistence.generateUUID
+import org.elasticsearch.client.Request
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
 import org.slf4j.{Logger, LoggerFactory}
@@ -33,6 +35,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.language.implicitConversions
+import scala.util.Try
 
 /** Regression test for issue #197: a paged extraction with no `ORDER BY` must return every row
   * exactly once on a MULTI-SHARD index.
@@ -97,6 +100,7 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
 
   override def afterAll(): Unit = {
     client.deleteIndex(index)
+    if (partialFixtureCreated) client.deleteIndex(partialIndex)
     super.afterAll()
   }
 
@@ -157,5 +161,114 @@ trait ScrollCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     rows should have size totalDocs.toLong
     rows.map(_._1("id").toString).toSet should have size totalDocs.toLong
     rows.head._2.slices shouldBe 1
+  }
+
+  // GATE-024 REST page error
+  it should "fail with Elasticsearch's status and reason on a page Elasticsearch rejects (GATE-024 REST page error)" in {
+    // un-LIMITed, over a pattern: every page is a search Elasticsearch refuses with a 400 on every
+    // major. `value` is an integer and 'not-a-number' cannot be parsed as one, so every shard
+    // rejects the range query while building it, before any script runs. (A script error is not a
+    // 400 on every major: Elasticsearch 6.8 answers a Painless runtime error with a 500.)
+    val source = client.scroll(
+      SelectStatement(s"SELECT id FROM ${index}* WHERE value > 'not-a-number'"),
+      ScrollConfig(scrollSize = 100)
+    )
+
+    val failure = Try(Await.result(source.runWith(Sink.seq), 5.minutes)).failed
+      .getOrElse(fail("the stream did not fail: Elasticsearch accepted every page"))
+
+    withClue(s"${failure.getClass.getName} ${failure.getMessage}: ") {
+      // a handled failure: Elasticsearch's own status, read by the client module
+      client.statusOf(failure) shouldBe Some(400)
+      // Elasticsearch's reason, not the HTTP client's wrapper
+      failure.getMessage should include("shards failed")
+      failure.getMessage should include("not-a-number")
+      failure should not be an[IllegalStateException]
+      // the HTTP client's wrapper is `method [<VERB>], host [...], URI [...]`; Elasticsearch's own
+      // reason may say `method [...]` (a Painless method), so only the wrapper's form is refused
+      failure.getMessage should not include regex("""method \[[A-Z]+\], host \[""")
+      failure.getMessage should not include "URI ["
+    }
+  }
+
+  // GATE-024 Java page error
+  private val partialIndex = "scroll_partial_failure"
+
+  @volatile private var partialFixtureCreated = false
+
+  /** 3 shards holding dates in `k`, and ONE document whose `k` is not a date, on one shard: the
+    * script that reads `k` as a TIMESTAMP fails on that shard only. Every document is routed with a
+    * key Elasticsearch places on a known shard (`_search_shards`), one key per shard.
+    */
+  private lazy val partialFixture: Unit = {
+    client
+      .createIndex(partialIndex, settings = """{"number_of_shards": 3, "number_of_replicas": 0}""")
+      .get shouldBe true
+    partialFixtureCreated = true
+    client
+      .setMapping(
+        partialIndex,
+        """{"properties": {"id": {"type": "keyword"}, "k": {"type": "keyword"}}}"""
+      )
+      .get shouldBe true
+
+    def shardOf(key: String): Int =
+      JacksonConfig.objectMapper
+        .readTree(
+          restClient
+            .performRequest(new Request("GET", s"/$partialIndex/_search_shards?routing=$key"))
+            .getEntity
+            .getContent
+        )
+        .path("shards")
+        .path(0)
+        .path(0)
+        .path("shard")
+        .asInt(-1)
+    val keyOfShard: Map[Int, String] = (0 until 100).iterator
+      .map(i => s"r$i")
+      .scanLeft(Map.empty[Int, String]) { (found, key) =>
+        val shard = shardOf(key)
+        if (found.contains(shard)) found else found + (shard -> key)
+      }
+      .find(_.size == 3)
+      .getOrElse(fail(s"no routing key per shard of $partialIndex"))
+
+    val docs = keyOfShard.toSeq.sortBy(_._1).flatMap { case (shard, key) =>
+      (1 to 4).map(i => (s"s$shard-$i", key, s"2024-0${shard + 1}-0${i}T00:00:00"))
+    } :+ (("bad", keyOfShard(0), "not-a-date"))
+    docs.foreach { case (id, key, k) =>
+      val request = new Request("PUT", s"/$partialIndex/_doc/$id?routing=$key")
+      request.setJsonEntity(s"""{"id":"$id","k":"$k"}""")
+      restClient.performRequest(request)
+    }
+    client.refresh(partialIndex)
+    ()
+  }
+
+  it should "fail with Elasticsearch's status and reason when one shard of a page fails (GATE-024 Java page error)" in {
+    // un-LIMITed and without ORDER BY: Elasticsearch answers the page on which the shard holding
+    // `bad` fails with HTTP 200 and failed shards, the other shards' rows only
+    partialFixture
+    val source = client.scroll(
+      SelectStatement(s"SELECT id FROM $partialIndex WHERE CAST(k AS TIMESTAMP) > '2000-01-01'"),
+      ScrollConfig(scrollSize = 2)
+    )
+
+    val failure = Try(Await.result(source.runWith(Sink.seq), 5.minutes)).failed
+      .getOrElse(fail("the stream did not fail: a failed shard's page was read as a page"))
+    log.info(s"GATE-024 Java page error: ${failure.getClass.getName} ${failure.getMessage}")
+
+    withClue(s"${failure.getClass.getName} ${failure.getMessage}: ") {
+      // a handled failure: Elasticsearch's own status, read by the client module
+      client.statusOf(failure) shouldBe Some(400)
+      failure.getMessage should include("shards failed")
+      // the script's own reason: 6.8 refuses to compile it, later majors fail it at run time
+      failure.getMessage should include regex "(compile|runtime) error"
+      // not retried as a transient failure
+      failure should not be an[_root_.java.io.IOException]
+      failure.getMessage should not include regex("""method \[[A-Z]+\], host \[""")
+      failure.getMessage should not include "URI ["
+    }
   }
 }

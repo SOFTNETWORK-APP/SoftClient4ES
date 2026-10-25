@@ -21,6 +21,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLDouble,
   SQLNumeric,
   SQLTemporal,
+  SQLTypes,
   SQLVarchar
 }
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
@@ -200,7 +201,9 @@ package object bridge {
           Map.empty,
           request.having.flatMap(_.criteria),
           None,
-          references
+          references,
+          levelSize = GroupedRowOrder.levelSize(request),
+          unmappedFields = request.unmappedKeyFields
         ) match {
           case Nil  => Seq.empty
           case aggs => aggs
@@ -224,7 +227,9 @@ package object bridge {
           directions,
           request.having.flatMap(_.criteria),
           None,
-          notNestedReferences
+          notNestedReferences,
+          levelSize = GroupedRowOrder.levelSize(request),
+          unmappedFields = request.unmappedKeyFields
         ) match {
           // No buckets. A `HAVING` with no `GROUP BY` filters the ONE implicit whole-table group,
           // so the metric aggregations move inside a synthetic single-bucket `filters` aggregation
@@ -346,7 +351,8 @@ package object bridge {
               directions,
               havingCriteria,
               Some(n),
-              references
+              references,
+              unmappedFields = request.unmappedKeyFields
             ) match {
               case Nil => notRelatedAggregationsToBuckets.map(_.agg)
               case aggs =>
@@ -433,6 +439,7 @@ package object bridge {
               .inner(
                 nestedInner(n)
               )
+              .copy(ignoreUnmapped = n.ignoreUnmapped)
           } else {
             nestedQuery(
               n.path,
@@ -441,6 +448,7 @@ package object bridge {
               .inner(
                 nestedInner(n)
               )
+              .copy(ignoreUnmapped = n.ignoreUnmapped)
           }
         }
 
@@ -670,10 +678,13 @@ package object bridge {
               case _          => scriptSort.asc()
             }
           } else {
-            val baseSort = sort.order match {
+            // `unmapped_type` from the resolved column type: an index of a pattern or list that
+            // does not map the column sorts its documents as having no value instead of failing
+            // its shards. `None` without a schema, so a schema-less request keeps its bytes.
+            val baseSort = (sort.order match {
               case Some(Desc) => FieldSort(sort.field.aliasOrName).desc()
               case _          => FieldSort(sort.field.aliasOrName).asc()
-            }
+            }).copy(unmappedType = sort.unmappedType)
             sort.nullOrdering match {
               case Some(NullsFirst) => baseSort.missing("_first")
               case Some(NullsLast)  => baseSort.missing("_last")
@@ -734,6 +745,21 @@ package object bridge {
       case _           => true
     }))
 
+  /** The same question asked of BOTH operands (issue #373).
+    *
+    * 🔴 `requiresScript` only ever inspected the LEFT identifier, so a comparison of one column
+    * with another -- which the ES query DSL cannot express at all -- fell through to `rangeQuery`
+    * keyed on the left field NAME, with the RIGHT column rendered as DATE MATH. MEASURED on ES
+    * 6.8.23: `WHERE ts < d` answered `failed to parse date field [d]` -- Elasticsearch read the
+    * column NAME as a date literal. A range can only compare a field with a CONSTANT; two fields
+    * need the script path, which renders both sides and already emits a correct comparison.
+    */
+  private[bridge] def requiresScript(identifier: Identifier, maybeValue: Option[Token]): Boolean =
+    requiresScript(identifier) || maybeValue.exists {
+      case id: Identifier => id.name.trim.nonEmpty
+      case _              => false
+    }
+
   private[bridge] def scriptQueryOf(criteria: Criteria)(implicit
     timestamp: Long,
     contextType: PainlessContextType,
@@ -751,6 +777,22 @@ package object bridge {
     doubleOp: Double => A
   ): A = n.toEither.fold(longOp, doubleOp)
 
+  /** 🔴 The negation of a comparison on a column, as SQL reads it: TRUE only where the comparison
+    * is FALSE, and a column with no value makes it NULL, so such a document is left out -- `n <> 0`
+    * does not keep the rows whose `n` is NULL, as DuckDB 1.5.5 and every SQL engine answer. A
+    * `must_not` alone matched every document the comparison did not, the ones missing the column
+    * included, on every major and every field type. The column's `exists` stands beside it.
+    *
+    * ⚠️ Several `queries` are negated EACH (`must_not` of every one: NOT a AND NOT b). A condition
+    * of two halves -- `NOT BETWEEN`, `NOT (a AND b)` -- is passed as ONE query, `must(a, b)`.
+    */
+  private[bridge] def negationOf(field: String, queries: Query*): Query =
+    not(queries: _*).filter(existsQuery(field))
+
+  /** [[negationOf]] over several columns: a negated MATCH over each of them. */
+  private[bridge] def negationOnAll(fields: Seq[String], query: Query): Query =
+    not(query).filter(fields.map(existsQuery))
+
   implicit def expressionToQuery(expression: GenericExpression)(implicit
     timestamp: Long,
     contextType: PainlessContextType = PainlessContextType.Query,
@@ -759,7 +801,7 @@ package object bridge {
     import expression._
     if (isAggregation)
       return matchAllQuery()
-    if (requiresScript(identifier)) return scriptQueryOf(expression)
+    if (requiresScript(identifier, maybeValue)) return scriptQueryOf(expression)
     // Geo distance special case
     identifier.functions.headOption match {
       case Some(d: Distance) =>
@@ -858,8 +900,8 @@ package object bridge {
             maybeNot match {
               case Some(_) =>
                 applyNumericOp(n)(
-                  l => not(termQuery(identifier.name, l)),
-                  d => not(termQuery(identifier.name, d))
+                  l => negationOf(identifier.name, termQuery(identifier.name, l)),
+                  d => negationOf(identifier.name, termQuery(identifier.name, d))
                 )
               case _ =>
                 applyNumericOp(n)(
@@ -876,8 +918,8 @@ package object bridge {
                 )
               case _ =>
                 applyNumericOp(n)(
-                  l => not(termQuery(identifier.name, l)),
-                  d => not(termQuery(identifier.name, d))
+                  l => negationOf(identifier.name, termQuery(identifier.name, l)),
+                  d => negationOf(identifier.name, termQuery(identifier.name, d))
                 )
             }
           case _ => matchAllQuery()
@@ -887,14 +929,14 @@ package object bridge {
           case LIKE =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.name, toRegex(l.value)))
+                negationOf(identifier.name, regexQuery(identifier.name, toRegex(l.value)))
               case _ =>
                 regexQuery(identifier.name, toRegex(l.value))
             }
           case RLIKE =>
             maybeNot match {
               case Some(_) =>
-                not(regexQuery(identifier.name, l.value))
+                negationOf(identifier.name, regexQuery(identifier.name, l.value))
               case _ =>
                 regexQuery(identifier.name, l.value)
             }
@@ -929,7 +971,7 @@ package object bridge {
           case EQ =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, l.value))
               case _ =>
                 termQuery(identifier.name, l.value)
             }
@@ -938,7 +980,7 @@ package object bridge {
               case Some(_) =>
                 termQuery(identifier.name, l.value)
               case _ =>
-                not(termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, l.value))
             }
           case _ => matchAllQuery()
         }
@@ -947,7 +989,7 @@ package object bridge {
           case EQ =>
             maybeNot match {
               case Some(_) =>
-                not(termQuery(identifier.name, b.value))
+                negationOf(identifier.name, termQuery(identifier.name, b.value))
               case _ =>
                 termQuery(identifier.name, b.value)
             }
@@ -956,7 +998,7 @@ package object bridge {
               case Some(_) =>
                 termQuery(identifier.name, b.value)
               case _ =>
-                not(termQuery(identifier.name, b.value))
+                negationOf(identifier.name, termQuery(identifier.name, b.value))
             }
           case _ => matchAllQuery()
         }
@@ -970,13 +1012,14 @@ package object bridge {
                 // the six below -- runs as a script instead of reaching a `MatchError`.
                 val o = if (maybeNot.isDefined) op.maybeNegated.getOrElse(op) else op
                 o match {
-                  case GT        => rangeQuery(identifier.name) gt script
-                  case GE        => rangeQuery(identifier.name) gte script
-                  case LT        => rangeQuery(identifier.name) lt script
-                  case LE        => rangeQuery(identifier.name) lte script
-                  case EQ        => rangeQuery(identifier.name) gte script lte script
-                  case NE | DIFF => not(rangeQuery(identifier.name) gte script lte script)
-                  case _         => scriptQueryOf(expression)
+                  case GT => rangeQuery(identifier.name) gt script
+                  case GE => rangeQuery(identifier.name) gte script
+                  case LT => rangeQuery(identifier.name) lt script
+                  case LE => rangeQuery(identifier.name) lte script
+                  case EQ => rangeQuery(identifier.name) gte script lte script
+                  case NE | DIFF =>
+                    negationOf(identifier.name, rangeQuery(identifier.name) gte script lte script)
+                  case _ => scriptQueryOf(expression)
                 }
               case _ =>
                 val context = PainlessContext(context = contextType, target = target)
@@ -1051,7 +1094,7 @@ package object bridge {
         case _ => termsQuery(identifier.name, _values.map(_.toString))
       }
     maybeNot match {
-      case Some(_) => not(t)
+      case Some(_) => negationOf(identifier.name, t)
       case _       => t
     }
   }
@@ -1087,7 +1130,7 @@ package object bridge {
                 )
               )
             maybeNot match {
-              case Some(_) => return not(fq, tq)
+              case Some(_) => return not(must(fq, tq))
               case _       => return must(fq, tq)
             }
           case _ =>
@@ -1116,21 +1159,21 @@ package object bridge {
                   val fq = rangeQuery(identifier.name) gte from
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case (None, Some(to)) =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = rangeQuery(identifier.name) lte to
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
                 case _ =>
                   val fq = GenericExpression(identifier, GE, ft.from, None)
                   val tq = GenericExpression(identifier, LE, ft.to, None)
                   maybeNot match {
-                    case Some(_) => return not(fq, tq)
+                    case Some(_) => return negationOf(identifier.name, must(fq, tq))
                     case _       => return must(fq, tq)
                   }
               }
@@ -1141,7 +1184,7 @@ package object bridge {
           throw new IllegalArgumentException(s"Unsupported out type for range query: ${fromTo.out}")
       }
     maybeNot match {
-      case Some(_) => not(r)
+      case Some(_) => negationOf(identifier.name, r)
       case _       => r
     }
   }
@@ -1154,11 +1197,16 @@ package object bridge {
       case LE | LT if distance.oneIdentifier =>
         val identifier = distance.identifiers.head
         val point = distance.points.head
-        geoDistanceQuery(
+        // `ignore_unmapped` only for a column the schema resolved as a GEO_POINT: an index of a
+        // pattern or list that does not map it then matches nothing instead of failing its shards.
+        (geoDistanceQuery(
           identifier.name,
           point.lat.value,
           point.lon.value
-        ) distance geoDistance.geoDistance
+        ) distance geoDistance.geoDistance).copy(ignoreUnmapped =
+          if (identifier.declaredType == SQLTypes.GeoPoint && !identifier.nested) Some(true)
+          else None
+        )
       case _ =>
         scriptQuery(
           Script(

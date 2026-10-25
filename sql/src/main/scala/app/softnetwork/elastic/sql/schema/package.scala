@@ -89,12 +89,16 @@ package object schema {
     def apply(n: String): IngestProcessorType = new IngestProcessorType {
       override val name: String = n
     }
+
+    /** The case object named `n`, else [[apply]]: the type a stored processor's key names. */
+    def named(n: String): IngestProcessorType =
+      Seq(Script, Rename, Remove, Set, DateIndexName, Enrich).find(_.name == n).getOrElse(apply(n))
   }
 
   sealed trait IngestProcessor extends DdlToken {
     def column: String
     def ignoreFailure: Boolean
-    final def node: ObjectNode = {
+    def node: ObjectNode = {
       val node = mapper.createObjectNode()
       node.set(processorType.name, properties)
       node
@@ -289,6 +293,17 @@ package object schema {
             )
           }
 
+        // A STORED script (`{"script": {"id": "<stored script>", "params": {...}}}`) has no
+        // `source`: no column declares it, so it is kept as it is stored, as any processor the
+        // table does not declare (it used to throw a NullPointerException on `source`, which made
+        // every ALTER TABLE of such a table fail).
+        case IngestProcessorType.Script.name if !props.hasNonNull("source") =>
+          GenericProcessor(
+            pipelineType = pipelineType,
+            processorType = IngestProcessorType.Script,
+            properties = props
+          )
+
         case IngestProcessorType.Script.name =>
           val desc = Option(props.get("description")).map(_.asText())
           val lang = Option(props.get("lang")).map(_.asText()).getOrElse("painless")
@@ -436,6 +451,36 @@ package object schema {
 
       }
     }
+  }
+
+  /** A processor exactly as Elasticsearch returned it: `stored` is its `{"<type>": {...}}` node.
+    * [[IngestPipeline.rewrite]] writes the processors a table does not declare as these.
+    *
+    * 🔴 `node` IS the stored node. Rebuilding it from `properties` would go through a Scala map and
+    * the shared mapper, whose `NON_NULL` inclusion drops null entries (`"params": {"d": null}` came
+    * back as `{}`), and `PipelineApi` sends it untouched on every major: the per-major key
+    * stripping is for the processors elasticsql renders, and the cluster already accepted this one.
+    *
+    * Its `sql` is TOTAL, never thrown: it serves only the `description` of the pipeline it is
+    * written in and log lines, never a statement shown to be re-run, so a property the value model
+    * cannot render (a list starting with `null`) is rendered as JSON text there.
+    */
+  final case class VerbatimProcessor(pipelineType: IngestPipelineType, stored: ObjectNode)
+      extends IngestProcessor {
+    override val processorType: IngestProcessorType =
+      IngestProcessorType.named(stored.fieldNames().next())
+    override lazy val properties: ListMap[String, Any] = stored.get(processorType.name)
+    private lazy val generic = GenericProcessor(pipelineType, processorType, properties)
+    override def column: String = generic.column
+    override def ignoreFailure: Boolean = generic.ignoreFailure
+    override def description: Option[String] = generic.description
+    override def node: ObjectNode = stored.deepCopy()
+    override def ddl: String = scala.util
+      .Try(generic.ddl)
+      .getOrElse(
+        s"${processorType.name.toUpperCase}(${mapper.writeValueAsString(stored.get(processorType.name))})"
+      )
+    override def sql: String = ddl
   }
 
   case class GenericProcessor(
@@ -790,6 +835,27 @@ package object schema {
       .filter(path => projection.find(path).isEmpty)
       .distinct
 
+  /** DuckDB 1.5.5's order of the number types, the narrowest first: the type it gives a column two
+    * of them make (`UNION ALL BY NAME`, MEASURED pair by pair) is the later one.
+    */
+  private val numberWidths: Map[SQLType, Int] = Map(
+    SQLTypes.TinyInt  -> 1,
+    SQLTypes.SmallInt -> 2,
+    SQLTypes.Int      -> 3,
+    SQLTypes.BigInt   -> 4,
+    SQLTypes.Real     -> 5,
+    SQLTypes.Double   -> 6
+  )
+
+  /** Of two columns mapped with two NUMBER types, the one with the wider type ([[numberWidths]]);
+    * `None` for any other pair.
+    */
+  private def widerNumber(a: Column, b: Column): Option[Column] =
+    (numberWidths.get(a.dataType), numberWidths.get(b.dataType)) match {
+      case (Some(x), Some(y)) => Some(if (x >= y) a else b)
+      case _                  => None
+    }
+
   /** The schema an index PATTERN or a comma list (`FROM logs-*`) answers with, so it is typed as
     * the single index is: the union of its indices' columns, merged FIELD BY FIELD (the lead's
     * ruling of 2026-10-05).
@@ -800,10 +866,16 @@ package object schema {
     *     statement's meaning depends on: a temporal literal is read against it) -- keeps that type,
     *     whatever the indices disagree on elsewhere. A field one index maps and another does not is
     *     the one index's.
-    *   - A field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot be chosen
-    *     between them, so nothing is refused on it and Elasticsearch answers for it, as it does
-    *     with no schema at all (the ruling's rule 4). It stays IN the schema: the name exists, and
-    *     a subquery's scope must know it does.
+    *   - A field two indices map with two NUMBER types takes the wider one, as DuckDB 1.5.5 types
+    *     such a column (`UNION ALL BY NAME`, MEASURED): `TINYINT` < `SMALLINT` < `INTEGER` <
+    *     `BIGINT` < `REAL` < `DOUBLE` -- an `integer` and a `long` are a `BIGINT`, a `float` and a
+    *     `double` a `DOUBLE`, a whole-number type and a `float` a `REAL`. Every value of either
+    *     index is a value of that type, so the rules that read a type (an integer key's filter, a
+    *     date's arithmetic) apply as over one index.
+    *   - Any other field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot
+    *     be chosen between them, so nothing is refused on it and Elasticsearch answers for it, as
+    *     it does with no schema at all (the ruling's rule 4). It stays IN the schema: the name
+    *     exists, and a subquery's scope must know it does.
     *   - Sub-fields (multi-fields, object properties) merge by the same rule, under their parent.
     *
     * 🔴 Found by review, MEASURED on Elasticsearch 8.18.3: `SELECT g, MAX(d) - MIN(d) FROM zwild_*
@@ -824,30 +896,39 @@ package object schema {
     def sameMapping(a: Column, b: Column): Boolean =
       a.dataType == b.dataType && format(a) == format(b)
     val conflicts = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
+    // every type a path is mapped with, so a disagreement lists the members' own types even after
+    // two of them were widened into one
+    val mappedTypes = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
     def merge(into: List[Column], columns: List[Column], parent: String): List[Column] = {
       val merged = scala.collection.mutable.LinkedHashMap(into.map(c => c.name -> c): _*)
       columns.foreach { column =>
         val path = s"$parent${column.name}"
         merged.get(column.name) match {
-          case None => merged.put(column.name, column)
+          case None =>
+            mappedTypes.put(path, Set(column.dataType.typeId))
+            merged.put(column.name, column)
           case Some(first) =>
+            mappedTypes.put(
+              path,
+              mappedTypes.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
+            )
             val multiFields = merge(first.multiFields, column.multiFields, s"$path.")
             if (sameMapping(first, column))
               merged.put(column.name, first.copy(multiFields = multiFields))
-            else {
-              conflicts.put(
-                path,
-                conflicts.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
-              )
-              merged.put(
-                column.name,
-                first.copy(
-                  dataType = SQLTypes.Any,
-                  options = first.options - "format",
-                  multiFields = multiFields
-                )
-              )
-            }
+            else
+              widerNumber(first, column) match {
+                case Some(wider) => merged.put(column.name, wider.copy(multiFields = multiFields))
+                case None =>
+                  conflicts.put(path, mappedTypes(path))
+                  merged.put(
+                    column.name,
+                    first.copy(
+                      dataType = SQLTypes.Any,
+                      options = first.options - "format",
+                      multiFields = multiFields
+                    )
+                  )
+              }
         }
       }
       merged.values.toList
@@ -1210,7 +1291,7 @@ package object schema {
       // 🔴 The body is rendered FIRST and bound: rendering is what REGISTERS the parameters and the
       // hoisted locals, so `ctx` is only complete afterwards. An inline `s"$ctx${script.painless…}"`
       // would print an EMPTY prologue (the same trap `PainlessResidualsSpec.fieldOf` records).
-      val expression = script.painless(Some(ctx))
+      val expression = SQLTypeUtils.renderingIn(Some(ctx))(script.painless(Some(ctx)))
       val prologue = ctx.toString
       // 🔴 The old assembly had a `case Array(single) if single.trim.startsWith("return ")` arm
       // that stripped a leading `return `. It is gone because it was DEAD, and #293's lesson is
@@ -1227,7 +1308,8 @@ package object schema {
         pipelineType = pipelineType,
         script = script.sql,
         column = column,
-        dataType = dataType.getOrElse(script.out),
+        // the type THIS script writes, read in its scope like its render (#292)
+        dataType = dataType.getOrElse(SQLTypeUtils.processorType(script)),
         source = source,
         materialized = materialized,
         expr = Some(script)
@@ -1763,9 +1845,102 @@ package object schema {
     }
 
     def describe: Seq[ListMap[String, Any]] = processors.map(_.describe)
+
+    /** What ALTER TABLE does to this pipeline, read live from Elasticsearch: change the processors
+      * the table declares, and keep every other one, unchanged and in place.
+      *
+      * A live processor is OWNED when the table declared it BEFORE the statement (`before`, the
+      * loaded table, not the merged one): the statement may change or remove only what the table
+      * already had. Ownership is decided by [[diff]] 's own key (type plus identity, with the
+      * script target recovery and the collision fallback), so this consumer of that key reads it
+      * through the same function as every other one (#292).
+      *
+      * One fallback on content: a live processor the key does not match, whose content equals
+      * (`IngestProcessor.diff` is empty) a declared processor no live one matched, is owned too;
+      * pairs are 1:1. Elasticsearch 6.8 needs it: it keeps no processor `description`, so a
+      * generated script reads back anonymous, and next to a user script assigning the same column
+      * the two collide and fall back to their content ids. Without the pairing the generated script
+      * is taken for a user one: every ALTER writes it twice, and DROP COLUMN keeps it.
+      *
+      * Every other live processor is UNDECLARED. The comparison puts them where they are, so they
+      * never produce a diff entry and the diff on the owned processors is exactly the one against
+      * `after` alone. The written pipeline is `after`'s processors, with the undeclared ones:
+      *   - LEADING (before every owned processor) kept first, so a normalising processor still runs
+      *     before the computed columns that read its output;
+      *   - TRAILING (all the others) after them, in live order. An undeclared processor placed
+      *     between two owned ones therefore moves after them when an owned processor changes;
+      *   - written as Elasticsearch returned them ([[VerbatimProcessor]], from `verbatim`), never
+      *     re-rendered through the typed model, which drops keys it does not model (`tag` and
+      *     `on_failure` of a `set`, `ignore_missing` of a `rename`), nor through a Scala map: a
+      *     re-rendered processor would be silently changed.
+      *
+      * @param before
+      *   the pipeline the table declared before the statement
+      * @param after
+      *   the pipeline the table declares after it
+      * @param stored
+      *   the JSON this pipeline was read from, as Elasticsearch returned it; it is read again with
+      *   [[IngestPipeline.verbatim]], position for position
+      */
+    def rewrite(
+      before: IngestPipeline,
+      after: IngestPipeline,
+      stored: String
+    ): PipelineRewrite = {
+      val verbatim = IngestPipeline.verbatim(name, stored, pipelineType)
+      require(
+        verbatim.processors.size == processors.size,
+        s"pipeline $name: the verbatim read holds ${verbatim.processors.size} processor(s), " +
+        s"the typed read ${processors.size}"
+      )
+      def position(p: IngestProcessor): Int = processors.indexWhere(_ eq p)
+
+      val declared = diff(before)
+      val unpaired = scala.collection.mutable.ListBuffer[IngestProcessor]()
+      unpaired ++= declared.collect { case ProcessorAdded(p) => p }
+      val undeclared = declared
+        .collect { case ProcessorRemoved(p) => p }
+        .sortBy(position)
+        .filterNot { p =>
+          unpaired.indexWhere(q => p.diff(q).isEmpty) match {
+            case -1 => false
+            case i =>
+              unpaired.remove(i)
+              true
+          }
+        }
+      val positions = undeclared.map(position)
+      val leading = processors.indices.takeWhile(positions.contains)
+      val trailing = positions.drop(leading.size)
+
+      val compared = after.copy(processors =
+        leading.map(processors) ++ after.processors ++ trailing.map(processors)
+      )
+      val written = after.copy(processors =
+        leading.map(verbatim.processors) ++ after.processors ++ trailing.map(verbatim.processors)
+      )
+      val kept = before.copy(processors =
+        leading.map(verbatim.processors) ++ before.processors ++ trailing.map(verbatim.processors)
+      )
+      val previous = Seq(before, kept).map(_.copy(name = name)) :+ this
+      PipelineRewrite(diff(compared), written, positions.map(verbatim.processors), stored, previous)
+    }
   }
 
   object IngestPipeline {
+
+    /** The pipeline `json` holds, read WITHOUT the typed model: each processor, in order, is a
+      * [[VerbatimProcessor]] carrying its stored node, so writing it back writes what Elasticsearch
+      * returned. [[IngestPipeline.rewrite]] writes the processors a table does not declare from
+      * this read.
+      */
+    def verbatim(name: String, json: String, pipelineType: IngestPipelineType): IngestPipeline = {
+      val processors = mapper.readTree(json).get("processors").elements().asScala.toList.map {
+        processor => VerbatimProcessor(pipelineType, processor.deepCopy[ObjectNode]())
+      }
+      IngestPipeline(name = name, pipelineType = pipelineType, processors = processors)
+    }
+
     def apply(
       name: String,
       json: String,

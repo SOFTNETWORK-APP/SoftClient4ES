@@ -602,7 +602,8 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "have no slot at NUMERIC or TEMPORAL, the other legs keeping theirs" in {
-    Seq("EXTRACT(YEAR FROM ts)", "DATEDIFF(ts, d)").foreach { computed =>
+    // ROUND and DATEDIFF report NUMERIC; a date part reports BIGINT (the next row)
+    Seq("ROUND(x, 2)", "DATEDIFF(ts, d)").foreach { computed =>
       val legs = slots(union(computed, "x"))
       legs.head shouldBe Some(Seq(None))
       legs(1).flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
@@ -624,6 +625,21 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
     slot(truncated).sqlType shouldBe SetOperationType(SQLTypes.Timestamp)
     shown(slot(truncated).read(received("\"2024-01-31T00:00:00Z\""))) shouldBe
     shown(legReader(truncated)(received("\"2024-01-31T00:00:00Z\"")))
+  }
+
+  // A date part is a whole number: BIGINT, as DuckDB 1.5.5 types it (`typeof(year(d))`,
+  // `typeof(month(ts))`, `typeof(extract(year FROM ts))`). Its leg has a slot, which reads every
+  // value as a Long, and the other leg keeps its own.
+  it should "give a date-part leg a BIGINT slot, reading every value as a Long" in {
+    Seq("YEAR(d)", "MONTH(ts)", "EXTRACT(YEAR FROM ts)").foreach { part =>
+      val sql = union(part, "x")
+      val legs = slots(sql)
+      withClue(s"[$sql] ") {
+        legs.head.flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.BigInt))
+        legs(1).flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
+        shown(slot(sql).read(received("2024"))) shouldBe ((2024L, classOf[java.lang.Long]))
+      }
+    }
   }
 
   it should "have no slot at VARBINARY or REAL at any depth, the other legs keeping theirs" in {

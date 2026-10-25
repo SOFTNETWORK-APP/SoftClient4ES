@@ -204,6 +204,67 @@ class TermsIncludeExcludeSpec extends AnyFlatSpec with Matchers {
     withClue(s"${wrong.size} wrong:\n${wrong.mkString("\n")}\n") { wrong shouldBe empty }
   }
 
+  "a key filter on a scripted numeric key" should
+  "keep on Elasticsearch 6.8 exactly the texts its script value prints for the number" in {
+    // A script key is a STRING terms: 6.8 compares each value with the text the script value
+    // prints, a Long `5` or a Double `5.0` depending on the column's mapping.
+    val in = termsBody(
+      queryOf(
+        "SELECT CAST(n AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS DOUBLE) " +
+        "HAVING CAST(n AS DOUBLE) IN (5, 1)"
+      ),
+      "k"
+    )
+    keptBy(in, KeywordKey, Seq("5", "5.0", "1", "1.0", "2", "2.0", "15", "5.5")) shouldBe
+    Kept(Set("5", "5.0", "1", "1.0"))
+    // one literal: its two texts are one exact set, never a pattern
+    val one = termsBody(
+      queryOf(
+        "SELECT CAST(n AS DOUBLE) AS k, COUNT(*) AS c FROM t GROUP BY CAST(n AS DOUBLE) " +
+        "HAVING CAST(n AS DOUBLE) <> 3"
+      ),
+      "k"
+    )
+    keptBy(one, KeywordKey, Seq("3", "3.0", "30", "3x0", "4")) shouldBe Kept(Set("30", "3x0", "4"))
+  }
+
+  "a key combination whose lists keep exactly SQL's groups" should
+  "keep on Elasticsearch 6.8 what SQL keeps -- or be refused by name beside several values" in {
+    val keys = Seq("a", "axb", "a.b", "ab", "b", "x", "ba")
+    // a pattern alone: kept are the keys it matches
+    val alone = termsBody(
+      queryOf(keyed("sval", "sval = 'axb' AND sval IN ('a','b') OR sval LIKE 'a%'")),
+      "sval"
+    )
+    keptBy(alone, KeywordKey, keys) shouldBe Kept(Set("a", "axb", "a.b", "ab"))
+    // a pattern beside several removed values: 6.8 cannot apply them together, and the default
+    // serializer refuses the request by name (the REST and Jest serializers with an HTTP 400)
+    val beside = keyed("sval", "sval LIKE 'a%' OR sval LIKE 'a%' AND sval NOT IN ('x','b')")
+    Try(queryOf(beside)) match {
+      case scala.util.Failure(e: UnsupportedOperationException) =>
+        e.getMessage shouldBe SearchBodySerializer.unmixableTermsFilterUnsupported("sval")
+      case other => fail(s"[$beside] expected the named refusal, got $other")
+    }
+  }
+
+  "a key IS NOT NULL beside a key value" should "keep on Elasticsearch 6.8 that value alone" in {
+    val terms = termsBody(queryOf(keyed("sval", "sval IS NOT NULL AND sval = 'a.b'")), "sval")
+    keptBy(terms, KeywordKey, Seq("a.b", "axb", "a")) shouldBe Kept(Set("a.b"))
+  }
+
+  "a GROUP BY level" should "be emitted without a NULL group, as Bucket.hasNullBucket states" in {
+    // `HAVING <key> IS NOT NULL` is answered as TRUE on every group, with no key filter, because
+    // a level builds no bucket for a NULL key (`Bucket.hasNullBucket` = false). A fix that emits
+    // the NULL group (`missing` on the level) must flip that premise: this row fails first.
+    Seq(keyed("sval", "sval IS NOT NULL"), keyed("sval", "sval = 'a'")).foreach { sql =>
+      withClue(sql) {
+        termsBody(queryOf(sql), "sval").has("missing") shouldBe single(
+          sql
+        ).buckets.head.hasNullBucket
+      }
+    }
+  }
+
   // ============================================ PART B: the refusal and the one writing site
 
   "the Default serializer" should "refuse, by name, exactly the pairs 6.8 rejects -- at any grouping level" in {

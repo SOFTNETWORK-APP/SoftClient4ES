@@ -210,41 +210,29 @@ HAVING city LIKE 'P%' AND city NOT RLIKE 'Pau|Pise';
 
 A single value in either list is unaffected, and so is every other combination.
 
-## A fractional number compared with an integer GROUP BY key is refused
+## A fractional number compared with an integer GROUP BY key needs the mapping
 
-`HAVING year = 2025.5` (and `<>`, `IN`, `NOT IN`) over an integer grouping key is refused with a
-`400` on every Elasticsearch release — *"HAVING cannot compare the integer GROUP BY key year with
-2025.5 …"*: no integer equals that number, and Elasticsearch would round it down and keep the group
-`2025`. Compare the key with a whole number. The check needs the index mapping; an index pattern
-or several indices have one too, merged over the indices they match. Where no mapping is known — a
-pattern that matches no index, a mapping that cannot be read, or a key the matched indices map with
-different types — the number is rounded down by Elasticsearch, without an error. See
+`HAVING year = 2025.5` over an integer grouping key keeps no group, `HAVING year <> 2025.5` keeps
+every group, as SQL answers: no integer equals that number, while Elasticsearch would round it down
+and keep the group `2025`. The rule needs the index mapping; an index pattern or several indices
+have one too, merged over the indices they match into the wider type. Where no mapping is known —
+a pattern that matches no index, a mapping that cannot be read, or a key the matched indices map
+with types that have no common type — the number is rounded down by Elasticsearch, without an
+error. A key grouped from an `UNNEST` keeps the refusal with a `400` — *"HAVING cannot compare the
+integer GROUP BY key … with 2025.5 …"*: compare it with a whole number. See
 [Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
 
-## `DATE_FORMAT` / `DATETIME_FORMAT` over a bare date column — Elasticsearch 6.8 refuses it
+## `DATE_FORMAT` / `DATETIME_FORMAT` of a bare date column as a GROUP BY key — Elasticsearch 6.8 refuses it
 
 `DATE_FORMAT(created_at, '%Y-%m-%d')` and `DATETIME_FORMAT(ts, '%Y-%m-%d %H:%i:%s')` — the operand a
-**bare `date` column** — work on **Elasticsearch 7, 8 and 9** and are refused on **Elasticsearch 6.8**
-with a script error. On that release a `date` doc-value reaches Painless as a
-`JodaCompatibleZonedDateTime`, while `DateTimeFormatter.format` requires a `java.time.TemporalAccessor`.
+**bare `date` column** — work on every release in a `SELECT` and a `WHERE`. On **Elasticsearch 6.8**
+a `date` doc-value reaches Painless as a `JodaCompatibleZonedDateTime`, which the formatter cannot
+read, so there the column is first made the UTC `ZonedDateTime` it holds.
 
-Everything else in the family is unaffected on 6.8, which makes the workaround a small edit:
-
-| Operand | 6.8 |
-|---------|-----|
-| A literal or a cast — `DATE_FORMAT('2025-01-10'::DATE, …)`, `DATE_FORMAT(CAST(created_at AS DATE), …)` | Works |
-| A column wrapped in a date function — `DATE_FORMAT(DATE_TRUNC(created_at, DAY), …)` | Works |
-| A bare date column — `DATE_FORMAT(created_at, …)` | **Refused** |
-
-So on 6.8, write `DATE_FORMAT(CAST(created_at AS DATE), '%Y-%m-%d')` or
-`DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m-%d')`; both return exactly what the bare column
-returns on 7+. Every formatting example in the reference already uses a cast, so none of them is
-affected.
-
-This is not permanent: the fix is understood and tracked as issue #371, together with the parameter
-identity defect (#370) it shares a cause with. It is not in this release because the change moves the
-emission of the whole date-format family in every venue, and that needs its own verification pass.
-See [DATE_FORMAT](functions_date_time.md#date_format) and
+As a **`GROUP BY` key**, such a format is refused by name on 6.8. Wrap the column:
+`GROUP BY DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m-%d')` or
+`GROUP BY DATE_FORMAT(CAST(created_at AS DATE), '%Y-%m-%d')` returns exactly what the bare column
+returns on 7+. See [DATE_FORMAT](functions_date_time.md#date_format) and
 [DATETIME_FORMAT](functions_date_time.md#datetime_format).
 
 ## Arithmetic is not accepted inside a function, a `CAST` or a `CASE` branch
@@ -308,8 +296,9 @@ SELECT o.id, UPPER(items.product) AS product FROM dql_orders o JOIN UNNEST(o.ite
 SELECT o.id, items.product FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
 ```
 
-Without a `LIMIT`, an UNNEST projection returns up to 100 elements per parent, or up to the index's
-own `index.max_inner_result_window` when that setting is lower. A parent holding more elements is
+Without a `LIMIT`, an UNNEST projection, and a `WHERE` over an UNNEST element, return up to 100
+elements per parent, or up to the index's own `index.max_inner_result_window` when that setting is
+lower. A parent holding more elements is
 cut without an error: a 101-element parent returns 100 rows, its last element dropped.
 
 Not affected by this refusal: a WHERE condition whose function is applied directly to the UNNEST

@@ -16,6 +16,7 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.`type`.SQLTypeUtils
 import app.softnetwork.elastic.sql.function.{Function, FunctionChain}
 import app.softnetwork.elastic.sql.{Alias, Expr, Identifier, TokenRegex, Updateable}
 
@@ -158,6 +159,22 @@ case class FieldSort(
         }
     }
   def isScriptSort: Boolean = functions.nonEmpty && !hasAggregation && field.fieldAlias.isEmpty
+
+  /** The `unmapped_type` this sort carries when it is emitted as a FIELD sort (row sorts and a
+    * window's `top_hits` sorts): the Elasticsearch type of the column the statement's schema
+    * resolved, so that an index of a pattern or list that does not map the column answers its
+    * documents, sorted as having no value, instead of failing its shards.
+    *
+    * `None` (the request keeps its bytes) for a script sort, a sort over a function, an alias, a
+    * nested column or an UNNEST element, and whenever the schema does not know the column: a column
+    * nobody maps must keep failing loudly, never sort silently on nothing.
+    */
+  lazy val unmappedType: Option[String] =
+    if (
+      isScriptSort || functions.nonEmpty || field.fieldAlias.exists(_ != field.name) ||
+      field.nested || field.nestedElement.isDefined
+    ) None
+    else SQLTypeUtils.sortUnmappedType(field.declaredType)
 
   def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation
 

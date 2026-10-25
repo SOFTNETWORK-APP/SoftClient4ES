@@ -18,6 +18,7 @@ package app.softnetwork.elastic.sql.bridge
 
 import com.sksamuel.elastic4s.http.search.SearchBodyBuilderFn
 import com.sksamuel.elastic4s.searches.SearchRequest
+import com.sksamuel.elastic4s.searches.aggs.{AbstractAggregation, Aggregation}
 
 /** The ONE place a bridge `SearchRequest` becomes a JSON body (issue #222). Hand-maintained ES 6
   * twin of the bridge template's seam (elastic4s 6.7.8 package names; same contract).
@@ -80,6 +81,24 @@ object SearchBodySerializer {
   def unmixableTermsFilterOn(major: Int, key: String): String =
     unmixableTermsFilterReason(key, s"on Elasticsearch $major")
 
+  /** The metadata key under which a bridge level carries the refusal of its own key (see
+    * `ElasticAggregation.dateFormatOfDocValueUnsupportedOn`). Every serializer raises it before any
+    * JSON exists, so it is never sent.
+    */
+  val Refusal: String = "softclient4es_refusal"
+
+  /** The refusal a level of `search` carries, anywhere in its aggregation tree. */
+  def refusedLevel(search: SearchRequest): Option[String] = refusedIn(search.aggs)
+
+  private def refusedIn(aggs: Iterable[AbstractAggregation]): Option[String] =
+    aggs.iterator
+      .map {
+        case agg: Aggregation =>
+          agg.metadata.get(Refusal).map(_.toString).orElse(refusedIn(agg.subaggs))
+        case _ => None
+      }
+      .collectFirst { case Some(message) => message }
+
   /** Today's behaviour -- the one-argument `SearchBodyBuilderFn` -- guarded against the shapes it
     * cannot render honestly. A transform-bearing extended_stats has no script-emitting builder on
     * this line, so the request is REFUSED, loudly and by name, instead of leaving as the statistic
@@ -92,6 +111,9 @@ object SearchBodySerializer {
         throw new UnsupportedOperationException(TransformExtendedStatsUnsupported)
       unmixableTermsFilter(search).foreach { key =>
         throw new UnsupportedOperationException(unmixableTermsFilterUnsupported(key))
+      }
+      refusedLevel(search).foreach { message =>
+        throw new UnsupportedOperationException(message)
       }
       SearchBodyBuilderFn(search).string()
     }

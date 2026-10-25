@@ -16,8 +16,10 @@
 
 package app.softnetwork.elastic.client.java
 
-import app.softnetwork.elastic.client.ElasticClientHelpers
+import app.softnetwork.elastic.client.{ElasticClientHelpers, ShardFailures}
 import app.softnetwork.elastic.client.result.{ElasticError, ElasticResult}
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import com.fasterxml.jackson.databind.JsonNode
 
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
@@ -56,8 +58,14 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
         .toSeq
     }
     val reasons = (reason.toSeq ++ rootCauses ++ causedBy).distinct
+    // WHY a shard failed is only in `failed_shards[i].reason.caused_by…`, which the client keeps as
+    // raw metadata: appended as `: <reason>` ([[ShardFailures.shardReason]]).
+    val shardReason = error
+      .flatMap(e => Option(e.metadata()).flatMap(m => Option(m.get("failed_shards"))))
+      .flatMap(failedShards => Try(convertToTree(failedShards)).toOption)
+      .flatMap(ShardFailures.shardReason(_, reasons))
     s"Elasticsearch error during $operation: ${errorType.getOrElse("unknown")} - ${if (reasons.nonEmpty) reasons.mkString("; ")
-    else ex.getMessage}"
+    else ex.getMessage}${shardReason.fold("")(r => s": $r")}"
   }
 
   /** Convert a Throwable failing an asynchronous Java-client call into an ElasticFailure,
@@ -389,7 +397,66 @@ trait JavaClientHelpers extends ElasticClientHelpers with JavaClientConversion {
         Try(ex.statusCode()).toOption.filter(_ > 0)
       case ex: org.elasticsearch.client.ResponseException =>
         Try(ex.getResponse.getStatusLine.getStatusCode).toOption.filter(_ > 0)
-      case other => super.statusOf(other)
+      case ex: JavaClientHelpers.SearchPageFailure => ex.error.statusCode
+      case other                                   => super.statusOf(other)
     }
 
+  /** The failure of a search page Elasticsearch rejected with a 4xx (408 / 429 excepted): a
+    * [[JavaClientHelpers.SearchPageFailure]] with that status and [[elasticsearchErrorMessage]].
+    * Any other failure is returned as it is, so its retry behaviour is unchanged.
+    */
+  private[client] def searchPageFailure(t: Throwable): Throwable =
+    unwrapThrowable(t) match {
+      case ex: co.elastic.clients.elasticsearch._types.ElasticsearchException
+          if statusOf(ex).exists(s => s >= 400 && s < 500 && s != 408 && s != 429) =>
+        new JavaClientHelpers.SearchPageFailure(
+          ElasticError(
+            message = elasticsearchErrorMessage("search", ex),
+            cause = Some(ex),
+            statusCode = statusOf(ex),
+            operation = Some("search")
+          )
+        )
+      case _ => t
+    }
+
+  /** The failure of a search page Elasticsearch answered with HTTP 200 and failed shards (`None`
+    * when no shard failed), by the rule of every search door, core's [[ShardFailures]] (#292):
+    *   - a 4xx (every failure is the caller's): a [[JavaClientHelpers.SearchPageFailure]], `<door>:
+    *     n of m shards failed: ...`, with that status;
+    *   - otherwise the door's own exception, `otherwise`, with its text as before.
+    */
+  private[client] def failedShardsPage(
+    door: String,
+    shards: co.elastic.clients.elasticsearch._types.ShardStatistics
+  )(otherwise: String => Exception): Option[Exception] =
+    Option(shards).filter(s => Option(s.failed()).exists(_.intValue() > 0)).map { s =>
+      Try(
+        JacksonConfig.objectMapper.createObjectNode().set[JsonNode]("_shards", convertToTree(s))
+      ).toOption
+        .flatMap(ShardFailures.of)
+        .map(_.toError)
+        .filter(_.statusCode.exists(status => status >= 400 && status < 500)) match {
+        case Some(error) =>
+          new JavaClientHelpers.SearchPageFailure(
+            error.copy(message = s"$door: ${error.message}", operation = Some("search"))
+          )
+        case None =>
+          val failures = Option(s.failures()).map(_.asScala.toList).getOrElse(Nil)
+          val reasons =
+            if (failures.nonEmpty) failures.map(_.reason()).mkString("; ")
+            else "Unknown shard failure"
+          otherwise(s"$door: $reasons")
+      }
+    }
+}
+
+object JavaClientHelpers {
+
+  /** A search page that failed for good, with its `ElasticError`: the twin of the ES 6 / ES 7 REST
+    * carrier. An `Exception`, as the page's failure always was, and not an `IOException`, so no
+    * retry takes it.
+    */
+  final class SearchPageFailure(val error: ElasticError)
+      extends RuntimeException(error.message, error.cause.orNull)
 }

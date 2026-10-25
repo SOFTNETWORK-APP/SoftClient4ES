@@ -1523,15 +1523,15 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
     * Error statuses surface as [[org.elasticsearch.client.ResponseException]] — an `IOException`,
     * which `retryWithBackoff` would retry. The typed path never retried an error status
     * (`ElasticsearchStatusException` is not retriable), so permanent client errors (4xx except
-    * 408/429) are rethrown as non-retriable to keep failing fast; retrying 408/429/5xx is a
-    * deliberate resilience gain on transient cluster conditions.
+    * 408/429) fail fast, as [[pageRejection]]: Elasticsearch's status and reason; retrying
+    * 408/429/5xx is a deliberate resilience gain on transient cluster conditions.
     */
   private def executeSearchPage(request: Request): JsonNode =
     try {
       readResponseTree(apply().getLowLevelClient.performRequest(request))
     } catch {
       case ex: ResponseException if isNonRetriable4xx(ex) =>
-        throw new IllegalStateException(ex.getMessage, ex)
+        throw pageRejection(ex)
     }
 
   /** Asynchronous sibling of [[executeSearchPage]] for the PIT paging path (#238): the request
@@ -1556,45 +1556,20 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       .map(readResponseTree)
       .recoverWith {
         case re: ResponseException if isNonRetriable4xx(re) =>
-          Future.failed(new IllegalStateException(re.getMessage, re))
+          Future.failed(pageRejection(re))
         case jp: com.fasterxml.jackson.core.JsonProcessingException =>
-          // an unparseable page body is an IOException subclass: a retry cannot help
-          Future.failed(new IllegalStateException(s"Unparseable page: ${jp.getMessage}", jp))
+          // an unparseable page body is an IOException subclass: a retry cannot help. Jackson's
+          // original message, without the location that names the input stream's class
+          Future.failed(
+            new RestHighLevelClientHelpers.SearchPageFailure(
+              result.ElasticError(
+                message = s"Unparseable page: ${jp.getOriginalMessage}",
+                cause = Some(jp),
+                operation = Some("search")
+              )
+            )
+          )
       }
-  }
-
-  /** 4xx except 408 / 429: a permanent client error that must fail fast rather than be retried
-    * (`ResponseException` is an `IOException`, which `retryWithBackoff` would otherwise retry).
-    */
-  private def isNonRetriable4xx(re: ResponseException): Boolean =
-    statusOf(re).exists(status => status >= 400 && status < 500 && status != 408 && status != 429)
-
-  /** Reasons of any failed shards on this page, if some shards failed. A page with failed shards is
-    * silent row loss on a paging path — callers must fail loudly, mirroring the es8/es9 typed shard
-    * check.
-    */
-  private def shardFailures(tree: JsonNode): Option[String] = {
-    val shards = tree.path("_shards")
-    if (shards.path("failed").asInt(0) > 0) {
-      val failures = shards.path("failures")
-      val reasons =
-        if (failures.isArray && failures.size() > 0) {
-          failures
-            .elements()
-            .asScala
-            .map { failure =>
-              val reason = failure.path("reason")
-              val message = reason.path("reason")
-              if (message.isTextual) message.asText() else reason.toString
-            }
-            .mkString("; ")
-        } else {
-          "Unknown shard failure"
-        }
-      Some(reasons)
-    } else {
-      None
-    }
   }
 
   /** Convert a hit's `sort` array into the values fed back as `search_after` on the next page. */
@@ -1673,10 +1648,10 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
                 val scrollId = tree.path("_scroll_id").textValue()
 
-                shardFailures(tree).foreach { reasons =>
+                failedShardsPage("Initial scroll failed", tree)(new IOException(_)).foreach { ex =>
                   // the failed request still created a server-side scroll context — release it
                   Option(scrollId).foreach(clearScroll)
-                  throw new IOException(s"Initial scroll failed: $reasons")
+                  throw ex
                 }
 
                 if (scrollId == null) {
@@ -1723,12 +1698,13 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 val tree =
                   executeSearchPage(scrollContinuationRequest(scrollId, config.keepAlive))
 
-                shardFailures(tree).foreach { reasons =>
-                  // the cursor is spent: a retry against a cleared context can only 404, and
-                  // re-polling a scroll cursor skips rows — fail without retrying
-                  clearScroll(scrollId)
-                  throw new IllegalStateException(s"Scroll continuation failed: $reasons")
-                }
+                failedShardsPage("Scroll continuation failed", tree)(new IllegalStateException(_))
+                  .foreach { ex =>
+                    // the cursor is spent: a retry against a cleared context can only 404, and
+                    // re-polling a scroll cursor skips rows — fail without retrying
+                    clearScroll(scrollId)
+                    throw ex
+                  }
 
                 val newScrollId = tree.path("_scroll_id").textValue()
                 val rawHits = tree.path("hits").path("hits").size()
@@ -1770,6 +1746,16 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       }
       .mapConcat(identity)
   }
+
+  /** The `_id` sort that `search_after` pages on when the statement has no sort, and its
+    * tie-breaker otherwise (below 7.12 only: from 7.12 the client pages through a PIT). It carries
+    * the same `unmapped_type` as the Elasticsearch 6 client's: there, an index created without any
+    * mapping has no `_id` field to sort on, and every shard of such an index fails the page.
+    * Whether 7.0-7.11 does the same is not measured. `_id` is mapped in every other index, where
+    * the key changes nothing.
+    */
+  private[this] def idSort: FieldSortBuilder =
+    new FieldSortBuilder("_id").order(SortOrder.ASC).unmappedType("keyword")
 
   /** Search After (only for hits, more efficient)
     */
@@ -1821,7 +1807,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                 "No sort fields in query for search_after, adding default _id sort. " +
                 "This may lead to inconsistent results if documents are updated during scroll."
               )
-              sourceBuilder.sort("_id", SortOrder.ASC)
+              sourceBuilder.sort(idSort)
             } else if (hasSorts && sourceBuilder.sorts() != null) {
               // Sorts already present, check that a tie-breaker exists
               val hasIdSort = sourceBuilder.sorts().asScala.exists { sortBuilder =>
@@ -1835,7 +1821,7 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
               if (!hasIdSort) {
                 // Add _id as tie-breaker
                 logger.debug("Adding _id as tie-breaker to existing sorts")
-                sourceBuilder.sort("_id", SortOrder.ASC)
+                sourceBuilder.sort(idSort)
               }
             }
 
@@ -1852,9 +1838,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
 
             val tree = executeSearchPage(request)
 
-            shardFailures(tree).foreach { reasons =>
-              throw new IOException(s"Search after failed: $reasons")
-            }
+            failedShardsPage("Search after failed", tree)(new IOException(_))
+              .foreach(ex => throw ex)
 
             // Extract ONLY hits (no aggregations for search_after)
             val hits = extractHitsOnly(tree, fieldAliases, config.retainDocumentId)
@@ -2042,9 +2027,8 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
                           executeSearchPageAsync(request)
                         }
                         .map { tree =>
-                          shardFailures(tree).foreach { reasons =>
-                            throw new IOException(s"PIT search_after failed: $reasons")
-                          }
+                          failedShardsPage("PIT search_after failed", tree)(new IOException(_))
+                            .foreach(ex => throw ex)
 
                           val hitsArray = tree.path("hits").path("hits")
                           if (!hitsArray.isArray || hitsArray.size() == 0) {
@@ -2136,10 +2120,19 @@ trait RestHighLevelClientScrollApi extends ScrollApi with RestHighLevelClientHel
       logger.info(s"PIT opened: ${pitId.take(20)}...")
       pitId
     }.recoverWith { case ex: Exception =>
-      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
-      Future.failed(
-        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
-      )
+      // the high-level client keeps Elasticsearch's response as a suppressed ResponseException:
+      // a 4xx (408 / 429 excepted) fails fast, with its status and reason ([[pageRejection]]), as
+      // every paging door does; any other failure is retried as before
+      (ex +: ex.getSuppressed.toSeq).collectFirst {
+        case re: ResponseException if isNonRetriable4xx(re) => pageRejection(re)
+      } match {
+        case Some(rejected) => Future.failed(rejected)
+        case None =>
+          logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+          Future.failed(
+            new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+          )
+      }
     }
   }
 

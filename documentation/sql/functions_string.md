@@ -520,9 +520,10 @@ SELECT CONCAT(firstName, ' ', lastName) AS full FROM users;
 SELECT CONCAT('Product: ', name, ' - Price: ', price) AS info
 FROM products;
 
--- With NULL handling
+-- With NULL handling: a NULL argument is skipped, as DuckDB's concat does,
+-- in a query, a computed column and a materialized view alike
 SELECT CONCAT('Hello', NULL, 'World') AS result;
--- Result: NULL (any NULL makes entire result NULL)
+-- Result: 'HelloWorld' (the call itself is never NULL)
 
 -- Build full address
 SELECT 

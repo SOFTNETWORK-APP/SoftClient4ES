@@ -654,6 +654,22 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
             yield daysBetween(a, utcDay(m))
         )
     ),
+    // a DATE conditional converted to a TIMESTAMP inside its NULL guard: r4 has no date at all
+    RowForm(
+      "CASE WHEN n > 0 THEN GREATEST(d, d2) ELSE ts END",
+      r =>
+        expect(
+          (if (r.n.exists(_ > 0)) latest(r.d.map(start), r.d2.map(start)) else r.ts).map(At)
+        )
+    ),
+    RowForm(
+      "COALESCE(ts2, GREATEST(d, d2))",
+      r => expect(r.ts2.orElse(latest(r.d.map(start), r.d2.map(start))).map(At))
+    ),
+    RowForm(
+      "GREATEST(COALESCE(d, d2), ts)",
+      r => expect(latest(r.d.orElse(r.d2).map(start), r.ts).map(At))
+    ),
     // a number cast to a TIMESTAMP: the instant that many milliseconds from the epoch
     RowForm("CAST(n AS TIMESTAMP)", r => expect(r.n.map(n => epochMillis(n.toDouble)))),
     RowForm("CAST(x AS TIMESTAMP)", r => expect(r.x.map(epochMillis)))
@@ -854,30 +870,39 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     GroupForm(
       "(MAX(n) + AVG(x))::BIGINT",
       g => expect(for (n <- g.maxN; x <- g.avgX) yield Num((n + x).toLong.toDouble))
-    ),
-    // ---- fix round 2: GREATEST / LEAST over aggregates, computed per group ----
-    // ⚠️ A SELECT's per-group calculation is NULL in a group missing one of its metrics:
-    // Elasticsearch's bucket_script does not run there (its gap policy skips the group), as for
-    // every per-group calculation. A HAVING reads every aggregate and skips a NULL one (below).
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
-    ),
-    GroupForm(
-      "LEAST(MAX(ts), MAX(d))",
-      g =>
-        expect(for (t <- g.maxTs; a <- g.maxD; m <- earliest(Some(t), Some(start(a)))) yield At(m))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2)) - MIN(d)",
-      g =>
-        expect(
-          for (a <- g.maxD; b <- g.maxD2; m <- g.minD)
-            yield daysBetween(m, if (a.isAfter(b)) a else b)
-        )
-    ),
-    GroupForm("GREATEST(MAX(n), 2)", g => expect(g.maxN.map(n => Num(Math.max(n, 2).toDouble))))
+    )
+    // ---- GREATEST / LEAST over aggregates per group: refused by name (`nullSkippingOverNullable`,
+    // below). Elasticsearch skips the calculation of a group missing one of its metrics, so it
+    // answered NULL where SQL answers the other arguments' greatest / least. A HAVING reads every
+    // aggregate and skips a NULL one, and stays answered (`havingForms`).
   )
+
+  /** The per-group SELECT calculations GREATEST / LEAST make over an aggregate that can be NULL:
+    * each is refused by name, per group, over its conversion, and through its alias.
+    */
+  private val nullSkippingCalculations: Seq[String] = Seq(
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g",
+    s"SELECT g, LEAST(MAX(ts), MAX(d)) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) - MIN(d) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(n), 2) AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2))::DATE AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2))::TIMESTAMP AS x FROM $table GROUP BY g",
+    s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g " +
+    "HAVING x > CAST('2023-12-01' AS DATE)"
+  )
+
+  "GREATEST / LEAST over an aggregate that can be NULL, per group" should
+  "be refused by name, never answered NULL for a group missing a metric" in {
+    // g2 has a `d` and no `d2`: DuckDB answers GREATEST(MAX(d), MAX(d2)) = MAX(d) there, and
+    // GREATEST(MAX(n), 2) = 2 in a group with no `n`
+    val outcomes = nullSkippingCalculations.map(sql => sql -> gatewayRows(sql))
+    outcomes.collect {
+      case (sql, Right(rs)) => s"[$sql] answered $rs"
+      case (sql, Left(error))
+          if !error.contains("is not supported in a calculation over aggregates") =>
+        s"[$sql] failed otherwise: $error"
+    } shouldBe empty
+  }
 
   /** A HAVING over a per-group calculation and whether each group is kept. */
   private final case class HavingForm(sql: String, keeps: Group => Option[Boolean])
@@ -925,17 +950,13 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       g => Some(g.countD - 1 > 0)
     ),
     // ---- fix round 2: GREATEST over aggregates. Inline, the group filter reads every aggregate
-    // and SKIPS a NULL one (g2 has a `d` and no `d2`); through its SELECT alias it reads the
-    // per-group calculation, NULL in a group missing one of its metrics ----
+    // and SKIPS a NULL one (g2 has a `d` and no `d2`) ----
     HavingForm(
       s"SELECT g FROM $table GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2023-12-01' AS DATE)",
       g => latest(g.maxD.map(start), g.maxD2.map(start)).map(_.isAfter(start(on("2023-12-01"))))
-    ),
-    HavingForm(
-      s"SELECT g, GREATEST(MAX(d), MAX(d2)) AS x FROM $table GROUP BY g HAVING x > CAST('2023-12-01' AS DATE)",
-      g =>
-        for (a <- g.maxD; b <- g.maxD2) yield (if (a.isAfter(b)) a else b).isAfter(on("2023-12-01"))
     )
+    // (through its SELECT alias it is the per-group calculation, refused:
+    // `nullSkippingCalculations`)
   )
 
   /** Run every statement before asserting anything, so a failure names every one that differs. */
@@ -1010,8 +1031,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     * `date` doc value is a `JodaCompatibleZonedDateTime`, which `isBefore` / `isAfter` / `isEqual`
     * against a genuine `ZonedDateTime` used to fail with `Class.cast`.
     *
-    * ⚠️ A column compared with ANOTHER column (`d2 > d`) is not here: on Elasticsearch 6.8 it is
-    * sent as a `range` bounded by the other column's NAME, outside this suite's rules.
+    * A column compared with ANOTHER column (`d2 > d`) is not here: it is scripted on every major,
+    * and the TIMESTAMP-vs-DATE row below covers it.
     */
   private val columnForms: Seq[WhereForm] = Seq(
     WhereForm("d < CAST('2024-01-07' AS DATE) - 7", r => r.d.map(_.isBefore(on("2023-12-31")))),
@@ -1054,6 +1075,19 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       "LEAST(d, ts) < ts",
       r => for (t <- r.ts; m <- earliest(r.d.map(start), r.ts)) yield m.isBefore(t)
     ),
+    // a DATE conditional is its UTC midnight beside a TIMESTAMP, and NULL where it is
+    WhereForm(
+      "COALESCE(d, d2) < ts",
+      r => for (m <- r.d.orElse(r.d2); t <- r.ts) yield start(m).isBefore(t)
+    ),
+    WhereForm(
+      "NULLIF(d, d2) > ts2",
+      r => for (m <- nullIf(r.d, r.d2); t <- r.ts2) yield start(m).isAfter(t)
+    ),
+    WhereForm(
+      "CASE WHEN n > 0 THEN d ELSE d2 END < ts",
+      r => for (m <- if (r.n.exists(_ > 0)) r.d else r.d2; t <- r.ts) yield start(m).isBefore(t)
+    ),
     // the comparisons that already worked, on every major
     WhereForm("d = CAST('2024-01-31' AS DATE)", r => r.d.map(_ == on("2024-01-31"))),
     WhereForm("d >= '2024-01-01'", r => r.d.map(a => !a.isBefore(on("2024-01-01")))),
@@ -1089,6 +1123,649 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     columnForms.exists(f => rows.exists(r => f.keeps(r).contains(true))) shouldBe true
     columnForms.exists(f => rows.exists(r => !f.keeps(r).contains(true))) shouldBe true
     verdict("column vs date arithmetic", whereVerdicts(columnForms))
+  }
+
+  /** Every comparison of a TIMESTAMP -- a column or a literal, at midnight or at a time of day --
+    * with a DATE expression -- a column, a CAST, a CASE, a COALESCE, a NULLIF, a GREATEST / LEAST,
+    * LAST_DAY, DATE_TRUNC -- on both sides, with the six operators, and the documents DuckDB 1.5.5
+    * keeps for each over this fixture. DuckDB casts the DATE to a TIMESTAMP, its UTC midnight: a
+    * TIMESTAMP is never narrowed to its day.
+    *
+    * Every comparison here renders as a script. A bare column compared with a literal runs as a
+    * query on the column's mapping instead, so that comparison is run inside a CASE, which renders
+    * it as a script; every other comparison with a literal on the right is run both ways.
+    *
+    * DuckDB's answers are read with its optimizer off: 1.5.5 folds `date_trunc(…) <> <a timestamp
+    * off the unit>` to TRUE, NULL included, where its unoptimized plan answers NULL.
+    */
+  private val timestampDateComparisons: Seq[(String, String)] = Seq(
+    "CAST(ts AS DATE) < ts"                                        -> "r1,r2,r3,r5,r6,r7",
+    "CAST(ts AS DATE) <= ts"                                       -> "r1,r2,r3,r5,r6,r7",
+    "CAST(ts AS DATE) > ts"                                        -> "",
+    "CAST(ts AS DATE) >= ts"                                       -> "",
+    "CAST(ts AS DATE) = ts"                                        -> "",
+    "CAST(ts AS DATE) <> ts"                                       -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31' AS DATE) < ts"                              -> "r1,r2,r5,r7",
+    "CAST('2024-01-31' AS DATE) <= ts"                             -> "r1,r2,r5,r7",
+    "CAST('2024-01-31' AS DATE) > ts"                              -> "r3,r6",
+    "CAST('2024-01-31' AS DATE) >= ts"                             -> "r3,r6",
+    "CAST('2024-01-31' AS DATE) = ts"                              -> "",
+    "CAST('2024-01-31' AS DATE) <> ts"                             -> "r1,r2,r3,r5,r6,r7",
+    "ts < CASE WHEN n > 0 THEN d ELSE d2 END"                      -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END < ts"                      -> "r1,r2,r5,r6,r7",
+    "ts <= CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <= ts"                     -> "r1,r2,r5,r6,r7",
+    "ts > CASE WHEN n > 0 THEN d ELSE d2 END"                      -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END > ts"                      -> "",
+    "ts >= CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END >= ts"                     -> "",
+    "ts = CASE WHEN n > 0 THEN d ELSE d2 END"                      -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END = ts"                      -> "",
+    "ts <> CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <> ts"                     -> "r1,r2,r5,r6,r7",
+    "ts < COALESCE(d2, d)"                                         -> "r1,r5",
+    "COALESCE(d2, d) < ts"                                         -> "r2,r3,r6,r7",
+    "ts <= COALESCE(d2, d)"                                        -> "r1,r5",
+    "COALESCE(d2, d) <= ts"                                        -> "r2,r3,r6,r7",
+    "ts > COALESCE(d2, d)"                                         -> "r2,r3,r6,r7",
+    "COALESCE(d2, d) > ts"                                         -> "r1,r5",
+    "ts >= COALESCE(d2, d)"                                        -> "r2,r3,r6,r7",
+    "COALESCE(d2, d) >= ts"                                        -> "r1,r5",
+    "ts = COALESCE(d2, d)"                                         -> "",
+    "COALESCE(d2, d) = ts"                                         -> "",
+    "ts <> COALESCE(d2, d)"                                        -> "r1,r2,r3,r5,r6,r7",
+    "COALESCE(d2, d) <> ts"                                        -> "r1,r2,r3,r5,r6,r7",
+    "ts < NULLIF(d, d2)"                                           -> "",
+    "NULLIF(d, d2) < ts"                                           -> "r1,r2,r3,r5,r6,r7",
+    "ts <= NULLIF(d, d2)"                                          -> "",
+    "NULLIF(d, d2) <= ts"                                          -> "r1,r2,r3,r5,r6,r7",
+    "ts > NULLIF(d, d2)"                                           -> "r1,r2,r3,r5,r6,r7",
+    "NULLIF(d, d2) > ts"                                           -> "",
+    "ts >= NULLIF(d, d2)"                                          -> "r1,r2,r3,r5,r6,r7",
+    "NULLIF(d, d2) >= ts"                                          -> "",
+    "ts = NULLIF(d, d2)"                                           -> "",
+    "NULLIF(d, d2) = ts"                                           -> "",
+    "ts <> NULLIF(d, d2)"                                          -> "r1,r2,r3,r5,r6,r7",
+    "NULLIF(d, d2) <> ts"                                          -> "r1,r2,r3,r5,r6,r7",
+    "ts < GREATEST(d, d2)"                                         -> "r1,r5",
+    "GREATEST(d, d2) < ts"                                         -> "r2,r3,r6,r7",
+    "ts <= GREATEST(d, d2)"                                        -> "r1,r5",
+    "GREATEST(d, d2) <= ts"                                        -> "r2,r3,r6,r7",
+    "ts > GREATEST(d, d2)"                                         -> "r2,r3,r6,r7",
+    "GREATEST(d, d2) > ts"                                         -> "r1,r5",
+    "ts >= GREATEST(d, d2)"                                        -> "r2,r3,r6,r7",
+    "GREATEST(d, d2) >= ts"                                        -> "r1,r5",
+    "ts = GREATEST(d, d2)"                                         -> "",
+    "GREATEST(d, d2) = ts"                                         -> "",
+    "ts <> GREATEST(d, d2)"                                        -> "r1,r2,r3,r5,r6,r7",
+    "GREATEST(d, d2) <> ts"                                        -> "r1,r2,r3,r5,r6,r7",
+    "ts < LEAST(d, d2)"                                            -> "",
+    "LEAST(d, d2) < ts"                                            -> "r1,r2,r3,r5,r6,r7",
+    "ts <= LEAST(d, d2)"                                           -> "",
+    "LEAST(d, d2) <= ts"                                           -> "r1,r2,r3,r5,r6,r7",
+    "ts > LEAST(d, d2)"                                            -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) > ts"                                            -> "",
+    "ts >= LEAST(d, d2)"                                           -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) >= ts"                                           -> "",
+    "ts = LEAST(d, d2)"                                            -> "",
+    "LEAST(d, d2) = ts"                                            -> "",
+    "ts <> LEAST(d, d2)"                                           -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) <> ts"                                           -> "r1,r2,r3,r5,r6,r7",
+    "ts < LAST_DAY(d)"                                             -> "r2,r3",
+    "LAST_DAY(d) < ts"                                             -> "r1,r5,r6,r7",
+    "ts <= LAST_DAY(d)"                                            -> "r2,r3",
+    "LAST_DAY(d) <= ts"                                            -> "r1,r5,r6,r7",
+    "ts > LAST_DAY(d)"                                             -> "r1,r5,r6,r7",
+    "LAST_DAY(d) > ts"                                             -> "r2,r3",
+    "ts >= LAST_DAY(d)"                                            -> "r1,r5,r6,r7",
+    "LAST_DAY(d) >= ts"                                            -> "r2,r3",
+    "ts = LAST_DAY(d)"                                             -> "",
+    "LAST_DAY(d) = ts"                                             -> "",
+    "ts <> LAST_DAY(d)"                                            -> "r1,r2,r3,r5,r6,r7",
+    "LAST_DAY(d) <> ts"                                            -> "r1,r2,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) < ts"                                    -> "r1,r2,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) <= ts"                                   -> "r1,r2,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) > ts"                                    -> "",
+    "DATE_TRUNC(d, MONTH) >= ts"                                   -> "",
+    "DATE_TRUNC(d, MONTH) = ts"                                    -> "",
+    "DATE_TRUNC(d, MONTH) <> ts"                                   -> "r1,r2,r3,r5,r6,r7",
+    "CAST(ts AS DATE) < ts2"                                       -> "r1,r5,r6",
+    "CAST(ts AS DATE) <= ts2"                                      -> "r1,r5,r6",
+    "CAST(ts AS DATE) > ts2"                                       -> "r2,r7",
+    "CAST(ts AS DATE) >= ts2"                                      -> "r2,r7",
+    "CAST(ts AS DATE) = ts2"                                       -> "",
+    "CAST(ts AS DATE) <> ts2"                                      -> "r1,r2,r5,r6,r7",
+    "CAST('2024-01-31' AS DATE) < ts2"                             -> "r1,r2,r5",
+    "CAST('2024-01-31' AS DATE) <= ts2"                            -> "r1,r2,r5",
+    "CAST('2024-01-31' AS DATE) > ts2"                             -> "r6,r7",
+    "CAST('2024-01-31' AS DATE) >= ts2"                            -> "r6,r7",
+    "CAST('2024-01-31' AS DATE) = ts2"                             -> "",
+    "CAST('2024-01-31' AS DATE) <> ts2"                            -> "r1,r2,r5,r6,r7",
+    "ts2 < CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END < ts2"                     -> "r1,r2,r5,r6",
+    "ts2 <= CASE WHEN n > 0 THEN d ELSE d2 END"                    -> "r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <= ts2"                    -> "r1,r2,r5,r6",
+    "ts2 > CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "r1,r2,r5,r6",
+    "CASE WHEN n > 0 THEN d ELSE d2 END > ts2"                     -> "r7",
+    "ts2 >= CASE WHEN n > 0 THEN d ELSE d2 END"                    -> "r1,r2,r5,r6",
+    "CASE WHEN n > 0 THEN d ELSE d2 END >= ts2"                    -> "r7",
+    "ts2 = CASE WHEN n > 0 THEN d ELSE d2 END"                     -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END = ts2"                     -> "",
+    "ts2 <> CASE WHEN n > 0 THEN d ELSE d2 END"                    -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <> ts2"                    -> "r1,r2,r5,r6,r7",
+    "ts2 < COALESCE(d2, d)"                                        -> "",
+    "COALESCE(d2, d) < ts2"                                        -> "r1,r2,r6,r7",
+    "ts2 <= COALESCE(d2, d)"                                       -> "r5",
+    "COALESCE(d2, d) <= ts2"                                       -> "r1,r2,r5,r6,r7",
+    "ts2 > COALESCE(d2, d)"                                        -> "r1,r2,r6,r7",
+    "COALESCE(d2, d) > ts2"                                        -> "",
+    "ts2 >= COALESCE(d2, d)"                                       -> "r1,r2,r5,r6,r7",
+    "COALESCE(d2, d) >= ts2"                                       -> "r5",
+    "ts2 = COALESCE(d2, d)"                                        -> "r5",
+    "COALESCE(d2, d) = ts2"                                        -> "r5",
+    "ts2 <> COALESCE(d2, d)"                                       -> "r1,r2,r6,r7",
+    "COALESCE(d2, d) <> ts2"                                       -> "r1,r2,r6,r7",
+    "ts2 < NULLIF(d, d2)"                                          -> "r2,r7",
+    "NULLIF(d, d2) < ts2"                                          -> "r1,r5,r6",
+    "ts2 <= NULLIF(d, d2)"                                         -> "r2,r7",
+    "NULLIF(d, d2) <= ts2"                                         -> "r1,r5,r6",
+    "ts2 > NULLIF(d, d2)"                                          -> "r1,r5,r6",
+    "NULLIF(d, d2) > ts2"                                          -> "r2,r7",
+    "ts2 >= NULLIF(d, d2)"                                         -> "r1,r5,r6",
+    "NULLIF(d, d2) >= ts2"                                         -> "r2,r7",
+    "ts2 = NULLIF(d, d2)"                                          -> "",
+    "NULLIF(d, d2) = ts2"                                          -> "",
+    "ts2 <> NULLIF(d, d2)"                                         -> "r1,r2,r5,r6,r7",
+    "NULLIF(d, d2) <> ts2"                                         -> "r1,r2,r5,r6,r7",
+    "ts2 < GREATEST(d, d2)"                                        -> "r2,r7",
+    "GREATEST(d, d2) < ts2"                                        -> "r1,r6",
+    "ts2 <= GREATEST(d, d2)"                                       -> "r2,r5,r7",
+    "GREATEST(d, d2) <= ts2"                                       -> "r1,r5,r6",
+    "ts2 > GREATEST(d, d2)"                                        -> "r1,r6",
+    "GREATEST(d, d2) > ts2"                                        -> "r2,r7",
+    "ts2 >= GREATEST(d, d2)"                                       -> "r1,r5,r6",
+    "GREATEST(d, d2) >= ts2"                                       -> "r2,r5,r7",
+    "ts2 = GREATEST(d, d2)"                                        -> "r5",
+    "GREATEST(d, d2) = ts2"                                        -> "r5",
+    "ts2 <> GREATEST(d, d2)"                                       -> "r1,r2,r6,r7",
+    "GREATEST(d, d2) <> ts2"                                       -> "r1,r2,r6,r7",
+    "ts2 < LEAST(d, d2)"                                           -> "",
+    "LEAST(d, d2) < ts2"                                           -> "r1,r2,r5,r6,r7",
+    "ts2 <= LEAST(d, d2)"                                          -> "",
+    "LEAST(d, d2) <= ts2"                                          -> "r1,r2,r5,r6,r7",
+    "ts2 > LEAST(d, d2)"                                           -> "r1,r2,r5,r6,r7",
+    "LEAST(d, d2) > ts2"                                           -> "",
+    "ts2 >= LEAST(d, d2)"                                          -> "r1,r2,r5,r6,r7",
+    "LEAST(d, d2) >= ts2"                                          -> "",
+    "ts2 = LEAST(d, d2)"                                           -> "",
+    "LEAST(d, d2) = ts2"                                           -> "",
+    "ts2 <> LEAST(d, d2)"                                          -> "r1,r2,r5,r6,r7",
+    "LEAST(d, d2) <> ts2"                                          -> "r1,r2,r5,r6,r7",
+    "ts2 < LAST_DAY(d)"                                            -> "r2,r7",
+    "LAST_DAY(d) < ts2"                                            -> "r1,r5,r6",
+    "ts2 <= LAST_DAY(d)"                                           -> "r2,r7",
+    "LAST_DAY(d) <= ts2"                                           -> "r1,r5,r6",
+    "ts2 > LAST_DAY(d)"                                            -> "r1,r5,r6",
+    "LAST_DAY(d) > ts2"                                            -> "r2,r7",
+    "ts2 >= LAST_DAY(d)"                                           -> "r1,r5,r6",
+    "LAST_DAY(d) >= ts2"                                           -> "r2,r7",
+    "ts2 = LAST_DAY(d)"                                            -> "",
+    "LAST_DAY(d) = ts2"                                            -> "",
+    "ts2 <> LAST_DAY(d)"                                           -> "r1,r2,r5,r6,r7",
+    "LAST_DAY(d) <> ts2"                                           -> "r1,r2,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) < ts2"                                   -> "r1,r5,r6",
+    "DATE_TRUNC(d, MONTH) <= ts2"                                  -> "r1,r5,r6",
+    "DATE_TRUNC(d, MONTH) > ts2"                                   -> "r2,r7",
+    "DATE_TRUNC(d, MONTH) >= ts2"                                  -> "r2,r7",
+    "DATE_TRUNC(d, MONTH) = ts2"                                   -> "",
+    "DATE_TRUNC(d, MONTH) <> ts2"                                  -> "r1,r2,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < d"                 -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= d"                -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > d"                 -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= d"                -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = d"                 -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> d"                -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < d2"                -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= d2"               -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > d2"                -> "r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= d2"               -> "r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = d2"                -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> d2"               -> "r1,r2,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < CAST(ts AS DATE)"  -> "r2,r5",
+    "CAST(ts AS DATE) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= CAST(ts AS DATE)" -> "r2,r5",
+    "CAST(ts AS DATE) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > CAST(ts AS DATE)"  -> "r1,r3,r6,r7",
+    "CAST(ts AS DATE) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= CAST(ts AS DATE)" -> "r1,r3,r6,r7",
+    "CAST(ts AS DATE) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = CAST(ts AS DATE)"  -> "",
+    "CAST(ts AS DATE) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> CAST(ts AS DATE)" -> "r1,r2,r3,r5,r6,r7",
+    "CAST(ts AS DATE) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < CASE WHEN n > 0 THEN d ELSE d2 END"  -> "r2,r5",
+    "CASE WHEN n > 0 THEN d ELSE d2 END < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r1,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= CASE WHEN n > 0 THEN d ELSE d2 END" -> "r2,r5",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > CASE WHEN n > 0 THEN d ELSE d2 END"  -> "r1,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= CASE WHEN n > 0 THEN d ELSE d2 END" -> "r1,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = CASE WHEN n > 0 THEN d ELSE d2 END"  -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> CASE WHEN n > 0 THEN d ELSE d2 END" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r2,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < COALESCE(d2, d)"       -> "r1,r2,r5",
+    "COALESCE(d2, d) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= COALESCE(d2, d)"      -> "r1,r2,r5",
+    "COALESCE(d2, d) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > COALESCE(d2, d)"       -> "r3,r6,r7",
+    "COALESCE(d2, d) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= COALESCE(d2, d)"      -> "r3,r6,r7",
+    "COALESCE(d2, d) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = COALESCE(d2, d)"       -> "",
+    "COALESCE(d2, d) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> COALESCE(d2, d)"      -> "r1,r2,r3,r5,r6,r7",
+    "COALESCE(d2, d) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < NULLIF(d, d2)"         -> "r2,r5",
+    "NULLIF(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= NULLIF(d, d2)"        -> "r2,r5",
+    "NULLIF(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"        -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > NULLIF(d, d2)"         -> "r1,r3,r6,r7",
+    "NULLIF(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= NULLIF(d, d2)"        -> "r1,r3,r6,r7",
+    "NULLIF(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"        -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = NULLIF(d, d2)"         -> "",
+    "NULLIF(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> NULLIF(d, d2)"        -> "r1,r2,r3,r5,r6,r7",
+    "NULLIF(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)"        -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < GREATEST(d, d2)"       -> "r1,r2,r5",
+    "GREATEST(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= GREATEST(d, d2)"      -> "r1,r2,r5",
+    "GREATEST(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > GREATEST(d, d2)"       -> "r3,r6,r7",
+    "GREATEST(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= GREATEST(d, d2)"      -> "r3,r6,r7",
+    "GREATEST(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r1,r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = GREATEST(d, d2)"       -> "",
+    "GREATEST(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"       -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> GREATEST(d, d2)"      -> "r1,r2,r3,r5,r6,r7",
+    "GREATEST(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)"      -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < LEAST(d, d2)"          -> "r2,r5",
+    "LEAST(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= LEAST(d, d2)"         -> "r2,r5",
+    "LEAST(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > LEAST(d, d2)"          -> "r1,r3,r6,r7",
+    "LEAST(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= LEAST(d, d2)"         -> "r1,r3,r6,r7",
+    "LEAST(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = LEAST(d, d2)"          -> "",
+    "LEAST(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> LEAST(d, d2)"         -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)"         -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < LAST_DAY(d)"           -> "r2,r5",
+    "LAST_DAY(d) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"           -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= LAST_DAY(d)"          -> "r2,r5",
+    "LAST_DAY(d) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > LAST_DAY(d)"           -> "r1,r3,r6,r7",
+    "LAST_DAY(d) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"           -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= LAST_DAY(d)"          -> "r1,r3,r6,r7",
+    "LAST_DAY(d) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = LAST_DAY(d)"           -> "",
+    "LAST_DAY(d) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"           -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> LAST_DAY(d)"          -> "r1,r2,r3,r5,r6,r7",
+    "LAST_DAY(d) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)"          -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) < DATE_TRUNC(d, MONTH)"  -> "r2,r5",
+    "DATE_TRUNC(d, MONTH) < CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <= DATE_TRUNC(d, MONTH)" -> "r2,r5",
+    "DATE_TRUNC(d, MONTH) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r3,r6,r7",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) > DATE_TRUNC(d, MONTH)"  -> "r1,r3,r6,r7",
+    "DATE_TRUNC(d, MONTH) > CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) >= DATE_TRUNC(d, MONTH)" -> "r1,r3,r6,r7",
+    "DATE_TRUNC(d, MONTH) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r2,r5",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) = DATE_TRUNC(d, MONTH)"  -> "",
+    "DATE_TRUNC(d, MONTH) = CAST('2024-01-31 10:30:00' AS TIMESTAMP)"  -> "",
+    "CAST('2024-01-31 10:30:00' AS TIMESTAMP) <> DATE_TRUNC(d, MONTH)" -> "r1,r2,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP)" -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < d"                     -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= d"                    -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > d"                     -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= d"                    -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = d"                     -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> d"                    -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < d2"                    -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= d2"                   -> "r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > d2"                    -> "r1,r2,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= d2"                   -> "r1,r2,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = d2"                    -> "r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> d2"                   -> "r1,r2,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < CAST(ts AS DATE)"      -> "",
+    "CAST(ts AS DATE) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"      -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= CAST(ts AS DATE)"     -> "r2",
+    "CAST(ts AS DATE) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"     -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > CAST(ts AS DATE)"      -> "r1,r3,r5,r6,r7",
+    "CAST(ts AS DATE) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"      -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= CAST(ts AS DATE)"     -> "r1,r2,r3,r5,r6,r7",
+    "CAST(ts AS DATE) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"     -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = CAST(ts AS DATE)"      -> "r2",
+    "CAST(ts AS DATE) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"      -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> CAST(ts AS DATE)"     -> "r1,r3,r5,r6,r7",
+    "CAST(ts AS DATE) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"     -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < CASE WHEN n > 0 THEN d ELSE d2 END" -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END < CAST('2024-03-01 00:00:00' AS TIMESTAMP)" -> "r1,r2,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= CASE WHEN n > 0 THEN d ELSE d2 END" -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)" -> "r1,r2,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > CASE WHEN n > 0 THEN d ELSE d2 END" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END > CAST('2024-03-01 00:00:00' AS TIMESTAMP)" -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= CASE WHEN n > 0 THEN d ELSE d2 END" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)" -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = CASE WHEN n > 0 THEN d ELSE d2 END"  -> "",
+    "CASE WHEN n > 0 THEN d ELSE d2 END = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"  -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> CASE WHEN n > 0 THEN d ELSE d2 END" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN n > 0 THEN d ELSE d2 END <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)" -> "r1,r2,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < COALESCE(d2, d)"        -> "",
+    "COALESCE(d2, d) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "r1,r2,r3,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= COALESCE(d2, d)"       -> "r5",
+    "COALESCE(d2, d) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > COALESCE(d2, d)"        -> "r1,r2,r3,r6,r7",
+    "COALESCE(d2, d) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= COALESCE(d2, d)"       -> "r1,r2,r3,r5,r6,r7",
+    "COALESCE(d2, d) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = COALESCE(d2, d)"        -> "r5",
+    "COALESCE(d2, d) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> COALESCE(d2, d)"       -> "r1,r2,r3,r6,r7",
+    "COALESCE(d2, d) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r1,r2,r3,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < NULLIF(d, d2)"          -> "",
+    "NULLIF(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= NULLIF(d, d2)"         -> "r2",
+    "NULLIF(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"         -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > NULLIF(d, d2)"          -> "r1,r3,r5,r6,r7",
+    "NULLIF(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= NULLIF(d, d2)"         -> "r1,r2,r3,r5,r6,r7",
+    "NULLIF(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"         -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = NULLIF(d, d2)"          -> "r2",
+    "NULLIF(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> NULLIF(d, d2)"         -> "r1,r3,r5,r6,r7",
+    "NULLIF(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"         -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < GREATEST(d, d2)"        -> "",
+    "GREATEST(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "r1,r3,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= GREATEST(d, d2)"       -> "r2,r5",
+    "GREATEST(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > GREATEST(d, d2)"        -> "r1,r3,r6,r7",
+    "GREATEST(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= GREATEST(d, d2)"       -> "r1,r2,r3,r5,r6,r7",
+    "GREATEST(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r2,r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = GREATEST(d, d2)"        -> "r2,r5",
+    "GREATEST(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"        -> "r2,r5",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> GREATEST(d, d2)"       -> "r1,r3,r6,r7",
+    "GREATEST(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"       -> "r1,r3,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < LEAST(d, d2)"           -> "",
+    "LEAST(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= LEAST(d, d2)"          -> "",
+    "LEAST(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > LEAST(d, d2)"           -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= LEAST(d, d2)"          -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = LEAST(d, d2)"           -> "",
+    "LEAST(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> LEAST(d, d2)"          -> "r1,r2,r3,r5,r6,r7",
+    "LEAST(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"          -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < LAST_DAY(d)"            -> "r2",
+    "LAST_DAY(d) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"            -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= LAST_DAY(d)"           -> "r2",
+    "LAST_DAY(d) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > LAST_DAY(d)"            -> "r1,r3,r5,r6,r7",
+    "LAST_DAY(d) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"            -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= LAST_DAY(d)"           -> "r1,r3,r5,r6,r7",
+    "LAST_DAY(d) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = LAST_DAY(d)"            -> "",
+    "LAST_DAY(d) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"            -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> LAST_DAY(d)"           -> "r1,r2,r3,r5,r6,r7",
+    "LAST_DAY(d) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"           -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) < DATE_TRUNC(d, MONTH)"   -> "",
+    "DATE_TRUNC(d, MONTH) < CAST('2024-03-01 00:00:00' AS TIMESTAMP)"   -> "r1,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <= DATE_TRUNC(d, MONTH)"  -> "r2",
+    "DATE_TRUNC(d, MONTH) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"  -> "r1,r2,r3,r5,r6,r7",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) > DATE_TRUNC(d, MONTH)"   -> "r1,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) > CAST('2024-03-01 00:00:00' AS TIMESTAMP)"   -> "",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) >= DATE_TRUNC(d, MONTH)"  -> "r1,r2,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP)"  -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) = DATE_TRUNC(d, MONTH)"   -> "r2",
+    "DATE_TRUNC(d, MONTH) = CAST('2024-03-01 00:00:00' AS TIMESTAMP)"   -> "r2",
+    "CAST('2024-03-01 00:00:00' AS TIMESTAMP) <> DATE_TRUNC(d, MONTH)"  -> "r1,r3,r5,r6,r7",
+    "DATE_TRUNC(d, MONTH) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP)"  -> "r1,r3,r5,r6,r7",
+    "CASE WHEN ts < CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"   -> "r3,r6",
+    "CASE WHEN ts <= CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "r3,r6",
+    "CASE WHEN ts > CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"   -> "r1,r2,r5,r7",
+    "CASE WHEN ts >= CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "r1,r2,r5,r7",
+    "CASE WHEN ts = CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"   -> "",
+    "CASE WHEN ts <> CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN ts2 < CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "r6,r7",
+    "CASE WHEN ts2 <= CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1" -> "r6,r7",
+    "CASE WHEN ts2 > CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "r1,r2,r5",
+    "CASE WHEN ts2 >= CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN ts2 = CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1"  -> "",
+    "CASE WHEN ts2 <> CAST('2024-01-31' AS DATE) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN d < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN d <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN d > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "r2,r5",
+    "CASE WHEN d >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN d = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "",
+    "CASE WHEN d <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN d2 < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "r6,r7",
+    "CASE WHEN d2 <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r6,r7",
+    "CASE WHEN d2 > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "r1,r2,r5",
+    "CASE WHEN d2 >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN d2 = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "",
+    "CASE WHEN d2 <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN CAST(ts AS DATE) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN CAST(ts AS DATE) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CAST(ts AS DATE) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN COALESCE(d2, d) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r3,r6,r7",
+    "CASE WHEN COALESCE(d2, d) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r3,r6,r7",
+    "CASE WHEN COALESCE(d2, d) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN COALESCE(d2, d) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN COALESCE(d2, d) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN COALESCE(d2, d) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN NULLIF(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN NULLIF(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN NULLIF(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN NULLIF(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN NULLIF(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN NULLIF(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN GREATEST(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r3,r6,r7",
+    "CASE WHEN GREATEST(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r3,r6,r7",
+    "CASE WHEN GREATEST(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN GREATEST(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5",
+    "CASE WHEN GREATEST(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN GREATEST(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN LEAST(d, d2) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN LEAST(d, d2) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN LEAST(d, d2) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN LEAST(d, d2) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN LEAST(d, d2) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LEAST(d, d2) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN LAST_DAY(d) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN LAST_DAY(d) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN LAST_DAY(d) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN LAST_DAY(d) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN LAST_DAY(d) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LAST_DAY(d) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) < CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) <= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) > CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN DATE_TRUNC(d, MONTH) >= CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN DATE_TRUNC(d, MONTH) = CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN DATE_TRUNC(d, MONTH) <> CAST('2024-01-31 10:30:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN d < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN d <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN d > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "",
+    "CASE WHEN d >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN d = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "r2",
+    "CASE WHEN d <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN d2 < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r6,r7",
+    "CASE WHEN d2 <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN d2 > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "",
+    "CASE WHEN d2 >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r5",
+    "CASE WHEN d2 = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1"  -> "r5",
+    "CASE WHEN d2 <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN CAST(ts AS DATE) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CAST(ts AS DATE) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN CAST(ts AS DATE) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN CAST(ts AS DATE) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN CASE WHEN n > 0 THEN d ELSE d2 END <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r5,r6,r7",
+    "CASE WHEN COALESCE(d2, d) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r6,r7",
+    "CASE WHEN COALESCE(d2, d) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN COALESCE(d2, d) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN COALESCE(d2, d) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r5",
+    "CASE WHEN COALESCE(d2, d) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r5",
+    "CASE WHEN COALESCE(d2, d) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r6,r7",
+    "CASE WHEN NULLIF(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN NULLIF(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN NULLIF(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN NULLIF(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN NULLIF(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN NULLIF(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN GREATEST(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN GREATEST(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN GREATEST(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN GREATEST(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN GREATEST(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2,r5",
+    "CASE WHEN GREATEST(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r6,r7",
+    "CASE WHEN LEAST(d, d2) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN LEAST(d, d2) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN LEAST(d, d2) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LEAST(d, d2) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LEAST(d, d2) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LEAST(d, d2) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN LAST_DAY(d) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN LAST_DAY(d) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN LAST_DAY(d) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN LAST_DAY(d) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN LAST_DAY(d) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN LAST_DAY(d) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) < CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) <= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r2,r3,r5,r6,r7",
+    "CASE WHEN DATE_TRUNC(d, MONTH) > CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "",
+    "CASE WHEN DATE_TRUNC(d, MONTH) >= CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN DATE_TRUNC(d, MONTH) = CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r2",
+    "CASE WHEN DATE_TRUNC(d, MONTH) <> CAST('2024-03-01 00:00:00' AS TIMESTAMP) THEN 1 ELSE 0 END = 1" -> "r1,r3,r5,r6,r7"
+  )
+
+  /** A column compared with a column, or with a function of one that Elasticsearch would read as
+    * date math (`CAST(ts AS DATE)`, `DATE_TRUNC(d, MONTH)`). A range query cannot compare two
+    * fields: on every major the comparison renders as a script.
+    */
+  private val timestampDateColumnComparisons: Seq[(String, String)] = Seq(
+    "ts < d"                      -> "",
+    "d < ts"                      -> "r1,r2,r3,r5,r6,r7",
+    "ts <= d"                     -> "",
+    "d <= ts"                     -> "r1,r2,r3,r5,r6,r7",
+    "ts > d"                      -> "r1,r2,r3,r5,r6,r7",
+    "d > ts"                      -> "",
+    "ts >= d"                     -> "r1,r2,r3,r5,r6,r7",
+    "d >= ts"                     -> "",
+    "ts = d"                      -> "",
+    "d = ts"                      -> "",
+    "ts <> d"                     -> "r1,r2,r3,r5,r6,r7",
+    "d <> ts"                     -> "r1,r2,r3,r5,r6,r7",
+    "ts < d2"                     -> "r1,r5",
+    "d2 < ts"                     -> "r2,r6,r7",
+    "ts <= d2"                    -> "r1,r5",
+    "d2 <= ts"                    -> "r2,r6,r7",
+    "ts > d2"                     -> "r2,r6,r7",
+    "d2 > ts"                     -> "r1,r5",
+    "ts >= d2"                    -> "r2,r6,r7",
+    "d2 >= ts"                    -> "r1,r5",
+    "ts = d2"                     -> "",
+    "d2 = ts"                     -> "",
+    "ts <> d2"                    -> "r1,r2,r5,r6,r7",
+    "d2 <> ts"                    -> "r1,r2,r5,r6,r7",
+    "ts < CAST(ts AS DATE)"       -> "",
+    "ts <= CAST(ts AS DATE)"      -> "",
+    "ts > CAST(ts AS DATE)"       -> "r1,r2,r3,r5,r6,r7",
+    "ts >= CAST(ts AS DATE)"      -> "r1,r2,r3,r5,r6,r7",
+    "ts = CAST(ts AS DATE)"       -> "",
+    "ts <> CAST(ts AS DATE)"      -> "r1,r2,r3,r5,r6,r7",
+    "ts < DATE_TRUNC(d, MONTH)"   -> "",
+    "ts <= DATE_TRUNC(d, MONTH)"  -> "",
+    "ts > DATE_TRUNC(d, MONTH)"   -> "r1,r2,r3,r5,r6,r7",
+    "ts >= DATE_TRUNC(d, MONTH)"  -> "r1,r2,r3,r5,r6,r7",
+    "ts = DATE_TRUNC(d, MONTH)"   -> "",
+    "ts <> DATE_TRUNC(d, MONTH)"  -> "r1,r2,r3,r5,r6,r7",
+    "ts2 < d"                     -> "r2,r7",
+    "d < ts2"                     -> "r1,r5,r6",
+    "ts2 <= d"                    -> "r2,r7",
+    "d <= ts2"                    -> "r1,r5,r6",
+    "ts2 > d"                     -> "r1,r5,r6",
+    "d > ts2"                     -> "r2,r7",
+    "ts2 >= d"                    -> "r1,r5,r6",
+    "d >= ts2"                    -> "r2,r7",
+    "ts2 = d"                     -> "",
+    "d = ts2"                     -> "",
+    "ts2 <> d"                    -> "r1,r2,r5,r6,r7",
+    "d <> ts2"                    -> "r1,r2,r5,r6,r7",
+    "ts2 < d2"                    -> "",
+    "d2 < ts2"                    -> "r1,r2,r6,r7",
+    "ts2 <= d2"                   -> "r5",
+    "d2 <= ts2"                   -> "r1,r2,r5,r6,r7",
+    "ts2 > d2"                    -> "r1,r2,r6,r7",
+    "d2 > ts2"                    -> "",
+    "ts2 >= d2"                   -> "r1,r2,r5,r6,r7",
+    "d2 >= ts2"                   -> "r5",
+    "ts2 = d2"                    -> "r5",
+    "d2 = ts2"                    -> "r5",
+    "ts2 <> d2"                   -> "r1,r2,r6,r7",
+    "d2 <> ts2"                   -> "r1,r2,r6,r7",
+    "ts2 < CAST(ts AS DATE)"      -> "r2,r7",
+    "ts2 <= CAST(ts AS DATE)"     -> "r2,r7",
+    "ts2 > CAST(ts AS DATE)"      -> "r1,r5,r6",
+    "ts2 >= CAST(ts AS DATE)"     -> "r1,r5,r6",
+    "ts2 = CAST(ts AS DATE)"      -> "",
+    "ts2 <> CAST(ts AS DATE)"     -> "r1,r2,r5,r6,r7",
+    "ts2 < DATE_TRUNC(d, MONTH)"  -> "r2,r7",
+    "ts2 <= DATE_TRUNC(d, MONTH)" -> "r2,r7",
+    "ts2 > DATE_TRUNC(d, MONTH)"  -> "r1,r5,r6",
+    "ts2 >= DATE_TRUNC(d, MONTH)" -> "r1,r5,r6",
+    "ts2 = DATE_TRUNC(d, MONTH)"  -> "",
+    "ts2 <> DATE_TRUNC(d, MONTH)" -> "r1,r2,r5,r6,r7"
+  )
+
+  "a TIMESTAMP compared with a DATE expression" should "keep exactly the documents DuckDB keeps" in {
+    val comparisons = timestampDateComparisons ++ timestampDateColumnComparisons
+    comparisons.size shouldBe 600
+    verdict(
+      "TIMESTAMP vs DATE",
+      comparisons.map { case (where, ids) =>
+        val sql = s"SELECT id FROM $table WHERE $where"
+        sql -> gatewayRows(sql).map { rs =>
+          val kept = rs.map(_.getOrElse("id", "?").toString).toSet
+          val want = ids.split(",").filter(_.nonEmpty).toSet
+          if (kept == want) Nil
+          else
+            Seq(
+              s"kept ${kept.toSeq.sorted.mkString(",")}, expected ${want.toSeq.sorted.mkString(",")}"
+            )
+        }
+      }
+    )
   }
 
   private def groupVerdicts(
@@ -1135,15 +1812,8 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     GroupForm(
       "(MAX(ts) + 1)::DATE",
       g => expect(g.maxTs.map(t => At(start(utcDay(t.plusMillis(DayMillis))))))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))::DATE",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
-    ),
-    GroupForm(
-      "GREATEST(MAX(d), MAX(d2))::TIMESTAMP",
-      g => expect(for (a <- g.maxD; b <- g.maxD2) yield At(start(if (a.isAfter(b)) a else b)))
     )
+    // (a conversion over GREATEST(MAX(d), MAX(d2)) is refused: `nullSkippingCalculations`)
   )
 
   "a DATE or TIMESTAMP conversion over a per-group date calculation" should "answer the java.time oracle in every group, in a HAVING over its alias, and over the whole table" in {
@@ -1183,7 +1853,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   }
 
   "a DATE aggregate over date-time strings" should
-  "compare as its UTC day's start per group, in GREATEST / LEAST as in date arithmetic" in {
+  "compare as its UTC day's start per group, in a HAVING's LEAST as in date arithmetic" in {
     // Elasticsearch accepts a date-time into a `date` field, and MAX / MIN of it keep that time:
     // per group, a DATE operand is still its UTC day -- the oracle is the one of `table`, whose
     // `d` is the same days without a time
@@ -1192,16 +1862,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       dateTimeTable,
       rows.map(r => json(r.copy(dText = r.d.map(day => s"${day}T22:30:00Z")))).toList
     )
-    val forms = groupForms.filter(f =>
-      Set(
-        "GREATEST(MAX(d), MAX(d2))",
-        "LEAST(MAX(ts), MAX(d))",
-        "GREATEST(MAX(d), MAX(d2)) - MIN(d)",
-        "MAX(d) + 1",
-        "MAX(d) - MIN(ts)"
-      ).contains(f.sql)
-    )
-    forms.size shouldBe 5
+    // (GREATEST / LEAST over these aggregates in a SELECT are refused: `nullSkippingCalculations`)
+    val forms = groupForms.filter(f => Set("MAX(d) + 1", "MAX(d) - MIN(ts)").contains(f.sql))
+    forms.size shouldBe 2
     // a group filter reads every aggregate, NULL ones skipped: g1's LEAST is its day's start,
     // 2024-03-01T00:00, kept; read with its time, it would be 06:00, and g1 would be dropped
     val threshold = Instant.parse("2024-03-01T03:00:00Z")

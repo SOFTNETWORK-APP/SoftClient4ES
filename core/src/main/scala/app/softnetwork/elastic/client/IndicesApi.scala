@@ -253,6 +253,8 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         invalidateShardCounts(Some(index))
         // ...nor a pattern's merged schema that did not read this index yet
         invalidatePatternsOf(index)
+        // ...nor a 404 remembered before it existed, for it or for a pattern it now matches
+        withSchemaMisses(_.forgetSchemaMissesOf(index))
         logger.info(s"✅ Index '$index' created successfully")
         success
       case success @ ElasticSuccess(_) =>
@@ -271,6 +273,11 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     *   the schema if the index exists, an error otherwise
     */
   def loadSchema(index: String): ElasticResult[Schema] = {
+    // An index PATTERN or a comma list is resolved by `loadPatternSchema`, the ONE function for that
+    // cache key (#292). Through the single-index path below, a cold cache refused it (it is not a
+    // concrete index name) while a warm one answered the entry `loadPatternSchema` had written: the
+    // same call answered or failed depending on which statement ran before it.
+    if (IndicesApi.isPattern(index)) return loadPatternSchema(index)
     val now = System.currentTimeMillis()
     // `compute`, not get/fetch/put: the plain form let N concurrent statements over one index each
     // issue their own `GET <index>` and parse the whole mapping on a cold cache or at TTL expiry.
@@ -310,8 +317,9 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
   /** The schema an index PATTERN or a comma list answers with (`FROM logs-*`, `FROM a,b`): the
     * columns of every index it matches, merged field by field (`schema.mergedSchema`), so a
-    * statement over a pattern is typed as one over a single index is. A field the indices map
-    * differently is left untyped: nothing is refused on it, and Elasticsearch answers for it.
+    * statement over a pattern is typed as one over a single index is. A field the indices map with
+    * two number types takes the wider one; any other field they map differently is left untyped:
+    * nothing is refused on it, and Elasticsearch answers for it.
     *
     * ONE mapping read per pattern -- `GET <pattern>` answers every matched index at once -- through
     * the SAME cache as [[loadSchema]], keyed by the pattern, so a hit costs no round trip. A
@@ -406,10 +414,10 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     *
     * ⚠️ NOT covered by a test, and it cannot be from outside: the divergent state exists only
     * between that `put` and `compute` installing the entry, and every seam a test can override
-    * (`executeGetIndex`, `getIndex`, `getTemplate`, `getPipeline`) runs BEFORE the `put`. Adding a
-    * hook that exists only to be parked in would be worse than the finding. The structural cure is
-    * to carry the target ON the cache entry so there is no second map to keep in sync — worth
-    * doing, deliberately not done here (it rewrites #276's invalidation path).
+    * (`executeGetIndex`, `getIndex`, `getTemplate`) runs BEFORE the `put`. Adding a hook that
+    * exists only to be parked in would be worse than the finding. The structural cure is to carry
+    * the target ON the cache entry so there is no second map to keep in sync — worth doing,
+    * deliberately not done here (it rewrites #276's invalidation path).
     *
     * Above four times the threshold the whole cache is dropped instead: values here are entire
     * `Table`s, not the `Int` of #238's shard counts, and expiry alone bounds nothing when an index
@@ -437,7 +445,9 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   /** Current size of the schema cache (tests). */
   private[client] def schemaCacheSize: Int = schemaCache.size()
 
-  /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21). */
+  /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21), and the 404 the
+    * alias may have answered since (a miss is remembered for the alias's own key only).
+    */
   private def invalidateAliasesOf(index: String): Unit =
     schemaAliasTargets
       .entrySet()
@@ -447,6 +457,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       .foreach { alias =>
         schemaCache.remove(alias)
         schemaAliasTargets.remove(alias)
+        withSchemaMisses(_.forgetSchemaMiss(alias))
         logger.debug(s"📦 Schema cache invalidated for alias '$alias' (target '$index')")
       }
 
@@ -454,27 +465,32 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     * merged columns read `index`'s mapping, so an elasticsql DDL statement that creates, alters or
     * drops `index` changes the pattern's answer exactly as it changes the single index's -- and,
     * like the single index's, it is read again on the next statement rather than served stale for
-    * its TTL. A pattern this one does not match keeps its entry.
+    * its TTL. A pattern this one does not match keeps its entry. Which keys match is
+    * [[IndicesApi.patternKeysReading]], the rule the remembered misses are forgotten by too.
     */
   private def invalidatePatternsOf(index: String): Unit =
-    // (a pattern is never the subject of a DDL statement: its own entry, written through
-    // `updateSchema(<pattern>, …)`, is not one of the entries an index's change invalidates)
-    if (!IndicesApi.isPattern(index))
-      schemaCache
-        .keySet()
-        .asScala
-        .filter(key => IndicesApi.isPattern(key) && IndicesApi.patternMatches(key, index))
-        .toList
-        .foreach { pattern =>
-          schemaCache.remove(pattern)
-          logger.debug(s"📦 Schema cache invalidated for pattern '$pattern' (index '$index')")
-        }
+    IndicesApi.patternKeysReading(schemaCache.keySet().asScala, index).foreach { pattern =>
+      schemaCache.remove(pattern)
+      logger.debug(s"📦 Schema cache invalidated for pattern '$pattern' (index '$index')")
+    }
+
+  /** The remembered 404 misses of this client ([[SearchApi.forgetSchemaMissesOf]]), when it is a
+    * [[SearchApi]] -- every client is. Called wherever an elasticsql DDL statement refreshes or
+    * drops a schema-cache entry: a lookup the miss skips would now find the mapping, and skipping
+    * it would leave every statement over the new table untyped until the miss expires.
+    */
+  private def withSchemaMisses(forget: SearchApi => Unit): Unit =
+    this match {
+      case search: SearchApi => forget(search)
+      case _                 => ()
+    }
 
   def updateSchema(index: String, schema: Schema): Unit = {
     val now = System.currentTimeMillis()
     schemaCache.put(index, CachedSchema(schema, now, resolveTtlMs(index, schema)))
     invalidateAliasesOf(index)
     invalidatePatternsOf(index)
+    withSchemaMisses(_.forgetSchemaMissesOf(index))
     // #238 — ALTER TABLE may have reindexed into a different shard count
     invalidateShardCounts(Some(index))
     logger.debug(s"📦 Schema cache updated for '$index'")
@@ -485,6 +501,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     val _ = schemaAliasTargets.remove(index)
     invalidateAliasesOf(index)
     invalidatePatternsOf(index)
+    withSchemaMisses(_.forgetSchemaMissesOf(index))
     invalidateShardCounts(Some(index)) // #238 — the sliced-paging shard counts follow the schema
     logger.info(s"🗑️ Schema cache invalidated for '$index'")
   }
@@ -492,6 +509,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   def invalidateAllSchemas(): Unit = {
     schemaCache.clear()
     schemaAliasTargets.clear()
+    withSchemaMisses(_.forgetAllSchemaMisses())
     invalidateShardCounts()
     logger.info("🗑️ All schema caches invalidated")
   }
@@ -622,71 +640,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         return ElasticSuccess(None)
       }
     }
-    var tempIndex = Index(index, root)
-    tempIndex.defaultIngestPipelineName match {
-      case Some(pipeline) =>
-        logger.info(
-          s"Index '$index' has default ingest pipeline '$pipeline'"
-        )
-        getPipeline(pipeline) match {
-          case ElasticSuccess(Some(json)) =>
-            logger.info(
-              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-            )
-            tempIndex = tempIndex.copy(defaultPipeline = Some(json))
-          case ElasticSuccess(None) =>
-            logger.warn(
-              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-            )
-            return ElasticFailure(
-              ElasticError(
-                message = s"Default ingest pipeline '$pipeline' for index '$index' does not exist",
-                cause = None,
-                statusCode = Some(404),
-                index = Some(index),
-                operation = Some("getIndex")
-              )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-            )
-            return ElasticFailure(error.copy(operation = Some("getIndex")))
-        }
-      case None => // No default ingest pipeline
-    }
-    tempIndex.finalIngestPipelineName match {
-      case Some(pipeline) =>
-        logger.info(
-          s"Index '$index' has final ingest pipeline '$pipeline'"
-        )
-        getPipeline(pipeline) match {
-          case ElasticSuccess(Some(json)) =>
-            logger.info(
-              s"✅ Ingest pipeline '$pipeline' for index '$index' exists"
-            )
-            tempIndex = tempIndex.copy(finalPipeline = Some(json))
-          case ElasticSuccess(None) =>
-            logger.warn(
-              s"⚠️ Ingest pipeline '$pipeline' for index '$index' does not exist"
-            )
-            return ElasticFailure(
-              ElasticError(
-                message = s"Final ingest pipeline '$pipeline' for index '$index' does not exist",
-                cause = None,
-                statusCode = Some(404),
-                index = Some(index),
-                operation = Some("getIndex")
-              )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to get ingest pipeline '$pipeline' for index '$index': ${error.message}"
-            )
-            return ElasticFailure(error.copy(operation = Some("getIndex")))
-        }
-      case None => // No default ingest pipeline
-    }
+    val tempIndex = Index(index, root)
     ElasticSuccess(Some(tempIndex))
   }
 
@@ -2275,6 +2229,17 @@ object IndicesApi {
   /** A FROM expression that names several indices: a `*` wildcard or a comma list. */
   private[client] def isPattern(source: String): Boolean =
     source.contains("*") || source.contains(",")
+
+  /** THE rule for the cached keys an index's change reaches beyond its own (#292): the PATTERN and
+    * LIST keys among `keys` that match `index` ([[patternMatches]]). Both maps an elasticsql DDL
+    * statement refreshes read it -- the schema cache (`invalidatePatternsOf`) and the remembered
+    * 404 misses ([[SearchApi.forgetSchemaMissesOf]]) -- so the two never disagree on what `CREATE
+    * TABLE logs-1` makes stale. A pattern is never the subject of a DDL statement: its own entry,
+    * written through `updateSchema(<pattern>, …)`, reaches no other key.
+    */
+  private[client] def patternKeysReading(keys: Iterable[String], index: String): List[String] =
+    if (isPattern(index)) Nil
+    else keys.filter(key => isPattern(key) && patternMatches(key, index)).toList
 
   /** Does the index `pattern` -- a comma list of names and `*` wildcards, as Elasticsearch reads
     * one -- match `index`? An EXCLUSION (`-logs-old`) is not read: a pattern that matches `index`

@@ -512,13 +512,21 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
     * fixes it: a temporal chain over a temporal column keeps the COLUMN's Java type.
     */
   "a temporal function compared with a date column" should "not be coerced at all" in {
+    // LAST_DAY is a DATE whatever its operand (its receiver is made one), so it is now the
+    // date-only side, promoted to meet the raw column -- on a `LocalDate`, where `atStartOfDay`
+    // exists.
     val emitted = predicateOf("SELECT id FROM t WHERE LAST_DAY(d) = ts")
     emitted shouldBe
     "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
-    "def param2 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
-    "def left1 = (param1 == null) ? null : param1.with(TemporalAdjusters.lastDayOfMonth()); " +
-    "(left1 == null || param2 == null ? false : ((left1.isEqual(param2))))"
-    emitted should not include "atStartOfDay"
+    "def param2 = (param1 == null) ? null : " +
+    "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate().with(TemporalAdjusters.lastDayOfMonth()); " +
+    "def param3 = (doc['ts'].size() == 0 ? null : doc['ts'].value); " +
+    "def left1 = (param2 != null ? param2.atStartOfDay(ZoneId.of('Z')) : null); " +
+    "(left1 == null || param3 == null ? false : ((left1.isEqual(param3))))"
+    // B-1 still holds: no `atStartOfDay` lands on a doc value (a ZonedDateTime) -- only on the
+    // LocalDate LAST_DAY answers
+    emitted should not include "param1.atStartOfDay"
+    emitted should not include "param3.atStartOfDay"
   }
 
   /** 🔴 `List.contains` is Java `equals`, which is FALSE across boxed numeric types. MEASURED on ES
@@ -545,8 +553,14 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
 
   "a one-argument COALESCE" should "render as its argument" in {
     // It folded over zero arguments and emitted `String.valueOf( : param1))`.
+    // `COALESCE(d)` is `d` and answers its DATE: the doc value is converted to it, then stringified
+    // inside its NULL guard -- a NULL is NULL, not the text "null" of `String.valueOf(null)`.
     val emitted = predicateOf("SELECT id FROM t WHERE COALESCE(d) = 'x'")
-    emitted should include("def left1 = String.valueOf(param1);")
+    emitted should include(
+      "def param2 = (param1 != null ? " +
+      "param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
+      "def left1 = (param2 != null ? String.valueOf(param2) : null);"
+    )
     emitted.count(_ == '(') shouldBe emitted.count(_ == ')')
   }
 
@@ -578,8 +592,10 @@ class PredicateTransformSurvivalSpec extends AnyFlatSpec with Matchers {
     // 🔴 And the narrowing must fire on BOTH sides or NEITHER: injected on the left alone it made the
     // sides different Java types — `class_cast_exception: Cannot cast java.time.ZonedDateTime to
     // java.time.chrono.ChronoLocalDate` (MEASURED). A document field on the right means neither.
+    // Both sides are LAST_DAY, a DATE: each receiver is made a `LocalDate` once, so the two are the
+    // same Java type and compare with `isEqual`.
     val temporal = predicateOf("SELECT id FROM t WHERE LAST_DAY(d) = LAST_DAY(ts)")
-    temporal should not include ".toLocalDate()"
+    temporal.sliding(".toLocalDate().with(".length).count(_ == ".toLocalDate().with(") shouldBe 2
     temporal should endWith("((left1.isEqual(right2))))")
   }
 

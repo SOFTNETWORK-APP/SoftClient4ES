@@ -283,6 +283,26 @@ lazy val testkit = Project(id = "softclient4es-core-testkit", base = file("testk
     persistence % "compile->compile;test->test;it->it"
   )
 
+// A generated module (es{7,8,9}/bridge, es{N}/testkit) is filled from its template by ONE task, and
+// every task that reads the module's sources or resources waits for it: compile, doc, packageSrc,
+// scalafmt, headerCheck. Hung on `compile` alone, the copy ran beside the listing of the sources, so a
+// parallel `publishLocal` from a fresh clone could package a bridge jar with no class
+// (project_es7_bridge_empty_publish_incident). A task key runs once per command, so the copy is not
+// repeated while another task reads the files.
+lazy val copyGeneratedSources =
+  taskKey[Unit]("Copy this generated module's template sources before anything reads them")
+
+def generatedSourcesSettings(copy: Def.Initialize[Task[Unit]]): Seq[Def.Setting[_]] = Seq(
+  copyGeneratedSources := copy.value,
+  Compile / unmanagedSources := (Compile / unmanagedSources).dependsOn(copyGeneratedSources).value,
+  Compile / unmanagedResources := (Compile / unmanagedResources)
+    .dependsOn(copyGeneratedSources)
+    .value,
+  Test / unmanagedSources := (Test / unmanagedSources).dependsOn(copyGeneratedSources).value,
+  Test / unmanagedResources := (Test / unmanagedResources).dependsOn(copyGeneratedSources).value,
+  Compile / compile := (Compile / compile).dependsOn(copyGeneratedSources).value
+)
+
 def copyTestkit(esVersion: String): Def.Initialize[Task[Unit]] = Def.task {
   val src = file("testkit")
   val target = baseDirectory.value
@@ -335,7 +355,7 @@ def testkitProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
         // Required at test runtime for COPY INTO ... FROM 's3a://...' tests via MinioTestKit
         // "org.apache.hadoop" % "hadoop-aws" % Versions.hadoop % Test excludeAll (excludeSlf4jAndLog4j: _*)
       ),
-      Compile / compile := (Compile / compile).dependsOn(copyTestkit(esVersion)).value
+      generatedSourcesSettings(copyTestkit(esVersion))
     )
     .settings(ss: _*)
     .enablePlugins(BuildInfoPlugin)
@@ -382,7 +402,7 @@ def bridgeProject(esVersion: String, ss: Def.SettingsDefinition*): Project = {
       name := projectId,
       libraryDependencies ++= elasticDependencies(elasticSearchVersion.value) ++
       elastic4sDependencies(elasticSearchVersion.value),
-      Compile / compile := (Compile / compile).dependsOn(copyBridge(esVersion)).value
+      generatedSourcesSettings(copyBridge(esVersion))
     )
     .settings(ss: _*)
     .dependsOn(

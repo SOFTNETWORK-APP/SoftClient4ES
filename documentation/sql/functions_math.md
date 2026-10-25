@@ -131,6 +131,11 @@ ROUND(x, n)
 **Output:**
 - `DOUBLE`
 
+A half is rounded away from zero, as DuckDB rounds: `ROUND(2.5)` is `3`, `ROUND(-2.5)` is `-3`,
+`ROUND(-1.25, 1)` is `-1.3`. With decimal places the value is DuckDB's `round(x * 10^n) / 10^n`
+(`ROUND(2.46, 1)` is `2.5`), in a `SELECT`, a `WHERE`, a `GROUP BY` key and its `HAVING` and a
+computed column alike. `ROUND` of `NULL` is `NULL`.
+
 **Examples:**
 ```sql
 -- Round to 2 decimals

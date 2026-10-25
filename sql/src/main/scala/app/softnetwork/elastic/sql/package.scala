@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.function.aggregate.{
   WindowFunction
 }
 import app.softnetwork.elastic.sql.function.geo.DistanceUnit
-import app.softnetwork.elastic.sql.function.time.CurrentFunction
+import app.softnetwork.elastic.sql.function.time.{CurrentFunction, IntervalFunction}
 import app.softnetwork.elastic.sql.parser.{Validation, Validator}
 import app.softnetwork.elastic.sql.query._
 import app.softnetwork.elastic.sql.schema.{Column, Table => Schema}
@@ -511,6 +511,17 @@ package object sql {
       * there with `Class.cast` (`query.Expression.painless`); 7 and up hand a `ZonedDateTime`.
       */
     def jodaCompatibleDates: Boolean = elasticsearchMajor.exists(_ < 7)
+
+    /** Does the client module of this major read a metric aggregation's `null` value as `0.0`?
+      * Elasticsearch answers `{"value": null}` for a `MIN` / `MAX` over no value on every major,
+      * but the Java client of 8 holds the value as a primitive `double` that "defaults to 0 if
+      * parsed from a JSON null value" (elasticsearch-java 8.18.3, `SingleMetricAggregateBase`). The
+      * client of 9 holds a nullable `Double` and leaves the value out; the REST clients of 6 and 7
+      * hand the `null` itself. So on 8 a group with no value cannot be told from a value of 0 by
+      * the value, and the bridge sends the count of the values beside it
+      * (`SQLAggregation.readsValueCount`).
+      */
+    def readsNullMetricAsZero: Boolean = elasticsearchMajor.contains(8)
   }
 
   object PainlessTarget {
@@ -769,6 +780,20 @@ package object sql {
     // Last parameter name added
     private[this] var _lastParam: Option[String] = None
 
+    // The fields the mapping does not map, whose doc values this script reads guarded
+    private[this] var _unmapped: Set[String] = Set.empty
+
+    /** This context, its script reading each field of `fields` -- fields the mapping the statement
+      * was resolved against does not map (`SingleSearch.unmappedKeyFields`) -- through a guard: a
+      * document of an index that does not map the field answers NULL for it
+      * ([[Identifier.checkMappedNotNull]]), where `doc['sd']` fails the shard ("No field found for
+      * [sd] in mapping"). Set by both bridges on a GROUP BY level's key script, before it renders.
+      */
+    def readingUnmapped(fields: Set[String]): PainlessContext = {
+      _unmapped = fields
+      this
+    }
+
     def isProcessor: Boolean = context == PainlessContextType.Processor
 
     def isTransform: Boolean = context == PainlessContextType.Transform
@@ -925,10 +950,14 @@ package object sql {
     }
 
     private[this] def paramValue(param: PainlessParam): String =
-      if (param.nullable && param.checkNotNull.nonEmpty)
-        param.checkNotNull
-      else
-        s"${param.param}${param.painlessMethods.mkString("")}"
+      param match {
+        case unmapped: Identifier if _unmapped.contains(unmapped.path) =>
+          unmapped.checkMappedNotNull
+        case _ if param.nullable && param.checkNotNull.nonEmpty =>
+          param.checkNotNull
+        case _ =>
+          s"${param.param}${param.painlessMethods.mkString("")}"
+      }
 
     override def toString: String =
       _declarations
@@ -1657,13 +1686,12 @@ package object sql {
       case _ => None
     }
 
-    /** The type an operand is DECLARED with: an aggregate is the metric it produces
-      * (`AggregateFunction.outputTypeOf`), anything else the type it reports (`reportedType`: a
-      * DATE column, a COALESCE of DATE columns, `d + 1` are DATEs).
+    /** The type an operand is DECLARED with: the type it reports (`reportedType`). A DATE column, a
+      * COALESCE of DATE columns, `d + 1` are DATEs; an aggregate is the metric it produces, because
+      * that is what an aggregate reports (`AggregateFunction.outputTypeOf`), so `COUNT(d)` is a
+      * BIGINT. One derivation (#292): there is no aggregate arm here of its own.
       */
     def declaredTypeOf(operand: Token): SQLType = operand match {
-      case i: Identifier if i.isAggregation =>
-        AggregateFunction.outputTypeOf(i).getOrElse(i.reportedType)
       case p: PainlessScript => p.reportedType
       case other             => other.out
     }
@@ -2138,6 +2166,17 @@ package object sql {
       else
         s"(doc['$path'].size() == 0 ? $nullValue : doc['$path'].value${painlessMethods.mkString("")})"
 
+    /** [[checkNotNull]] for a field the mapping may not hold (`PainlessContext.readingUnmapped`):
+      * NULL in a document whose index does not map it. `doc.containsKey` answers whether the field
+      * is mapped, on every major (6.8's `LeafDocLookup` as 9's), and a mapped field reads as
+      * before.
+      */
+    def checkMappedNotNull: String =
+      if (path.isEmpty) ""
+      else
+        s"(!doc.containsKey('$path') || doc['$path'].size() == 0 ? $nullValue : " +
+        s"doc['$path'].value${painlessMethods.mkString("")})"
+
     lazy val processParamName: String = {
       if (path.nonEmpty) {
         if (path.contains("."))
@@ -2242,15 +2281,22 @@ package object sql {
       val ct = chainType
       if (isAggregation || !ct.isInstanceOf[SQLTemporal]) ct
       else
-        FunctionUtils
-          .transformFunctions(this)
-          .collectFirst {
-            case f: TransformFunction[_, _]
-                if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
-              f.outputType
-          }
+        temporalProducerType
           .getOrElse(if (baseType.isInstanceOf[SQLTemporal]) baseType else ct)
     }
+
+    /** The temporal type the OUTERMOST producer of this chain renders (the #384 scan behind
+      * [[renderedType]]), or `None` when no function in the chain produces a temporal value of its
+      * own — every adjuster returns its receiver's type, so only a producer changes the answer.
+      */
+    def temporalProducerType: Option[SQLType] =
+      FunctionUtils
+        .transformFunctions(this)
+        .collectFirst {
+          case f: TransformFunction[_, _]
+              if f.producesOutputJavaType && f.outputType.isInstanceOf[SQLTemporal] =>
+            f.outputType
+        }
 
     /** The type the column was DECLARED as, where that differs from what a query hands Painless.
       * Defaults to `baseType`; only a schema-resolved identifier can tell them apart.
@@ -2274,10 +2320,22 @@ package object sql {
       * `reportedType`, so the leaf declarations propagate outward instead of the runtime collapse
       * doing. With no functions this IS the leaf.
       *
-      * ⚠️ An AGGREGATE reports `out`, for the reason [[chainType]] already records.
+      * 🔴 An AGGREGATE reports what it PRODUCES (`AggregateFunction.outputTypeOf`), the one
+      * derivation (#292) that comparisons and set operations read too: `COUNT(DISTINCT b)` is a
+      * BIGINT whatever `b` is, `AVG(n)` a DOUBLE, `MAX(CAST(ts AS DATE))` a DATE. Reporting the
+      * aggregated column's type instead declared a `CREATE TABLE … AS SELECT COUNT(DISTINCT b)`
+      * column BOOLEAN and mapped it `boolean`, and a function over an aggregate inherited the same
+      * mistake (`NULLIF(COUNT(DISTINCT b), 0)` was a BOOLEAN). No recursion: `outputTypeOf` strips
+      * the aggregate before it asks the chain for its `reportedType`. The caveat of [[chainType]]
+      * is about RENDERING and does not apply here: declaring a column renders nothing.
       */
     override def reportedType: SQLType =
       functions.headOption match {
+        // 🔴 An interval over an operand that REPORTS a DATE says so itself, even where that is
+        // also its `out` (a DATE plus whole days is a DATE): the column's runtime TIMESTAMP the
+        // fallback below reads is not what it reports (`IntervalFunction.reportedOverDate`).
+        case Some(f: IntervalFunction[_]) if !isAggregation && f.reportedOverDate.isDefined =>
+          f.reportedOverDate.get
         case Some(f) if !isAggregation =>
           // 🔴 A function that has NOT refined the question answers `out`, and taking that verbatim
           // would be a LOSS: the outermost function's own `out` is coarser than the chain's for the
@@ -2291,10 +2349,15 @@ package object sql {
           // falling back to `out` reported `NULLIF(CAST(s AS BIGINT), 0)` as KEYWORD.
           val refined = f.reportedType
           if (refined == f.out) renderedType else refined
+        case _ if isAggregation =>
+          AggregateFunction.outputTypeOf(this).getOrElse(reportedLeafType)
         case _ => reportedLeafType
       }
 
-    override def painless(context: Option[PainlessContext]): String = {
+    override def painless(context: Option[PainlessContext]): String =
+      SQLTypeUtils.renderingIn(context)(identifierPainless(context))
+
+    private[this] def identifierPainless(context: Option[PainlessContext]): String = {
       // A context-free rendering of an AGGREGATE is a bucket-pipeline rendering (`bucket_selector`
       // for HAVING, `bucket_script` for arithmetic over aggregates): there is no document to read,
       // only the metric Elasticsearch already computed, published under `buckets_path`. The
@@ -2692,7 +2755,11 @@ package object sql {
                 nested = true,
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                // Story IDENT-4 -- ONE decision for all five branches: `SingleSearch.bucketFor`.
+                // In the three nested branches it IS the spelling lookup (a nested or UNNEST-
+                // qualified name has no identity), so only the qualified-plain and unqualified
+                // branches can answer differently.
+                bucket = request.bucketFor(this).orElse(bucket),
                 nestedElement = nestedElement,
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(colName)),
@@ -2707,7 +2774,7 @@ package object sql {
                 name = s"${tuple._2._1}.$colName",
                 limit = tuple._2._2,
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucket = request.bucketFor(this).orElse(bucket),
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(colName)),
                 table = table
@@ -2718,7 +2785,7 @@ package object sql {
               .copy(
                 tableAlias = Some(tableAlias),
                 fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-                bucket = request.bucketNames.get(identifierName).orElse(bucket),
+                bucket = request.bucketFor(this).orElse(bucket),
                 bucketPath = bucketPath,
                 col = columnSchema.flatMap(schema => schema.find(name)),
                 table = table
@@ -2726,15 +2793,21 @@ package object sql {
               .withFunctions(this.updateFunctions(request))
           case _ =>
             val colName = parts.tail.mkString(".")
-            this.copy(
-              tableAlias = Some(tableAlias),
-              name = colName,
-              fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-              bucket = request.bucketNames.get(identifierName).orElse(bucket),
-              bucketPath = bucketPath,
-              col = columnSchema.flatMap(schema => schema.find(colName)),
-              table = table
-            )
+            this
+              .copy(
+                tableAlias = Some(tableAlias),
+                name = colName,
+                fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
+                bucket = request.bucketFor(this).orElse(bucket),
+                bucketPath = bucketPath,
+                col = columnSchema.flatMap(schema => schema.find(colName)),
+                table = table
+              )
+              // Story IDENT-4 -- the chain resolves with the column, as in every other branch.
+              // Without it every function in a qualified column's chain kept the PARSED receiver
+              // (`doc['t.d']`) until a second `update()` -- which an index-pattern search, a
+              // materialized view and a watcher never perform.
+              .withFunctions(this.updateFunctions(request))
         }
       } else {
         // An UN-QUALIFIED name. It resolves against the MAIN table, whatever that is — and since
@@ -2745,7 +2818,7 @@ package object sql {
         this
           .copy(
             fieldAlias = request.fieldAliases.get(identifierName).orElse(fieldAlias),
-            bucket = request.bucketNames.get(identifierName).orElse(bucket),
+            bucket = request.bucketFor(this).orElse(bucket),
             bucketPath = bucketPath,
             col = columnSchema.flatMap(schema => schema.find(name))
           )

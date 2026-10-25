@@ -28,6 +28,7 @@ import org.slf4j.Logger
 
 import scala.collection.immutable.ListMap
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.control.NonFatal
 
 //format:off
 /** Core extension for DQL quota enforcement.
@@ -229,8 +230,62 @@ class CoreDqlExtension extends ExtensionSpi {
     * ⚠️ Result-VARIANT change on the licensed gateway: under rule (2) a `UNION ALL` answers
     * `QueryRows` where every path answered `QueryStructured` before. Every consumer already matches
     * all three variants.
+    *
+    * 🔴 ONE failure boundary, around all three rules, with both halves. A branch that fails at run
+    * time answers a handled [[ElasticFailure]], never a failed `Future`:
+    *   - the `catch` covers what runs SYNCHRONOUSLY, before any `Future` exists: the seam
+    *     (`resolveWithSchema`, which may execute a WHERE subquery) and the row mappers;
+    *   - the `recover` covers everything the returned `Future` carries: a scrolled branch and a
+    *     `QueryStream` branch whose stream fails (an Elasticsearch 4xx on a search page, a shard
+    *     failure, a window computation failure), a row mapper or a set-operation reader that throws
+    *     while a branch's rows are kept, and the fold itself.
+    *
+    * It sits HERE because `GatewayApi.run` recovers an `ElasticError` refusal only: any other
+    * throwable from this fold used to leave `run` as an exception, where the one-shot `_msearch`
+    * route and `SearchApi` answer the same branch failure as an `ElasticFailure`. The status is the
+    * client module's reading of the throwable (`statusOrServerError`: Elasticsearch's own status,
+    * else 500), so no cause chain is walked here. The body still runs on the caller's thread: it is
+    * not moved onto the dispatcher, because the seam may execute a subquery synchronously.
     */
   protected def capUnionAll(
+    multi: MultiSearch,
+    quota: Quota,
+    client: ElasticClientApi
+  )(implicit system: ActorSystem): Future[ElasticResult[QueryResult]] = {
+    implicit val ec: ExecutionContext = system.dispatcher
+    try capUnionAllRules(multi, quota, client).recover { case NonFatal(t) =>
+      branchFailure(t)(client)
+    } catch {
+      case NonFatal(t) => Future.successful(branchFailure(t)(client))
+    }
+  }
+
+  /** A `UNION ALL` branch failure as the handled failure [[capUnionAll]] answers. An `ElasticError`
+    * is answered as `GatewayApi.run` answers one raised by a DQL statement: logged at ERROR and
+    * relabelled `dql`, its status, message and cause kept. `run` does that in a function local to
+    * itself, which cannot be called from here, so this arm mirrors it. Any other throwable is named
+    * for the statement, carries the client module's status for it and keeps it as the cause.
+    */
+  private def branchFailure(t: Throwable)(client: ElasticClientApi): ElasticResult[QueryResult] =
+    t match {
+      case e: ElasticError =>
+        logger.error(s"❌ ${e.message}")
+        ElasticFailure(e.copy(operation = Some("dql")))
+      case other =>
+        val reason = Option(client.unwrapThrowable(other).getMessage)
+          .getOrElse(other.getClass.getSimpleName)
+        val error = ElasticError(
+          message = s"UNION ALL failed: $reason",
+          statusCode = client.statusOrServerError(other),
+          operation = Some("dql"),
+          cause = Some(other)
+        )
+        logger.error(s"❌ ${error.message}", other)
+        ElasticFailure(error)
+    }
+
+  /** [[capUnionAll]]'s three rules, without its failure boundary. Called from there only. */
+  private def capUnionAllRules(
     multi: MultiSearch,
     quota: Quota,
     client: ElasticClientApi

@@ -61,9 +61,9 @@ package object window {
   /** Story 14.4 — STDDEV / VARIANCE family integration shape.
     *
     * All four projections come from a single ES `extended_stats` per call. Fields are
-    * `Option[Double]` because the sample variants return `null` on ES < 7.7 (the `_sampling` keys
-    * do not exist there); the population variants read the un-suffixed `std_deviation` / `variance`
-    * keys, which are present on ES 6+.
+    * `Option[Double]` because a statistic of no value is `null`. The population variants read the
+    * un-suffixed `std_deviation` / `variance` keys, present on ES 6+; the sample variants read the
+    * `_sampling` keys of ES 7.7+, and are derived from `count`, `sum` and `sum_of_squares` before.
     */
   case class DepartmentStatsExtended(
     department: String,

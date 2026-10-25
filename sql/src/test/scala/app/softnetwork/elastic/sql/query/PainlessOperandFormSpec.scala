@@ -163,13 +163,10 @@ class PainlessOperandFormSpec extends AnyFlatSpec with Matchers {
     *
     * ⚠️ SCOPE, stated rather than implied. `MatchCriteria` and `MultiMatchCriteria` declare NO
     * `maybeNot` field — a full-text match has no negated spelling of its own — so they are outside
-    * this rule by construction, and `NOT match(x) AGAINST ('y')` still takes the `must_not` route.
-    * MEASURED live on ES 8.18.3: it matches a document that does not carry the field. That is the
-    * same deviation the bare-column `NOT status = 'A'` route has, it is pinned in
-    * `GatewayApiIntegrationSpec`, and it is NOT fixed here: giving `MatchCriteria` a `maybeNot`
-    * changes its arity and its `.sql` render (which `MaterializedViewExtension` persists) and needs
-    * a new bridge arm emitting `must_not(match) + exists(field)` — too much for the round that
-    * closes this story, and the lead's call, not the dev's.
+    * this rule by construction, and `NOT match(x) AGAINST ('y')` takes the `must_not` route. The
+    * bridge stands that `must_not` beside the column's `exists` (`ElasticBridge`), so a document
+    * that does not carry the field is left out, as for the bare-column `NOT status = 'A'`
+    * (`GatewayApiIntegrationSpec`).
     */
   "every criteria class that can carry its own NOT" should "say how to flip it" in {
     def root: java.io.File = {

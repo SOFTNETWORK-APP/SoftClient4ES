@@ -315,4 +315,31 @@ object UnnestScope {
 
   /** The refusal `SingleSearch.validate()` returns, if any. */
   def refusal(ss: SingleSearch): Option[String] = violations(ss).headOption.map(_.message)
+
+  /** The inner hits whose ELEMENTS are the rows of a row statement, with the columns each element
+    * places in its row: the statement's own row explosion (`SingleSearch.nestedHitsMappings`, an
+    * UNNEST a SELECT column reads), and every UNNEST of the FROM its WHERE filters per element that
+    * no SELECT column reads, which places no column.
+    *
+    * 🔴 `… JOIN UNNEST(t.items) AS i WHERE YEAR(i.at) = 2024` is one row per matching ELEMENT, as
+    * `JOIN UNNEST` is everywhere else and as DuckDB answers it. With no column of `i` projected the
+    * explosion had no entry for `i`, so the statement answered each matching PARENT once, and the
+    * inner hits the nested query returned came back as an extra column.
+    *
+    * An aggregation statement is left as it is: its rows are its groups.
+    */
+  def rowExplosion(ss: SingleSearch): Map[String, Seq[(String, String)]] = {
+    val projected = ss.nestedHitsMappings
+    if (!ss.returnsRows || ss.windowRowQuery) projected
+    else {
+      val joined = ss.from.unnests.map(_.innerHitsName).toSet
+      val filtered = ss.where.toSeq
+        .flatMap(_.nestedElements)
+        .map(_.innerHitsName)
+        .distinct
+        .filter(name => joined.contains(name) && !projected.contains(name))
+      if (filtered.isEmpty) projected
+      else projected ++ filtered.map(_ -> Seq.empty[(String, String)])
+    }
+  }
 }

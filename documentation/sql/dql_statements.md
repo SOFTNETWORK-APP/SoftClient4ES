@@ -435,28 +435,37 @@ The `WHERE` clause supports:
 > `IN` / `BETWEEN` over a function were sent to Elasticsearch with an empty field name and rejected.
 >
 > A predicate with **no** function is not scripted — it becomes a term/range query — and `NOT` over
-> it is Elasticsearch's `must_not`, which **does** return documents that lack the field. The two
-> routes therefore differ for absent fields; use `IS NULL` / `IS NOT NULL` when that distinction
-> matters.
+> it is Elasticsearch's `must_not` beside the column's `exists`, so it leaves out the documents that
+> lack the field, as SQL reads `NOT` over a `NULL`: `WHERE status <> 'A'`, `NOT IN`,
+> `NOT BETWEEN`, `NOT LIKE` and a negated `MATCH` answer the same rows as the scripted route. Use
+> `IS NULL` to keep the documents without a value.
 >
 > A **projected** function keeps its `NULL`: `SELECT UPPER(status) AS u` returns `u = NULL` for a
 > document with no `status`, and a `GROUP BY UPPER(status)` has no bucket for it. The collapse to
 > "no match" applies to a **condition**, never to a value.
 >
-> 🔴 **`ORDER BY` over a function of a column some documents do not carry LOSES ROWS SILENTLY.** The
-> engine emits a null-preserving sort script; Elasticsearch then fails the shard while building the
-> comparator (`null_pointer_exception`). What you see depends on the shard count, and the dangerous
-> case is the normal one:
+> 🔴 **`ORDER BY` over a function of a column some documents do not carry answers an error.** The
+> engine emits a null-preserving sort script; Elasticsearch then fails every shard that holds such
+> a document while building the comparator (`null_pointer_exception`). The statement fails
+> whatever the shard count:
 >
-> - on a **single-shard** index the whole search is rejected — you get an error;
-> - on a **multi-shard** index the search returns **HTTP 200** and the failing shard's documents are
->   simply **absent from the result**. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with
->   one lacking the field: `_shards.failed: 1`, `hits.total: 5` — two rows gone, no error anywhere.
->   The engine does not surface `_shards.failures`, so nothing reaches the caller.
+> - on a **single-shard** index Elasticsearch rejects the whole search (HTTP 500, `all shards
+>   failed`);
+> - on a **multi-shard** index Elasticsearch answers HTTP 200 with the other shards' documents only;
+>   the engine reads `_shards` and answers an error instead, with no status code:
+>   `1 of 3 shards failed: null_pointer_exception: Cannot invoke "java.lang.CharSequence.length()"
+>   because "text" is null`. MEASURED on Elasticsearch 8.18.3, 3 shards, 7 documents with one
+>   lacking the field (`_shards.failed: 1`, `hits.total: 5`). Before **0.24.0** the engine returned
+>   those 5 rows as the whole result, with no error.
 >
-> Until that is fixed, sort by the bare column, or keep the field present on every document. Do not
-> rely on getting an error. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which
-> is NULL-valued for the rows no branch matches.
+> A statement without `LIMIT` is read page by page and fails the same way
+> (`PIT search_after failed: …`). To sort such a column, sort by the bare column, or keep the field
+> present on every document. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`,
+> which is NULL-valued for the rows no branch matches.
+>
+> Since **0.24.0**, a sort by the bare column over an index pattern or list also answers the
+> documents of an index that does not map that column, sorted as `NULL`, when the other indices map
+> it as `keyword`, `boolean`, `date`, `byte`, `short`, `integer`, `long`, `float` or `double`.
 >
 > ⚠️ Two limits of the rule above, stated rather than implied. `NOT <function>(x) IS NULL` is a
 > PARSE rejection — the grammar takes a bare name after `NOT` there — so the rule covers the
@@ -877,7 +886,7 @@ WHERE items.quantity >= 1
 ORDER BY o.id ASC;
 ```
 
-`JOIN UNNEST` behaves like a standard SQL UNNEST operation: each element of an `ARRAY<STRUCT>` becomes a separate output row, with parent fields duplicated — exactly like a relational unnest.
+`JOIN UNNEST` behaves like a standard SQL UNNEST operation: each element of an `ARRAY<STRUCT>` becomes a separate output row, with parent fields duplicated — exactly like a relational unnest. Over an index pattern or list, an index that does not map the UNNEST path contributes no rows, when another index maps it as `nested`.
 
 This means:
 
@@ -948,10 +957,15 @@ SELECT o.id, items.product,
 FROM dql_orders o JOIN UNNEST(o.items) AS items LIMIT 100;
 ```
 
-Without a `LIMIT`, an UNNEST projection returns up to 100 elements per parent, or up to the index's
-own `index.max_inner_result_window` when that setting is lower. A parent holding more elements is
-cut without an error: measured on Elasticsearch 6.8, 7.17, 8.18 and 9.0, a 101-element parent
-returns 100 rows, its last element dropped.
+A `WHERE` over an UNNEST element answers **one row per matching element**, as `JOIN UNNEST` does
+everywhere (`SELECT o.id FROM dql_orders o JOIN UNNEST(o.items) AS items WHERE items.quantity >= 2`
+answers an order once for each of its items with a quantity of 2 or more), whether or not the
+`SELECT` reads an element column.
+
+Without a `LIMIT`, an UNNEST projection, and a `WHERE` over an UNNEST element, return up to 100
+elements per parent, or up to the index's own `index.max_inner_result_window` when that setting is
+lower. A parent holding more elements is cut without an error: measured on Elasticsearch 6.8,
+7.17, 8.18 and 9.0, a 101-element parent returns 100 rows, its last element dropped.
 
 ---
 
@@ -982,8 +996,10 @@ GROUP BY department;
 
 All six map to a single Elasticsearch `extended_stats` aggregation per call; the requested field
 (`std_deviation_sampling`, `variance_sampling` for the sample variants; the un-suffixed
-`std_deviation`, `variance` for the population variants) is projected from the response. Sample
-variants require **Elasticsearch 7.7+**; population variants work on Elasticsearch 6+.
+`std_deviation`, `variance` for the population variants) is projected from the response. Both
+work on Elasticsearch 6+: before 7.7 the response has no sample keys, and the sample variants are
+computed from the `count`, `sum` and `sum_of_squares` it reports. A group with no value answers
+`NULL`, and so does a sample variant over one value.
 
 Over a **transformed** operand (`STDDEV(YEAR(hire_date))`, `VARIANCE(ABS(salary))`, plain or
 windowed) the statistic is computed over the transform on **Elasticsearch 7 and later**; on
@@ -1027,6 +1043,24 @@ ORDER BY COUNT(*) DESC;
 ```
 
 - `GROUP BY` supports nested fields (`profile.city`).
+- A key over a date column, or over a function of any column, groups by the key's own value from
+  a single index, an index pattern or a list of indices:
+  - `DATE_TRUNC(created_at, MONTH)` is one Elasticsearch `date_histogram` level with that calendar
+    interval;
+  - a bare date column (`GROUP BY created_at`) is a `terms` level on the field: one group per
+    stored value;
+  - any other function of a column (`YEAR(created_at)`, `LAST_DAY(created_at)`,
+    `WEEKDAY(created_at)`, `DATE_FORMAT(created_at, '%Y-%m')`, `ISNULL(city)`, `UPPER(city)`) is a
+    `terms` level on the function's script: one group per value of the function.
+
+  The key of such a function reads back as the type it reports: a number for a function that
+  answers one (`YEAR(created_at)` answers `2024`, `n + 0` a number), ordered as a number
+  (`ORDER BY DAY(created_at) DESC` answers `31, 20, 11, 5, 3`), and text otherwise. A level that
+  carries a `HAVING` condition on its key keeps reading it as text. A bare
+  `DATE` column's key reads back as a timestamp at midnight UTC. On Elasticsearch 6, a key that
+  formats a date column as stored (`DATE_FORMAT(created_at, …)`, `DATETIME_FORMAT(created_at, …)`)
+  is refused: truncate the column first, `DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m')` or
+  `DATETIME_FORMAT(DATE_TRUNC(created_at, SECOND), …)`.
 - `HAVING` filters groups based on aggregate conditions.
 - Translated to Elasticsearch aggregations.
 - An aggregate referenced only in `HAVING` or `ORDER BY` needs no alias and no `SELECT` item: it is
@@ -1037,10 +1071,10 @@ ORDER BY COUNT(*) DESC;
   operands are computed as hidden aggregations of the group.
 - With **no `GROUP BY`**, the whole table is one group and the statement answers **one row**,
   calculations included (since `0.24.0`): `SELECT MAX(price) - MIN(price) AS price_range FROM t`,
-  `COUNT(*) * 2`, `MAX(created) + 1` (a `DATE`), `DATEDIFF(MAX(created), MIN(created))`,
-  `GREATEST(MAX(created), MAX(updated))`. A calculation is evaluated as it is per group, with the
-  same rules. Every `SELECT` item must then be an aggregate, a calculation over aggregates or a
-  constant.
+  `COUNT(*) * 2`, `MAX(created) + 1` (a `DATE`), `DATEDIFF(MAX(created), MIN(created))`. A
+  calculation is evaluated as it is per group, with the same rules — a `GREATEST` / `LEAST` over an
+  aggregate that can be NULL (`GREATEST(MAX(created), MAX(updated))`) is refused, as per group.
+  Every `SELECT` item must then be an aggregate, a calculation over aggregates or a constant.
 - Over **no matching document**, with no `GROUP BY`: a `MAX`, a `MIN` or an `AVG` is NULL, and so
   is a calculation that reads one; `COUNT(*)` is `0` (`COUNT(*) * 2` is `0`, and
   `HAVING COUNT(*) = 0` keeps the one row). A calculation over `COUNT(column)`,
@@ -1107,20 +1141,55 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 ```
 
-- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE`.
+- Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — whether the key
+  is a column or a function of columns written as in `GROUP BY`
+  (`GROUP BY UPPER(city) HAVING UPPER(city) = 'PARIS'`, `GROUP BY LENGTH(code) HAVING LENGTH(code)
+  IN (2, 3)`). Elasticsearch compares a function key with the condition as the text of its value,
+  so such a condition is applied where that text is known: the type of every column the function
+  reads comes from the index mapping, no column is a date, and the function returns text, a
+  boolean or a whole number written as an integer (`LENGTH(code) = 2`, not `2.0`). Otherwise it is
+  refused by name — a function over a date column (`CONCAT(created, '')`), a function whose result
+  is a decimal number or of a precision not known in advance (`ABS(amount)`, `SQRT(x)`,
+  `price * 1.5`), a whole number written with a decimal part (`LENGTH(code) = 2.0`), or any such
+  condition where no mapping of the source can be read (an index that did not exist when it was
+  last queried, a client that reads no mapping).
   On a `keyword`, `integer`, `long`, `double` or `boolean` key, `=`, `<>`, `IN` and `NOT IN` keep or
   remove **exactly** the values written, on every supported release: a `.`, `*`, `(`, `\` or `'` in a
   value is an ordinary character, and a numeric or boolean key is compared as a number or a boolean.
-- ⚠️ **An integer key compared with a number that has a fractional part is refused**
-  (`HAVING year = 2025.5`, `HAVING year IN (2024.5, 2025)`) — whether the key is named by its
-  column, its SELECT alias or its GROUP BY position, or is grouped from an `UNNEST`: no integer
-  equals that number, and Elasticsearch would round it down and keep the group `2025`. Compare the
-  key with a whole number (`2025` or `2025.0`). The check reads the index mapping: that of the
-  index, or, over an index pattern or several indices, the mapping of every index they match,
-  merged. It cannot run where no mapping is known — a pattern that matches no index, a mapping that
-  cannot be read, or a key the matched indices map with different types (`integer` in one, `long`
-  in another). There, Elasticsearch rounds the number down and answers without an error (on
-  Elasticsearch 6.8, a comparison with a single value used to fail instead).
+- The key may be written **with or without its table qualifier, on either side** — the spelling BI
+  tools generate: `GROUP BY c.city HAVING c.city = 'Paris'`, `GROUP BY c.city HAVING city = 'Paris'`
+  and `GROUP BY city HAVING c.city = 'Paris'` filter exactly the groups `GROUP BY city HAVING
+  city = 'Paris'` does. An unqualified name is the main table's column, as everywhere else in a
+  statement. In a JOIN, a column the `GROUP BY` does not group for that table (`GROUP BY a.city
+  HAVING b.city = 'x'`) is refused as neither a GROUP BY key nor an aggregate. A table's own name is
+  not a qualifier once the table is aliased (`FROM customers c … HAVING customers.city = 'x'` is
+  refused). A key whose function renders its own argument (`CAST`, `TRY_CAST`, `SAFE_CAST`,
+  `ISNULL`, `ISNOTNULL`) is matched by its spelling: write it the same way in `GROUP BY`
+  and `HAVING` (`GROUP BY CAST(c.city AS VARCHAR) HAVING CAST(c.city AS VARCHAR) = 'x'`); a mixed
+  spelling is refused, except in a JOIN, a derived table or a CTE, whose `HAVING` the relational
+  engine evaluates.
+- **An integer key compared with a number that has a fractional part** is answered as SQL answers
+  it: no integer equals that number. `HAVING year = 2025.5` and `HAVING year IN (2024.5, 2025.5)`
+  keep no group, `HAVING year <> 2025.5` and `HAVING year NOT IN (2025.5)` keep every group (the
+  condition drops out), and a list holding whole numbers too keeps them alone (`HAVING year IN
+  (2024.5, 2025)` keeps `2025`) — whether the key is named by its column, its SELECT alias or its
+  GROUP BY position. Sent as it is, Elasticsearch would round the number down and keep the group
+  `2025`. A comparison the key filter cannot express (`HAVING year < 2025.5`) is refused as for any
+  key, and so is a fractional comparison on a key grouped from an `UNNEST`, whose condition sits in
+  a nested relation. The rule reads the index mapping: that of the index, or, over an index
+  pattern or several indices, the mapping of every index they match, merged into the wider type
+  (`integer` in one index and `long` in another is a `BIGINT`, `float` and `double` a `DOUBLE`, a
+  whole-number type and `float` a `REAL`). It cannot apply where no mapping is known — a pattern
+  that matches no index, a mapping that cannot be read, or a key the matched indices map with
+  types that have no common type (`long` in one, `keyword` in another). There, Elasticsearch
+  rounds the number down and answers without an error (on Elasticsearch 6.8, a comparison with a
+  single value used to fail instead).
+- ⚠️ **A `float` key compared with a value no `float` holds exactly is refused**
+  (`GROUP BY r HAVING r = 0.1`, `r` mapped `float`): Elasticsearch prints the key as the float
+  widened to a double (`0.10000000149011612`) and reads the value as the double `0.1`, so no group
+  would match, where SQL casts `0.1` to the key's `FLOAT` and keeps the group. The refusal names
+  the widened value; filter in `WHERE` instead, where Elasticsearch reads the value as a float, or
+  compare with a value a float holds exactly (`0.5`, `0.25`), which is answered.
 - ⚠️ **Elasticsearch 6 only:** a pattern (`LIKE` / `RLIKE`) in one list and **two or more** values
   in the other (`city LIKE 'P%' AND city NOT IN ('Pau', 'Pise')`) is refused, because that release
   applies the kept and removed terms together only when both are patterns or both are values. Write
@@ -1151,12 +1220,26 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
 
   The refused rows previously returned a plausible-looking but WRONG set of groups. Otherwise:
   split the query, or restate the condition as an `OR` of equalities or an `AND` of inequalities.
-- ⚠️ **A FUNCTION of the key is refused** (`HAVING UPPER(city) = 'PARIS'`,
-  `HAVING LENGTH(status) = 1`). The terms filter can only express a direct comparison, and the
-  alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
+- ⚠️ **A FUNCTION of the key is refused when the `GROUP BY` key is the column itself**
+  (`GROUP BY city HAVING UPPER(city) = 'PARIS'`, `GROUP BY status HAVING LENGTH(status) = 1`). The
+  terms filter can only express a direct comparison, and the alternatives are unsound: filtering documents instead would keep or drop a multi-valued document
   WHOLE, and would change the counts of surviving groups whenever the key is itself a function of
   the column (`GROUP BY DAY(d) HAVING YEAR(d) = 2025`). Compare the key itself, or filter in
   `WHERE`.
+- ⚠️ **A condition on a date grouping key is refused** when the key is computed:
+  - a `DATE_TRUNC` key
+    (`GROUP BY DATE_TRUNC(created, MONTH) HAVING DATE_TRUNC(created, MONTH) = '2024-01-01'`):
+    Elasticsearch groups it with a date histogram, and a date histogram has no key filter;
+  - any other key whose function returns a date, a time or a timestamp (`LAST_DAY`, `DATE_ADD`,
+    `DATETIME_ADD`, `TIMESTAMPADD`, `TO_DATE`, `CAST(… AS DATE)`, `COALESCE` over a date column):
+    Elasticsearch computes such a key with a script and compares the condition with the text of its
+    value, which a date literal does not match.
+
+  Restrict the rows in `WHERE` instead, with the same condition:
+  `WHERE LAST_DAY(created) = '2024-01-31' GROUP BY LAST_DAY(created)`, or for a `DATE_TRUNC` key
+  `WHERE created >= '2024-01-01' AND created < '2024-02-01' GROUP BY DATE_TRUNC(created, MONTH)`.
+  A bare date or timestamp column key **is** filtered: `GROUP BY created HAVING created =
+  '2024-01-03'`.
 - A predicate naming a column that is **neither** the `GROUP BY` key **nor** an aggregate is refused
   (`HAVING UPPER(name) = 'X'` when the grouping is by `city`) — with or without a `GROUP BY`.
 - ⚠️ An `OR` whose branches need **different stages** is refused, because Elasticsearch applies
@@ -1167,6 +1250,14 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
     `GROUP BY country, city HAVING country = 'FR' OR city = 'Paris'` would return only the groups
     matching BOTH. An `OR` on ONE key, within one mechanism, is supported subject to the table
     above; the corresponding `AND` is always fine, because the nesting IS the conjunction.
+    The same holds for two functions of one column (`GROUP BY YEAR(created), MONTH(created) HAVING
+    YEAR(created) = 2024 OR MONTH(created) = 1`): refused, while the `AND` of the two is accepted.
+
+  A `MATCH (city) AGAINST ('…')` on the key is a key filter like `RLIKE` and follows the same
+  rules: it can be combined with an aggregate by `AND`, not by `OR`; a `MATCH` over two grouping
+  keys (`GROUP BY country, city HAVING MATCH (country, city) AGAINST ('x')`) is an `OR` across them
+  and is refused; and a `MATCH` on a column that is not a `GROUP BY` key is refused, as stated
+  above.
 - An `AND` across mechanisms is fine — each stage applies its own half.
 - A group whose compared metric has no value (for instance `MAX(age)` over a group whose documents
   all lack `age`) never passes a `HAVING` comparison, in either direction: the generated filter
@@ -1202,10 +1293,25 @@ GROUP BY profile.city;
 - Grouping **by** a constant is also legal and means exactly one group
   (`SELECT 2 AS flag ... GROUP BY flag`, or the equivalent position `... GROUP BY 1`). It needs a
   `SELECT` alias, because the alias is the only name that group can be given.
-- `LIMIT` on a `GROUP BY` bounds the number of **groups**, not the number of rows — it is pushed
-  down as the Elasticsearch `terms` size. On a multi-column `GROUP BY` it bounds **each level**, so
-  the row count can exceed it.
-- `OFFSET` is **not supported** with `GROUP BY` and is rejected: group results are not paginated.
+- `LIMIT` on a `GROUP BY` bounds the number of **groups** — it is pushed down as the
+  Elasticsearch `terms` size. On a multi-column `GROUP BY` it still answers at most `LIMIT`
+  groups: each level is sent with that size, and the rows are cut to the `LIMIT` once they are put
+  together (`GROUP BY a, b LIMIT 2` answers two rows, not two per value of `a`).
+- On a multi-column `GROUP BY`, `ORDER BY` sorts the **whole result**, over a key other than the
+  first or over an aggregate too — named by its alias (`ORDER BY c`) or by its expression
+  (`ORDER BY COUNT(*)`, `ORDER BY MAX(amount)`), returned by the `SELECT` or not:
+  `GROUP BY city, created_at ORDER BY created_at DESC` orders every group by its date, across the
+  cities. When the levels cannot give that order themselves, the rows are sorted once they are put
+  together, then cut to the `LIMIT`; an aggregate the `SELECT` does not return is read for the sort
+  only. A `NULL` aggregate is placed where the same `ORDER BY` over one column places it: a `MAX`
+  with no value last descending and first ascending, any other `NULL` last ascending and first
+  descending. The levels above the first sort key's own level are asked for all their groups;
+  that level and the ones below it keep the `LIMIT` (`GROUP BY city, created_at ORDER BY
+  created_at DESC LIMIT 10` asks every city, and 10 dates in each).
+- `LIMIT n OFFSET m` on a `GROUP BY` skips the first m groups, then answers n, in the order the
+  statement asks for: a level is sent with n + m buckets, and the groups are skipped once the rows
+  are put together. It is refused beside a window function and over a `GROUP BY` key of an
+  `UNNEST` element, where the groups cannot be skipped in that order.
 - With no `LIMIT`, every level is sized at Elasticsearch's `search.max_buckets` ceiling (65,536):
   a grouping wider than that fails loudly rather than truncating silently.
 
@@ -1638,8 +1744,10 @@ NULL arguments are ignored (ANSI semantics); the result is NULL only
 when every argument is NULL. Both are emitted as Painless ternary chains — over whole numbers the
 winner is chosen by a comparison, over fractional numbers by `Math.max` / `Math.min`, over dates
 over the epoch milliseconds each one denotes. They are
-conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported — but over
-aggregates they are computed per group (`GREATEST(MAX(a), MAX(b))` beside a `GROUP BY`).
+conditional functions, not aggregates — `GREATEST(...) OVER (...)` is not supported. Over
+aggregates that are never NULL (`COUNT`, `SUM`) they are computed per group; over an aggregate that
+can be NULL (`MAX`, `MIN`, `AVG`, ...) they are answered in a `HAVING` and refused in a `SELECT`,
+where Elasticsearch would skip a group with no value and answer NULL for it.
 
 ```sql
 SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;

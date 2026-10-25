@@ -19,7 +19,7 @@ package app.softnetwork.elastic.sql.bridge
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.sksamuel.elastic4s.searches.SearchRequest
-import com.sksamuel.elastic4s.searches.aggs.{AbstractAggregation, Aggregation}
+import com.sksamuel.elastic4s.searches.aggs.{AbstractAggregation, Aggregation, TermsAggregation}
 import com.sksamuel.elastic4s.searches.aggs.pipeline.BucketScriptPipelineAgg
 
 import scala.jdk.CollectionConverters._
@@ -35,8 +35,9 @@ import scala.jdk.CollectionConverters._
   * The script is sent as the object Elasticsearch documents -- `source`, `lang`, `params` -- for
   * exactly the `bucket_script`s that carry params, so the source stays the SAME text from one
   * request to the next and Elasticsearch compiles it once: inlining the clock instead would compile
-  * a new script on every request, against the cluster's compilation rate limit. Every other body is
-  * returned untouched, unparsed.
+  * a new script on every request, against the cluster's compilation rate limit. Its `terms` builder
+  * does not write a `value_type` either, which a scripted key that reports a number is sent with
+  * ([[valueTypes]]). Every other body is returned untouched, unparsed.
   */
 object BucketScriptParams {
 
@@ -53,16 +54,47 @@ object BucketScriptParams {
       case _                   => Nil
     }.toMap
 
-  /** `body`, the JSON of `search`, with the params of its `bucket_script`s bound. */
+  /** The `value_type` of every `terms` aggregation of `aggs` that carries one, by aggregation name,
+    * at any depth: the scripted keys that report a number (`Bucket.scriptedKeyValueType`).
+    */
+  private def valueTypes(aggs: Seq[AbstractAggregation]): Map[String, String] =
+    aggs.flatMap {
+      case terms: TermsAggregation =>
+        terms.valueType.map(t => terms.name -> t.toString.toLowerCase).toSeq ++
+          valueTypes(terms.subaggs)
+      case parent: Aggregation => valueTypes(parent.subaggs).toSeq
+      case _                   => Nil
+    }.toMap
+
+  /** `body`, the JSON of `search`, with the params of its `bucket_script`s bound and the
+    * `value_type` of its scripted numeric keys written.
+    */
   def bind(body: String, search: SearchRequest): String = {
     val params = withParams(search.aggs)
-    if (params.isEmpty) body
+    val types = valueTypes(search.aggs)
+    if (params.isEmpty && types.isEmpty) body
     else {
       val root = mapper.readTree(body)
-      bind(root, params)
+      if (params.nonEmpty) bind(root, params)
+      if (types.nonEmpty) typed(root, types)
       mapper.writeValueAsString(root)
     }
   }
+
+  private def typed(node: JsonNode, types: Map[String, String]): Unit =
+    node match {
+      case obj: ObjectNode =>
+        obj.fields().asScala.toList.foreach { entry =>
+          (types.get(entry.getKey), entry.getValue.path("terms")) match {
+            case (Some(valueType), terms: ObjectNode) if terms.has("script") =>
+              terms.put("value_type", valueType)
+            case _ =>
+          }
+          typed(entry.getValue, types)
+        }
+      case array: ArrayNode => array.elements().asScala.foreach(typed(_, types))
+      case _                =>
+    }
 
   private def bind(node: JsonNode, params: Map[String, Map[String, Any]]): Unit =
     node match {

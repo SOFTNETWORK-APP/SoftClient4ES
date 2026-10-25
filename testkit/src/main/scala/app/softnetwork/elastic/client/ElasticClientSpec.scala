@@ -1048,13 +1048,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         // The maximum date should be the latest birthDate in the dataset
         s.get.headOption match {
           case Some(value) =>
-            value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
-              case Some(d: Double) =>
-                d should ===(
-                  LocalDate.parse("1969-05-09").toEpochDay.toDouble * 3600 * 24 * 1000
+            // a timestamp, as DuckDB answers MIN / MAX of a date or a timestamp: never its epoch
+            // milliseconds, never its text
+            value.asTemporalSafe.toOption match {
+              case Some(t: ZonedDateTime) =>
+                t.toOffsetDateTime should ===(
+                  LocalDate.parse("1969-05-09").atStartOfDay().atOffset(ZoneOffset.UTC)
                 )
-              case Some(s: String) =>
-                s should ===("1969-05-09T00:00:00.000Z")
               case _ => fail(s"Unexpected value type: ${value.prettyPrint}")
             }
           case None => fail("No result found for max aggregation")
@@ -1068,13 +1068,13 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
         // The minimum date should be the earliest birthDate in the dataset
         s.get.headOption match {
           case Some(value) =>
-            value.asDoubleSafe.orElse(value.asStringSafe).toOption match {
-              case Some(d: Double) =>
-                d should ===(
-                  LocalDate.parse("1967-11-21").toEpochDay.toDouble * 3600 * 24 * 1000
+            // a timestamp, as DuckDB answers MIN / MAX of a date or a timestamp: never its epoch
+            // milliseconds, never its text
+            value.asTemporalSafe.toOption match {
+              case Some(t: ZonedDateTime) =>
+                t.toOffsetDateTime should ===(
+                  LocalDate.parse("1967-11-21").atStartOfDay().atOffset(ZoneOffset.UTC)
                 )
-              case Some(s: String) =>
-                s should ===("1967-11-21T00:00:00.000Z")
               case _ => fail(s"Unexpected value type: ${value.prettyPrint}")
             }
           case None => fail("No result found for min aggregation")

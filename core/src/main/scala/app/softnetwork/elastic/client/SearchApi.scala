@@ -29,13 +29,15 @@ import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  GroupedRowOrder,
   Limit,
   MultiSearch,
   SQLAggregation,
   SearchStatement,
   SelectStatement,
   SingleSearch,
-  SubqueryScope
+  SubqueryScope,
+  UnnestScope
 }
 import app.softnetwork.elastic.sql.`type`.SQLType
 import app.softnetwork.elastic.sql.schema.Schema
@@ -254,18 +256,41 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(phaseOne)
+                unresolved(phaseOne, Some(source))
               case Failure(e) =>
                 logger.debug(
                   s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
                 )
-                ElasticResult.success(phaseOne)
+                unresolved(phaseOne, Some(source))
             }
-          case None => ElasticResult.success(phaseOne)
+          case None => unresolved(phaseOne, Some(source))
         }
-      case _ => ElasticResult.success(phaseOne)
+      case _ => unresolved(phaseOne, None)
     }
   }
+
+  /** The ONE exit of [[resolveWithSchema]] that sends a statement WITHOUT a resolved schema: a
+    * mapping that could not be read, a remembered miss, a client that is not an [[IndicesApi]], no
+    * index source. Every column is `Any` there, and the rules a statement must still pass are
+    * `SingleSearch.validateUnresolved`'s -- refused with the 400 the resolved branch gives.
+    */
+  private def unresolved(
+    statement: SingleSearch,
+    source: Option[String]
+  ): ElasticResult[SingleSearch] =
+    statement.validateUnresolved() match {
+      case Left(reason) =>
+        logger.error(s"❌ $reason")
+        ElasticResult.failure(
+          ElasticError(
+            message = reason,
+            statusCode = Some(400),
+            index = source,
+            operation = Some("search")
+          )
+        )
+      case Right(_) => ElasticResult.success(statement)
+    }
 
   /** THE schema lookup for a statement's sources, for every consumer -- the attach
     * ([[resolveWithSchema]]) and the scope of a subquery ([[resolvedSchema]]) alike (#292): ONE
@@ -414,6 +439,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * an insert also purges the expired ones, and if it is STILL above four times the threshold (a
     * client probing thousands of distinct unknown names inside one TTL) it is cleared -- the worst
     * case is then today's cost, one failed lookup per statement, never unbounded memory.
+    *
+    * An elasticsql DDL statement through this client forgets the misses it makes stale, wherever it
+    * refreshes or drops a schema-cache entry ([[forgetSchemaMissesOf]]).
     */
   private val schemaMisses =
     new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
@@ -427,10 +455,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * MISS. There is no metadata to read a TTL from, because there was no schema — an index that
     * does not exist cannot ask to be forgotten sooner.
     *
-    * 🔴 And deliberately CAPPED, which the two positive caches are not. Nothing invalidates a miss:
-    * it is cleared only by a later successful load, and `resolveWithSchema` does not even attempt
-    * the lookup while one stands. So a miss remembered for an operator-chosen hour would mean that
-    * querying a table before it exists, then creating it, leaves every statement against it running
+    * 🔴 And deliberately CAPPED, which the two positive caches are not. A miss is cleared by a
+    * later successful load, which `resolveWithSchema` does not even attempt while one stands, or by
+    * an elasticsql DDL statement through THIS client ([[forgetSchemaMissesOf]]). An index created
+    * any other way — another client, a raw `PUT`, an ingest that auto-creates it — is not seen, so
+    * a miss remembered for an operator-chosen hour would leave every statement against it running
     * with NO schema attached for that hour — no `SQLTypeUtils.coerce`, no temporal-literal
     * resolution, silently (#306's skip conditions). Shortening the TTL still shortens this; making
     * the knob able to LENGTHEN it would turn a five-minute nuisance into an unbounded one.
@@ -446,7 +475,15 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       System.currentTimeMillis() - missedAt < schemaMissTtlMs
     }
 
-  private def rememberSchemaMiss(source: String): Unit = {
+  /** Remember a 404 miss on `source` -- an index, an alias, or the comma-joined sources of a
+    * pattern or list ([[lookupSchema]]'s key) -- for [[schemaMissTtlMs]].
+    *
+    * `private[client]`: it is also the testkit's way to put a statement on the UNTYPED path -- the
+    * one an unreadable mapping takes -- over an index that exists. Arming a miss by querying the
+    * index before it exists no longer holds once the fixture is created through the same client,
+    * since that DDL forgets the miss ([[forgetSchemaMissesOf]]).
+    */
+  private[client] def rememberSchemaMiss(source: String): Unit = {
     val now = System.currentTimeMillis()
     schemaMisses.put(source, now)
     if (schemaMisses.size() > schemaMissPurgeThreshold) {
@@ -458,6 +495,28 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         schemaMisses.clear()
     }
   }
+
+  /** Forget the remembered miss on `key` -- an index, an alias -- if there is one. */
+  private[client] def forgetSchemaMiss(key: String): Unit = {
+    val _ = schemaMisses.remove(key)
+  }
+
+  /** Forget every remembered miss `index` answers now: its own, and every PATTERN or LIST key that
+    * matches it ([[IndicesApi.patternKeysReading]] -- the rule the schema cache drops its pattern
+    * entries by, #292). `IndicesApi` calls it wherever an elasticsql DDL statement refreshes or
+    * drops `index`'s schema-cache entry -- `createIndex`, `updateSchema` (ALTER TABLE),
+    * `invalidateSchema` (DROP TABLE, `deleteIndex`, the REPL `refresh`) -- and the gateway after a
+    * partitioned CREATE TABLE's template, which answers the table's lookup: a miss that outlived
+    * the statement would skip the lookup that now finds the mapping, and every statement over the
+    * new table would run with no schema until the miss expired.
+    */
+  private[client] def forgetSchemaMissesOf(index: String): Unit = {
+    forgetSchemaMiss(index)
+    IndicesApi.patternKeysReading(schemaMisses.keySet().asScala, index).foreach(forgetSchemaMiss)
+  }
+
+  /** Forget every remembered miss (`invalidateAllSchemas`, the REPL `refresh` with no index). */
+  private[client] def forgetAllSchemaMisses(): Unit = schemaMisses.clear()
 
   /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
   private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
@@ -719,7 +778,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Searching with query \n$elasticQuery\nin indices '$indices'"
     )
 
-    executeSingleSearch(elasticQuery) match {
+    failedShardsAsFailure(executeSingleSearch(elasticQuery), Some(indices)) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed search for query \n$elasticQuery\nin indices '$indices'"
@@ -832,7 +891,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Multi-searching with query \n$elasticQueries"
     )
 
-    executeMultiSearch(elasticQueries) match {
+    failedShardsAsFailure(
+      executeMultiSearch(elasticQueries),
+      Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed multi-search for query \n$elasticQueries"
@@ -1008,6 +1070,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     val query = elasticQuery.query
     val indices = elasticQuery.indices.mkString(",")
     executeSingleSearchAsync(elasticQuery)
+      .map(failedShardsAsFailure(_, Some(indices)))
       .flatMap {
         case ElasticSuccess(Some(response)) =>
           logger.info(
@@ -1130,6 +1193,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     )
 
     executeMultiSearchAsync(elasticQueries)
+      .map(
+        failedShardsAsFailure(
+          _,
+          Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+        )
+      )
       .flatMap {
         case ElasticSuccess(Some(response)) =>
           logger.info(
@@ -1550,7 +1619,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         .mkString(",")}'"
     )
 
-    executeSingleSearch(elasticQuery) match {
+    failedShardsAsFailure(
+      executeSingleSearch(elasticQuery),
+      Some(elasticQuery.indices.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed search with inner hits in indices '${elasticQuery.indices.mkString(",")}'"
@@ -1636,7 +1708,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Multi-searching inner hits with ${elasticQueries.queries.size} queries"
     )
 
-    executeMultiSearch(elasticQueries) match {
+    failedShardsAsFailure(
+      executeMultiSearch(elasticQueries),
+      Some(elasticQueries.queries.flatMap(_.indices).distinct.mkString(","))
+    ) match {
       case ElasticSuccess(Some(response)) =>
         logger.info(
           s"✅ Successfully executed multi-search inner hits with ${elasticQueries.queries.size} queries"
@@ -1673,6 +1748,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         )
     }
   }
+
+  /** A one-shot search on which SOME shards failed answers an error, not partial rows.
+    *
+    * Elasticsearch answers such a search with HTTP 200 and the hits / buckets of the shards that
+    * succeeded only; every one-shot door reads `_shards` here (per `responses[i]` for a multi
+    * search, see [[ShardFailures.error]]) and reports it through its own failure arm. The scroll /
+    * PIT doors check every page in the clients.
+    */
+  private def failedShardsAsFailure(
+    result: ElasticResult[Option[JsonNode]],
+    index: Option[String]
+  ): ElasticResult[Option[JsonNode]] =
+    result match {
+      case ElasticSuccess(Some(tree)) =>
+        ShardFailures.error(tree) match {
+          case Some(error) => ElasticResult.failure(error.copy(index = index))
+          case None        => result
+        }
+      case other => other
+    }
 
   // ========================================================================
   // METHODS TO IMPLEMENT
@@ -2258,8 +2353,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * ONE boolean per statement, decided on the AST: a bounded `UNION ALL` pays nothing.
     */
   private def unionAllNeedsPerLeg(multiple: MultiSearch): Boolean =
-    this.isInstanceOf[ScrollApi] &&
-    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))
+    (this.isInstanceOf[ScrollApi] &&
+    multiple.requests.exists(r => r.returnsRows && requiresScrollPaging(r.limit))) ||
+    multiple.requests.exists(legNeedsRowWork)
+
+  /** True when core works on the PARSED rows of `leg` before they are its answer, as it does for
+    * the same statement on its own ([[searchResolved]]): the order, the skip and the cut of a GROUP
+    * BY's groups (`GroupedRowOrder`), or one row per element of an UNNEST its WHERE filters and no
+    * column reads (`UnnestScope.rowExplosion`). Such a leg is executed through the per-leg route,
+    * which applies them by construction: the one-shot `_msearch` parse applied neither, so a leg's
+    * `LIMIT 2 OFFSET 1` over its groups answered every group, and an UNNEST leg one row per parent
+    * plus the raw inner hits.
+    *
+    * The columns a leg declares VARCHAR are no such work: they are how the rows are READ, and every
+    * leg carries its own reading into the one-shot parse ([[unionAllLegProjections]]), so a `UNION
+    * ALL` over a VARCHAR column keeps its single `_msearch`. Decided on the AST, once per
+    * statement.
+    */
+  private def legNeedsRowWork(leg: SingleSearch): Boolean =
+    GroupedRowOrder.of(leg).isDefined ||
+    UnnestScope.rowExplosion(leg).keySet != leg.nestedHitsMappings.keySet
 
   /** Story 22.6 — sequential per-leg execution of a `UNION ALL` whose legs cannot all be one-shot.
     *
@@ -2329,13 +2442,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearch(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )
+          )(TextColumns.of(single, context)).map(inGroupedRowOrder(single, _))
     }
   }
+
+  /** `response` with the rows of a GROUP BY in the order, past the offset and to the count the
+    * statement asks for ([[ElasticConversion.orderGroupedRows]]); itself for every other statement.
+    */
+  private def inGroupedRowOrder(single: SingleSearch, response: ElasticResponse): ElasticResponse =
+    GroupedRowOrder.of(single) match {
+      case Some(order) =>
+        response.copy(results =
+          orderGroupedRows(response.results, order)(identity).map(withoutCarried(order))
+        )
+      case None => response
+    }
 
   /** The async twin of [[searchResolved]]. */
   private def searchResolvedAsync(single: SingleSearch)(implicit
@@ -2357,11 +2483,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           singleSearchAsync(
             elasticQuery,
             single.fieldAliases,
-            single.sqlAggregations,
+            // an aggregate only the ORDER BY reads is read until the rows are sorted
+            GroupedRowOrder.readAggregations(single),
             extractOutputFieldNames(single),
-            single.nestedHitsMappings,
+            UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )
+          )(ec, TextColumns.of(single, context)).map(_.map(inGroupedRowOrder(single, _)))
     }
   }
 
@@ -2485,7 +2612,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * still nothing to RENAME to (the result has no declared names), so each leg simply keeps its
     * own — which is precisely what `search(leg)` gives the per-leg route, so the two agree.
     */
-  private def unionAllLegProjections(multiple: MultiSearch): Seq[LegProjection] = {
+  private def unionAllLegProjections(
+    multiple: MultiSearch
+  )(implicit context: ConversionContext): Seq[LegProjection] = {
     val outputFields = unionAllOutputFieldNames(multiple)
     // with no declared names there is no column to type, as for the other routes
     // (`unionAllRowMappers`)
@@ -2499,7 +2628,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         leg.nestedHitsMappings,
         // the plan that built THIS leg's request -- never one made from the merged map
         toClientAggregations(leg.sqlAggregations),
-        convert
+        convert,
+        // ...read as THIS leg reads its rows on its own: its VARCHAR columns as their text
+        Some(TextColumns.of(leg, context))
       )
     }
   }

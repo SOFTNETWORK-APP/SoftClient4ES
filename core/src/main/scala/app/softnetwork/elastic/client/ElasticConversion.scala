@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.sql.query.SingleSearch
+import app.softnetwork.elastic.sql.query.{Desc, GroupedRowOrder, SQLAggregation, SingleSearch}
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.json4s.{Extraction, Formats}
@@ -232,7 +232,7 @@ trait ElasticConversion {
               outputFields = leg0.map(_ => fields).getOrElse(Seq.empty),
               // ...and in the type the result gives each column (`SetOperationValues`)
               converters = leg0.flatMap(_.converters).orNull
-            )
+            )(leg0.flatMap(_.context).getOrElse(context))
           } else {
             Seq.empty
           }
@@ -304,6 +304,83 @@ trait ElasticConversion {
         }
         .map(_ - "bucket_root")
 
+  /** The rows of a GROUP BY, in the order and to the count the statement asks for
+    * (`GroupedRowOrder`): sorted by its ORDER BY when the levels' own bucket order cannot give it,
+    * then past its OFFSET, then cut to its LIMIT. Run once over the rows of ONE aggregation
+    * response, which is already whole in memory, and only for a statement that needs it
+    * (`GroupedRowOrder.of`).
+    *
+    * NULL sorts where the same ORDER BY over one level puts it, as Elasticsearch orders a group
+    * with no value: below every value for a column of `GroupedRowOrder.lowNulls` (a `MAX`), above
+    * every value otherwise -- last ascending and first descending (a NULLS clause is refused under
+    * a GROUP BY). Two numbers compare as numbers whatever their class (a key may come back a Long,
+    * a metric a Double), two values of one comparable class by their order, anything else by its
+    * text. The sort is stable. The columns read only for the sort (`GroupedRowOrder.carried`) are
+    * left to [[withoutCarried]].
+    */
+  def orderGroupedRows[T](items: Seq[T], order: GroupedRowOrder)(
+    row: T => ListMap[String, Any]
+  ): Seq[T] = {
+    val sorted =
+      if (!order.sorts) items
+      else {
+        val keys = order.sortKeys.toArray
+        val low = keys.map { case (column, _) => order.lowNulls.contains(column) }
+        items.sortWith { (a, b) =>
+          val ra = row(a)
+          val rb = row(b)
+          var i = 0
+          var c = 0
+          while (c == 0 && i < keys.length) {
+            val (column, direction) = keys(i)
+            c = compareGroupedValues(
+              unwrapCell(ra.getOrElse(column, null)),
+              unwrapCell(rb.getOrElse(column, null)),
+              low(i)
+            )
+            if (direction == Desc) c = -c
+            i += 1
+          }
+          c < 0
+        }
+      }
+    val skipped = order.offset.fold(sorted)(m => sorted.drop(math.max(m, 0)))
+    order.limit.fold(skipped)(n => skipped.take(math.max(n, 0)))
+  }
+
+  /** `row` without the columns `order` read only to sort the rows by (`GroupedRowOrder.carried`):
+    * an aggregate the SELECT does not return. `row` itself when there is none.
+    */
+  def withoutCarried(order: GroupedRowOrder)(row: ListMap[String, Any]): ListMap[String, Any] =
+    if (order.carried.isEmpty) row else row -- order.carried
+
+  private def unwrapCell(value: Any): Any = value match {
+    case Seq(one) => one
+    case other    => other
+  }
+
+  /** NULL is greater than every value -- last ascending, first descending -- or, `lowNull`, lower
+    * than every value.
+    */
+  private def compareGroupedValues(a: Any, b: Any, lowNull: Boolean): Int =
+    (a, b) match {
+      case (null, null) => 0
+      case (null, _)    => if (lowNull) -1 else 1
+      case (_, null)    => if (lowNull) 1 else -1
+      case (x: java.lang.Number, y: java.lang.Number) =>
+        (x, y) match {
+          case (
+                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte,
+                _: java.lang.Long | _: java.lang.Integer | _: java.lang.Short | _: java.lang.Byte
+              ) =>
+            java.lang.Long.compare(x.longValue(), y.longValue())
+          case _ => java.lang.Double.compare(x.doubleValue(), y.doubleValue())
+        }
+      case (x: Comparable[_], y) if x.getClass == y.getClass =>
+        x.asInstanceOf[Comparable[Any]].compareTo(y)
+      case _ => String.valueOf(a).compareTo(String.valueOf(b))
+    }
+
   /** convert JsonNode to Rows
     */
   /** `rowInvariants` are the statement's ROW-INVARIANT SELECT items -- constants, which cannot vary
@@ -354,6 +431,12 @@ trait ElasticConversion {
     // hold a nested `_source` shape, so they keep the projector alone.
     val fromHits = hitsNode.exists(_.nonEmpty)
 
+    // the levels the statement sends as a numeric `terms` of doubles (`SingleSearch.doubleKeyLevels`)
+    val doubleKeys: Set[String] = context match {
+      case TextColumns(_, keys) => keys
+      case _                    => Set.empty
+    }
+
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
@@ -363,17 +446,33 @@ trait ElasticConversion {
 
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
+        val ret =
+          parseAggregations(
+            aggs,
+            rowInvariants,
+            fieldAliases,
+            aggregations,
+            rootDocCount,
+            doubleKeys
+          )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
-        val ret = parseAggregations(aggs, rowInvariants, fieldAliases, aggregations, rootDocCount)
+        val ret =
+          parseAggregations(
+            aggs,
+            rowInvariants,
+            fieldAliases,
+            aggregations,
+            rootDocCount,
+            doubleKeys
+          )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations
-        val globalMetrics = extractGlobalMetrics(aggs)
+        val globalMetrics = extractGlobalMetrics(aggs, aggregations)
         val allTopHits = extractAggregationValues(
           extractAllTopHits(aggs, fieldAliases, aggregations),
           aggregations
@@ -571,8 +670,19 @@ trait ElasticConversion {
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     // One decision per parse — the per-row hot path does no `_id` work when it is not kept
     val withDocumentId = retainDocumentId || keepsDocumentId(requestedFields)
+    // ...and none for the columns declared VARCHAR unless the statement declares some
+    val text: Set[String] = context match {
+      case TextColumns(columns, _) => columns
+      case _                       => Set.empty
+    }
     hits.map { hit =>
-      var source = extractSource(hit, fieldAliases)
+      var source =
+        if (text.isEmpty) extractSource(hit, fieldAliases)
+        else
+          Option(hit.get("_source"))
+            .filter(_.isObject)
+            .map(jsonNodeToMap(_, fieldAliases, text))
+            .getOrElse(ListMap.empty)
       fieldAliases.foreach(entry => {
         if (!source.contains(entry._2)) {
           findKeyValue(entry._1, source) match {
@@ -587,7 +697,10 @@ trait ElasticConversion {
       val fieldsNode = Option(hit.path("fields"))
         .filter(!_.isMissingNode)
       val fields = fieldsNode
-        .map(jsonNodeToMap(_, fieldAliases))
+        .map(n =>
+          if (text.isEmpty) jsonNodeToMap(n, fieldAliases)
+          else jsonNodeToMap(n, fieldAliases, text)
+        )
         .getOrElse(ListMap.empty)
       source ++ metadata ++ innerHits ++ fields
     }
@@ -994,13 +1107,17 @@ trait ElasticConversion {
     *   how many documents the enclosing scope aggregated over, threaded so an aggregate over ZERO
     *   documents can answer ANSI NULL (story 22.2). `hits.total` at the root, a bucket's
     *   `doc_count` inside one, a wrapper aggregation's own `doc_count` under that.
+    * @param doubleKeys
+    *   the names of the levels the statement sends as a numeric `terms` of doubles, whose
+    *   non-finite keys a response writes as text ([[extractBucketKey]]).
     */
   def parseAggregations(
     aggsNode: JsonNode,
     parentContext: ListMap[String, Any],
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation],
-    docCount: Option[Long] = None
+    docCount: Option[Long] = None,
+    doubleKeys: Set[String] = Set.empty
   ): Seq[ListMap[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
@@ -1087,7 +1204,8 @@ trait ElasticConversion {
           currentContext,
           fieldAliases,
           aggregations,
-          docCountOf(aggValue, "doc_count").orElse(docCount)
+          docCountOf(aggValue, "doc_count").orElse(docCount),
+          doubleKeys
         )
       }
     } else if (bucketAggs.isEmpty) {
@@ -1110,7 +1228,7 @@ trait ElasticConversion {
           val metrics = extractMetrics(bucket, aggregations, bucketDocCount)
           val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
 
-          val bucketKey = extractBucketKey(bucket)
+          val bucketKey = extractBucketKey(bucket, doubleKeys.contains(aggName))
 
           // The synthetic whole-table bucket a `HAVING` with no `GROUP BY` is wrapped in is
           // TRANSPARENT: it exists only to give the `having_filter` bucket_selector a multi-bucket
@@ -1148,7 +1266,8 @@ trait ElasticConversion {
               currentContext,
               fieldAliases,
               aggregations,
-              bucketDocCount
+              bucketDocCount,
+              doubleKeys
             )
           } else {
             Seq(currentContext)
@@ -1175,7 +1294,18 @@ trait ElasticConversion {
 
   /** Extract the bucket key with proper typing (String, Long, Double, DateTime, etc.)
     */
-  def extractBucketKey(bucket: JsonNode): Any = {
+  def extractBucketKey(bucket: JsonNode): Any = extractBucketKey(bucket, doubleLevel = false)
+
+  /** [[extractBucketKey]] on a level that is, or is not, a numeric `terms` of doubles
+    * (`SingleSearch.doubleKeyLevels`).
+    *
+    * On such a level a non-finite key is the Double it is. JSON has no number for it, so a response
+    * writes it as the text Java prints (`"Infinity"`, `"-Infinity"`, `"NaN"`): MEASURED on
+    * Elasticsearch 6.8.23, `GROUP BY EXP(n)` answered the String `"Infinity"` beside Doubles, a
+    * column of two classes, where DuckDB answers the DOUBLE `inf`. On any other level the text is
+    * the key's value, whatever it spells.
+    */
+  def extractBucketKey(bucket: JsonNode, doubleLevel: Boolean): Any = {
     // Préférer key_as_string pour les dates
     val keyAsString = Option(bucket.get("key_as_string"))
       .map(_.asText())
@@ -1189,7 +1319,9 @@ trait ElasticConversion {
         Option(bucket.get("key")).map { keyNode =>
           if (keyNode.isTextual) {
             val text = keyNode.asText()
-            tryParseAsDateTime(text).getOrElse(text)
+            if (doubleLevel && ElasticConversion.NonFiniteKeys.contains(text))
+              java.lang.Double.valueOf(text)
+            else tryParseAsDateTime(text).getOrElse(text)
           } else if (keyNode.isIntegralNumber) {
             val longValue = keyNode.asLong()
             // If it looks like a timestamp in milliseconds, convert to Instant
@@ -1273,21 +1405,119 @@ trait ElasticConversion {
     val direct = Option(value.get(resultField)).filterNot(_.isNull)
     val valuesNode = Option(value.get("values"))
     val nested = valuesNode.flatMap(vs => Option(vs.get(resultField))).filterNot(_.isNull)
-    direct.orElse(nested).map(_.asDouble()).orElse {
-      (valuesNode, parseDoubleOpt(resultField)) match {
-        case (Some(vs: ObjectNode), Some(want)) =>
-          var best: Option[(Double, JsonNode)] = None
-          vs.forEachEntry { (k, v) =>
-            parseDoubleOpt(k).foreach { kd =>
-              if (!v.isNull && best.forall(b => Math.abs(kd - want) < Math.abs(b._1 - want)))
-                best = Some(kd -> v)
+    // A statistic Elasticsearch could not compute is NULL, never a number: a percentile of a group
+    // with no value, a sample deviation of one value (`"NaN"` on 7.17).
+    direct
+      .orElse(nested)
+      .map(_.asDouble())
+      .filter(finite)
+      .orElse(derivedSample(value, resultField))
+      .orElse {
+        (valuesNode, parseDoubleOpt(resultField)) match {
+          case (Some(vs: ObjectNode), Some(want)) =>
+            var best: Option[(Double, JsonNode)] = None
+            vs.forEachEntry { (k, v) =>
+              parseDoubleOpt(k).foreach { kd =>
+                if (!v.isNull && best.forall(b => Math.abs(kd - want) < Math.abs(b._1 - want)))
+                  best = Some(kd -> v)
+              }
             }
-          }
-          best.collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
-        case _ => None
+            best
+              .collect { case (kd, node) if Math.abs(kd - want) <= 1e-6 => node.asDouble() }
+              .filter(finite)
+          case _ => None
+        }
       }
+  }
+
+  private def finite(d: Double): Boolean = !d.isNaN && !d.isInfinite
+
+  /** A SAMPLE variance or standard deviation the `extended_stats` response does not carry -- its
+    * `_sampling` keys exist from Elasticsearch 7.7 on -- derived from the `count`, `sum` and
+    * `sum_of_squares` every release reports, as 7.7 computes it: `(sum_of_squares - sum² / count) /
+    * (count - 1)`, never below 0, and its square root for the deviation. `None` under two values
+    * (the statistic is NULL there, as in DuckDB: `withoutValues`) or when a key is absent.
+    *
+    * Read only where the `_sampling` key is absent, so a response that carries it is read as
+    * before.
+    */
+  private def derivedSample(value: JsonNode, resultField: String): Option[Double] = {
+    def number(key: String): Option[Double] =
+      Option(value.get(key)).filter(_.isNumber).map(_.asDouble()).filter(finite)
+    resultField match {
+      case "variance_sampling" | "std_deviation_sampling" =>
+        for {
+          count   <- number("count") if count >= 2
+          sum     <- number("sum")
+          squares <- number("sum_of_squares")
+        } yield {
+          val variance = math.max(0.0, (squares - sum * sum / count) / (count - 1))
+          if (resultField == "variance_sampling") variance else math.sqrt(variance)
+        }
+      case _ => None
     }
   }
+
+  /** Whether the aggregation `agg` of this node computed its value over NO value of its field, read
+    * from the field's value count wherever the response states it -- never from the value itself:
+    * Elasticsearch 8's typed client has already turned a `null` value into `0.0`.
+    *
+    *   - a STDDEV / VARIANCE (`extended_stats`) reports its `count`: no value, or one value for a
+    *     SAMPLE statistic, which needs two (DuckDB answers NULL for both);
+    *   - a `MIN` / `MAX` of a date or a timestamp reports a `value_as_string` exactly when it has a
+    *     value (Elasticsearch formats only a value it has);
+    *   - a `MIN` / `MAX` of a number, and an `AVG`, is sent with the count of its values beside it
+    *     where the client reads `null` as `0.0` (`SQLAggregation.readsValueCount`) -- its own, or
+    *     the one it shares with the other aggregates of its expression (`valueCountOwner`): a count
+    *     of 0 is no value. Elsewhere its value states it -- the raw `null` of 6.8 and 7.17, no
+    *     value at all on 9 -- and the NULL is made explicit, so a whole table of such documents
+    *     answers its one row.
+    */
+  private def withoutValues(
+    node: ObjectNode,
+    name: String,
+    value: JsonNode,
+    agg: ClientAggregation
+  ): Boolean =
+    if (agg.temporal) {
+      val text = value.get("value_as_string")
+      text == null || text.isNull
+    } else
+      agg.aggType match {
+        case AggregationType.Stddev | AggregationType.StddevSamp | AggregationType.StddevPop |
+            AggregationType.Variance | AggregationType.VarSamp | AggregationType.VarPop =>
+          val count = value.path("count")
+          count.isNumber && (count.asLong() == 0L ||
+          (count.asLong() < 2L && agg.aggResultField.exists(_.endsWith("_sampling"))))
+        case AggregationType.Min | AggregationType.Max | AggregationType.Avg =>
+          val metric = value.get("value")
+          metric == null || metric.isNull ||
+          valueCountOf(node, agg.valueCountOwner.getOrElse(name)).contains(0.0)
+        case _ => false
+      }
+
+  /** The count of the values of the aggregation named `name`, from the `value_count` sent beside it
+    * ([[SQLAggregation.valueCountName]]) -- under its own name, or under its typed key, which the
+    * Java client of Elasticsearch 8 answers (`value_count#<name>`). `None` where none was sent.
+    */
+  private def valueCountOf(node: ObjectNode, name: String): Option[Double] = {
+    val countName = SQLAggregation.valueCountName(name)
+    Option(node.get(countName))
+      .orElse(Option(node.get(s"value_count#$countName")))
+      .map(_.path("value"))
+      .filter(_.isNumber)
+      .map(_.asDouble())
+  }
+
+  /** The value of a `MIN` / `MAX` of a date or a timestamp: the `value_as_string` Elasticsearch
+    * formats, read as a temporal exactly as a date bucket key is; a format no ISO reader takes (a
+    * custom date format of the mapping) is read from the epoch milliseconds, at UTC.
+    */
+  private def temporalValueOf(value: JsonNode, metricValue: JsonNode): Any =
+    Option(value.get("value_as_string"))
+      .filter(_.isTextual)
+      .flatMap(text => tryParseAsDateTime(text.asText()))
+      .getOrElse(Instant.ofEpochMilli(metricValue.asDouble().toLong).atZone(ZoneId.of("UTC")))
 
   /** Extract metrics from an aggregation node
     */
@@ -1332,15 +1562,23 @@ trait ElasticConversion {
           // that reads any other value than a count or a sum -- it is absent, NULL -- and evaluates
           // one over counts and sums only (`_count`, and `keep_values` from 7.17), whose answer is
           // the calculation's (`COUNT(*) * 2` is 0), issue #413.
+          //
+          // A GROUP with documents but no value of the field (`docCount` > 0) is the same NULL, and
+          // ES 8 has turned its `null` into `0.0` too: that is read from the field's value count
+          // (`withoutValues`).
           val emptyInput =
-            docCount.contains(0L) && aggregations
+            (docCount.contains(0L) && aggregations
               .get(name)
-              .exists(agg => agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript)
+              .exists(agg =>
+                agg.nullOverEmptyInput && agg.aggType != AggregationType.BucketScript
+              )) || aggregations.get(name).exists(withoutValues(n, name, value, _))
           Option(value.get("value"))
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
             .map { metricValue =>
-              val numericValue = if (metricValue.isIntegralNumber) {
+              val numericValue = if (aggregations.get(name).exists(_.temporal)) {
+                temporalValueOf(value, metricValue)
+              } else if (metricValue.isIntegralNumber) {
                 metricValue.asLong()
               } else if (metricValue.isFloatingPointNumber) {
                 metricValue.asDouble()
@@ -1354,24 +1592,25 @@ trait ElasticConversion {
               // ClientAggregation.aggResultField, set at SQLAggregation →
               // ClientAggregation conversion time. Covers:
               //   * extended_stats (STDDEV / VARIANCE) — key is top-level, e.g.
-              //     "variance"; the `_sampling` sample keys require ES 7.7+.
+              //     "variance"; the `_sampling` sample keys exist from ES 7.7 on, and
+              //     are derived from count / sum / sum_of_squares before (`derivedSample`).
               //   * percentiles (PERCENTILE_CONT / PERCENTILE_DISC) — key is
               //     nested under the response `values` object, e.g. "99.0".
               // When the key is absent, logs a warning and yields None so the
               // column appears as null — the Stats branch below is skipped for
               // these aggregations (see its `aggResultField.isEmpty` guard) to
               // avoid emitting a stats-shaped struct in place of the null.
-              aggregations.get(name).flatMap(_.aggResultField).flatMap { resultField =>
-                projectAggResultField(value, resultField) match {
-                  case Some(d) => Some(name -> d)
-                  case None =>
-                    conversionLogger.warn(
-                      s"Aggregation '$name' requested result field '$resultField' " +
-                      "which is absent from the response (extended_stats sample variants " +
-                      "require Elasticsearch 7.7+); the column will be null."
-                    )
-                    None
-                }
+              aggregations.get(name).flatMap(_.aggResultField).filter(_ => !emptyInput).flatMap {
+                resultField =>
+                  projectAggResultField(value, resultField) match {
+                    case Some(d) => Some(name -> d)
+                    case None =>
+                      conversionLogger.warn(
+                        s"Aggregation '$name' requested result field '$resultField' " +
+                        "which is absent from the response; the column will be null."
+                      )
+                      None
+                  }
               }
             }
             .orElse {
@@ -1396,8 +1635,9 @@ trait ElasticConversion {
               }
             }
             .orElse {
-              // Percentiles
-              if (value.has("values")) {
+              // Percentiles -- a percentile COLUMN projects its percent above (`aggResultField`) and
+              // is NULL when that percent has no value: it never answers the whole map.
+              if (aggregations.get(name).flatMap(_.aggResultField).isEmpty && value.has("values")) {
                 Option(value.get("values")) match {
                   case Some(valuesNode: ObjectNode) =>
                     var percentiles: Seq[(String, Any)] = Seq.empty
@@ -1415,8 +1655,12 @@ trait ElasticConversion {
             // null-fills under NativeContext).
             .orElse(if (emptyInput) Some(name -> (null: Any)) else None) match {
             case Some(m) =>
-              // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT)
-              val isAuxiliary = aggregations.get(m._1).exists(_.auxiliary)
+              // Skip auxiliary aggregations (from HAVING/WHERE/ORDER BY only, not in SELECT), and
+              // the value count sent beside a MIN / MAX, which only `withoutValues` reads
+              val isAuxiliary = aggregations.get(m._1) match {
+                case Some(agg) => agg.auxiliary
+                case None      => SQLAggregation.isValueCountName(m._1)
+              }
               if (!isAuxiliary) metrics ++= Seq(m._1 -> m._2)
             case _ =>
           }
@@ -1555,12 +1799,30 @@ trait ElasticConversion {
 
   /** Extract global metrics from aggregations (for hits + aggs case)
     */
-  def extractGlobalMetrics(aggsNode: JsonNode): ListMap[String, Any] = {
+  def extractGlobalMetrics(aggsNode: JsonNode): ListMap[String, Any] =
+    extractGlobalMetrics(aggsNode, ListMap.empty[String, ClientAggregation])
+
+  /** [[extractGlobalMetrics]], reading the value count an aggregation shares with another of its
+    * expression where `aggregations` says so (`ClientAggregation.valueCountOwner`).
+    */
+  def extractGlobalMetrics(
+    aggsNode: JsonNode,
+    aggregations: ListMap[String, ClientAggregation]
+  ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
         var entries: Seq[(String, Any)] = Seq.empty
         n.forEachEntry { (name, value) =>
-          if (!value.has("buckets") && value.has("value")) {
+          // the value count sent beside a MIN / MAX / AVG is no column, and a count of 0 is the
+          // NULL of its aggregate (`withoutValues`), which this reading leaves out as it leaves a
+          // null out
+          val key = normalizeAggregationKey(name)
+          if (
+            !value.has("buckets") && value.has("value") &&
+            !SQLAggregation.isValueCountName(key) &&
+            !valueCountOf(n, aggregations.get(key).flatMap(_.valueCountOwner).getOrElse(key))
+              .contains(0.0)
+          ) {
             val metricValue = value.get("value")
             if (!metricValue.isNull) {
               val value = if (metricValue.isIntegralNumber) {
@@ -1642,6 +1904,36 @@ trait ElasticConversion {
     }
   }
 
+  /** [[jsonNodeToMap]], with the top-level entries named in `text` -- the columns a statement
+    * declares VARCHAR ([[TextColumns]]) -- read as their text, never re-read as a temporal.
+    */
+  private[client] def jsonNodeToMap(
+    node: JsonNode,
+    fieldAliases: ListMap[String, String],
+    text: Set[String]
+  ): ListMap[String, Any] =
+    node match {
+      case n: ObjectNode =>
+        var entries: Seq[(String, Any)] = Seq.empty
+        n.forEachEntry { (name, e) =>
+          val column = fieldAliases.getOrElse(name, name)
+          val value =
+            if (text.contains(column) || text.contains(name)) jsonNodeToText(e, fieldAliases)
+            else jsonNodeToAny(e, fieldAliases)
+          entries ++= Seq(column -> value)
+        }
+        ListMap(entries: _*)
+      case _ =>
+        ListMap.empty
+    }
+
+  /** [[jsonNodeToAny]] with no temporal inference: a text is its own value. */
+  private def jsonNodeToText(node: JsonNode, fieldAliases: ListMap[String, String]): Any =
+    if (node != null && node.isTextual) node.asText()
+    else if (node != null && node.isArray)
+      node.elements().asScala.map(jsonNodeToText(_, fieldAliases)).toList
+    else jsonNodeToAny(node, fieldAliases)
+
   /** Convert a JsonNode to Any (primitive types, List, Map)
     */
   def jsonNodeToAny(node: JsonNode, fieldAliases: ListMap[String, String]): Any = {
@@ -1678,6 +1970,9 @@ object ElasticConversion extends ElasticConversion {
     * `elastic.include-document-id` is enabled.
     */
   val DocumentIdField: String = "_id"
+
+  /** The texts a response writes a non-finite double key as (`extractBucketKey`). */
+  private[client] val NonFiniteKeys: Set[String] = Set("Infinity", "-Infinity", "NaN")
 
   /** SCHEMA-12 — the reader of ONE projection's un-aliased dotted columns, built once per stream by
     * `nestedPathColumns` and composed BEFORE the projector, so `SELECT obj.a FROM t` carries the

@@ -1434,21 +1434,12 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   .size(config.scrollSize)
                   .build()
 
-                val response = apply().search(searchRequest, classOf[ObjectNode])
+                val response =
+                  try apply().search(searchRequest, classOf[ObjectNode])
+                  catch { case t: Throwable => throw searchPageFailure(t) }
 
-                if (
-                  response.shards() != null && response
-                    .shards()
-                    .failed() != null && response.shards().failed().intValue() > 0
-                ) {
-                  val failures = response.shards().failures()
-                  val errorMsg = if (failures != null && !failures.isEmpty) {
-                    failures.asScala.map(_.reason()).mkString("; ")
-                  } else {
-                    "Unknown shard failure"
-                  }
-                  throw new IOException(s"Initial scroll failed: $errorMsg")
-                }
+                failedShardsPage("Initial scroll failed", response.shards())(new IOException(_))
+                  .foreach(ex => throw ex)
 
                 val scrollId = response.scrollId()
 
@@ -1493,23 +1484,17 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                   .scroll(Time.of(t => t.time(config.keepAlive)))
                   .build()
 
-                val response = apply().scroll(scrollRequest, classOf[ObjectNode])
+                val response =
+                  try apply().scroll(scrollRequest, classOf[ObjectNode])
+                  catch { case t: Throwable => throw searchPageFailure(t) }
 
-                if (
-                  response.shards() != null && response
-                    .shards()
-                    .failed() != null && response.shards().failed().intValue() > 0
-                ) {
+                // the cursor is spent: a retry against a cleared context can only 404, and
+                // re-polling a scroll cursor skips rows — fail without retrying
+                failedShardsPage("Scroll continuation failed", response.shards())(
+                  new IllegalStateException(_)
+                ).foreach { ex =>
                   clearScroll(scrollId)
-                  val failures = response.shards().failures()
-                  val errorMsg = if (failures != null && !failures.isEmpty) {
-                    failures.asScala.map(_.reason()).mkString("; ")
-                  } else {
-                    "Unknown shard failure"
-                  }
-                  // the cursor is spent: a retry against a cleared context can only 404, and
-                  // re-polling a scroll cursor skips rows — fail without retrying
-                  throw new IllegalStateException(s"Scroll continuation failed: $errorMsg")
+                  throw ex
                 }
 
                 val newScrollId = response.scrollId()
@@ -1732,23 +1717,14 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
                           // completion thread — the RestClient IO reactor — before this future
                           // completes; only the row extraction below runs on system.dispatcher.
                           fromCompletableFuture(async().search(request, classOf[ObjectNode]))
+                            .transform(response => response, searchPageFailure)
                         }
                         .map { response =>
                           // Row extraction on system.dispatcher.
                           // Check errors
-                          if (
-                            response.shards() != null &&
-                            response.shards().failed() != null &&
-                            response.shards().failed().intValue() > 0
-                          ) {
-                            val failures = response.shards().failures()
-                            val errorMsg = if (failures != null && !failures.isEmpty) {
-                              failures.asScala.map(_.reason()).mkString("; ")
-                            } else {
-                              "Unknown shard failure"
-                            }
-                            throw new IOException(s"PIT search_after failed: $errorMsg")
-                          }
+                          failedShardsPage("PIT search_after failed", response.shards())(
+                            new IOException(_)
+                          ).foreach(ex => throw ex)
 
                           val rawHits = response.hits().hits()
                           if (rawHits.isEmpty) {
@@ -1862,10 +1838,16 @@ trait JavaClientScrollApi extends ScrollApi with JavaClientHelpers {
       logger.info(s"PIT opened successfully: ${pitId.take(20)}... (keepAlive: $keepAlive)")
       pitId
     }.recoverWith { case ex: Exception =>
-      logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
-      Future.failed(
-        new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
-      )
+      searchPageFailure(ex) match {
+        // a 4xx Elasticsearch answers (408 / 429 excepted) fails fast, with its status and reason,
+        // as every paging door does; any other failure is retried as before
+        case rejected: JavaClientHelpers.SearchPageFailure => Future.failed(rejected)
+        case _ =>
+          logger.error(s"Failed to open PIT: ${ex.getMessage}", ex)
+          Future.failed(
+            new IOException(s"Failed to open PIT for indices: ${indices.mkString(", ")}", ex)
+          )
+      }
     }
   }
 

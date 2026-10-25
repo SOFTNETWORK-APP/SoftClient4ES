@@ -38,6 +38,7 @@ import app.softnetwork.elastic.sql.function.convert.Conversion
 import app.softnetwork.elastic.sql.function.geo.Distance
 import app.softnetwork.elastic.sql.operator._
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
+import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql._
 
 import scala.annotation.tailrec
@@ -531,7 +532,14 @@ case class Predicate(
         (if (negate) query.not(filterOf(emittedRight)) else query.filter(filterOf(emittedRight)))
           .filter(filterOf(leftCriteria))
       case OR =>
-        (if (negate) query.not(filterOf(emittedRight)) else query.should(filterOf(emittedRight)))
+        // 🔴 Under OR a negation that cannot fold into its criterion (a MATCH, a relation, a
+        // group) is ONE of the alternatives: a `bool { must_not }` inside the `should`. Put in
+        // this bool's own `must_not`, beside the `should` clauses, it was required of EVERY
+        // document: `x = 50 OR NOT MATCH(k) AGAINST ('a')` answered `x = 50 AND NOT MATCH(…)`.
+        // The negated MATCH keeps the documents where its columns have a value (the bridge's
+        // `negationOnAll`), as SQL reads NOT over a NULL.
+        (if (negate) query.should(ElasticBoolQuery(group = true).not(filterOf(emittedRight)))
+         else query.should(filterOf(emittedRight)))
           .should(filterOf(leftCriteria))
     }
   }
@@ -701,19 +709,23 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    // Story IDENT-4 -- the SAME grouping key, not merely the same display name (`Bucket.sameKeyAs`):
+    // a display name is shared by a self-join's two levels and by two functions of one column.
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         operator match {
           // These feed the ES `terms` include/exclude and its regex form, so they need the value
           // itself, never its SQL rendering: `.sql` carries the quote delimiters (which used to be
           // stripped for EQ/NE but not for LIKE/RLIKE, embedding `'` in the regex) and, since
           // string literals are escaped, would also carry `\\` for a value holding one backslash.
+          // A value is written by `Bucket.keyFilterTexts`, the one writer of a key-filter value: a
+          // number on a scripted key is sent in every text the key may print it as.
           case EQ =>
             if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
               maybeValue match {
                 case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.value.toString)
+                    bucketIncludesExcludes.values ++ bucket.keyFilterTexts(v.value)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -723,7 +735,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
               maybeValue match {
                 case Some(v: Value[_]) if v.value.toString.nonEmpty =>
                   bucketIncludesExcludes.copy(values =
-                    bucketIncludesExcludes.values ++ Set(v.value.toString)
+                    bucketIncludesExcludes.values ++ bucket.keyFilterTexts(v.value)
                   )
                 case _ => bucketIncludesExcludes
               }
@@ -1089,7 +1101,25 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   private def narrowsToValueType: Boolean =
     identifier.originalType == SQLTypes.Any && mayBeTemporal(identifier) &&
     !valueReadsDocumentField &&
-    (valueType == SQLTypes.Date || valueType == SQLTypes.Time)
+    (valueType == SQLTypes.Time || valueType == SQLTypes.Date && !reportsTimeOfDay)
+
+  /** Does the left operand carry a time of day -- it REPORTS a TIMESTAMP or a DATETIME, read from a
+    * column DECLARED as one -- so that a DATE beside it is compared as its UTC midnight, as DuckDB
+    * compares it, and the operand is never narrowed to its day? `ts > CASE … END` over two DATE
+    * arms narrowed `ts` to `.toLocalDate()` and kept no document of the DATE's own day:
+    * `2024-01-31T10:30Z` was not after `2024-01-31`. The DATE side is promoted instead
+    * (`comparisonTargetType`, `promotedRight`).
+    *
+    * A chain over a DATE column keeps its narrowing: `DATE_TRUNC(d, MONTH)` reports a TIMESTAMP at
+    * a midnight, its day. A column whose type is unknown (no schema) carries none, and keeps the
+    * narrowing the no-schema fixtures pin. Asked in a query only: an ingest processor and a
+    * transform keep their bytes.
+    */
+  private def reportsTimeOfDay: Boolean = {
+    def timeOfDay(t: SQLType) = t == SQLTypes.Timestamp || t == SQLTypes.DateTime
+    !SQLTypeUtils.rendersOutsideQuery && timeOfDay(identifier.reportedType) &&
+    timeOfDay(identifier.declaredType)
+  }
 
   /** The type BOTH operands are reconciled to before they are compared.
     *
@@ -1286,24 +1316,22 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       case Some(ctx) =>
         ctx.addParam(identifier) match {
           case Some(_) =>
-            identifier.originalType match {
-              // 🔴 `originalType == Any` means "this identifier NAMES a column", NOT "that column is
-              // temporal" — so this narrowing fired for any column at all, and `DATE_PARSE(iso,
-              // 'yyyy-MM-dd') = CAST('2025-01-06' AS DATE)` over a KEYWORD column emitted
-              // `doc['iso'].value.toLocalDate()`: `.toLocalDate()` on a `String`, which fails the
-              // shard. MEASURED on ES 8.18, before and after this fix — the narrowing predates it —
-              // and it is the last reason a `DATE_PARSE` predicate could not work. The doc-value is a
-              // temporal only when the COLUMN is, which `baseType` is the thing that knows.
-              case SQLTypes.Any if mayBeTemporal(identifier) && !valueReadsDocumentField =>
-                valueType match {
-                  case SQLTypes.Date =>
-                    identifier.addPainlessMethod(".toLocalDate()")
-                  case SQLTypes.Time =>
-                    identifier.addPainlessMethod(".toLocalTime()")
-                  case _ =>
-                }
-              case _ =>
-            }
+            // 🔴 `originalType == Any` means "this identifier NAMES a column", NOT "that column is
+            // temporal" — so this narrowing fired for any column at all, and `DATE_PARSE(iso,
+            // 'yyyy-MM-dd') = CAST('2025-01-06' AS DATE)` over a KEYWORD column emitted
+            // `doc['iso'].value.toLocalDate()`: `.toLocalDate()` on a `String`, which fails the
+            // shard. MEASURED on ES 8.18, before and after this fix — the narrowing predates it —
+            // and it is the last reason a `DATE_PARSE` predicate could not work. The doc-value is a
+            // temporal only when the COLUMN is, which `baseType` is the thing that knows. The
+            // condition is `narrowsToValueType`'s, which the types of this comparison read (#292).
+            if (narrowsToValueType)
+              valueType match {
+                case SQLTypes.Date =>
+                  identifier.addPainlessMethod(".toLocalDate()")
+                case SQLTypes.Time =>
+                  identifier.addPainlessMethod(".toLocalTime()")
+                case _ =>
+              }
           case _ => // do nothing
         }
       case _ => // do nothing
@@ -1368,8 +1396,20 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         // reason: there the same operand was parsed TWICE).
         case Some(ctx) if ctx.isProcessor && identifier.chainType.isInstanceOf[SQLTemporal] =>
           chain
+        // 🔴 The conversion applies to the WHOLE operand, inside its NULL guard. A conditional's
+        // nameless identifier answers `nullable = false`, so `GREATEST(d, d2) > d` appended its
+        // DATE's midnight to the GREATEST's own guard -- `(lv3 == null ? null : …).atStartOfDay(…)`
+        // -- and a document missing both dates failed the statement (MEASURED on Elasticsearch
+        // 8.18.3 and 9.0.3); appended to a CASE (`p3 ? a : b`), it converted the last branch only.
+        // `mayRenderNull` is the one answer every converting consumer reads: `coerce` binds an
+        // operand that can be NULL once, and guards it; one that cannot is converted as ONE value. A
+        // rendering the conversion leaves alone keeps its bytes.
         case _ =>
-          SQLTypeUtils.coerce(chain, operandType, targetedType, identifier.nullable, context)
+          val nullable = SQLTypeUtils.mayRenderNull(identifier, context)
+          val operand = if (nullable) chain else SQLTypeUtils.asOneValue(chain)
+          val converted =
+            SQLTypeUtils.coerce(operand, operandType, targetedType, nullable, context)
+          if (converted == operand) chain else converted
       }
     (chain, coerced)
   }
@@ -1404,8 +1444,12 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // milliseconds -- and [[bucketPipelineCheck]] converts a temporal value to the same unit, so the
     // two are compared as numbers. The `java.time` methods below would be called on a `Double`
     // (`dynamic method [java.lang.Double, isAfter/1] not found`).
+    //
+    // Story IDENT-4 -- NOT "the column is a GROUP BY key" (`hasBucket`): a WHERE comparison reads
+    // documents, never a bucket key, so it took the numeric fallback (a raw `>` on two dates,
+    // which Painless refuses) whenever its column happened to be grouped, and only then.
     val readsMetric =
-      isAggregation || hasBucket || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
+      isAggregation || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
     op match {
       case _: ComparisonOperator =>
         // 🔴 Story BIDC-8 AD-9 — dispatch on the EFFECTIVE operator, i.e. with a `NOT` folded in,
@@ -1732,7 +1776,16 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   private def reducesDateMetrics: Boolean =
     NumericReducer.overDates(identifier) && identifier.hasAggregation
 
-  override def painless(context: Option[PainlessContext]): String = {
+  /** A comparison is an entry point of a rendering (`SQLTypeUtils.renderingIn`): in an ingest
+    * processor or a transform, the types it reads to reconcile its operands are the ones its
+    * operands render there. Read outside that scope, a transform's `COALESCE(d2, d) > ts` took the
+    * query's DATE for a conditional whose arms render their doc values there, and appended
+    * `.atStartOfDay(…)` to a `ZonedDateTime`.
+    */
+  override def painless(context: Option[PainlessContext]): String =
+    SQLTypeUtils.renderingIn(context)(comparisonPainless(context))
+
+  private def comparisonPainless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
     if (context.isEmpty && referencesBucketMetric) return bucketPipelinePainless
     if (context.isEmpty && reducesDateMetrics)
@@ -1857,7 +1910,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
       */
     val utcComparison: Boolean =
       context.exists(c => !c.isProcessor && !c.isTransform && c.target.jodaCompatibleDates) &&
-      valueType.isInstanceOf[SQLTemporal] && !isAggregation && !hasBucket &&
+      valueType.isInstanceOf[SQLTemporal] && !isAggregation &&
       comparisonTargetType == SQLTypes.Timestamp
     def instantOperand(rendered: SQLType, readsDocument: Boolean): Boolean =
       utcComparison && readsDocument &&
@@ -2323,16 +2376,19 @@ case class InExpr[R, +T <: Value[R]](
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
           // The VALUE, never its SQL rendering -- the rule `Expression.includes` states on its EQ
           // arm. `.sql` escapes a backslash and an apostrophe, and stripping only the quote
           // delimiters left both escapes behind: `IN ('a\b')` sent `a\\b` and `IN ('it''s')` sent
           // `it\s`, which keep no group. The IN grammar admits string, long and double literals
-          // only, so no element is null.
+          // only, so no element is null. Each value in every text the level's key may print it
+          // as (`Bucket.keyFilterTexts`).
           bucketIncludesExcludes.copy(values =
-            bucketIncludesExcludes.values ++ values.values.map(_.value.toString).toSet
+            bucketIncludesExcludes.values ++ values.values.flatMap(v =>
+              bucket.keyFilterTexts(v.value)
+            )
           )
         else bucketIncludesExcludes
       case _ => bucketIncludesExcludes
@@ -3097,7 +3153,7 @@ case class MatchCriteria(
     not: Boolean,
     bucketIncludesExcludes: BucketIncludesExcludes
   ): BucketIncludesExcludes = {
-    identifier.bucket.find(_.name == bucket.name) match {
+    identifier.bucket.find(_.sameKeyAs(bucket)) match {
       case Some(_) =>
         if ((!not && maybeNot.isEmpty) || (not && maybeNot.isDefined))
           // The value, not its rendering — see the include/exclude note above.
@@ -3154,6 +3210,29 @@ sealed abstract class ElasticRelation(val criteria: Criteria, val operator: Elas
 
 }
 
+object ElasticRelation {
+
+  /** Whether some join field of `schema` holds `relation` in this role: as a parent (a key of its
+    * `relations`) for `PARENT(…)`, as a child (one of their values) for `CHILD(…)`. Holding the
+    * relation is required, not only having a join field: an index without the field holds no
+    * relation, so its `has_child` / `has_parent` may then tolerate it (`ignore_unmapped`), but the
+    * same key would also silence a relation no index holds (a typo), which must keep failing.
+    * Without a schema, `false`.
+    */
+  private[sql] def joinHolds(schema: Option[Schema], relation: String, asParent: Boolean): Boolean =
+    schema.exists(_.columns.exists(_.options.get("relations") match {
+      case Some(ObjectValue(rels)) =>
+        if (asParent) rels.contains(relation)
+        else
+          rels.values.exists {
+            case StringValue(child) => child == relation
+            case vs: Values[_, _]   => vs.values.exists(_.value == relation)
+            case _                  => false
+          }
+      case _ => false
+    }))
+}
+
 case class ElasticNested(
   override val criteria: Criteria,
   override val limit: Option[Limit],
@@ -3182,19 +3261,211 @@ case class ElasticNested(
 }
 
 case class ElasticChild(
-  override val criteria: Criteria
+  override val criteria: Criteria,
+  joinRelationKnown: Boolean = false
 ) extends ElasticRelation(criteria, Child) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SingleSearch): ElasticChild =
-    this.copy(criteria = criteria.update(request))
+
+  /** `ignore_unmapped` of this `has_child`: only when a join field of the schema holds the relation
+    * as a child.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (joinRelationKnown) Some(true) else None
+
+  override def update(request: SingleSearch): ElasticChild = {
+    val updated = this.copy(criteria = criteria.update(request))
+    updated.copy(joinRelationKnown =
+      updated.relationType.exists(ElasticRelation.joinHolds(request.schema, _, asParent = false))
+    )
+  }
 }
 
 case class ElasticParent(
-  override val criteria: Criteria
+  override val criteria: Criteria,
+  joinRelationKnown: Boolean = false
 ) extends ElasticRelation(criteria, Parent) {
   def nestedElement: Option[NestedElement] = None
-  override def update(request: SingleSearch): ElasticParent =
-    this.copy(criteria = criteria.update(request))
+
+  /** `ignore_unmapped` of this `has_parent`: only when a join field of the schema holds the
+    * relation as a parent.
+    */
+  lazy val ignoreUnmapped: Option[Boolean] = if (joinRelationKnown) Some(true) else None
+
+  override def update(request: SingleSearch): ElasticParent = {
+    val updated = this.copy(criteria = criteria.update(request))
+    updated.copy(joinRelationKnown =
+      updated.relationType.exists(ElasticRelation.joinHolds(request.schema, _, asParent = true))
+    )
+  }
+}
+
+/** 🔴 A WHERE condition over a column of a NESTED path that no JOIN UNNEST and no `NESTED(…)`
+  * declares -- `WHERE items.sku = 's1'` -- is the nested query over that path: the documents one of
+  * whose elements satisfies it, as `NESTED(items.sku = 's1')` answers and as DuckDB answers `EXISTS
+  * (SELECT 1 FROM unnest(items) AS e WHERE e.sku = 's1')`. Sent as it was, the condition queried
+  * the ROOT document, which holds no field of a nested path: no document matched, HTTP 200.
+  *
+  * The condition is wrapped in the `ElasticNested` relation the bridge renders for a `NESTED(…)` no
+  * JOIN UNNEST declares (its path is the column's first segment). Conditions over the same path,
+  * joined by AND or OR, are ONE wrapper and test the same element, as a JOIN UNNEST does
+  * (`items.sku = 's2' AND items.qty > 2`); conditions over different paths test each its own.
+  *
+  * Read from the schema core attaches (`SingleSearch.update(Some(schema))`): without one a
+  * condition is sent as before. A condition that cannot be wrapped -- reading two nested paths, a
+  * nested column and a column of the document, or a column under a nested path that is not its
+  * first segment -- is refused by name before any request ([[refusal]],
+  * `SingleSearch.validateResolved`).
+  */
+private[sql] object ImplicitNested {
+
+  /** Where a condition's columns lie. */
+  sealed trait Reading
+  case object OnDocument extends Reading
+  final case class OnPath(path: String) extends Reading
+  final case class Unwrappable(reason: String) extends Reading
+
+  private def schemaOf(column: Identifier, request: SingleSearch): Option[Schema] =
+    column.table.flatMap(request.schemas.get).orElse(request.schema)
+
+  /** The proper prefixes of `name` the schema maps as `nested`, outermost first. */
+  private def nestedPrefixes(name: String, schema: Option[Schema]): List[String] = {
+    val parts = name.split('.').toList
+    (1 until parts.size).toList
+      .map(i => parts.take(i).mkString("."))
+      .filter(NestedElements.mappedAsNested(schema, _))
+  }
+
+  /** The columns a condition reads: its operand's, and its value's when that is a column. */
+  private[sql] def columnsOf(e: Expression): Seq[Identifier] =
+    (e.identifier +: e.maybeValue.toSeq.collect { case column: Identifier => column })
+      .flatMap(FunctionUtils.funIdentifiers(_))
+      .filter(_.name.trim.nonEmpty)
+      .distinct
+
+  def readingOf(e: Expression, request: SingleSearch): Reading = {
+    val columns = columnsOf(e)
+    // a condition reading a JOIN UNNEST column, at any depth (`COALESCE(t.name, i.s) = 'x'`), is
+    // the UNNEST's: its own wrapping and its own scope rules (`UnnestScope`) apply
+    if (
+      e.nestedElement.isDefined || e.identifier.nested ||
+      columns.exists(c => c.nested || c.nestedElement.isDefined)
+    ) OnDocument
+    else {
+      val placed: Seq[Either[String, Option[String]]] = columns.map { column =>
+        val head = column.name.split('.').head
+        nestedPrefixes(column.name, schemaOf(column, request)) match {
+          case Nil                         => Right(None)
+          case only :: Nil if only == head => Right(Some(head))
+          case paths =>
+            Left(s"the column ${column.name}, under the nested path ${paths.last}")
+        }
+      }
+      placed.collectFirst { case Left(reason) => reason } match {
+        case Some(reason) => Unwrappable(reason)
+        case None =>
+          placed.collect { case Right(Some(path)) => path }.distinct.toList match {
+            case Nil => OnDocument
+            case path :: Nil if placed.contains(Right(None)) =>
+              Unwrappable(s"a column of the nested path $path and a column of the document")
+            case path :: Nil => OnPath(path)
+            case paths       => Unwrappable(s"the nested paths ${paths.mkString(", ")}")
+          }
+      }
+    }
+  }
+
+  /** The one nested path an implicit wrapper ([[wrap]]) tests, if `criteria` is one. */
+  private def pathOf(criteria: Criteria, request: SingleSearch): Option[String] = {
+    def leaves(c: Criteria): Seq[Reading] = c match {
+      case p: Predicate  => leaves(p.leftCriteria) ++ leaves(p.rightCriteria)
+      case e: Expression => Seq(readingOf(e, request))
+      case _             => Seq(OnDocument)
+    }
+    criteria match {
+      case n: ElasticNested if n.fromCriteria && n.criteria.nestedElements.isEmpty =>
+        leaves(n.criteria).distinct match {
+          case Seq(OnPath(path)) => Some(path)
+          case _                 => None
+        }
+      case _ => None
+    }
+  }
+
+  /** The first segment of every dotted column `criteria` reads, through its relations: the nested
+    * path a `NESTED(…)` no JOIN UNNEST declares tests, as the bridge renders it. The ONE
+    * derivation, read by [[wrap]] and by the bridge: read off the operand's NAME alone, it missed a
+    * column under a function (`UPPER(items.sku)`, whose operand is a nameless wrapper).
+    */
+  def nestedPathsOf(criteria: Criteria): List[String] = criteria match {
+    case p: Predicate => nestedPathsOf(p.leftCriteria) ++ nestedPathsOf(p.rightCriteria)
+    case relation: ElasticRelation => nestedPathsOf(relation.criteria)
+    case m: MultiMatchCriteria     => nestedPathsOf(m.criteria)
+    case e: Expression =>
+      columnsOf(e).toList.flatMap(_.name.split('.').toList match {
+        case path :: _ :: _ => List(path)
+        case _              => Nil
+      })
+    case _ => Nil
+  }
+
+  /** `criteria`, its conditions over a nested path wrapped in the nested query over it. */
+  def wrap(criteria: Criteria, request: SingleSearch): Criteria =
+    if (request.schema.isEmpty && request.schemas.isEmpty) criteria else wrapped(criteria, request)
+
+  private def wrapped(criteria: Criteria, request: SingleSearch): Criteria = criteria match {
+    case p: Predicate =>
+      val left = wrapped(p.leftCriteria, request)
+      val right = wrapped(p.rightCriteria, request)
+      def unwrapped(c: Criteria): Criteria = c match {
+        case n: ElasticNested => n.criteria
+        case other            => other
+      }
+      (pathOf(left, request), pathOf(right, request)) match {
+        // the same path: one element satisfies both, as over a JOIN UNNEST
+        case (Some(l), Some(r)) if l == r =>
+          val joined = p.copy(leftCriteria = unwrapped(left), rightCriteria = unwrapped(right))
+          ElasticNested(joined, joined.limit)
+        case _ => p.copy(leftCriteria = left, rightCriteria = right)
+      }
+    case e: Expression =>
+      readingOf(e, request) match {
+        case OnPath(_) => ElasticNested(e, e.limit)
+        case _         => e
+      }
+    // `MATCH (c1, …) AGAINST (…)`, one MATCH per column: wrapped when every column lies on one path
+    case m: MultiMatchCriteria if pathOf(ElasticNested(m.criteria, None), request).isDefined =>
+      ElasticNested(m, None)
+    // a later resolution (`update(Some(schema))` again, as core resolves a scrolled search) merges
+    // two wrappers into one (`Predicate.update`): over several paths, each path is its own again,
+    // so the statement renders as it did once resolved
+    case n: ElasticNested
+        if n.fromCriteria && n.criteria.nestedElements.isEmpty &&
+          n.criteria.isInstanceOf[Predicate] && pathOf(n, request).isEmpty &&
+          nestedPathsOf(n.criteria).distinct.size > 1 =>
+      wrapped(n.criteria, request)
+    case other => other
+  }
+
+  /** The refusal of the first condition of `criteria` that reads a nested path and cannot be
+    * wrapped, through `NESTED(…)` too, which renders the same nested query.
+    */
+  def refusal(criteria: Criteria, request: SingleSearch): Option[String] = {
+    def first(c: Criteria): Option[String] = c match {
+      case p: Predicate     => first(p.leftCriteria).orElse(first(p.rightCriteria))
+      case n: ElasticNested => first(n.criteria)
+      case e: Expression =>
+        readingOf(e, request) match {
+          case Unwrappable(reason) =>
+            Some(
+              s"WHERE ${e.sql} reads $reason: a condition over a nested column is tested on one " +
+              "element of one nested path. Write it over a JOIN UNNEST of that path, or one " +
+              "condition per path."
+            )
+          case _ => None
+        }
+      case _ => None
+    }
+    first(criteria)
+  }
 }
 
 case class Where(criteria: Option[Criteria]) extends Updateable {
@@ -3203,7 +3474,7 @@ case class Where(criteria: Option[Criteria]) extends Updateable {
     case _       => ""
   }
   def update(request: SingleSearch): Where =
-    this.copy(criteria = criteria.map(_.update(request)))
+    this.copy(criteria = criteria.map(c => ImplicitNested.wrap(c.update(request), request)))
 
   override def validate(): Either[String, Unit] = criteria match {
     case Some(c) =>

@@ -121,4 +121,73 @@ class JestScrollPageFailureSpec extends AnyWordSpec with Matchers {
       isRetriableError(ex) shouldBe false
     }
   }
+
+  "statusOf" should {
+
+    "read Elasticsearch's status from a failed page, and only from an HTTP error answer" in {
+      val reason = """{"root_cause":[{"type":"illegal_argument_exception"}]}"""
+      def failed(code: Int): io.searchbox.client.JestResult = {
+        val result = new io.searchbox.client.JestResult(new com.google.gson.Gson())
+        result.setSucceeded(false)
+        result.setResponseCode(code)
+        result.setErrorMessage(reason)
+        result
+      }
+      val page = client.pageFailure("Search after failed", failed(400))
+      // the message is the one the page always threw, and the retry policy does not move
+      page.getMessage shouldBe s"Search after failed: $reason"
+      isRetriableError(page) shouldBe true
+      client.statusOf(page) shouldBe Some(400)
+      client.statusOf(client.pageFailure("Scroll failed", failed(503))) shouldBe Some(503)
+      // no HTTP response: no status, as before
+      client.statusOf(client.pageFailure("Scroll failed", failed(0))) shouldBe None
+    }
+  }
+
+  /** A page on which ONE of 3 shards failed with `errType`, as Elasticsearch answers it with HTTP
+    * 200, read as the paging doors read it.
+    */
+  private def oneOfThreeShardsFailed(errType: String): com.fasterxml.jackson.databind.JsonNode =
+    app.softnetwork.elastic.sql.serialization.JacksonConfig.objectMapper.readTree(
+      """{"_shards":{"total":3,"successful":2,"skipped":0,"failed":1,"failures":[{"shard":0,""" +
+      s""""index":"idx","node":"n1","reason":{"type":"$errType","reason":"compile error",""" +
+      """"lang":"painless","caused_by":{"type":"illegal_argument_exception",""" +
+      """"reason":"cannot cast"}}}]},"hits":{"hits":[]}}"""
+    )
+
+  private def searchAfterPage(tree: com.fasterxml.jackson.databind.JsonNode): Option[Exception] =
+    client.failedShardsPage("Search after failed", tree)(new java.io.IOException(_))
+
+  "failedShardsPage" should {
+
+    "answer core's shard-failure error and status when every failure is the caller's" in {
+      val failure = searchAfterPage(oneOfThreeShardsFailed("script_exception")).get
+      failure shouldBe a[jest.JestClientHelpers.SearchPageFailure]
+      failure.getMessage shouldBe
+      "Search after failed: 1 of 3 shards failed: script_exception: compile error " +
+      "(caused by illegal_argument_exception: cannot cast)"
+      failure.asInstanceOf[jest.JestClientHelpers.SearchPageFailure].error.operation shouldBe
+      Some("search")
+      client.statusOf(failure) shouldBe Some(400)
+      client.statusOf(new java.util.concurrent.CompletionException(failure)) shouldBe Some(400)
+      isRetriableError(failure) shouldBe false
+    }
+
+    "keep the door's own exception, text and retry for any other failure" in {
+      val failure = searchAfterPage(oneOfThreeShardsFailed("circuit_breaking_exception")).get
+      failure shouldBe an[java.io.IOException]
+      failure should not be a[jest.JestClientHelpers.PageFailure]
+      failure.getMessage shouldBe "Search after failed: compile error"
+      client.statusOf(failure) shouldBe None
+      isRetriableError(failure) shouldBe true
+    }
+
+    "answer nothing when no shard failed" in {
+      searchAfterPage(
+        app.softnetwork.elastic.sql.serialization.JacksonConfig.objectMapper.readTree(
+          """{"_shards":{"total":3,"successful":3,"skipped":0,"failed":0},"hits":{"hits":[]}}"""
+        )
+      ) shouldBe None
+    }
+  }
 }

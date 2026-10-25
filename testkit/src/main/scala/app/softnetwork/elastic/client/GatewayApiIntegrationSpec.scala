@@ -24,6 +24,9 @@ import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.health.HealthStatus
 import app.softnetwork.elastic.sql.policy.EnrichPolicyTaskStatus
 import app.softnetwork.elastic.sql.query.SelectStatement
+import app.softnetwork.elastic.sql.schema.mapper
+import app.softnetwork.elastic.sql.serialization.JacksonConfig
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 import com.typesafe.config.ConfigFactory
 
 import java.time.temporal.ChronoUnit
@@ -187,6 +190,46 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
 
     assertDdl(System.nanoTime(), client.run(sql).futureValue)
     assertDdl(System.nanoTime(), client.run(sql).futureValue) // second call should succeed
+  }
+
+  /** A column declares its sub-fields and its script together, `FIELDS (…)` then `SCRIPT AS (…)`,
+    * the order `Column.sql` renders them in.
+    *
+    * 🔴 The grammar read a script OR sub-fields, so this statement was refused with `')' expected
+    * but 'S' found`, while a materialized view renders exactly this column for a string GROUP BY
+    * key. The row asks the cluster both halves: the pipeline computes the script, and the mapping
+    * carries the sub-field.
+    */
+  it should "create a column with sub-fields and a script together, as it renders them" in {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE IF NOT EXISTS col_fields_script " +
+          "(id INT, k KEYWORD, c VARCHAR FIELDS (raw KEYWORD) SCRIPT AS (UPPER(k)));"
+        )
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO col_fields_script (id, k) VALUES (1, 'ab');").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+
+    rawById("SELECT id, c FROM col_fields_script", "c") shouldBe Map(1L -> "AB")
+
+    // ES 6.8 nests the mapping under its type, so the node is found by its `_meta`
+    client.asInstanceOf[MappingApi].getMapping("col_fields_script") match {
+      case ElasticSuccess(json) =>
+        val mapping = JacksonConfig.objectMapper.readTree(json).findParent("_meta")
+        withClue(s"[$json] ") {
+          mapping should not be null
+          val c = mapping.path("properties").path("c")
+          c.path("type").asText() shouldBe "text"
+          c.path("fields").path("raw").path("type").asText() shouldBe "keyword"
+        }
+      case other => fail(s"getMapping(col_fields_script) failed: $other")
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -391,6 +434,243 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       // … and the TIMESTAMP one stays a TIMESTAMP, so this is narrowing and not a blanket collapse
       ddl should include("eff_ts TIMESTAMP")
     }
+  }
+
+  /** The source of the CTAS-over-aggregate rows: a BOOLEAN to count, an INTEGER to average, and a
+    * key to group by. Created once, by whichever of those rows runs first.
+    */
+  private lazy val ctasAggregateSource: String = {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run("CREATE TABLE IF NOT EXISTS ctas_agg_src (id INT, g KEYWORD, b BOOLEAN, n INT);")
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO ctas_agg_src (id, g, b, n) VALUES " +
+          "(1, 'x', true, 1), (2, 'x', false, 2), (3, 'y', true, 3);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 3))
+    )
+    "ctas_agg_src"
+  }
+
+  /** `(_meta.columns.<c>.data_type, properties.<c>.type)` of each column, read from the index's own
+    * mapping. ES 6.8 nests both under the mapping type, so the node is found by its `_meta`.
+    */
+  private def declaredAndMapped(index: String, columns: String*): Map[String, (String, String)] =
+    client.asInstanceOf[MappingApi].getMapping(index) match {
+      case ElasticSuccess(json) =>
+        val mapping = JacksonConfig.objectMapper.readTree(json).findParent("_meta")
+        withClue(s"[$json] ") { mapping should not be null }
+        columns.map { c =>
+          c -> (
+            mapping.path("_meta").path("columns").path(c).path("data_type").asText(),
+            mapping.path("properties").path(c).path("type").asText()
+          )
+        }.toMap
+      case other => fail(s"getMapping($index) failed: $other")
+    }
+
+  /** A CTAS column over an aggregate is declared, and mapped, with the type the aggregate PRODUCES.
+    *
+    * 🔴 Since #395 it took the type of the column the aggregate reads: `COUNT(DISTINCT b)` was
+    * declared BOOLEAN and mapped `boolean`, and `VAR_POP(n)` / `AVG(n)` INT and `integer`. On ES
+    * 6.8 every row of such a CTAS then failed to index. The values these rows write are not
+    * asserted here: the CTAS reads its SELECT through the hits path, which is a separate, older
+    * defect.
+    */
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (global)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_global AS SELECT COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_global", "c", "vp", "av") shouldBe Map(
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
+  }
+
+  it should "declare and map a CTAS aggregate column with the type the aggregate produces (grouped)" in {
+    val src = ctasAggregateSource
+    val created =
+      client
+        .run(
+          "CREATE TABLE ctas_agg_grouped AS SELECT g, COUNT(DISTINCT b) AS c, VAR_POP(n) AS vp, " +
+          s"AVG(n) AS av FROM $src GROUP BY g"
+        )
+        .futureValue
+    withClue(s"[$created] ") { created.isSuccess shouldBe true }
+
+    declaredAndMapped("ctas_agg_grouped", "g", "c", "vp", "av") shouldBe Map(
+      "g"  -> ("KEYWORD", "keyword"),
+      "c"  -> ("BIGINT", "long"),
+      "vp" -> ("DOUBLE", "double"),
+      "av" -> ("DOUBLE", "double")
+    )
+  }
+
+  /** A CTAS column over a date part is declared BIGINT and mapped `long`, the whole number it
+    * produces.
+    *
+    * 🔴 It was declared NUMERIC, which a CTAS maps to a `scaled_float` without a `scaling_factor`,
+    * so the target index could not be created (400 `Field [scaling_factor] is required`). The
+    * values are DuckDB's: `year(DATE '2024-03-15')` is 2024 and `month` 3.
+    */
+  it should "declare and map a CTAS date-part column BIGINT, the whole number it produces" in {
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS ctas_datepart_src (id INT, d DATE);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO ctas_datepart_src (id, d) VALUES (1, '2024-03-15'), (2, '2019-07-04');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE ctas_datepart AS SELECT id, YEAR(d) AS y, MONTH(d) AS mo " +
+          "FROM ctas_datepart_src"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    declaredAndMapped("ctas_datepart", "y", "mo") shouldBe Map(
+      "y"  -> ("BIGINT", "long"),
+      "mo" -> ("BIGINT", "long")
+    )
+    intsById("SELECT id, y FROM ctas_datepart", "y") shouldBe Map(1L -> 2024L, 2L -> 2019L)
+    intsById("SELECT id, mo FROM ctas_datepart", "mo") shouldBe Map(1L -> 3L, 2L -> 7L)
+  }
+
+  /** A set operation over a date part answers BIGINT, every value a Long, as DuckDB does.
+    *
+    * 🔴 A set operation types each leg with the type it reports, and a date part reported NUMERIC,
+    * a type read as it comes: `YEAR(d) UNION ALL n` was a NUMERIC column whose values kept the
+    * class they arrived with. DuckDB 1.5.5 types `year(d)` BIGINT and the column BIGINT, which a
+    * leg's INTEGER widens to, so the values are 2024, 2019, 7 and 42, each a BIGINT.
+    */
+  it should "answer a set operation over a date part as BIGINT, every value a Long" in {
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS setop_datepart_d (id INT, d DATE);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run("INSERT INTO setop_datepart_d (id, d) VALUES (1, '2024-03-15'), (2, '2019-07-04');")
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    assertDdl(
+      System.nanoTime(),
+      client.run("CREATE TABLE IF NOT EXISTS setop_datepart_n (id INT, n INT);").futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO setop_datepart_n (id, n) VALUES (1, 7), (2, 42);").futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+
+    val sql = "SELECT YEAR(d) AS y FROM setop_datepart_d UNION ALL SELECT n FROM setop_datepart_n"
+    val values = collectRows(System.nanoTime(), client.run(sql).futureValue).map(scalarOf(_, "y"))
+    withClue(s"[$sql] ${values.map(v => s"$v: ${Option(v).map(_.getClass.getSimpleName)}")} ") {
+      values.filter(_ != null).map(_.getClass).distinct shouldBe Seq(classOf[java.lang.Long])
+      values.sortBy(String.valueOf(_).toLong) shouldBe Seq(7L, 42L, 2019L, 2024L)
+    }
+  }
+
+  /** The source of the GREATEST / LEAST rows over a date part: an INT and a REAL beside a date.
+    * Created once, by whichever of those rows runs first.
+    */
+  private lazy val greatestDatePartSource: String = {
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run("CREATE TABLE IF NOT EXISTS gl_datepart (id INT, d DATE, n INT, r REAL);")
+        .futureValue
+    )
+    assertDml(
+      System.nanoTime(),
+      client
+        .run(
+          "INSERT INTO gl_datepart (id, d, n, r) VALUES " +
+          "(1, '2024-03-15', 7, 2030.5), (2, '2019-07-04', 2021, 1.25);"
+        )
+        .futureValue,
+      Some(DmlResult(inserted = 2))
+    )
+    "gl_datepart"
+  }
+
+  /** id -> the numeric value of each of `columns`, compared by value whatever its class. */
+  private def numbersById(sql: String, columns: String*): Map[Long, Seq[BigDecimal]] =
+    collectRows(System.nanoTime(), client.run(sql).futureValue).map { row =>
+      String.valueOf(scalarOf(row, "id")).toDouble.toLong ->
+      columns.map(c => BigDecimal(String.valueOf(scalarOf(row, c))))
+    }.toMap
+
+  /** GREATEST / LEAST take the common type of what their arguments REPORT, so a date part, a
+    * BIGINT, makes them BIGINT beside an INT and REAL beside a REAL, and they render the cast of
+    * that type. These rows prove that the cast RUNS and answers DuckDB's values. DuckDB 1.5.5:
+    * `typeof(greatest(n, year(d)))` is BIGINT, `typeof(greatest(r, year(d)))` FLOAT, and the values
+    * below. Before, a date part was NUMERIC and they cast to `(double)`.
+    *
+    * ⚠️ The values are compared by value, not by class. On this path (a SELECT read through its
+    * hits) a script field answers the class the response parser gives it, a whole number an Integer
+    * and a decimal a Double, not its declared type's, whatever the cast: a pre-existing gap,
+    * recorded, that these rows do not pin.
+    */
+  it should "answer GREATEST / LEAST of a date part and an INT with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(n, YEAR(d)) AS g, LEAST(YEAR(d), n) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal(2024), BigDecimal(7)),
+      2L -> Seq(BigDecimal(2021), BigDecimal(2019))
+    )
+  }
+
+  it should "answer GREATEST / LEAST of a date part and a REAL with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(r, YEAR(d)) AS g, LEAST(YEAR(d), r) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal("2030.5"), BigDecimal(2024)),
+      2L -> Seq(BigDecimal(2019), BigDecimal("1.25"))
+    )
+  }
+
+  it should "answer GREATEST / LEAST of a date part and a literal with DuckDB's values" in {
+    val src = greatestDatePartSource
+    numbersById(
+      s"SELECT id, GREATEST(YEAR(d), 2020) AS g, LEAST(YEAR(d), 2020) AS l FROM $src",
+      "g",
+      "l"
+    ) shouldBe Map(
+      1L -> Seq(BigDecimal(2024), BigDecimal(2020)),
+      2L -> Seq(BigDecimal(2020), BigDecimal(2019))
+    )
   }
 
   it should "keep the script, and keep it WORKING, when the projection carries the operand (#385)" in {
@@ -984,9 +1264,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
-  /** 🔴 The lead's Ruling B, executed. A safe cast that FAILS leaves its hoisted local at `null`,
-    * and the function wrapping it guarded the raw COLUMN parameter — which is not null — so the
-    * null reached the call. MEASURED on real Elasticsearch 8.18.3 over `s = 'abc'`:
+  /** 🔴 The lead's Ruling B, executed, then overturned for CONCAT (lead, 2026-10-23). A safe cast
+    * that FAILS leaves its hoisted local at `null`, and the function wrapping it guarded the raw
+    * COLUMN parameter — which is not null — so the null reached the call. MEASURED on real
+    * Elasticsearch 8.18.3 over `s = 'abc'`:
     *
     * {{{
     *   CONCAT(TRY_CAST(s AS BIGINT), 'x')   ->  "nullx"     <- the literal text, stored
@@ -996,9 +1277,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     *
     * The first two are a wrong VALUE — Painless `String.valueOf(null)` — not an absent column, and
     * that is what makes this worth a cluster row: nothing throws, Elasticsearch answers 200, and a
-    * `keyword` mapping stores the word `null` as happily as any other. The repair guards the
-    * reference the CALL reads as well as the raw parameter, so a failed safe cast is a NULL operand
-    * and the whole call is NULL — the rule `CONCAT(s, 'x')` over a null `s` already followed.
+    * `keyword` mapping stores the word `null` as happily as any other. A failed safe cast is a NULL
+    * operand: `ROUND` over it is NULL, and `CONCAT` skips it, as DuckDB's `concat` skips a NULL
+    * argument (`concat(NULL, 'x')` is `'x'`) — the one rule a query follows too. Ruling B made the
+    * whole CONCAT NULL in a computed column only.
     *
     * ⚠️ `'125'` is in the fixture so the row cannot be satisfied by a script that computes nothing:
     * the castable row must still produce the concatenation.
@@ -1031,7 +1313,8 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       String.valueOf(scalarOf(ok.head, "f")).toDouble shouldBe 125.0
     }
 
-    // the UNCASTABLE row: no value at all, and above all NOT the words `nullx` / `xnull`
+    // the UNCASTABLE row: CONCAT skips the NULL operand (DuckDB: `x` and `x`), never the words
+    // `nullx` / `xnull`, and ROUND over it is NULL
     val failing = collectRows(
       System.nanoTime(),
       client.run("SELECT id, s, c, d, f FROM trycast_null WHERE id = 2").futureValue
@@ -1039,34 +1322,30 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     withClue(s"$failing ") {
       failing.size shouldBe 1
       String.valueOf(scalarOf(failing.head, "s")) shouldBe "abc"
-      // 🔴 Stated as the DEFECT, so this row cannot go green on the pre-fix emission -- and read
-      // through `scalarOf`, which UNWRAPS Elasticsearch's per-field array. Comparing the wrapped
-      // value would have made `List("nullx")` pass this assertion (issue #382, found by review).
+      // read through `scalarOf`, which UNWRAPS Elasticsearch's per-field array: comparing the
+      // wrapped value would have made `List("nullx")` pass a negative assertion (issue #382)
       List("c", "d").foreach { k =>
-        failing.head.get(k).map(v => String.valueOf(scalarOf(failing.head, k))) match {
-          case Some(rendered) =>
-            withClue(s"[$k] ") {
-              rendered should not be "nullx"
-              rendered should not be "xnull"
-            }
-          case None => // absent is the right answer too
-        }
+        withClue(s"[$k] ")(String.valueOf(scalarOf(failing.head, k)) shouldBe "x")
       }
-      // ...and the column really is SQL NULL, by the same predicate every other row here uses
-      List("c", "d", "f").foreach(k =>
-        withClue(s"[$k] ")(isNullColumn(failing.head, k) shouldBe true)
-      )
+      withClue("[f] ")(isNullColumn(failing.head, "f") shouldBe true)
     }
 
     // 🔴 What the documentation promises about a NULL computed column, measured rather than
     // assumed: the row IS returned by a plain SELECT (above, `failing.size shouldBe 1`) and IS
-    // skipped by an existence test, because a null writes no doc value.
+    // skipped by an existence test, because a null writes no doc value. `c` holds a value on both.
     val existing = collectRows(
       System.nanoTime(),
-      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+      client.run("SELECT id FROM trycast_null WHERE f IS NOT NULL").futureValue
     )
     withClue(s"$existing ") {
       existing.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong) shouldBe Seq(1L)
+    }
+    val both = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id FROM trycast_null WHERE c IS NOT NULL").futureValue
+    )
+    withClue(s"$both ") {
+      both.map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong).sorted shouldBe Seq(1L, 2L)
     }
   }
 
@@ -1570,6 +1849,126 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     renderResults(System.nanoTime(), res)
     res.isSuccess shouldBe true
     res.toOption.get shouldBe DdlResult(false)
+  }
+
+  it should "keep the ingest processors a table does not declare across ALTER TABLE" in {
+    // A processor added to a table's pipeline outside its declaration belongs to no column. ALTER
+    // TABLE compared the live pipeline against the declaration alone, so it diffed that processor
+    // as removed and deleted it -- on an ALTER that did not touch the pipeline at all.
+    val pipeline = "alter_undeclared_ddl_default_pipeline"
+    assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS alter_undeclared").futureValue)
+    // a stale pipeline from an earlier run would keep its processors and make the control vacuous
+    assertDdl(System.nanoTime(), client.run(s"DROP PIPELINE IF EXISTS $pipeline").futureValue)
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          "CREATE TABLE alter_undeclared (id KEYWORD, a INT, b INT, c INT SCRIPT AS (a + b), PRIMARY KEY (id))"
+        )
+        .futureValue
+    )
+    assertDdl(
+      System.nanoTime(),
+      client
+        .run(
+          s"""ALTER PIPELINE $pipeline (ADD PROCESSOR SET (field = "status", if = "ctx.status == null", ignore_failure = true, value = "active"))"""
+        )
+        .futureValue
+    )
+
+    // a processor added through the Elasticsearch API, with the `separator` Elasticsearch 6 and 7
+    // strip from every processor elasticsql renders: there it can only be kept as it is stored
+    val split =
+      mapper.readTree("""{"split":{"field":"tags","separator":",","ignore_missing":true}}""")
+    val pipelines = client.asInstanceOf[PipelineApi]
+    def stored(): ObjectNode = pipelines.getPipeline(pipeline) match {
+      case ElasticSuccess(Some(json)) => mapper.readTree(json).asInstanceOf[ObjectNode]
+      case other                      => fail(s"$other")
+    }
+    def splitKept(): Boolean = {
+      val all = stored().get("processors")
+      (0 until all.size()).exists(i => all.get(i) == split)
+    }
+    // and the pipeline's own keys: a pipeline-level `on_failure` everywhere, `_meta` where the
+    // cluster takes it (Elasticsearch 7.10+)
+    val onFailure =
+      mapper.readTree("""[{"set":{"field":"error","value":"{{ _ingest.on_failure_message }}"}}]""")
+    val meta = mapper.readTree("""{"owner":"ops"}""")
+    val withMeta = client.asInstanceOf[VersionApi].version match {
+      case ElasticSuccess(v) => ElasticsearchVersion.isAtLeast(v, 7, 10)
+      case other             => fail(s"$other")
+    }
+    val withSplit = stored()
+    withSplit.get("processors").asInstanceOf[ArrayNode].add(split)
+    withSplit.set[ObjectNode]("on_failure", onFailure)
+    if (withMeta) withSplit.set[ObjectNode]("_meta", meta)
+    pipelines.createPipeline(pipeline, mapper.writeValueAsString(withSplit)) shouldBe
+    ElasticSuccess(true)
+    def ownKeysKept(): Unit = {
+      stored().get("on_failure") shouldBe onFailure
+      if (withMeta) stored().get("_meta") shouldBe meta
+    }
+
+    def processors(): Seq[Map[String, Any]] =
+      assertQueryRows(System.nanoTime(), client.run(s"DESCRIBE PIPELINE $pipeline").futureValue)
+    def tmpPipelines(): Seq[String] =
+      pipelineNames().map(String.valueOf).filter(_.startsWith("alter_undeclared_tmp_"))
+    def row(sql: String): Map[String, Any] = {
+      val rows = collectRows(System.nanoTime(), client.run(sql).futureValue)
+      rows should have size 1
+      rows.head
+    }
+
+    // the control: the script, the primary key and the two processors the table does not declare
+    val created = processors()
+    created should have size 4
+    created.count(_("field") == "status") shouldBe 1
+    splitKept() shouldBe true
+    ownKeysKept()
+
+    // an ALTER that changes no processor the table declares
+    val unrelated = client.run("ALTER TABLE alter_undeclared ADD COLUMN note KEYWORD").futureValue
+    renderResults(System.nanoTime(), unrelated)
+    unrelated.isSuccess shouldBe true
+    unrelated.toOption.get shouldBe DdlResult(true)
+    val kept = processors()
+    kept should have size 4
+    kept.count(_("field") == "status") shouldBe 1
+    splitKept() shouldBe true
+    ownKeysKept()
+    tmpPipelines() shouldBe empty
+
+    // RUN-level: the index runs the live pipeline, the computed column AND the kept processor
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO alter_undeclared (id, a, b) VALUES ('r1', 1, 2)").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    val r1 = row("SELECT c, status FROM alter_undeclared WHERE id = 'r1'")
+    String.valueOf(scalarOf(r1, "c")).toDouble shouldBe 3.0
+    String.valueOf(scalarOf(r1, "status")) shouldBe "active"
+
+    // an ALTER that removes a processor the table declares removes that one only
+    assertDdl(
+      System.nanoTime(),
+      client.run("ALTER TABLE alter_undeclared DROP COLUMN c").futureValue
+    )
+    val dropped = processors()
+    dropped.exists(_("processor_type") == "script") shouldBe false
+    dropped.count(_("field") == "status") shouldBe 1
+    // the pipeline was rewritten for the dropped script: the split and the pipeline's own keys
+    // are written as they are stored
+    splitKept() shouldBe true
+    ownKeysKept()
+    tmpPipelines() shouldBe empty
+
+    assertDml(
+      System.nanoTime(),
+      client.run("INSERT INTO alter_undeclared (id, a, b) VALUES ('r2', 3, 4)").futureValue,
+      Some(DmlResult(inserted = 1))
+    )
+    val r2 = row("SELECT status FROM alter_undeclared WHERE id = 'r2'")
+    String.valueOf(scalarOf(r2, "status")) shouldBe "active"
   }
 
   // ---------------------------------------------------------------------------
@@ -3714,12 +4113,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // 🔴 With NO function the engine does not script at all, and the contrast is worth pinning:
     // a bare column becomes a TERM query, so `OR` is a `bool.should` of two clauses …
     ids("WHERE status = 'A' OR id = 1") shouldBe Seq(1)
-    // … and `NOT` becomes Elasticsearch's `must_not`, whose semantics INCLUDE a document that does
-    // not carry the field — row 3 matches. That diverges from ANSI (`NOT NULL` is NULL), it is
-    // PRE-EXISTING, structural, and BIDC-8 does not change it: this story fixes what the Painless
-    // FILTER emits, and a bare-column predicate never reaches Painless here. Pinned so the
-    // difference between the two routes is visible rather than discovered.
-    ids("WHERE NOT status = 'A'") shouldBe Seq(2, 3)
+    // … and `NOT` becomes Elasticsearch's `must_not`, beside the column's `exists`: row 3, which
+    // does not carry the field, is left out, as ANSI reads `NOT NULL` (NULL). A `must_not` alone
+    // included it; both routes now agree.
+    ids("WHERE NOT status = 'A'") shouldBe Seq(2)
     // A numeric function family, so the rule is not string-specific (`amount` is present on all).
     ids("WHERE ABS(amount) > 10") shouldBe Seq(2, 3)
     ids("WHERE LOWER(status) = 'a' AND ABS(amount) > 10") shouldBe Seq.empty[Int]
@@ -3853,15 +4250,11 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 'y' END) = 'y'") shouldBe Seq(1)
     ids("WHERE (CASE WHEN UPPER(status) = 'A' THEN 1 END) = 1") shouldBe Seq(1)
 
-    // 🔴 Round 11, M-3 — A DEVIATION PINNED AS IT IS, NOT AS IT SHOULD BE. A full-text `MATCH` has
-    // no negated spelling of its own, so `NOT match(...)` takes Elasticsearch's `must_not`, which
-    // INCLUDES a document lacking the field: row 3 has no `status`, and ANSI would leave it out
-    // (`NOT UNKNOWN` is UNKNOWN). Same family as the bare-column `NOT status = 'A'` pinned above.
-    // NOT fixed in this story: it needs a `maybeNot` field on `MatchCriteria` (arity + `.sql`
-    // render, which `MaterializedViewExtension` persists) and a bridge arm emitting
-    // `must_not(match) + exists(field)` — the lead's call. `PainlessOperandFormSpec`'s class-axis
-    // gate names the exemption explicitly rather than leaving it silent.
-    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2, 3)
+    // A full-text `MATCH` has no negated spelling of its own, so `NOT match(...)` takes
+    // Elasticsearch's `must_not`; the bridge stands it beside the column's `exists`, so row 3, with
+    // no `status`, is left out, as ANSI reads `NOT UNKNOWN` (UNKNOWN). A `must_not` alone included
+    // it.
+    ids("WHERE amount = 50 AND NOT match(status) against ('A')") shouldBe Seq(2)
 
     assertDdl(System.nanoTime(), client.run("DROP TABLE IF EXISTS tvl_orders").futureValue)
   }

@@ -1568,6 +1568,184 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     client.searchedStatement.get() should not be null
   }
 
+  // ---- a failing UNION ALL branch under the licensed cap answers a handled failure ----
+
+  /** A client whose `UNION ALL` branch fails the ways a real branch fails under the cap: the
+    * branch's scroll stream fails (an Elasticsearch 4xx on a search page, a shard failure, a window
+    * computation failure all arrive this way), `scroll` itself throws, or a row mapper throws while
+    * the branch's rows are kept (a set-operation reader that cannot read a value). Every other
+    * branch serves one row. `failedScrolls` records the failing branch's scroll with its config, so
+    * each row can say WHICH arm of the fold it reached.
+    */
+  private class FailingBranchClient(
+    failing: SingleSearch => Boolean,
+    failure: () => Throwable,
+    synchronously: Boolean = false,
+    throwingMapper: Boolean = false,
+    throwingSeam: Option[Throwable] = None
+  ) extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+
+    @volatile var failedScrolls: Seq[(SearchStatement, ScrollConfig)] = Seq.empty
+    @volatile var seamThread: Option[Thread] = None
+
+    /** The cross-branch seam, which the cap path calls on the CALLER's thread before any `Future`
+      * exists. When `throwingSeam` is set it throws there, as a seam whose WHERE subquery fails
+      * synchronously would.
+      */
+    override private[client] def resolveWithSchema(
+      multiple: app.softnetwork.elastic.sql.query.MultiSearch
+    ): ElasticResult[app.softnetwork.elastic.sql.query.MultiSearch] =
+      throwingSeam match {
+        case Some(t) =>
+          seamThread = Some(Thread.currentThread())
+          throw t
+        case None => super.resolveWithSchema(multiple)
+      }
+
+    override def scroll(
+      statement: SearchStatement,
+      config: ScrollConfig = ScrollConfig()
+    )(implicit
+      system: ActorSystem,
+      context: ConversionContext
+    ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] =
+      statement match {
+        case s: SingleSearch if failing(s) =>
+          synchronized { failedScrolls = failedScrolls :+ ((statement, config)) }
+          if (synchronously) throw failure()
+          else Source.failed(failure())
+        case _ =>
+          Source.single((ListMap[String, Any]("a" -> 1), ScrollMetrics()))
+      }
+
+    override private[client] def unionAllRowMappers(
+      multiple: app.softnetwork.elastic.sql.query.MultiSearch
+    )(implicit context: ConversionContext): Seq[ListMap[String, Any] => ListMap[String, Any]] =
+      if (throwingMapper)
+        multiple.requests.map(_ =>
+          (_: ListMap[String, Any]) =>
+            throw new IllegalArgumentException("Conversion Error: Could not read 'x' as DATE")
+        )
+      else super.unionAllRowMappers(multiple)
+  }
+
+  private def fromY(s: SingleSearch): Boolean = s.sql.contains("FROM y")
+
+  /** The statement's outcome under the Community cap. The `Future` must SUCCEED with an
+    * `ElasticFailure`: a failed `Future`, or a throw from `execute` itself, is the escape.
+    */
+  private def handledFailureOf(sql: String, client: ElasticClientApi): ElasticError = {
+    val parsed = Parser(sql) match {
+      case Right(s) => s
+      case Left(e)  => fail(s"parse failed: ${e.msg}")
+    }
+    val ext = newExtension(Quota.Community.copy(maxQueryResults = Some(50)), LicenseType.Community)
+    scala.util.Try(Await.result(ext.execute(parsed, client), 10.seconds)) match {
+      case scala.util.Success(ElasticFailure(error)) => error
+      case scala.util.Success(other) => fail(s"expected a handled ElasticFailure, got $other")
+      case scala.util.Failure(t) =>
+        fail(s"the branch failure escaped execute: ${t.getClass.getName}: ${t.getMessage}")
+    }
+  }
+
+  behavior of "CoreDqlExtension UNION ALL branch-failure boundary"
+
+  it should "answer a handled 500 when a scrolled branch's stream fails" in {
+    val client =
+      new FailingBranchClient(fromY, () => new RuntimeException("boom"))
+    val error = handledFailureOf("SELECT a FROM x UNION ALL SELECT a FROM y", client)
+    error.statusCode shouldBe Some(500)
+    error.operation shouldBe Some("dql")
+    error.message should include("boom")
+    error.message should startWith("UNION ALL failed: ")
+    // the scroll ARM of the fold took it: the branch was scrolled bounded by the budget
+    client.failedScrolls.map(_._2.maxDocuments.isDefined) shouldBe Seq(true)
+  }
+
+  /** …answered as `GatewayApi.run` answers an `ElasticError` raised by a DQL statement: its status,
+    * message and cause kept, the operation relabelled `dql`.
+    */
+  it should "keep a status-bearing ElasticError a scrolled branch's stream fails with" in {
+    val rootCause = new RuntimeException("illegal_argument_exception")
+    val esError = ElasticError(
+      message = "Fielddata is disabled on [v]",
+      cause = Some(rootCause),
+      statusCode = Some(400),
+      operation = Some("search")
+    )
+    val client = new FailingBranchClient(fromY, () => esError)
+    val error = handledFailureOf("SELECT a FROM x UNION ALL SELECT a FROM y", client)
+    error.statusCode shouldBe Some(400)
+    error.message shouldBe "Fielddata is disabled on [v]"
+    error.cause.exists(_ eq rootCause) shouldBe true
+    error.operation shouldBe Some("dql")
+    client.failedScrolls should have size 1
+  }
+
+  it should "answer a handled failure when a QueryStream branch's stream fails" in {
+    val client =
+      new FailingBranchClient(fromY, () => new RuntimeException("window computation failed"))
+    val error = handledFailureOf(
+      // leg 1 is row-shaped and un-LIMITed (the cap path); leg 2 is the `QueryStream` shape: not
+      // row-shaped, no LIMIT, fields projected
+      "SELECT amount, category FROM x UNION ALL SELECT amount, MAX(amount) AS m FROM y",
+      client
+    )
+    error.statusCode shouldBe Some(500)
+    error.operation shouldBe Some("dql")
+    error.message should include("window computation failed")
+    // the QueryStream ARM took it: the executor's own scroll, with no budget in its config
+    client.failedScrolls.map(_._2.maxDocuments) shouldBe Seq(None)
+  }
+
+  it should "answer a handled failure when a row mapper throws while a branch's rows are kept" in {
+    val client =
+      new FailingBranchClient(_ => false, () => fail("no branch fails"), throwingMapper = true)
+    val error = handledFailureOf("SELECT a FROM x UNION ALL SELECT a FROM y", client)
+    error.statusCode shouldBe Some(500)
+    error.operation shouldBe Some("dql")
+    error.message should include("Conversion Error: Could not read")
+    error.cause.map(_.getClass) shouldBe Some(classOf[IllegalArgumentException])
+  }
+
+  it should "answer a handled failure when a branch's scroll throws synchronously" in {
+    val client = new FailingBranchClient(
+      fromY,
+      () => new IllegalStateException("scroll could not be opened"),
+      synchronously = true
+    )
+    val error = handledFailureOf("SELECT a FROM x UNION ALL SELECT a FROM y", client)
+    error.statusCode shouldBe Some(500)
+    error.operation shouldBe Some("dql")
+    error.message should include("scroll could not be opened")
+    client.failedScrolls should have size 1
+  }
+
+  /** The SYNCHRONOUS half. Every row above fails inside a `Future` (the fold's `flatMap` captures
+    * even a synchronous `scroll` throw), so the `recover` alone answers them. Here the throw
+    * happens before any `Future` exists, on the thread that called `execute`: only the `catch`
+    * answers it.
+    */
+  it should "answer a handled failure when the seam throws on the caller's thread" in {
+    val seamFailure = new IllegalStateException("subquery could not be resolved")
+    val client =
+      new FailingBranchClient(
+        _ => false,
+        () => fail("no branch runs"),
+        throwingSeam = Some(seamFailure)
+      )
+    val caller = Thread.currentThread()
+    val error = handledFailureOf("SELECT a FROM x UNION ALL SELECT a FROM y", client)
+    // the throw really happened before any Future: on the caller's thread, and no branch ran
+    client.seamThread shouldBe Some(caller)
+    client.failedScrolls shouldBe empty
+    error.statusCode shouldBe Some(500)
+    error.operation shouldBe Some("dql")
+    error.message should include("subquery could not be resolved")
+    error.cause.exists(_ eq seamFailure) shouldBe true
+  }
+
   // ---- Story P0.6: QueryResults cap-hit recorded on BOTH reject branches ----
 
   behavior of "CoreDqlExtension cap-hit instrumentation (P0.6)"

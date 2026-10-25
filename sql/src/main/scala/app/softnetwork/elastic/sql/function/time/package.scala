@@ -19,6 +19,8 @@ package app.softnetwork.elastic.sql.function
 import app.softnetwork.elastic.sql.{
   escapePainlessString,
   escapeStringLiteral,
+  painlessUtcLocalDate,
+  painlessUtcZonedDateTime,
   query,
   DateMathRounding,
   DateMathScript,
@@ -74,6 +76,56 @@ package object time {
       }
     }
 
+    /** A TIMESTAMP over an operand that renders a DATE when the interval is shorter than a day
+      * ([[promotesDate]]): the type the operand is converted to before the interval applies.
+      */
+    override def out: SQLType = if (promotesDate) SQLTypes.Timestamp else super.out
+
+    /** Is the interval shorter than a day (`HOUR`, `MINUTE`, `SECOND`)? */
+    private def subDay: Boolean = interval.unit match {
+      case TimeUnit.HOURS | TimeUnit.MINUTES | TimeUnit.SECONDS => true
+      case _                                                    => false
+    }
+
+    /** 🔴 A sub-day interval over an operand that renders a DATE
+      * (`SQLTypeUtils.operandRendersDate`: a cast to DATE, `LAST_DAY`, a conditional that answers a
+      * DATE) is a TIMESTAMP, as DuckDB types `DATE + INTERVAL 1 HOUR`: the date is its UTC
+      * midnight, then the hours are added. `LocalDate.plus(1, ChronoUnit.HOURS)` threw `Unsupported
+      * unit: Hours` and failed the statement once a `GREATEST` / `COALESCE` over dates answered its
+      * DATE, while the same call over `CAST(ts AS DATE)` was promoted: the consumer decided from
+      * another derivation than the one its operand answers with (#292). In a query: an ingest
+      * processor keeps its bytes.
+      */
+    private def promotesDate: Boolean =
+      subDay && !SQLTypeUtils.rendersOutsideQuery && SQLTypeUtils.operandRendersDate(this)
+
+    /** The type the operand is converted FROM before the interval applies. */
+    private def operandType(context: Option[PainlessContext]): SQLType =
+      if (promotes(context)) SQLTypes.Date else expr.baseType
+
+    /** Is the operand promoted to its UTC midnight before the interval applies, in this script? */
+    private def promotes(context: Option[PainlessContext]): Boolean =
+      SQLTypeUtils.convertsArms(context) && promotesDate
+
+    /** 🔴 The type `DATE_ADD` / `DATE_SUB` / `DATETIME_ADD` / `DATETIME_SUB` REPORT over an operand
+      * that REPORTS a DATE: a DATE for a whole number of days (`DAY`, `WEEK`, `MONTH`, `QUARTER`,
+      * `YEAR`), the lead's date-arithmetic ruling (a date plus whole days is a date) and the gate
+      * oracle's `CAST(d + INTERVAL 1 DAY AS DATE)`; a TIMESTAMP for a sub-day interval, as DuckDB
+      * types it. Over a bare DATE column it reported the column's runtime TIMESTAMP, while over a
+      * DATE `COALESCE` it reported DATE: two answers for two DATE operands. Any other operand
+      * reports as before, and so does every operand while an ingest processor or a transform
+      * renders, whose bytes read this type (`GREATEST` / `LEAST` over it) and do not move
+      * (`SQLTypeUtils.rendersOutsideQuery`).
+      */
+    def reportedOverDate: Option[SQLType] = this match {
+      case f: FunctionWithIdentifier
+          if !SQLTypeUtils.rendersOutsideQuery && f.identifier.reportedType == SQLTypes.Date =>
+        interval.checkType(SQLTypes.Date).toOption
+      case _ => None
+    }
+
+    override def reportedType: SQLType = reportedOverDate.getOrElse(super.reportedType)
+
     /** The interval's unit against the type it applies to, asked once the column types are known
       * (the lead's ruling of 2026-10-05), never when the statement is parsed.
       */
@@ -92,7 +144,14 @@ package object time {
           // THEN swapped it folded onto the boolean CONDITION (compile error); and
           // `CAST(d AS DATE) - INTERVAL 3 DAY > d` read `x > x`. Measured on the control.
           ctx.find(base) match {
-            case Some(param) =>
+            // 🔴 A BOUND expression that can be NULL -- `COALESCE(CAST(d AS DATE), NULL)` folds to
+            // the cast's parameter, `(param1 != null ? … : null)` -- is guarded like an expression
+            // below: the interval appended to it landed OUTSIDE the guard inside it, and `.plus`
+            // ran on the NULL of every document missing `d`. A column's parameter guards an
+            // appended method itself (`checkNotNull`). In a query.
+            case Some(param)
+                if (!param.isInstanceOf[LiteralParam] || !nullable ||
+                !SQLTypeUtils.convertsArms(context)) && !promotes(context) =>
               param.addPainlessMethod(painless(context))
               return base
             case _ if nullable =>
@@ -102,18 +161,20 @@ package object time {
               ctx.addParam(LiteralParam(base)) match {
                 case Some(bound) =>
                   return s"($bound == null) ? null : (def)(${SQLTypeUtils
-                    .coerce(bound, expr.baseType, out, nullable = false, context)}${painless(context)})"
+                    .coerce(bound, operandType(context), out, nullable = false, context)}${painless(context)})"
                 case None =>
               }
             case _ =>
           }
         case _ =>
       }
+      val from = operandType(context)
+      val operand = if (promotes(context)) SQLTypeUtils.asOneValue(base) else base
       if (nullable) {
         // ensure unique variable names
-        s"(def e$idx = $base; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", expr.baseType, out, nullable = false, context)}${painless(context)} : null)"
+        s"(def e$idx = $operand; e$idx != null ? ${SQLTypeUtils.coerce(s"e$idx", from, out, nullable = false, context)}${painless(context)} : null)"
       } else
-        s"${SQLTypeUtils.coerce(base, expr.baseType, out, nullable = expr.nullable, context)}${painless(context)}"
+        s"${SQLTypeUtils.coerce(operand, from, out, nullable = expr.nullable, context)}${painless(context)}"
     }
   }
 
@@ -410,7 +471,18 @@ package object time {
     * (issue #368). A `.get` here would be a second, silently divergent copy of that decision --
     * which is the shape of the defect, not a leftover.
     */
-  case object Extract extends Expr("EXTRACT") with TokenRegex
+  case object Extract extends Expr("EXTRACT") with TokenRegex {
+
+    /** Is `field` a part of the time of day, or the offset -- a field a `LocalDate` does not have?
+      */
+    def timeOfDay(field: TimeField): Boolean = field match {
+      case TimeField.HOUR_OF_DAY | TimeField.MINUTE_OF_HOUR | TimeField.SECOND_OF_MINUTE |
+          TimeField.NANO_OF_SECOND | TimeField.MICRO_OF_SECOND | TimeField.MILLI_OF_SECOND |
+          TimeField.OFFSET_SECONDS =>
+        true
+      case _ => false
+    }
+  }
 
   /** The Painless accessor an `Extract` reads its field with.
     *
@@ -436,6 +508,43 @@ package object time {
 
     override def inputType: SQLTemporal = SQLTypes.Temporal
     override def outputType: SQLNumeric = SQLTypes.Numeric
+
+    /** A date part is a whole number, so it REPORTS a BIGINT: the type DuckDB answers for every
+      * member of the family (`year`, `month`, `day`, `quarter`, `week`, `dayofweek`, `dayofyear`,
+      * `hour`, `minute`, `second`, the sub-second parts and `extract(… FROM …)`).
+      *
+      * 🔴 `outputType` stays NUMERIC: it is what `coerce` and the date part's own Painless read.
+      * `reportedType` is what a consumer that DECLARES a column reads (`CREATE TABLE … AS SELECT`,
+      * a materialized view), and NUMERIC there was a column no index could be created with (a
+      * `scaled_float` without a `scaling_factor`). Set operations, comparisons and GREATEST / LEAST
+      * type an operand with it too (one derivation): a `UNION` over a date part is BIGINT, a quoted
+      * number beside one is read as a whole number, and GREATEST / LEAST, which take the common
+      * type of their arguments, render the cast of that type (`(long)` beside an INT, `(float)`
+      * beside a REAL), the one Painless that follows this type. This is the override
+      * `Identifier.reportedType` is built for: only a function that actually says something
+      * different gets to override.
+      */
+    override def reportedType: SQLType = SQLTypes.BigInt
+
+    /** A part of the TIME of day (or the offset) of an operand that renders a DATE -- a
+      * `LocalDate`, which has no time: a cast to DATE, `LAST_DAY`, a conditional that answers a
+      * DATE (`SQLTypeUtils.operandRendersDate`) -- reads it at its UTC midnight, as DuckDB reads
+      * `hour(DATE)` (0). On the `LocalDate` itself `get(ChronoField.HOUR_OF_DAY)` threw
+      * `UnsupportedTemporalTypeException` and failed the statement: `HOUR(CAST(d AS DATE))` on
+      * `main` already, and `OFFSET_SECONDS(LAST_DAY(ts))` once `LAST_DAY` answered its DATE. The
+      * operand is bound once and guarded. In a query only: an ingest processor keeps its bytes.
+      */
+    override def toPainless(base: String, idx: Int, context: Option[PainlessContext]): String =
+      context match {
+        case Some(ctx)
+            if base.nonEmpty && SQLTypeUtils.convertsArms(context) &&
+              Extract.timeOfDay(field) && SQLTypeUtils.operandRendersDate(this) =>
+          val p = painless(context)
+          val one = SQLTypeUtils.asOneValue(base)
+          val operand = ctx.addParam(LiteralParam(one)).getOrElse(one)
+          s"($operand == null) ? null : (def)($operand.atStartOfDay(ZoneId.of('Z'))$p)"
+        case _ => super.toPainless(base, idx, context)
+      }
 
     override def toSQL(base: String): String = s"$sql(${field.sql} FROM $base)"
 
@@ -526,13 +635,26 @@ package object time {
       * one broken receiver for another.
       *
       * `with(TemporalAdjusters.lastDayOfMonth())` is defined on `Temporal`, so it needs no
-      * knowledge of the receiver at all and returns the receiver's own type. Executed on real
-      * Elasticsearch 6.8.23, 7.17.29, 8.18.3 and 9.0.3 over `ZonedDateTime`, `LocalDate` and
-      * `LocalDateTime` receivers -- see `DateDocValueEmissionSpec` for what the emission is pinned
-      * against.
+      * knowledge of the receiver at all. Executed on real Elasticsearch 6.8.23, 7.17.29, 8.18.3 and
+      * 9.0.3 over `ZonedDateTime`, `LocalDate` and `LocalDateTime` receivers -- see
+      * `DateDocValueEmissionSpec` for what the emission is pinned against.
+      *
+      * 🔴 It returns the RECEIVER's own type, so in a query the receiver is first made a DATE
+      * (`LastDayOfMonth.toPainlessCall`): over a timestamp the adjuster kept the time of day, a
+      * `ZonedDateTime`, where `LAST_DAY` is a DATE.
       */
     override def painless(context: Option[PainlessContext]): String = ".with"
     override lazy val words: List[String] = List(sql, "LASTDAY")
+
+    /** The DATE of a receiver whose type is unknown (`Any`: a `date_nanos` column), from its
+      * runtime class: a `LocalDate` as it is, a `LocalDateTime` its date, any other temporal (a
+      * zoned doc value) its UTC date. The arm conversion leaves such a receiver as it renders, and
+      * the adjuster kept its class and its time of day. One `instanceof` per row, for this receiver
+      * only: a typed receiver is converted as before. `receiver` is ONE value, read three times.
+      */
+    def dateOf(receiver: String): String =
+      s"($receiver instanceof LocalDate ? $receiver : $receiver instanceof LocalDateTime ? " +
+      s"$receiver.toLocalDate() : $receiver$painlessUtcLocalDate)"
   }
 
   case class LastDayOfMonth(identifier: Identifier)
@@ -546,19 +668,86 @@ package object time {
     override def inputType: SQLDate = SQLTypes.Date
     override def outputType: SQLDate = SQLTypes.Date
 
+    /** `LAST_DAY` is a DATE whatever its operand, as DuckDB types `last_day(TIMESTAMP)`: in a query
+      * its receiver is converted to a DATE before the adjuster ([[toPainlessCall]]), so it renders
+      * a `LocalDate`. It PRODUCES its type rather than preserving its receiver's (#384), which is
+      * what `Identifier.renderedType` -- and so a consumer's conversion and a conditional's arm --
+      * reads. Reporting the receiver's TIMESTAMP typed `CASE … THEN CAST(d AS DATE) ELSE
+      * LAST_DAY(ts) END` a TIMESTAMP, where DuckDB answers a DATE. While an ingest processor
+      * renders, where the receiver is not converted, it preserves its receiver's type, as it did
+      * (`SQLTypeUtils.rendersOutsideQuery`).
+      */
+    override def producesOutputJavaType: Boolean = !SQLTypeUtils.rendersOutsideQuery
+
+    override def reportedType: SQLType = SQLTypes.Date
+
     override def sql: String = LastDayOfMonth.sql
 
     override def toSQL(base: String): String = {
       s"$sql($base)"
     }
 
+    /** 🔴 The receiver is converted to a DATE FROM what it renders, through the one arm conversion
+      * (`SQLTypeUtils.convertArm`): a date doc value through the UTC normalisation
+      * (`….toInstant().atZone(ZoneId.of('Z')).toLocalDate()`), a receiver that already renders a
+      * `LocalDate` (a cast to DATE, `CURRENT_DATE`, a narrowed parameter) as it is, and a receiver
+      * whose type is unknown (a `date_nanos` column), which that conversion leaves as it renders,
+      * from its runtime class ([[LastDayOfMonth.dateOf]]). Without it the adjuster answered the
+      * receiver's class: `LAST_DAY(ts)` kept `ts`'s time of day, a `ZonedDateTime` in a DATE
+      * column, and a CASE mixing it with a DATE arm answered two classes.
+      *
+      * ⚠️ Only an operand the call has not converted is converted here. A function-wrapped column
+      * arrives converted already: `FunctionN.painless` converts it to this function's input type,
+      * DATE, from what it renders (`SQLTypeUtils.renderedSourceType`) -- which is why
+      * `LAST_DAY(CAST(ts AS TIMESTAMP))` always answered a DATE. A bare column arrives as its doc
+      * value: the conversion `FunctionN` attempts for it is a method appended to the column's
+      * parameter object, which lands on whichever copy of the column the script registered first --
+      * not this one (MEASURED: `LAST_DAY(ts)` rendered `param1.with(…)` over the raw doc value). A
+      * nameless operand (a CASE, a COALESCE) has no parameter, and arrives as it renders: the type
+      * it reports.
+      *
+      * A receiver that is a NAME is guarded by the call (`(param1 == null) ? null : …`), so it is
+      * not NULL here. A nameless receiver that can be NULL renders its OWN guard (`(param4 == null)
+      * ? null : (def)(…)`, a `DATE_TRUNC` over a CASE): in a query it is bound once, and the
+      * conversion and the adjuster apply INSIDE a guard on it. Appended to the guarded expression,
+      * they ran on its NULL (`cannot access method/field [with] from a null def reference`). An
+      * ingest processor keeps its bytes: its receiver is parsed from the raw `ctx.<field>`.
+      */
     override def toPainlessCall(
       callArgs: List[String],
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
         case arg :: Nil =>
-          s"$arg${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
+          val convertedByCall =
+            identifier.functions.nonEmpty && context.exists(_.get(identifier).isDefined)
+          // a nameless receiver that can be NULL, bound once to be guarded (in a query)
+          val guarded =
+            if (
+              SQLTypeUtils.convertsArms(context) && !FunctionN.isName(arg.trim) &&
+              SQLTypeUtils.mayRenderNull(identifier, context)
+            ) context.flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(arg))))
+            else None
+          val operand = guarded.getOrElse(arg)
+          val converts = SQLTypeUtils.convertsArms(context) && !convertedByCall
+          val receiver =
+            if (converts && SQLTypeUtils.armSourceType(identifier, operand, context).isUnknown)
+              LastDayOfMonth.dateOf(
+                if (FunctionN.isName(operand.trim)) operand.trim
+                else
+                  context
+                    .flatMap(_.addParam(LiteralParam(SQLTypeUtils.asOneValue(operand))))
+                    .getOrElse(SQLTypeUtils.asOneValue(operand))
+              )
+            else if (converts)
+              SQLTypeUtils.convertArm(identifier, operand, SQLTypes.Date, nullable = false, context)
+            else operand
+          // the adjuster applies to the whole receiver, not to the last branch of a conditional one
+          val adjusted =
+            if (SQLTypeUtils.convertsArms(context)) SQLTypeUtils.asOneValue(receiver) else receiver
+          val call =
+            s"$adjusted${LastDayOfMonth.painless(context)}(TemporalAdjusters.lastDayOfMonth())"
+          guarded.fold(call)(bound => s"($bound == null) ? null : $call")
         case _ => throw new IllegalArgumentException("LastDayOfMonth requires exactly one argument")
       }
     }
@@ -1295,6 +1484,44 @@ package object time {
     }
   }
 
+  /** A function that FORMATS a date into text, and can tell whether its operand is a date column's
+    * raw doc value.
+    */
+  sealed trait FormatsDateDocValue extends FunctionWithIdentifier {
+
+    /** Whether the operand is a date column's RAW doc value: no function applied before this one,
+      * and a mapping that types the column temporal. Elasticsearch 6.8 hands a script a `date` doc
+      * value as a `JodaCompatibleZonedDateTime`, which `DateTimeFormatter.format` does not read as
+      * the date it is (`PainlessTarget.jodaCompatibleDates`). Without a mapping the type is unknown
+      * and this is false.
+      */
+    def formatsRawDateDocValue: Boolean =
+      identifier.functions.isEmpty && identifier.name.nonEmpty &&
+      identifier.baseType.isInstanceOf[SQLTemporal]
+
+    /** The unit a `DATE_TRUNC` of the operand keeps this function's output at: truncating first
+      * hands the formatter a value it reads on every major (MEASURED on Elasticsearch 6.8.23).
+      */
+    def keepingUnit: TimeUnit
+
+    /** 🔴 The operand as the formatter reads it. Elasticsearch 6.8 hands a QUERY script a `date`
+      * doc value as a `JodaCompatibleZonedDateTime`, which is no `TemporalAccessor`: the format of
+      * a raw date column failed every shard holding such a document ("Cannot cast
+      * org.elasticsearch.script.JodaCompatibleZonedDateTime to
+      * java.time.temporal.TemporalAccessor") and the search answered HTTP 500. On that major the
+      * raw doc value is first made the UTC `ZonedDateTime` it holds, through the normalisation
+      * every temporal conversion of a doc value already takes (`painlessUtcZonedDateTime`). 7 and
+      * up hand a `ZonedDateTime`, and an ingest processor and a transform read no doc value: their
+      * scripts keep their bytes. `operand` is a name (the call's NULL guard tests it first).
+      */
+    protected def formatterOperand(operand: String, context: Option[PainlessContext]): String =
+      if (
+        formatsRawDateDocValue &&
+        context.exists(c => !c.isProcessor && !c.isTransform && c.target.jodaCompatibleDates)
+      ) s"${SQLTypeUtils.asOneValue(operand)}$painlessUtcZonedDateTime"
+      else operand
+  }
+
   case object DateFormat extends Expr("DATE_FORMAT") with TokenRegex with PainlessScript {
     override def painless(context: Option[PainlessContext]): String = ".format"
     override lazy val words: List[String] = List(sql, "FORMAT", "DATEFORMAT")
@@ -1304,8 +1531,11 @@ package object time {
       extends DateFunction
       with TransformFunction[SQLDate, SQLVarchar]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with FormatsDateDocValue {
     override def fun: Option[PainlessScript] = Some(DateFormat)
+
+    override def keepingUnit: TimeUnit = TimeUnit.DAYS
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -1345,11 +1575,13 @@ package object time {
           // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
           // call. Passing `false` here made a document merely MISSING the field run
           // `LocalDate.parse(null, ...)` and fail the shard.
-          val operand = identifier.baseType match {
+          // The operand's RENDERED source type: over `CAST(s AS DATE)` or `DATE_PARSE(s, …)` it is
+          // already a `LocalDate`, and parsing it a second time failed the shard.
+          val source = SQLTypeUtils.renderedSourceType(identifier, context)
+          val operand = source match {
             case _: SQLVarchar =>
-              SQLTypeUtils
-                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
-            case _ => arg
+              SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
+            case _ => formatterOperand(arg, context)
           }
           context match {
             case Some(ctx) =>
@@ -1514,8 +1746,11 @@ package object time {
       extends DateTimeFunction
       with TransformFunction[SQLDateTime, SQLVarchar]
       with FunctionWithIdentifier
-      with FunctionWithDateTimeFormat {
+      with FunctionWithDateTimeFormat
+      with FormatsDateDocValue {
     override def fun: Option[PainlessScript] = Some(DateTimeFormat)
+
+    override def keepingUnit: TimeUnit = TimeUnit.SECONDS
 
     override def args: List[PainlessScript] = List(identifier)
 
@@ -1555,11 +1790,13 @@ package object time {
           // parameter, i.e. EVALUATED before the guard `FunctionN.painless` puts around the format
           // call. Passing `false` here made a document merely MISSING the field run
           // `LocalDate.parse(null, ...)` and fail the shard.
-          val operand = identifier.baseType match {
+          // The operand's RENDERED source type: over `CAST(s AS DATE)` or `DATE_PARSE(s, …)` it is
+          // already a `LocalDate`, and parsing it a second time failed the shard.
+          val source = SQLTypeUtils.renderedSourceType(identifier, context)
+          val operand = source match {
             case _: SQLVarchar =>
-              SQLTypeUtils
-                .coerce(arg, identifier.baseType, inputType, identifier.nullable, context)
-            case _ => arg
+              SQLTypeUtils.coerce(arg, source, inputType, identifier.nullable, context)
+            case _ => formatterOperand(arg, context)
           }
           context match {
             case Some(ctx) =>

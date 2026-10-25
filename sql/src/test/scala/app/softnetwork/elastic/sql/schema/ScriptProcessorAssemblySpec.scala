@@ -105,8 +105,9 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
     }
   }
 
-  /** A byte-exact drift pin on `;`-free assembly: these shapes were always correct and none of them
-    * may move.
+  /** A byte-exact drift pin on `;`-free assembly: none of these shapes may move unnoticed. The
+    * CONCAT one moved with the lead's ruling of 2026-10-23: a processor's CONCAT skips a NULL
+    * argument, as a query's does.
     */
   it should "assemble a literal-free expression exactly as before" in {
     forAll(
@@ -114,7 +115,7 @@ class ScriptProcessorAssemblySpec extends AnyFlatSpec with Matchers with TableDr
         ("ddl", "expected"),
         (
           "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (CONCAT(name, 'ab')))",
-          "def param1 = ctx.name; ctx.c = (param1 == null) ? null : String.valueOf(param1) + \"ab\""
+          "def param1 = ctx.name; ctx.c = ((param1 == null ? \"\" : String.valueOf(param1)) + \"ab\")"
         ),
         (
           "CREATE TABLE t (name KEYWORD, c KEYWORD SCRIPT AS (UPPER('ab')))",
