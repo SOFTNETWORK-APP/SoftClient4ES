@@ -134,7 +134,9 @@ ROUND(x, n)
 A half is rounded away from zero, as DuckDB rounds: `ROUND(2.5)` is `3`, `ROUND(-2.5)` is `-3`,
 `ROUND(-1.25, 1)` is `-1.3`. With decimal places the value is DuckDB's `round(x * 10^n) / 10^n`
 (`ROUND(2.46, 1)` is `2.5`), in a `SELECT`, a `WHERE`, a `GROUP BY` key and its `HAVING` and a
-computed column alike. `ROUND` of `NULL` is `NULL`.
+computed column alike. `ROUND` of `NULL` is `NULL`. Over a `REAL` (`float`) operand with decimal
+places the rounding is computed in single precision, as DuckDB rounds a `FLOAT`: `ROUND(r, 1)` of
+the float `7.75` is the float `7.8`, read back as `7.800000190734863` (*since `0.24.0`*).
 
 **Examples:**
 ```sql
@@ -392,15 +394,24 @@ FROM triangles;
 
 ### Logarithmic and Exponential Functions
 
-#### LOG / LN
+> **Outside their domain these functions fail the statement**, as DuckDB does (*since `0.24.0`*):
+> `LOG` / `LOG10` of zero (*"cannot take logarithm of zero"*) or of a negative number (*"cannot take
+> logarithm of a negative number"*), `SQRT` of a negative number (*"cannot take square root of a
+> negative number"*), and `ASIN` / `ACOS` outside `[-1, 1]` (*"ASIN is undefined outside [-1,1]"*,
+> and the same for `ACOS`). The search fails with that reason and the status Elasticsearch gives a
+> script error: `400` on Elasticsearch 8, `500` on Elasticsearch 6.8. Before `0.24.0` such a row
+> answered `NaN` or `-Infinity`.
+
+#### LOG
 
 Natural logarithm (base e).
 
 **Syntax:**
 ```sql
 LOG(x)
-LN(x)
 ```
+
+`LOG` is the natural logarithm; there is no `LN` spelling (`LN(x)` is not a function).
 
 **Inputs:**
 - `x` - `NUMERIC` (> 0)
@@ -414,9 +425,6 @@ LN(x)
 SELECT LOG(EXP(1)) AS l;
 -- Result: 1
 
--- Using LN alias
-SELECT LN(10) AS l;
--- Result: 2.302585...
 
 -- Natural log of 1
 SELECT LOG(1) AS l;

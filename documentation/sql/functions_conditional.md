@@ -4,6 +4,27 @@
 
 This page documents conditional expressions.
 
+### The type of a conditional
+
+*Since `0.24.0`.* `CASE`, `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` answer **one type per
+column**: the type they report, which is DuckDB's common type of the values they can return
+(`DATE` with `DATE` is a `DATE`, `DATE` with `TIMESTAMP` a `TIMESTAMP`, `INT` with `DOUBLE` a
+`DOUBLE`, a `BOOLEAN` with a number a number), and every row is converted to it. `NULLIF` reports
+the type of its first argument. An argument whose type is not known — a `date_nanos` column, or a
+column no mapping types — beside a `DATE` makes a `TIMESTAMP`.
+
+- **Arguments with no common type are refused**, once the column types are known, with DuckDB's
+  reason: `CASE WHEN n > 0 THEN d ELSE n END` (a `DATE` beside an `INT`) answers *"Cannot mix values
+  of type INT and DATE in CASE expression - an explicit cast is required"*, and `COALESCE` *"… in
+  COALESCE operator …"*. That covers a number beside a date, a text column beside a number or a
+  date, and a `TIME` beside a date or a timestamp. A `NULL`, a string literal, an aggregate and an
+  argument of unknown type take no part in the check. Cast one side to the type you want.
+- **A `NULL` literal argument is folded**, as DuckDB and PostgreSQL do: `NULLIF(x, NULL)` is `x`,
+  `NULLIF(NULL, x)` is `NULL`, `COALESCE` drops a `NULL` argument, and `GREATEST` / `LEAST` skip
+  one. With no other argument left, the result is `NULL`.
+- In a computed column (`SCRIPT AS`) and in a materialized view's computed field, a conditional is
+  rendered as before `0.24.0`, so a stored pipeline does not change.
+
 ---
 
 ### Function: CASE (searched form)  

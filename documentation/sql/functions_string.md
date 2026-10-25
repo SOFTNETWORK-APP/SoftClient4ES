@@ -239,14 +239,22 @@ FROM products;
 
 ### String Measurement Functions
 
-#### LENGTH / LEN
+#### LENGTH / LEN / CHAR_LENGTH / CHARACTER_LENGTH
 
 Character length of string.
+
+> **It counts CHARACTERS, not bytes**, and that is why `CHAR_LENGTH` is an accepted spelling here.
+> MySQL's own `LENGTH` counts *bytes*, so a statement written against MySQL may say `CHAR_LENGTH`
+> precisely to avoid that — and it means exactly what our `LENGTH` already did.
+> `CHAR_LENGTH('café')` is **4**, not 5. `CHAR_LENGTH` and `CHARACTER_LENGTH` are the SQL-92
+> spellings; BI tools emit them for a "string length" calculated field.
 
 **Syntax:**
 ```sql
 LENGTH(str)
 LEN(str)
+CHAR_LENGTH(str)
+CHARACTER_LENGTH(str)
 ```
 
 **Inputs:**
@@ -276,6 +284,12 @@ SELECT LENGTH('hello world') AS l;
 -- Unicode characters
 SELECT LENGTH('café') AS l;
 -- Result: 4
+
+-- The SQL-92 spellings, and the reason they exist: 4 characters, 5 UTF-8 bytes
+SELECT CHAR_LENGTH('café') AS l;
+-- Result: 4
+SELECT CHARACTER_LENGTH('hello world') AS l;
+-- Result: 11
 
 -- Filter by length
 SELECT * FROM products

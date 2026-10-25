@@ -822,7 +822,7 @@ WHERE event_time >= '2025-01-10 09:00:00'
 ### Operator: `IN`
 
 **Description:**  
-Membership in a set of literal or numeric values, or results of subquery (subquery support depends on implementation).
+Membership in a set of literal or numeric values, or in the values a subquery returns.
 
 **Syntax:**
 ```sql
@@ -881,6 +881,14 @@ WHERE category_id IN (
 );
 ```
 
+Subqueries are accepted **since engine `0.24.0`**. The subquery must project **exactly one column** (`IN (SELECT * FROM …)` is refused), must read a table
+(`IN (SELECT 1)` is refused) and may not be a set operation. An uncorrelated body is executed first and its
+values are collected as a distinct set — bounded at **65,536** values (`index.max_terms_count`), past which
+the statement fails loudly rather than truncating. A body over a plain column is resolved with a single
+`terms` aggregation, so `DISTINCT` inside it buys nothing. A **correlated** body (one that reads the outer
+row) runs on the relational engine — see
+[Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
+
 **Empty List:**
 ```sql
 -- ✗ parse error: an IN list holds at least one value
@@ -899,6 +907,9 @@ SELECT * FROM users WHERE status = 'active' OR status IS NULL;
 SELECT * FROM users WHERE email IN ('test@example.com');
 -- Rows with NULL email are not matched
 ```
+
+A `NULL` among the values a subquery returns is ignored by `IN` (ANSI). A literal `NULL` in a written value
+list, and an empty list `IN ()`, are **parse errors** — write the condition with `IS NULL` instead.
 
 ---
 
@@ -938,9 +949,10 @@ SELECT * FROM products WHERE product_id NOT IN (1, 2, 3);
 **With Subquery:**
 ```sql
 -- Exclude customers who have orders
+-- (no DISTINCT needed — the engine collects the subquery's values as a set)
 SELECT * FROM customers
 WHERE id NOT IN (
-  SELECT DISTINCT customer_id FROM orders
+  SELECT customer_id FROM orders
 );
 
 -- Exclude inactive categories
@@ -955,7 +967,8 @@ WHERE category_id NOT IN (
 -- ✗ parse error: NULL is not accepted in a NOT IN list
 SELECT * FROM users WHERE id NOT IN (1, 2, NULL);
 
--- Safe alternative: filter NULLs in subquery
+-- NOT IN over a subquery that returns a NULL matches NO rows (ANSI: the comparison is UNKNOWN)
+-- Filter the NULLs out in the subquery:
 SELECT * FROM customers
 WHERE id NOT IN (
   SELECT customer_id FROM orders WHERE customer_id IS NOT NULL
@@ -967,6 +980,12 @@ WHERE NOT EXISTS (
   SELECT 1 FROM orders o WHERE o.customer_id = c.id
 );
 ```
+
+That last form is a **correlated** subquery — the body reads `c.id` from the outer row — so it runs on the
+relational engine rather than on Elasticsearch alone (**since engine `0.24.0` with arrow-extensions
+`0.3.4`**; the uncorrelated forms above need only the engine). The outer reference must be qualified with the outer
+alias and left unquoted. See
+[Which forms need the relational engine](known_limitations.md#which-forms-need-the-relational-engine).
 
 ---
 
@@ -1703,8 +1722,9 @@ WHERE first_name = 'John' OR last_name = 'Doe';
 -- May require full table scan
 
 -- Alternative: UNION ALL (if indexes exist)
--- Note: bare UNION (with de-duplication) is not supported and is rejected at
--- parse time — a row matching BOTH predicates appears twice with UNION ALL.
+-- UNION ALL keeps duplicates, so a row matching BOTH predicates appears twice —
+-- the second branch excludes them here. A bare UNION would de-duplicate for you,
+-- but it runs on the relational engine rather than on Elasticsearch directly.
 SELECT * FROM users WHERE first_name = 'John'
 UNION ALL
 SELECT * FROM users WHERE last_name = 'Doe' AND first_name <> 'John';

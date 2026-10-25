@@ -2,7 +2,25 @@
 
 # Keywords
 
-A list of reserved words recognized by the parser for this engine.
+The words the parser recognises. Two different sets live on this page, and the difference matters when
+you name a column:
+
+- **Recognised** — the word has a meaning in the grammar. Everything listed below is recognised.
+- **Reserved** — the word additionally **cannot be used as a bare identifier**. Most, but *not all*, of
+  the words below are reserved.
+
+`EXISTS` is reserved, so `SELECT exists FROM t` is a parse error. `ANY` and `SOME` are **deliberately not
+reserved**, so `SELECT any, some FROM t WHERE any = 1` parses as columns — even though `x = ANY (SELECT …)`
+is real grammar. The same split runs through the set-operator and CTE words: `UNION`, `INTERSECT`, `EXCEPT`,
+`ALL` and `DISTINCT` are reserved, while `WITH` and `RECURSIVE` are not — `SELECT a AS recursive FROM t`
+parses, `SELECT a AS intersect FROM t` does not. `TOP` is recognised (`SELECT TOP 10 id FROM t` bounds the rows) and **deliberately not reserved**, so
+`SELECT top FROM t` still selects a column called `top`. `PERCENT` is recognised only so that
+`SELECT TOP n PERCENT` can be refused *by name* — see
+[Known limitations](known_limitations.md).
+
+If you have a column whose name collides with a reserved word, **quote it** rather than
+renaming it: `SELECT "exists" FROM t` works, and so does the backtick spelling — see
+[Quoted identifiers](dql_statements.md#quoted-identifiers).
 
 ## Main clauses
 COPY
@@ -25,9 +43,20 @@ NULLS FIRST
 NULLS LAST  
 OFFSET  
 LIMIT
+TOP
+PERCENT
 ON
 CONFLICT
 DO
+UNION ALL
+UNION
+UNION DISTINCT
+INTERSECT
+INTERSECT ALL
+EXCEPT
+EXCEPT ALL
+WITH
+RECURSIVE
 SHOW
 DESCRIBE
 EVERY
@@ -79,6 +108,8 @@ TRIM
 LTRIM  
 RTRIM  
 LENGTH  
+CHAR_LENGTH  
+CHARACTER_LENGTH  
 SUBSTRING  
 SUBSTR  
 CONCAT  
@@ -156,10 +187,12 @@ DATE_SUB
 DATESUB  
 DATETIME_ADD  
 DATETIMEADD  
+TIMESTAMPADD  
 DATETIME_SUB  
 DATETIMESUB  
 DATE_DIFF  
 DATEDIFF  
+TIMESTAMPDIFF  
 DATE_FORMAT  
 DATE_PARSE  
 DATETIME_FORMAT  
@@ -181,6 +214,22 @@ NOT IN
 NOT BETWEEN  
 IS NULL  
 IS NOT NULL  
+EXISTS  
+NOT EXISTS  
+ALL  
+ANY  
+SOME  
+
+`EXISTS` and `ALL` are **reserved** — a column of either name must be quoted. `ANY` and `SOME` are
+recognised but **not reserved**, on purpose: a column called `any` keeps parsing, and the grammar tells the
+two readings apart by what follows.
+
+These five words introduce the subquery predicates. `= ANY` and `= SOME` mean `IN`, and `<> ALL` means
+`NOT IN` — the engine normalises them, so `WHERE customer_id = ANY (SELECT id FROM customers)` is stored
+and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The ordering quantifiers
+(`> ALL`, `>= ANY`, `< ALL`, …) keep their operator, but **`SOME` always normalises to `ANY`** — a
+statement written `<= SOME (…)` is stored and re-rendered as `<= ANY (…)`. See
+[Subqueries and derived tables](known_limitations.md#subqueries-and-derived-tables).
 
 ## Logical operators
 AND  

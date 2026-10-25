@@ -34,6 +34,15 @@ Aggregate functions perform calculations on sets of rows and return a single res
 - **HAVING**: Filters groups based on aggregate conditions
 - **Window Functions**: Perform calculations across rows related to the current row
 
+**The type of an aggregate column** (*since `0.24.0`*) is the type the aggregate produces — what
+`DESCRIBE`, a `CREATE TABLE … AS SELECT` mapping, a materialized view and the JDBC / Arrow metadata
+declare: `COUNT` is `BIGINT`; `AVG`, the `STDDEV` / `VARIANCE` family and the percentiles are
+`DOUBLE`; `SUM` keeps the summed column's numeric type; `MIN`, `MAX`, `FIRST_VALUE` and `LAST_VALUE`
+keep the type of the expression they aggregate (`MAX(YEAR(d))` is `BIGINT`, `MAX(CAST(ts AS DATE))`
+a `DATE`). The values are unchanged. `MIN` / `MAX` over `ROUND(x, n)` or a `DATEDIFF` report
+`NUMERIC`, which a `CREATE TABLE … AS SELECT` cannot map: it fails at index creation
+(`Field [scaling_factor] is required`) and leaves no index behind.
+
 ---
 
 ## Function: COUNT
@@ -215,8 +224,9 @@ SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 
 **NULL Handling:**
 - NULL values are ignored
-- If all values are NULL, returns NULL
-- Empty set returns NULL
+- If all values are NULL, or over no row, returns `0.0`: the engine keeps Elasticsearch's own sum
+  of no value, where ANSI SQL answers NULL. `AVG`, `MIN`, `MAX`, the `STDDEV` / `VARIANCE` family
+  and the percentiles answer NULL there, and `COUNT` answers `0`.
 
 **Examples:**
 
@@ -486,7 +496,8 @@ MIN(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 - `expr` - Any comparable type (numeric, string, date, etc.)
 
 **Output:**
-- Same type as input
+- Same type as input: over a `DATE` or a `TIMESTAMP` it answers the date or the timestamp, per
+  group too (before `0.24.0` a grouped one answered its epoch milliseconds)
 
 **NULL Handling:**
 - NULL values are ignored
@@ -614,7 +625,8 @@ MAX(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 - `expr` - Any comparable type (numeric, string, date, etc.)
 
 **Output:**
-- Same type as input
+- Same type as input: over a `DATE` or a `TIMESTAMP` it answers the date or the timestamp, per
+  group too (before `0.24.0` a grouped one answered its epoch milliseconds)
 
 **NULL Handling:**
 - NULL values are ignored

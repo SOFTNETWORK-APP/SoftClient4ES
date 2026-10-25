@@ -110,9 +110,12 @@ SELECT CAST(true AS VARCHAR) AS str;
 SELECT CAST(CURRENT_DATE AS VARCHAR) AS date_str;
 -- Result: '2025-10-27'
 
--- Timestamp to VARCHAR
+-- Timestamp to VARCHAR: the instant's ISO text, in UTC
 SELECT CAST(CURRENT_TIMESTAMP AS VARCHAR) AS ts_str;
--- Result: '2025-10-27 16:10:21'
+-- Result: '2025-10-27T16:10:21.541Z'
+
+-- A DATE or TIMESTAMP column cast to VARCHAR prints its stored instant the same way
+-- (d holding 2024-01-03): '2024-01-03T00:00Z'; DATE_FORMAT(d, '%Y-%m-%d') gives '2024-01-03'
 ```
 
 **Date and Time Conversions:**
@@ -152,6 +155,24 @@ SELECT CAST(1704902400000 AS TIMESTAMP) AS ts;
 -- computed column; a fraction of a millisecond is dropped, toward zero
 SELECT CAST(created_ms AS TIMESTAMP) AS created_at FROM events;
 ```
+
+**Temporal casts in a query** (*since `0.24.0`*):
+
+- A date-only string cast to `TIMESTAMP` or `DATETIME` is its midnight UTC:
+  `CAST('2024-01-03' AS TIMESTAMP)` is `2024-01-03T00:00:00Z`, over a `KEYWORD` column too.
+- A `DATE` value cast to `BIGINT` is the epoch milliseconds of its midnight UTC, and cast to `TIME`
+  is `00:00:00`: this holds for a `CAST(… AS DATE)`, `CURRENT_DATE`, a `DATE` literal, `LAST_DAY` and
+  a `CASE` / `COALESCE` / `NULLIF` / `GREATEST` / `LEAST` that answers a `DATE`. A `DATE` **column**
+  answers its stored instant: `CAST(d AS BIGINT)` is that instant's epoch milliseconds, and
+  `CAST(d AS TIME)` its time of day in UTC.
+- A temporal expression cast to `TIME`, `DATE` or `BIGINT` converts its value:
+  `CAST(DATE_TRUNC(ts, HOUR) AS TIME)` is the time of day, `AS DATE` the day, `AS BIGINT` the epoch
+  milliseconds.
+- A number cast to `DATE` is refused, as PostgreSQL refuses it (`(d - d2)::DATE`); a number cast to
+  `TIMESTAMP` is read as epoch milliseconds, as above.
+- `CAST(NULL AS VARCHAR)` is `NULL`, not the text `'null'`.
+
+DuckDB refuses a `DATE` cast to `BIGINT` or to `TIME`; the values above are this engine's rule.
 
 **Boolean Conversions:**
 
@@ -662,10 +683,10 @@ WHERE denominator != 0;
 | DOUBLE     | INT       | `CAST(123.99 AS INT)`         | Truncates decimal               |
 | DOUBLE     | VARCHAR   | `CAST(123.45 AS VARCHAR)`     | Always succeeds                 |
 | BIGINT     | TIMESTAMP | `CAST(epoch_ms AS TIMESTAMP)` | Epoch milliseconds, UTC         |
-| DATE       | VARCHAR   | `CAST(date_col AS VARCHAR)`   | Format: 'YYYY-MM-DD'            |
+| DATE       | VARCHAR   | `CAST(date_col AS VARCHAR)`   | The stored instant's ISO text (`2024-01-03T00:00Z`); a `DATE` value such as `CURRENT_DATE` gives `YYYY-MM-DD` |
 | DATE       | TIMESTAMP | `CAST(date_col AS TIMESTAMP)` | Time set to 00:00:00            |
 | TIMESTAMP  | DATE      | `CAST(ts_col AS DATE)`        | Drops time component            |
-| TIMESTAMP  | VARCHAR   | `CAST(ts_col AS VARCHAR)`     | Format: 'YYYY-MM-DD HH:MI:SS'   |
+| TIMESTAMP  | VARCHAR   | `CAST(ts_col AS VARCHAR)`     | The instant's ISO text, in UTC (`2024-02-10T23:30Z`) |
 | BOOLEAN    | INT       | `CAST(true AS INT)`           | true=1, false=0                 |
 | BOOLEAN    | VARCHAR   | `CAST(true AS VARCHAR)`       | 'true' or 'false'               |
 
