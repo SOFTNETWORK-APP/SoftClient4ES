@@ -156,6 +156,18 @@ CREATE TABLE docs (
 - `content.keyword` is a keyword sub-field.
 - `content.english` is a text sub-field with the English analyzer.
 
+A column may declare its sub-fields **and** a computed value together, sub-fields first, as
+`SHOW TABLE` renders it (*since `0.24.0`*):
+
+```sql
+CREATE TABLE docs (
+  k KEYWORD,
+  c VARCHAR FIELDS (raw KEYWORD) SCRIPT AS (UPPER(k))
+)
+```
+
+The opposite order, `SCRIPT AS (…) FIELDS (…)`, is a syntax error.
+
 ---
 
 #### FIELDS for STRUCT or NESTED OBJECTS
@@ -383,7 +395,11 @@ The gateway:
 > the existing index**, so a refused statement leaves the cluster exactly as it was.
 >
 > A query may not select from the table it is creating: `CREATE TABLE t AS SELECT … FROM t` is
-> refused, and so is a query that reads it as a `JOIN` leg.
+> refused (*"CREATE TABLE t cannot select from itself."*), and so is a query that reads it as a
+> `JOIN` leg or in a `WHERE` subquery at any depth. A `CREATE OR REPLACE` is also refused when an
+> index pattern or a list it reads matches the table it replaces and does not exclude it
+> (`CREATE OR REPLACE TABLE logs_1 AS SELECT … FROM logs_*`); `FROM logs_*,-logs_1`, and a new table
+> name the pattern matches, run.
 >
 > A table created this way is an ordinary table, even when the query selects from a materialized
 > view: it is not itself a view, and nothing refreshes it.
@@ -595,8 +611,8 @@ of the document.
 > **`ALTER TABLE` changes only the ingest processors the table declares**: those of its computed
 > columns, defaults, primary key and partitioning. A processor its pipeline holds otherwise (added
 > with `ALTER PIPELINE … ADD PROCESSOR`, through the Elasticsearch API, or in a pipeline named by
-> `default_pipeline` / `final_pipeline`) is not changed or removed by `ALTER TABLE` (one exception
-> closes this note):
+> `default_pipeline` / `final_pipeline`) — a `script` processor that runs a stored script by its
+> `id` included — is not changed or removed by `ALTER TABLE` (one exception closes this note):
 >
 > - When no declared processor changes, the pipeline is not written.
 > - When one does, the pipeline is written again, with each such processor as Elasticsearch
@@ -611,6 +627,10 @@ of the document.
 >   declared processors, or with no pipeline (`_none`) when the table declares none; the index then
 >   gets its pipeline back. When the table declares no processor for a pipeline and that pipeline
 >   holds nothing else, the index is left with `_none`.
+> - If a step after the migration fails — it throws, or Elasticsearch answers it with an error,
+>   such as a pipeline it refuses with a `400` — the index's pipeline settings are restored first,
+>   then the temporary pipeline is dropped, and the statement answers that failure. If the restore
+>   itself fails, the temporary pipeline is kept, since the index still names it.
 >
 > `SHOW CREATE TABLE` shows the declaration; `SHOW CREATE PIPELINE` shows every processor.
 >
