@@ -49,12 +49,12 @@ Available images per ES version:
 ### Pinning a release, and why there is no JAR
 
 The images above track `latest`. Pin the tag for anything you need to reproduce — the current
-release is **`0.3.3`**:
+release is **`0.3.4`**:
 
 ```bash
 docker run -p 32010:32010 \
   -e ELASTIC_HOST=elasticsearch \
-  softnetwork/softclient4es8-arrow-flight-sql:0.3.3
+  softnetwork/softclient4es8-arrow-flight-sql:0.3.4
 ```
 
 The sidecar ships **as a Docker image only**. The `softclient4es{6,7,8,9}-arrow-flight-sql`
@@ -169,6 +169,13 @@ elastic.credentials {
 | `ARRAY<*>`      | —           | `List`                      |
 | `ARRAY<STRUCT>` | `nested`    | `List<Struct>`              |
 
+The table is the declared mapping. A plain query's Arrow schema is inferred from the values of its
+rows (a `BIGINT` column holding small whole numbers arrives as `Int(32)`); a set operation's
+branches are typed from the declared types above when the statement is planned, and a JOIN result
+carries DuckDB's types. A column the reader cannot answer — a dictionary-encoded column, an Arrow
+type it has no reader for — fails naming the column instead of reading `NULL` (*since
+arrow-extensions `0.3.4`*).
+
 ---
 
 ## In-process alternative: the ADBC driver
@@ -197,7 +204,7 @@ The single-cluster sidecar on this page is the free shape. Multi-cluster **feder
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
+**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **Non-recursive CTEs** (`WITH name AS (SELECT …)`) are supported too, at the top of a `SELECT`; `WITH RECURSIVE` and CTE column lists are refused by name. **Set operators** — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported as well; everything but `UNION ALL` runs on the relational engine this driver ships. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 
@@ -218,7 +225,7 @@ The Arrow Flight SQL sidecar sends one anonymous usage ping per day (no IP, no S
 
 ## Known limitations
 
-Subqueries, CTEs (`WITH`), and set operators beyond `UNION ALL` are not in R1 — and some BI tools auto-generate them. See [Known Limitations & Roadmap](../sql/known_limitations.md) for exactly what works today, what's coming in R2a, and the per-tool workaround.
+Subqueries, derived tables, non-recursive CTEs — which some BI tools auto-generate — and the `UNION` / `INTERSECT` / `EXCEPT` set operators all work since engine `0.24.0`. See [Known Limitations & Roadmap](../sql/known_limitations.md#subqueries-and-derived-tables) for exactly what works today and what is still refused.
 
 ---
 

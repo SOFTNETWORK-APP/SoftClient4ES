@@ -20,13 +20,13 @@ Download the self-contained fat JAR for your Elasticsearch version. The JARs are
 
 | Elasticsearch | Download |
 |---|---|
-| ES 6.x | [`softclient4es6-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es6-jdbc-driver-0.3.3.jar) |
-| ES 7.x | [`softclient4es7-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es7-jdbc-driver-0.3.3.jar) |
-| ES 8.x | [`softclient4es8-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es8-jdbc-driver-0.3.3.jar) |
-| ES 9.x | [`softclient4es9-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es9-jdbc-driver-0.3.3.jar) |
+| ES 6.x | [`softclient4es6-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es6-jdbc-driver-0.3.4.jar) |
+| ES 7.x | [`softclient4es7-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es7-jdbc-driver-0.3.4.jar) |
+| ES 8.x | [`softclient4es8-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es8-jdbc-driver-0.3.4.jar) |
+| ES 9.x | [`softclient4es9-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es9-jdbc-driver-0.3.4.jar) |
 
-Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.3); check a download with
-`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.3.jar.sha256`.
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.4); check a download with
+`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.4.jar.sha256`.
 
 ---
 
@@ -257,8 +257,17 @@ The JDBC driver supports the full SQL Gateway syntax:
 
 - **DDL** — CREATE/ALTER/DROP TABLE, pipelines, watchers, enrich policies
 - **DML** — INSERT, UPDATE, DELETE, COPY INTO
-- **DQL** — SELECT with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, UNION ALL, JOIN UNNEST, window functions
+- **DQL** — SELECT with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, set operators (`UNION [ALL]` / `INTERSECT` / `EXCEPT`), JOIN UNNEST, window functions
 - **SHOW/DESCRIBE** — Tables, pipelines, watchers, enrich policies
+
+**Column types.** A plain query's `ResultSetMetaData` is inferred from the first non-null value of
+each column, not from the type the column declares: a `BIGINT` column holding small whole numbers
+is reported as `INTEGER`, and `getLong` still reads it as a long. A set operation's columns follow
+the declared types. On a JOIN result (*since arrow-extensions `0.3.4`*) the columns carry DuckDB's
+types, an integer getter throws `SQLException` on a value outside its type's range instead of
+answering a wrapped value, `getBigDecimal` of a `BIGINT` is exact, and a column the reader has no
+mapping for (a dictionary-encoded column, for instance) fails naming the column instead of reading
+`NULL`.
 
 ---
 
@@ -303,7 +312,7 @@ Multi-cluster **federation** — joining across *separate* ES clusters — is **
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
+**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **Non-recursive CTEs** (`WITH name AS (SELECT …)`) are supported too, at the top of a `SELECT`; `WITH RECURSIVE` and CTE column lists are refused by name. **Set operators** — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported as well; everything but `UNION ALL` runs on the relational engine this driver ships. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 

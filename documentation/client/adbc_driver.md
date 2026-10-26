@@ -23,13 +23,13 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch | Download |
 |---|---|
-| ES 6.x | [`softclient4es6-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es6-adbc-driver-0.3.3.jar) |
-| ES 7.x | [`softclient4es7-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es7-adbc-driver-0.3.3.jar) |
-| ES 8.x | [`softclient4es8-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es8-adbc-driver-0.3.3.jar) |
-| ES 9.x | [`softclient4es9-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es9-adbc-driver-0.3.3.jar) |
+| ES 6.x | [`softclient4es6-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es6-adbc-driver-0.3.4.jar) |
+| ES 7.x | [`softclient4es7-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es7-adbc-driver-0.3.4.jar) |
+| ES 8.x | [`softclient4es8-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es8-adbc-driver-0.3.4.jar) |
+| ES 9.x | [`softclient4es9-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es9-adbc-driver-0.3.4.jar) |
 
-Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/adbc-v0.3.3); check a download with
-`shasum -a 256 -c softclient4es8-adbc-driver-0.3.3.jar.sha256`.
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/adbc-v0.3.4); check a download with
+`shasum -a 256 -c softclient4es8-adbc-driver-0.3.4.jar.sha256`.
 
 ---
 
@@ -173,7 +173,7 @@ Multi-cluster **federation** — joining across *separate* ES clusters — is **
 
 ## What does NOT work yet
 
-Subqueries (`IN (SELECT …)`, `EXISTS`, scalar, derived tables) and CTEs (`WITH`) are not supported in the current release — they arrive in a later release. Write the JOIN explicitly instead. See the Known Limitations & Roadmap (`../sql/known_limitations.md`) for the full list.
+**Since engine `0.24.0`**, subqueries (`IN (SELECT …)` / `NOT IN`, `EXISTS` / `NOT EXISTS`, scalar and quantified comparisons) and derived tables (`FROM (SELECT …)`, `JOIN (SELECT …)`) are supported, correlated or not. **Non-recursive CTEs** (`WITH name AS (SELECT …)`) are supported too, at the top of a `SELECT`; `WITH RECURSIVE` and CTE column lists are refused by name. **Set operators** — `UNION ALL`, `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL` — are supported as well; everything but `UNION ALL` runs on the relational engine this driver ships. See the Known Limitations & Roadmap (`../sql/known_limitations.md#subqueries-and-derived-tables`) for the forms that are still refused.
 
 ---
 

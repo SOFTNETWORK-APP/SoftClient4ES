@@ -149,7 +149,30 @@ ORDER BY sales DESC
 LIMIT 100;
 ```
 
-**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, window functions, aggregations, nested fields, geospatial queries, and more.
+Subqueries and derived tables are part of DQL too — **since engine `0.24.0`**:
+
+```sql
+-- Subquery in WHERE — IN / NOT IN, EXISTS / NOT EXISTS, a scalar comparison,
+-- or a quantified one (= ANY | SOME, <> ALL, > ALL, >= ANY, …)
+SELECT name FROM employees
+WHERE department_id IN (SELECT id FROM departments WHERE region = 'EU');
+
+-- Derived table in FROM (also valid in JOIN, nested to any depth)
+SELECT d.category, d.n
+FROM (SELECT category, COUNT(*) AS n FROM bi_events GROUP BY category) d
+WHERE d.n > 10;
+
+-- Correlated subquery — the body reads the outer row
+SELECT c.name FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+```
+
+- **Uncorrelated `WHERE` subqueries run on Elasticsearch itself**, so they work on every surface — including a plain REPL with no extensions.
+- **Derived tables and correlated subqueries run on the relational engine** — since engine `0.24.0` with arrow-extensions `0.3.4` (`softclient4es-arrow-extensions`), the same engine that executes cross-index JOINs: the REPL's default install, the JDBC driver, the ADBC driver, the Arrow Flight SQL server and Federation all carry it. A venue without it refuses the statement with a clear error instead of executing it against the first index named.
+- **Non-recursive CTEs run on that same relational engine** — a CTE reference *is* a derived table, so it carries the same venue requirement. A `WITH` clause is accepted at the top of a `SELECT` only; `WITH RECURSIVE` and CTE column lists (`WITH a (x, y) AS …`) are refused by name.
+- **Set operators run on that engine too** — `UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`. `UNION ALL` is the exception: Elasticsearch answers it directly, branch by branch, at every venue. Branches are matched by column **position**, and the result takes the first branch's names.
+
+**Supported features:** cross-index `JOIN`s, `JOIN UNNEST`, subqueries, derived tables, CTEs, set operators, window functions, aggregations, nested fields, geospatial queries, and more.
 
 📖 **[DQL Documentation](documentation/sql/dql_statements.md)**
 
@@ -217,13 +240,13 @@ Download the self-contained fat JAR (all dependencies included) for your Elastic
 
 | Elasticsearch Version | Download |
 |---|---|
-| ES 6.x | [`softclient4es6-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es6-jdbc-driver-0.3.3.jar) |
-| ES 7.x | [`softclient4es7-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es7-jdbc-driver-0.3.3.jar) |
-| ES 8.x | [`softclient4es8-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es8-jdbc-driver-0.3.3.jar) |
-| ES 9.x | [`softclient4es9-jdbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.3/softclient4es9-jdbc-driver-0.3.3.jar) |
+| ES 6.x | [`softclient4es6-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es6-jdbc-driver-0.3.4.jar) |
+| ES 7.x | [`softclient4es7-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es7-jdbc-driver-0.3.4.jar) |
+| ES 8.x | [`softclient4es8-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es8-jdbc-driver-0.3.4.jar) |
+| ES 9.x | [`softclient4es9-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es9-jdbc-driver-0.3.4.jar) |
 
-Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.3); check a download with
-`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.3.jar.sha256`.
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.4); check a download with
+`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.4.jar.sha256`.
 
 > **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
@@ -323,13 +346,13 @@ For programmatic access, add SoftClient4ES to your project.
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.23.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.24.0"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.2"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.3"
 // Add the arrow extensions for cross-index JOIN (required for JOINs; Java 11+)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.3"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.4"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.3"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.4"
 ```
 
 ```scala
@@ -486,6 +509,9 @@ Materialized views with JOINs rely on **Elasticsearch Watcher** to automatically
 - [x] Arrow Flight SQL server (gRPC, Docker)
 - [x] ADBC driver (in-process, columnar)
 - [x] Cross-index JOINs
+- [x] Subqueries (`IN` / `EXISTS` / scalar / quantified, correlated or not) and derived tables — `0.24.0`
+- [x] Non-recursive CTEs (`WITH name AS (SELECT …)`) — `0.24.0`
+- [x] Set operators (`UNION` / `UNION DISTINCT`, `INTERSECT` / `INTERSECT ALL`, `EXCEPT` / `EXCEPT ALL`) — `0.24.0`
 - [ ] Advanced monitoring dashboard
 - [ ] Additional SQL functions
 - [ ] ES|QL bridge

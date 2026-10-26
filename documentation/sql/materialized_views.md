@@ -239,6 +239,19 @@ LIMIT 100;
 
 When a `GROUP BY` clause is present, the engine generates an additional **pivot transform** for the aggregation step.
 
+The `LIMIT` of a view's definition is recorded with it, but the view stores **every** group: limit
+the rows when you query the view. An `OFFSET` of groups is refused by name, for the same reason.
+
+A view grouped by an **expression** — `SELECT YEAR(o.created_at) AS y, COUNT(*) AS n … GROUP BY
+YEAR(o.created_at)`, or `GROUP BY y`, or `GROUP BY 1` — stores one row per group, keyed by the
+`SELECT` alias. Its key column is declared with the type its expression reports: `BIGINT` for
+`YEAR`, `MONTH`, `DAY` and the other date parts, the column's own type for `ABS`, and `VARCHAR` with
+a `keyword` sub-field for `UPPER` and the other string functions. A view grouped by an aliased
+column (`SELECT c.city AS town, COUNT(*) … GROUP BY town`, `GROUP BY c.city` or the ordinal) stores
+the key under its alias, over one table or a JOIN. A group whose key is `NULL` is not stored.
+
+A `HAVING` in a view is more constrained than a `HAVING` in a `SELECT` — most importantly, every aggregate it reads must be published in the `SELECT` list **with an alias**, as `SUM(o.amount) AS total_amount` is above. See [HAVING in a materialized view](#having-in-a-materialized-view).
+
 ---
 
 ## DROP MATERIALIZED VIEW
@@ -531,15 +544,88 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 
 | Limitation                                  | Details                                                              |
 |---------------------------------------------|----------------------------------------------------------------------|
+| **`HAVING`**                                | More constrained than in a `SELECT`: every aggregate the clause reads must be published in the `SELECT` list with an alias, and it cannot filter on a grouping key (see below) |
+| **`LIMIT` / `OFFSET`**                      | A `LIMIT` in the definition is only recorded: the view stores every row or group. An `OFFSET` of groups is refused by name. |
+| **A `GROUP BY` key the view cannot compute** | A key whose function the engine does not script — `DATE_TRUNC` with an interval, `DATE_FORMAT`, … — is refused at creation, naming the key and its expression. So is a view whose aggregation would never write one of its key columns. |
+| **The `NULL` group**                         | A group whose key is `NULL` is not stored, as a query's `GROUP BY` forms no `NULL` group either. |
+| **A nested column in `WHERE`**               | A condition over a nested column written without `NESTED(…)` matches nothing in a view's `WHERE` (a query tests the column's elements). Write the `NESTED(…)` condition. |
+| **Every table needs its schema**             | A view one of whose tables has no schema under its index name is refused: *"Materialized view v cannot be typed: no schema was loaded for table t."* |
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
 | **`RIGHT JOIN` / `FULL OUTER JOIN`**        | Not supported (see below). Use `LEFT JOIN` with swapped table order. |
 | **Aggregates need a `GROUP BY`**             | A view that selects an aggregate — a window function, a percentile or a standard deviation included — without a `GROUP BY`, or whose `GROUP BY` reaches none of the tables it reads (a `CROSS JOIN`ed table, or an alias of a table joined more than once that the view does not read: only one alias of such a table is read), is refused at creation: a materialized view computes aggregates per `GROUP BY` group, and without one it would store the source rows and none of the aggregates. The refusal names each aggregate the view would not store: compute it with a query instead. Known limitation: an aggregate nested inside a function or an expression, such as `ROUND(AVG(amount), 2)` or `SUM(amount) / COUNT(*)`, is not detected — the refusal does not name it, and does not refuse a view whose only aggregates are nested this way. |
-| **Aggregates of an expression**             | An aggregate whose operand is an expression rather than a column — `MAX(DATE_TRUNC(created_at, MONTH))`, `SUM(CAST(amount AS INT))`, `COUNT(UPPER(name))` — is refused at creation: a materialized view aggregates a column as it is stored, so it would compute `MAX(created_at)`, `SUM(amount)` and `COUNT(*)` in their place. A `CAST` over a column is refused too, whatever its type. Compute it with a query instead. |
+| **Aggregates of an expression**             | An aggregate whose operand is an expression rather than a column — `MAX(DATE_TRUNC(created_at, MONTH))`, `SUM(CAST(amount AS INT))`, `COUNT(UPPER(name))` — is refused at creation: a materialized view aggregates a column as it is stored, so it would compute `MAX(created_at)`, `SUM(amount)` and `COUNT(*)` in their place. A `CAST` to the column's own declared type (`SUM(CAST(amount AS DOUBLE))` over a `DOUBLE` column, and the `::`, `TRY_CAST` and `CONVERT` spellings) is the column itself, and is accepted, except under a window; a cast to another type is refused. Compute it with a query instead. |
 | **One column per aggregate**                | Two aggregates that would produce the same column name — typically unaliased, `COUNT(x), COUNT(DISTINCT x)` or `SUM(amount), MAX(amount)` — are refused at creation; give each its own alias (`COUNT(x) AS n, COUNT(DISTINCT x) AS n_distinct`). The refusal proposes aliases only for the aggregates the view would store under them, and names the others — for example a window function, a percentile, or an aggregate of a column in a single-table view without a computed column — to be computed with a query. A `COUNT(*)` is one of the aggregates a view stores, so the refusal proposes an alias for it too. |
 | **Quota limits**                            | Community: 1 view · Pro: 50 · Enterprise: unlimited                 |
 | **Watcher dependency (ES license)**         | Automatic enrich policy re-execution relies on Elasticsearch Watcher, which the free Basic license does not include. The view is still created and `REFRESH MATERIALIZED VIEW` still works (see below) |
 | **Eventual consistency**                    | Data is eventually consistent based on refresh frequency and delay   |
 | **Join cardinality**                        | JOINs use enrich policies which match on a single field              |
+
+### HAVING in a materialized view
+
+Since engine `0.24.0`, `CREATE MATERIALIZED VIEW` **refuses** a `HAVING` that the Elasticsearch transform behind the view cannot express, naming the clause and the remedy. The refusal is a parse-time rejection (HTTP 400), so it reaches every venue — REPL, JDBC, Flight SQL — and no artifact is deployed.
+
+The same `HAVING` usually stays valid in a plain `SELECT`. This is a limit of the **transform** a view deploys, not of the query engine, and not of Elasticsearch.
+
+**The case you are most likely to meet: an aggregate with no `SELECT` alias.**
+
+```sql
+-- REFUSED: SUM(amount) carries no alias
+CREATE MATERIALIZED VIEW sales_by_city_mv
+AS
+SELECT city, SUM(amount)
+FROM orders
+GROUP BY city
+HAVING SUM(amount) > 5;
+
+-- Accepted: the same view, with the aggregate published under an alias
+CREATE MATERIALIZED VIEW sales_by_city_mv
+AS
+SELECT city, SUM(amount) AS total
+FROM orders
+GROUP BY city
+HAVING SUM(amount) > 5;
+```
+
+A view's transform names each aggregation after its `SELECT` alias, so an unaliased aggregate leaves the group filter pointing at a metric the view never creates. Adding `AS total` is the whole fix — the `HAVING` itself does not change.
+
+#### Why a view differs from a search
+
+A search has three channels for a `HAVING`; a transform's pivot offers two of them.
+
+| The `HAVING` names                               | A search applies it through                          | A view's pivot                                                                  |
+|--------------------------------------------------|------------------------------------------------------|---------------------------------------------------------------------------------|
+| a grouping key — `HAVING city = 'Paris'`         | the `terms` aggregation's `include` / `exclude` list | **no such channel** — `group_by` emits `{"terms":{"field":…}}` and nothing else |
+| arithmetic over aggregates — `HAVING spread > 3` | a `bucket_script`                                    | a `bucket_script`, for a calculation the `SELECT` list publishes under an alias |
+| a metric — `HAVING SUM(amount) > 5`              | a `bucket_selector`                                  | a `bucket_selector`                                                             |
+
+A pivot also computes a narrower set of metrics than a search: only `MIN`, `MAX`, `SUM`, `AVG` and `COUNT` (including `COUNT(DISTINCT …)`).
+
+#### What is refused
+
+| A view's `HAVING` that…                                                                                               | Why                                                                                                                                                                                                    | Remedy                                                                           |
+|-----------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| reads an aggregate with **no `SELECT` alias** — `SELECT city, SUM(amount) … HAVING SUM(amount) > 5`                   | the pivot names each aggregation after its `SELECT` alias, so the condition matches none of them                                                                                                       | publish the aggregate with an alias: `SUM(amount) AS total`                      |
+| filters on a **grouping key** — `HAVING city = 'Paris'`                                                               | a transform's `group_by` has no `include` / `exclude` channel                                                                                                                                          | move the condition into the view's `WHERE`                                       |
+| has **no `GROUP BY`**                                                                                                 | no `GROUP BY` means no pivot, and a `bucket_selector` hangs on the pivot                                                                                                                               | add a `GROUP BY`, or materialize the aggregate and filter when querying the view |
+| names an aggregate **a pivot cannot compute** — `HAVING STDDEV(amount) > 1`                                           | a pivot computes only `MIN`, `MAX`, `SUM`, `AVG` and `COUNT`, so this aggregate exists in no view                                                                                                      | filter when querying the view                                                    |
+| names an aggregate the **`SELECT` list does not publish** — `SELECT city, COUNT(*) AS n … HAVING MAX(amount) > 100`   | the filter would read a metric the view does not compute                                                                                                                                               | add `MAX(amount) AS max_amount` to the `SELECT` list                             |
+| contains a **nested, child or parent predicate**                                                                      | the pivot would emit the metric condition alone — a partial filter returning the wrong groups at HTTP 200                                                                                              | filter when querying the view                                                    |
+| reads the clock — `CURRENT_DATE`, `NOW()` — in the `HAVING` or in a calculation                                       | nothing binds the clock in a transform                                                                                                                                                                 | filter when querying the view                                                    |
+| reads a calculation over aggregates that has no alias, whose operands are not `SELECT` items, that reads an aggregate a pivot cannot compute, or whose alias collides with another column | the pivot computes a calculation from the published aggregates, under its alias                                                                                                                        | alias the calculation, and publish its operands in the `SELECT` list             |
+
+Every aggregate a `HAVING` names is read, so two aggregates compared (`HAVING MAX(amount) > MIN(amount)`), a function over several of them (`COALESCE(MAX(a), MIN(b)) > 1`, `GREATEST`, `LEAST`), `ISNULL(MIN(a))` and an alias inside a function filter the groups as the same `HAVING` does in a search. A group with no value of the column reads its `MIN`, `MAX` or `AVG` as `NULL`, as in a search.
+
+#### What still works
+
+- A metric compared with a constant, when the aggregate is published under a `SELECT` alias — `SELECT city, SUM(amount) AS total … HAVING SUM(amount) > 5`. The alias form, `HAVING total > 5`, is equally accepted.
+- A JOIN view with a metric-only `HAVING` — the [aggregation example](#materialized-view-with-aggregations) above.
+- `COUNT(DISTINCT …)` — `SELECT city, COUNT(DISTINCT customer_id) AS customers … HAVING COUNT(DISTINCT customer_id) > 1`.
+- A function grouping key — `SELECT DATE_TRUNC(order_date, MONTH) AS month, SUM(amount) AS total … GROUP BY month HAVING SUM(amount) > 100`.
+- A calculation over published aggregates, and a `HAVING` on it — `SELECT city, MAX(amount) AS hi, MIN(amount) AS lo, MAX(amount) - MIN(amount) AS spread … GROUP BY city HAVING spread > 3`. The view stores the calculation with its type: a `DATE - DATE` is a number of days, and a `DATE` / `TIMESTAMP` calculation (`MAX(d) + 1`, `GREATEST(MAX(d), MAX(d2))`) is stored as a date.
+
+#### What changed
+
+Before engine `0.24.0` every refused statement above was **accepted**, and the view then materialized the wrong groups at HTTP 200: the condition was silently dropped and **every** group was materialized, or the deployed `bucket_selector` read an undeclared parameter, rejected every group, and the view came out **empty**. A calculation over aggregates was declared in the view schema and never stored. A view bakes that missing filter into a stored transform which then feeds dashboards, which is why the refusal is preferable. A view already deployed keeps running as it is — the rules apply when a view is created, and `CREATE OR REPLACE` is validated exactly like `CREATE`.
 
 ### Supported JOIN types
 

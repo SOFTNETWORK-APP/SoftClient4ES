@@ -176,7 +176,8 @@ DATEADD(date_expr, INTERVAL n UNIT)
 - `INTERVAL n UNIT` - where `UNIT` is one of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`
 
 **Output:**
-- `DATE`
+- `DATE` for whole days (`DAY`, `WEEK`, `MONTH`, `QUARTER`, `YEAR`) over a `DATE`. A sub-day
+  interval over a `DATE` (`INTERVAL 1 HOUR`) starts from its midnight UTC and is a `TIMESTAMP`.
 
 **Examples:**
 ```sql
@@ -218,7 +219,8 @@ DATESUB(date_expr, INTERVAL n UNIT)
 - `INTERVAL n UNIT` - where `UNIT` is one of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`
 
 **Output:**
-- `DATE`
+- `DATE` for whole days (`DAY`, `WEEK`, `MONTH`, `QUARTER`, `YEAR`) over a `DATE`. A sub-day
+  interval over a `DATE` (`INTERVAL 1 HOUR`) starts from its midnight UTC and is a `TIMESTAMP`.
 
 **Examples:**
 ```sql
@@ -245,19 +247,33 @@ SELECT DATE_SUB('2025-01-10'::DATE, INTERVAL 1 QUARTER) AS last_quarter;
 
 ---
 
-#### DATETIME_ADD / DATETIMEADD
+#### DATETIME_ADD / DATETIMEADD / TIMESTAMPADD
 
 Adds interval to `DATETIME` / `TIMESTAMP`.
+
+Two argument orders are accepted, and they mean the same thing. The second — **unit first, with a
+plain count instead of an `INTERVAL`** — is the ODBC/JDBC and T-SQL order, which is what a BI tool
+emits. `TIMESTAMPADD` is the ODBC name for it.
 
 **Syntax:**
 ```sql
 DATETIME_ADD(datetime_expr, INTERVAL n UNIT)
 DATETIMEADD(datetime_expr, INTERVAL n UNIT)
+
+DATETIME_ADD(UNIT, n, datetime_expr)
+TIMESTAMPADD(UNIT, n, datetime_expr)
 ```
 
 **Inputs:**
 - `datetime_expr` - `DATETIME` or `TIMESTAMP`
 - `INTERVAL n UNIT` - where `UNIT` is one of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
+- In the unit-first form, `n` is a plain integer and may be **negative**; the ODBC interval names
+  `SQL_TSI_YEAR`, `SQL_TSI_QUARTER`, `SQL_TSI_MONTH`, `SQL_TSI_WEEK`, `SQL_TSI_DAY`, `SQL_TSI_HOUR`,
+  `SQL_TSI_MINUTE` and `SQL_TSI_SECOND` are accepted as spellings of the units above
+
+> There is **no `TIMESTAMPSUB`** — it exists in neither ODBC nor MySQL. Subtract by passing a
+> negative count: `TIMESTAMPADD(DAY, -89, CURRENT_DATE)`. (`DATETIME_SUB` is available for the
+> `INTERVAL` form.)
 
 **Output:**
 - `DATETIME`
@@ -267,6 +283,15 @@ DATETIMEADD(datetime_expr, INTERVAL n UNIT)
 -- Add 1 day
 SELECT DATETIME_ADD('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 1 DAY) AS tomorrow;
 -- Result: 2025-01-11T12:00:00Z
+
+-- The same thing in the ODBC unit-first order
+SELECT TIMESTAMPADD(DAY, 1, '2025-01-10T12:00:00Z'::TIMESTAMP) AS tomorrow;
+-- Result: 2025-01-11T12:00:00Z
+
+-- ODBC interval name, and a negative count instead of a subtraction
+SELECT TIMESTAMPADD(SQL_TSI_DAY, 1, '2025-01-10T12:00:00Z'::TIMESTAMP) AS tomorrow;
+-- Result: 2025-01-11T12:00:00Z
+SELECT TIMESTAMPADD(DAY, -89, CURRENT_DATE) AS ninety_days_ago;
 
 -- Add 2 hours
 SELECT DATETIME_ADD('2025-01-10T12:00:00Z'::TIMESTAMP, INTERVAL 2 HOUR) AS later;
@@ -509,7 +534,8 @@ DATE_FORMAT(date_expr, pattern)
 - `pattern` - `VARCHAR` (MySQL-style pattern)
 
 **Output:**
-- `VARCHAR`
+- `VARCHAR`, read back as the text it formats — never re-read as a date or a time
+  (`DATETIME_FORMAT(ts, '%H:%i:%s')` answers `'00:00:00'` for midnight, not `00:00`)
 
 **Elasticsearch 6.8 — a bare date column as a `GROUP BY` key is not supported:**
 
@@ -618,7 +644,8 @@ DATETIME_FORMAT(datetime_expr, pattern)
 - `pattern` - `VARCHAR` (MySQL-style pattern)
 
 **Output:**
-- `VARCHAR`
+- `VARCHAR`, read back as the text it formats — never re-read as a date or a time
+  (`DATETIME_FORMAT(ts, '%H:%i:%s')` answers `'00:00:00'` for midnight, not `00:00`)
 
 **Elasticsearch 6.8 — a bare date column as a `GROUP BY` key is not supported:**
 
@@ -788,7 +815,16 @@ EXTRACT(unit FROM date_expr)
 - `date_expr` - `DATE` or `DATETIME`
 
 **Output:**
-- `INT` / `BIGINT`
+- `BIGINT` — every date part, `EXTRACT` and the individual functions below alike (*since
+  `0.24.0`*; it was reported as a `NUMERIC`, which a `CREATE TABLE … AS SELECT` could not map). A
+  `GROUP BY` over a date part answers whole numbers (`Long`), and so does a `UNION ALL` column of
+  date parts.
+- Over a `DATE`, the time-of-day parts (`HOUR`, `MINUTE`, `SECOND`, the sub-second parts,
+  `OFFSET_SECONDS`) read its midnight UTC and answer `0`.
+
+A date part compared with a quoted number must be compared with a whole number, as any whole-number
+expression is: `YEAR(d) = '2024'` is accepted, `YEAR(d) = '2024.5'` and `YEAR(d) = '2024.0'` are
+refused (*"'BIGINT' is not compatible with 'VARCHAR'"*).
 
 **Examples:**
 ```sql
@@ -937,10 +973,12 @@ LAST_DAY(date_expr)
 ```
 
 **Inputs:**
-- `date_expr` - `DATE`
+- `date_expr` - `DATE`, `DATETIME` or `TIMESTAMP`
 
 **Output:**
-- `DATE`
+- `DATE`, whatever the operand: over a timestamp the time of day is dropped (`LAST_DAY(ts)` over
+  `2024-02-10T23:30:00Z` is `2024-02-29`), a `date_nanos` column included. Before `0.24.0`
+  `LAST_DAY` over a date column failed the query.
 
 **Examples:**
 ```sql
