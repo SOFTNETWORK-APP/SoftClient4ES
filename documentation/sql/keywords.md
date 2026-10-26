@@ -12,7 +12,14 @@ you name a column:
 
 `EXISTS` is reserved, so `SELECT exists FROM t` is a parse error. `ANY` and `SOME` are **deliberately not
 reserved**, so `SELECT any, some FROM t WHERE any = 1` parses as columns — even though `x = ANY (SELECT …)`
-is real grammar. If you have a column whose name collides with a reserved word, **quote it** rather than
+is real grammar. The same split runs through the set-operator and CTE words: `UNION`, `INTERSECT`, `EXCEPT`,
+`ALL` and `DISTINCT` are reserved, while `WITH` and `RECURSIVE` are not — `SELECT a AS recursive FROM t`
+parses, `SELECT a AS intersect FROM t` does not. `TOP` is recognised (`SELECT TOP 10 id FROM t` bounds the
+rows) and **deliberately not reserved**, so `SELECT top FROM t` still selects a column called `top`.
+`PERCENT` and `TIES` are recognised only so that `SELECT TOP n PERCENT` and `SELECT TOP n WITH TIES` can be
+refused *by name* — see [Known limitations](known_limitations.md).
+
+If you have a column whose name collides with a reserved word, **quote it** rather than
 renaming it: `SELECT "exists" FROM t` works, and so does the backtick spelling — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers).
 
@@ -40,7 +47,7 @@ page *is* hand-written and is preserved by regeneration.
     through the parser, not inferred from a list.
 - **Kind** — which surface of the engine the word arrives from, not a taxonomy of what it does: it is
   the registry list the word is declared in, refined by the package it is declared in. That is why
-  `UNION` reads `operator` while `EXCEPT` reads `clause`, and why `CASE`/`WHEN`/`OVER` read `clause`
+  `UNION` reads `operator` while `EXCEPT` reads `clause, operator`, and why `CASE`/`WHEN`/`OVER` read `clause`
   rather than naming a function family. A word can have more than one kind — `LIMIT` is a clause
   keyword *and* a statement keyword. `reserved only` marks a word that is reserved but backed by no
   grammar surface at this baseline: reserving it costs you the name and buys nothing.
@@ -54,7 +61,7 @@ row. Constructions assembled from two separate keywords are listed just below.
 These are real syntax, but each is built from two keywords that the grammar carries independently, so
 they cannot appear in the generated tables — their component words do, individually.
 
-- `NOT IN`, `NOT BETWEEN`, `NOT LIKE` — negated forms of the corresponding operator.
+- `NOT IN`, `NOT BETWEEN`, `NOT LIKE`, `NOT EXISTS` — negated forms of the corresponding operator.
 - `MATCH ... AGAINST` — full-text match, e.g. `WHERE MATCH(title) AGAINST ('coffee')`.
 - `WITHIN GROUP` — the ordered-set aggregate clause, e.g.
   `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)`.
@@ -74,7 +81,7 @@ accepts it, so `SELECT a || b FROM t` is a parse error — use `CONCAT(a, b)`.
 recognised but **not reserved**, on purpose: a column called `any` keeps parsing, and the grammar tells the
 two readings apart by what follows.
 
-These five words introduce the subquery predicates. `= ANY` and `= SOME` mean `IN`, and `<> ALL` means
+These four words introduce the subquery predicates. `= ANY` and `= SOME` mean `IN`, and `<> ALL` means
 `NOT IN` — the engine normalises them, so `WHERE customer_id = ANY (SELECT id FROM customers)` is stored
 and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The ordering quantifiers
 (`> ALL`, `>= ANY`, `< ALL`, …) keep their own spelling. See
@@ -92,7 +99,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 
 ## Keyword index
 
-332 keywords, of which 134 are reserved.
+340 keywords, of which 135 are reserved.
 
 | Keyword | Reserved | Kind |
 | --- | --- | --- |
@@ -127,6 +134,8 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `CEIL` | yes | math function |
 | `CEILING` | no | math function |
 | `CHAR` | no | type |
+| `CHARACTER_LENGTH` | no | string function |
+| `CHAR_LENGTH` | no | string function |
 | `CHILD` | no | operator |
 | `CLUSTER` | no | statement |
 | `COALESCE` | yes | conditional function |
@@ -183,7 +192,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `DESC` | no | clause, statement |
 | `DESCRIBE` | yes | statement |
 | `DISTANCE` | yes | geo function |
-| `DISTINCT` | yes | clause |
+| `DISTINCT` | yes | clause, operator |
 | `DO` | yes | statement |
 | `DOUBLE` | no | type |
 | `DROP` | yes | statement |
@@ -194,7 +203,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `EPOCHDAY` | no | temporal function |
 | `EPOCH_DAY` | no | temporal function |
 | `EVERY` | yes | statement |
-| `EXCEPT` | yes | clause |
+| `EXCEPT` | yes | clause, operator |
 | `EXECUTE` | no | statement |
 | `EXISTS` | yes | operator, statement |
 | `EXP` | yes | math function |
@@ -234,6 +243,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `INSERT` | yes | statement |
 | `INT` | no | type |
 | `INTEGER` | no | type |
+| `INTERSECT` | yes | operator |
 | `INTERVAL` | yes | clause |
 | `INTO` | no | statement |
 | `IS` | no | operator |
@@ -312,6 +322,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `PARSE_DATE` | yes | temporal function |
 | `PARSE_DATETIME` | yes | temporal function |
 | `PARTITION` | no | clause, statement |
+| `PERCENT` | no | statement |
 | `PERCENTILE_CONT` | yes | aggregate function |
 | `PERCENTILE_DISC` | yes | aggregate function |
 | `PI` | yes | literal |
@@ -386,11 +397,15 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `TEMPORARY` | no | statement |
 | `TEXT` | no | type |
 | `THEN` | yes | clause |
+| `TIES` | no | statement |
 | `TIME` | no | type |
 | `TIMESTAMP` | no | type |
+| `TIMESTAMPADD` | no | temporal function |
+| `TIMESTAMPDIFF` | no | temporal function |
 | `TINYINT` | no | type |
 | `TO` | yes | statement |
 | `TODAY` | yes | temporal function |
+| `TOP` | no | clause |
 | `TO_DATE` | no | temporal function |
 | `TO_TIMESTAMP` | no | temporal function |
 | `TRIM` | yes | string function |
@@ -431,12 +446,14 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 
 ## Compound phrases
 
-11 multi-word phrases carried by a single keyword token. Each component word has its own row above. Constructions assembled from two separate keywords are listed under [Multi-keyword constructions](#multi-keyword-constructions).
+14 multi-word phrases carried by a single keyword token. Each component word has its own row above. Constructions assembled from two separate keywords are listed under [Multi-keyword constructions](#multi-keyword-constructions).
 
 | Phrase |
 | --- |
+| `EXCEPT ALL` |
 | `FULL OUTER` |
 | `GROUP BY` |
+| `INTERSECT ALL` |
 | `IS NOT NULL` |
 | `IS NULL` |
 | `LEFT OUTER` |
@@ -446,6 +463,7 @@ and re-rendered as `WHERE customer_id IN (SELECT id FROM customers)`. The orderi
 | `PARTITION BY` |
 | `RIGHT OUTER` |
 | `UNION ALL` |
+| `UNION DISTINCT` |
 
 ## Symbolic operators
 
