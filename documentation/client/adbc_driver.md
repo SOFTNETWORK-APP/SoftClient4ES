@@ -23,13 +23,13 @@ Download the self-contained fat JAR for your Elasticsearch version:
 
 | Elasticsearch | Download |
 |---|---|
-| ES 6.x | [`softclient4es6-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es6-adbc-driver-0.3.3.jar) |
-| ES 7.x | [`softclient4es7-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es7-adbc-driver-0.3.3.jar) |
-| ES 8.x | [`softclient4es8-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es8-adbc-driver-0.3.3.jar) |
-| ES 9.x | [`softclient4es9-adbc-driver-0.3.3.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.3/softclient4es9-adbc-driver-0.3.3.jar) |
+| ES 6.x | [`softclient4es6-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es6-adbc-driver-0.3.4.jar) |
+| ES 7.x | [`softclient4es7-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es7-adbc-driver-0.3.4.jar) |
+| ES 8.x | [`softclient4es8-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es8-adbc-driver-0.3.4.jar) |
+| ES 9.x | [`softclient4es9-adbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/adbc-v0.3.4/softclient4es9-adbc-driver-0.3.4.jar) |
 
-Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/adbc-v0.3.3); check a download with
-`shasum -a 256 -c softclient4es8-adbc-driver-0.3.3.jar.sha256`.
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/adbc-v0.3.4); check a download with
+`shasum -a 256 -c softclient4es8-adbc-driver-0.3.4.jar.sha256`.
 
 ---
 

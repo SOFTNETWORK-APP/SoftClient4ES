@@ -350,7 +350,7 @@ libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client"
 // Add the community extensions for materialized views (optional)
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.3"
 // Add the arrow extensions for cross-index JOIN (required for JOINs; Java 11+)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.3"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.4"
 // Add the JDBC driver if you want to use it from Scala (optional)
 libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.3"
 ```
