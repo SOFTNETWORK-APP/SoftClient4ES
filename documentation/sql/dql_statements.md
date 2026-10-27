@@ -1117,9 +1117,10 @@ plain REPL:
 2. Those values are injected into the outer query as a literal `terms` filter, and the outer query
    runs as an ordinary search.
 
-The inner result set is therefore **bounded**: past `index.max_terms_count` (65,536 by default) the
-statement fails loudly rather than truncating silently. Narrow the inner query, or raise the index
-setting.
+The inner result set is therefore **bounded**: past **65,536** distinct values the
+statement fails loudly rather than truncating silently. The bound is fixed: it is the default of
+Elasticsearch's `index.max_terms_count`, and raising that setting does not lift it. Narrow the inner
+query, or rewrite the statement as a JOIN.
 
 Elasticsearch's own `terms` lookup is not what this uses and could not be: it reads **one document by
 id**, and cannot express a query.
