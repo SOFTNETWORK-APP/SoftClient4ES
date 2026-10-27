@@ -149,8 +149,10 @@ the engine** — the JDBC driver, the ADBC driver and the Arrow Flight SQL sidec
 ### The bound on an uncorrelated subquery
 
 The two-phase path resolves the inner statement into a set of values, so it is bounded by what an
-Elasticsearch `terms` query accepts — **65,536 distinct values** (`index.max_terms_count`). Past that the
-statement fails loudly, naming the limit and suggesting the JOIN rewrite; it is never silently truncated. A
+Elasticsearch `terms` query accepts by default — **65,536 distinct values**, a fixed bound that raising
+`index.max_terms_count` does not lift. Past that the statement fails loudly, on a default cluster with
+Elasticsearch's own *too many buckets* error, which names the 65,536 limit; it is never silently truncated.
+Rewrite such a statement as a JOIN. A
 plain `SELECT <column> FROM …` body is resolved with a single bounded `terms` aggregation, so the values are
 already distinct and `DISTINCT` buys nothing.
 
