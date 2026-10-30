@@ -709,10 +709,14 @@ private[client] object HitReading {
     *
     * A value Elasticsearch refuses is no value of the type -- it holds it in `_source` only
     * (`ignore_malformed`) -- so `read` answers [[OutOfType]] and the column keeps it as stored
-    * (`Unreadable.KeepAsStored`): narrowing it would wrap it. So is a `long` text with more than 19
-    * digits of scale either way where the majors disagree (7.17 and 8.18 refuse a scale below -19
-    * and read 0 above 19; 6.8 reads the value). No digit count or scale is computed in `Int`
-    * arithmetic, and no value is materialised beyond the digits its text holds.
+    * (`Unreadable.KeepAsStored`): narrowing it would wrap it. So is a `long` text where the majors
+    * disagree: 7.17 and 8.18 refuse a scale below -19 and read 0 above 19, where 6.8 reads the
+    * truncated value -- except a non-zero value with a scale of 2^29 + 8 (536,870,920) or more,
+    * which 6.8 refuses: its `toBigInteger` divides by `BigInteger.TEN.pow(scale)`, which reports an
+    * overflow from that scale on (`bitLength(10) * scale / 32 > 2^26` on its JDK 15.0.1), and the
+    * `ArithmeticException` is a refusal. A value below 1 with a smaller scale, and a zero at any
+    * scale, are 0 on every major. No digit count or scale is computed in `Int` arithmetic, and no
+    * value is materialised beyond the digits its text holds.
     */
   private[client] sealed abstract class WholeRange {
 
@@ -790,6 +794,11 @@ private[client] object HitReading {
     private val LongMin = java.math.BigDecimal.valueOf(Long.MinValue)
     private val LongMax = java.math.BigDecimal.valueOf(Long.MaxValue)
 
+    /** The smallest scale 6.8.23 refuses in a non-zero `long` text: `BigInteger.TEN.pow(scale)`
+      * overflows once `4L * scale / 32 > (1 << 26)` (JDK 15.0.1's `pow`).
+      */
+    private val Es6RefusedScale: Int = (1 << 29) + 8
+
     /** `long`. */
     object ForBigInt extends WholeRange {
 
@@ -818,7 +827,10 @@ private[client] object HitReading {
               // the digits before the point, in Long arithmetic, read off the scale
               val integerDigits = d.precision().toLong - d.scale()
               if (d.scale() < -19) OutOfType
-              else if (d.signum() == 0 || integerDigits <= 0) java.lang.Long.valueOf(0L)
+              else if (d.signum() == 0) java.lang.Long.valueOf(0L)
+              // 6.8 refuses it, 7.17 / 8.18 read 0: the majors disagree
+              else if (d.scale() >= Es6RefusedScale) OutOfType
+              else if (integerDigits <= 0) java.lang.Long.valueOf(0L)
               else if (d.scale() > 19 || integerDigits > 19) OutOfType
               else {
                 val truncated = d.setScale(0, java.math.RoundingMode.DOWN)

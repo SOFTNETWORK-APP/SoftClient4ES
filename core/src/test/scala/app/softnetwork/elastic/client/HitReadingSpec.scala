@@ -305,9 +305,8 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     row("SELECT tb FROM s2_t", """{"tb": "127.9"}""")("tb") shouldBe java.lang.Integer.valueOf(127)
     row("SELECT l FROM s2_t", """{"l": "9223372036854775807.5"}""")("l") shouldBe
     java.lang.Long.valueOf(Long.MaxValue)
-    row("SELECT l FROM s2_t", """{"l": "0.5e-1000000000"}""")("l") shouldBe java.lang.Long.valueOf(
-      0L
-    )
+    // ...and a `long` text below 1 whose scale 6.8 refuses (integral scale below) stays as stored
+    row("SELECT l FROM s2_t", """{"l": "0.5e-1000000000"}""")("l") shouldBe "0.5e-1000000000"
   }
 
   // integral coercion: NumberFieldMapper / AbstractXContentParser 6.8.23, 7.17.29 and 8.18.3,
@@ -326,6 +325,25 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     Seq("1e2147483647", "-1e2147483647", "123e2147483646").foreach { text =>
       integrals.foreach { c =>
         withClue(s"$c '$text': ")(read(c, s""""$text"""") shouldBe text)
+      }
+    }
+  }
+
+  it should "keep a long text below 1 as stored from the scale 6.8 refuses (integral scale)" in {
+    // 6.8.23's `toBigInteger` divides by BigInteger.TEN.pow(scale), which overflows from a scale of
+    // 2^29 + 8 on (refused, `_ignored`); 7.17.29 / 8.18.3 read 0 above a scale of 19: the majors
+    // disagree, so the value stays as stored on both
+    val refused =
+      Seq("1e-700000000", "-1e-700000000", "1e-2147483647", "0.5e-536870919", "5e-536870920")
+    refused.map(t => t -> read("l", s""""$t"""")) shouldBe refused.map(t => t -> t)
+    // below that scale, and a zero at any scale, every major reads 0
+    Seq("1e-536870919", "1e-100000", "5e-20", "0e-700000000", "0.0e-2147483646").foreach { t =>
+      withClue(t)(read("l", s""""$t"""") shouldBe java.lang.Long.valueOf(0L))
+    }
+    // `integer` / `short` / `byte` read the text through Double.parseDouble (0) on every major
+    Seq("tb", "s", "n").foreach { c =>
+      Seq("1e-700000000", "1e-2147483647").foreach { t =>
+        withClue(s"$c '$t': ")(read(c, s""""$t"""") shouldBe int(0))
       }
     }
   }
