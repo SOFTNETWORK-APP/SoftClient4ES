@@ -323,4 +323,34 @@ class SchemaMissInvalidationSpec extends AnyFlatSpec with Matchers with BeforeAn
       }
     }
   }
+
+  "The path reload memo (SCHEMA-2, D10)" should "reload a lacking path ONCE per TTL, and stay bounded" in {
+    val client = new RecordingClient
+    client.indices = Set("t")
+    def select(column: String): Unit = {
+      val _ = client.search(SelectStatement(s"SELECT id, $column FROM t"))
+    }
+    select("id")
+    val loaded = client.lookups.size
+    select("zz_0")
+    client.lookups.size shouldBe loaded + 1 // one reload for the path the mapping lacks...
+    select("zz_0")
+    client.lookups.size shouldBe loaded + 1 // ...and none within the TTL
+    // live entries are kept above the purge threshold
+    (1 to 300).foreach(i => select(s"zz_$i"))
+    client.schemaPathReloadCount shouldBe 301
+    // an insert above the threshold drops the expired entries (each by its source's TTL)
+    client.cacheTtlMs = 1L
+    select("zz_a") // re-stamps the source's entry with the short TTL
+    Thread.sleep(5)
+    select("zz_b")
+    client.schemaPathReloadCount should be <= 2
+    // thousands of distinct live names inside one TTL never grow it past four times the threshold
+    client.cacheTtlMs = 5 * 60 * 1000L
+    (1 to 1100).foreach(i => select(s"yy_$i"))
+    client.schemaPathReloadCount should be <= 1024
+    val before = client.lookups.size
+    select("yy_1100")
+    client.lookups.size shouldBe before // the newest path is still remembered
+  }
 }

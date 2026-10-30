@@ -169,9 +169,9 @@ trait UnnestFunctionRefusalExecutionSpec
   private def viaGateway(sql: String): Either[ElasticError, Seq[ListMap[String, Any]]] = {
     val answered: Try[Either[ElasticError, Seq[ListMap[String, Any]]]] =
       Try(Await.result(client.run(sql), 60.seconds)).flatMap {
-        case ElasticSuccess(QueryRows(rows, _))           => Success(Right(rows))
+        case ElasticSuccess(QueryRows(rows, _, _))        => Success(Right(rows))
         case ElasticSuccess(QueryStructured(response, _)) => Success(Right(response.results))
-        case ElasticSuccess(QueryStream(stream, _)) =>
+        case ElasticSuccess(QueryStream(stream, _, _)) =>
           Try(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)).map(Right(_))
         case ElasticSuccess(other) =>
           Success(Left(ElasticError(message = s"unexpected result $other")))

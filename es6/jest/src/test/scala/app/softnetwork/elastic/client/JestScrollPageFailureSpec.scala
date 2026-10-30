@@ -107,6 +107,28 @@ class JestScrollPageFailureSpec extends AnyWordSpec with Matchers {
     }
   }
 
+  "both extractors" should {
+
+    "read a page in its statement's schema context: the rows and classes core's parse gives (SCHEMA-2, pages)" in {
+      val fixture = SchemaPageFixture
+      val context = fixture.context("6.8.23")
+      val scroll = client.extractAllResults(
+        fixture.page,
+        fixture.fieldAliases,
+        noAggregations,
+        retainDocumentId = false
+      )(context)
+      val searchAfter =
+        client.extractHitsOnly(fixture.page, fixture.fieldAliases, retainDocumentId = false)(
+          context
+        )
+      Seq(scroll, searchAfter).foreach { rows =>
+        rows shouldBe fixture.expected
+        fixture.classes(rows) shouldBe fixture.classes(fixture.expected)
+      }
+    }
+  }
+
   "extractHitsOnly" should {
 
     "return one row per raw hit on a good page" in {

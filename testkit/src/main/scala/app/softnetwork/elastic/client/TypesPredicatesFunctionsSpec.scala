@@ -182,9 +182,9 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
   /** The rows of `sql` through `GatewayApi.run`. */
   private def gatewayRowsOf(sql: String): Seq[ListMap[String, Any]] =
     Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
       case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")

@@ -129,10 +129,12 @@ case class ClientAggregation(
 }
 
 case class ElasticResponse(
-  query: String,                               // Original query
-  response: String,                            // Raw JSON response
-  fieldAliases: Map[String, String],           // Field name mappings
-  aggregations: Map[String, ClientAggregation] // Aggregation definitions
+  sql: Option[String],                          // Original SQL, when any
+  query: String,                                // The Elasticsearch query
+  results: Seq[ListMap[String, Any]],           // The rows
+  fieldAliases: ListMap[String, String],        // Field name mappings
+  aggregations: ListMap[String, ClientAggregation], // Aggregation definitions
+  schema: Option[ResultSchema] = None           // The declared result schema (see gateway.md)
 )
 ```
 

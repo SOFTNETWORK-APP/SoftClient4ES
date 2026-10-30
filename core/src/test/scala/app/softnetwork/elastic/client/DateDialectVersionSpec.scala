@@ -207,14 +207,15 @@ class DateDialectVersionSpec extends AnyFlatSpec with Matchers {
     ).foreach { case (sql, values) =>
       withClue(sql)(rows(forbidden(), sql, values) shouldBe rows(answering("8.18.3"), sql, values))
     }
-    // an agreeing date of a format of its own is read, a zone name kept as stored
+    // an agreeing date of a format of its own is read; a zone-name format makes its column
+    // VARCHAR (SCHEMA-2, D12: core reads no value of it for sure), every value its text as stored
     rows(forbidden(), union("c_c1", "c_c1"), Seq("\"2024/01/31\"")) shouldBe Seq(midnight)
     rows(
       forbidden(),
       union("tsz", "tsz"),
       Seq("\"2024-01-31 10:30 UTC\"", "\"2024-01-31 10:30 CET\"")
     ) shouldBe Seq(
-      shown(utc("2024-01-31T10:30:00Z")),
+      shown("2024-01-31 10:30 UTC"),
       shown("2024-01-31 10:30 CET")
     )
   }

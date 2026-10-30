@@ -21,7 +21,7 @@ package app.softnetwork.elastic.client.repl
 import akka.actor.ActorSystem
 import akka.stream.Materializer
 import akka.stream.scaladsl.{Sink, Source}
-import app.softnetwork.elastic.client.ElasticClientApi
+import app.softnetwork.elastic.client.{ElasticClientApi, ResultSchema}
 import app.softnetwork.elastic.client.result.{
   ElasticError,
   ElasticFailure,
@@ -48,7 +48,8 @@ class StreamingReplExecutor(gateway: ElasticClientApi)(implicit
   case class StreamContext(
     source: Source[ListMap[String, Any], _],
     name: String,
-    startTime: Long
+    startTime: Long,
+    schema: Option[ResultSchema] = None
   )
 
   /** Execute SQL and handle streaming results
@@ -62,9 +63,9 @@ class StreamingReplExecutor(gateway: ElasticClientApi)(implicit
         val executionTime = (System.nanoTime() - startTime).nanos
 
         elasticResult match {
-          case ElasticSuccess(QueryStream(source, _)) =>
-            // Store stream context for later consumption
-            activeStream = Some(StreamContext(source.map(_._1), sql, startTime))
+          case ElasticSuccess(QueryStream(source, _, schema)) =>
+            // Store stream context for later consumption -- with its schema (SCHEMA-2, D13)
+            activeStream = Some(StreamContext(source.map(_._1), sql, startTime, schema))
             ExecutionSuccess(
               StreamResult(estimatedSize = None, isActive = true),
               executionTime
@@ -148,6 +149,9 @@ class StreamingReplExecutor(gateway: ElasticClientApi)(implicit
   /** Check if there's an active stream
     */
   def hasActiveStream: Boolean = activeStream.isDefined
+
+  /** The active stream's result schema (SCHEMA-2): the header its collected rows render under. */
+  def activeStreamSchema: Option[ResultSchema] = activeStream.flatMap(_.schema)
 
   def invalidateSchema(index: String): Unit = gateway.invalidateSchema(index)
   def invalidateAllSchemas(): Unit = gateway.invalidateAllSchemas()

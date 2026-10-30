@@ -27,7 +27,7 @@ object JsonFormatter {
 
   def format(result: QueryResult, executionTime: Duration): String = {
     result match {
-      case QueryRows(rows, _) =>
+      case QueryRows(rows, _, _) =>
         val json = JObject(
           "rows"              -> JArray(rows.map(rowToJson).toList),
           "count"             -> JInt(rows.size),
@@ -76,12 +76,16 @@ object JsonFormatter {
   }
 
   private def valueToJson(value: Any): JValue = value match {
-    case null           => JNull
-    case s: String      => JString(s)
-    case i: Short       => JInt(i)
-    case i: Int         => JInt(i)
-    case l: Long        => JLong(l)
-    case d: Double      => JDouble(d)
+    case null      => JNull
+    case s: String => JString(s)
+    case i: Short  => JInt(i)
+    case i: Int    => JInt(i)
+    case l: Long   => JLong(l)
+    case d: Double => JDouble(d)
+    // SCHEMA-2 (D2) -- a REAL is a number, its bytes as JSON spells the float
+    case f: Float => JDouble(java.lang.Double.parseDouble(java.lang.Float.toString(f)))
+    // ...and a VARBINARY its base64 text, the text 0.24.0 answered
+    case b: Array[Byte] => JString(java.util.Base64.getEncoder.encodeToString(b))
     case b: Boolean     => JBool(b)
     case seq: Seq[_]    => JArray(seq.map(valueToJson).toList)
     case map: Map[_, _] => JObject(map.map { case (k, v) => k.toString -> valueToJson(v) }.toList)

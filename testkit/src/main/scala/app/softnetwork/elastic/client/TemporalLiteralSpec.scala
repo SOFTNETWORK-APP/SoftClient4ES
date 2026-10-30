@@ -173,9 +173,9 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
   /** Gateway venue: `GatewayApi.run` -- what the JDBC driver, the REPL and the sidecar call. */
   private def gatewayIds(sql: String): Set[String] =
     Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => ids(rows)
+      case ElasticSuccess(QueryRows(rows, _, _))        => ids(rows)
       case ElasticSuccess(QueryStructured(response, _)) => ids(response.results)
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         ids(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
       case ElasticSuccess(other) => fail(s"Unexpected result: $other")
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")

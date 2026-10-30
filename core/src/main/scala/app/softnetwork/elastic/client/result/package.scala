@@ -428,25 +428,37 @@ package object result {
     * Story P0.5: the additive, default-`None` `truncation` field carries the single-index result
     * cap signal. Because the field has a default value, every `QueryRows(rows)` '''constructor'''
     * call across core / arrow / jdbc keeps compiling unchanged. Positional '''pattern''' matches
-    * (`case QueryRows(rows)`) must add a trailing `_` (`case QueryRows(rows, _)`) — the compiler's
-    * synthetic extractor now binds both fields. (A custom 1-arg companion `unapply` was rejected:
-    * Scala 2.12 still prefers the synthetic 2-arg extractor, so it is not cross-version safe.)
+    * (`case QueryRows(rows)`) must add a trailing `_` per field (`case QueryRows(rows, _, _)` since
+    * SCHEMA-2's `schema`) — the compiler's synthetic extractor binds every field. (A custom 1-arg
+    * companion `unapply` was rejected: Scala 2.12 still prefers the synthetic 2-arg extractor, so
+    * it is not cross-version safe.)
     */
   case class QueryRows(
     rows: Seq[ListMap[String, Any]],
-    truncation: Option[ResultTruncation] = None
+    truncation: Option[ResultTruncation] = None,
+    schema: Option[ResultSchema] = None
   ) extends QueryResult
 
+  /** SCHEMA-2 (D13): `schema` -- the statement's result schema, declared before any row is read;
+    * `None` where none is known (no mapping, a DDL / DML / SHOW result). Positional patterns bind
+    * THREE fields (`case QueryRows(rows, _, _)`); the shape immune to the next arity change is
+    * `case q: QueryRows => q.rows`.
+    */
   case class QueryStream(
     stream: Source[(ListMap[String, Any], ScrollMetrics), NotUsed],
-    truncation: Option[ResultTruncation] = None
+    truncation: Option[ResultTruncation] = None,
+    schema: Option[ResultSchema] = None
   ) extends QueryResult
 
   case class QueryStructured(
     response: ElasticResponse,
     truncation: Option[ResultTruncation] = None
   ) extends QueryResult {
-    def asQueryRows: QueryRows = QueryRows(response.results, truncation)
+
+    /** The statement's result schema, carried by its response (A-18). */
+    def schema: Option[ResultSchema] = response.schema
+
+    def asQueryRows: QueryRows = QueryRows(response.results, truncation, response.schema)
   }
 
   case class StreamResult(

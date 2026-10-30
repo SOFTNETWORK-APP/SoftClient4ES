@@ -57,8 +57,8 @@ class FromlessSelectGatewaySpec
 
   private def rows(result: ElasticResult[QueryResult]): Seq[ListMap[String, Any]] =
     result match {
-      case ElasticSuccess(QueryRows(r, _)) => r
-      case other                           => fail(s"expected QueryRows, got $other")
+      case ElasticSuccess(QueryRows(r, _, _)) => r
+      case other                              => fail(s"expected QueryRows, got $other")
     }
 
   // ── Fixture B: a NopeClientApi whose search answers from a response QUEUE and which

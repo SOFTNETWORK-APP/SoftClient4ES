@@ -571,6 +571,8 @@ class Repl(
 
     var displayedRows = 0
     val allRows = scala.collection.mutable.ListBuffer[ListMap[String, Any]]()
+    // SCHEMA-2 (D13) -- the stream's schema, read before the consumption ends the stream
+    val schema = executor.activeStreamSchema
 
     val resultFuture = executor.consumeStream(
       batchSize = batchSize,
@@ -596,7 +598,7 @@ class Repl(
           // Render accumulated rows
           if (allRows.nonEmpty) {
             val output = ResultRenderer.render(
-              QueryRows(allRows.toSeq),
+              QueryRows(allRows.toSeq, schema = schema),
               result.duration,
               config.format
             )

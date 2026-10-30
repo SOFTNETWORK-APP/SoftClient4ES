@@ -178,9 +178,9 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
   private def gatewaySelected(where: String): Set[String] = {
     val sql = s"SELECT id FROM $index WHERE $where"
     val rows = Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
       case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")
@@ -506,9 +506,9 @@ trait PredicateFunctionResultSpec extends AnyFlatSpecLike with ElasticDockerTest
   private def gatewayWhereIds(where: String): Set[String] = {
     val sql = s"SELECT id FROM $precedenceIndex WHERE $where"
     val rows = Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
       case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")

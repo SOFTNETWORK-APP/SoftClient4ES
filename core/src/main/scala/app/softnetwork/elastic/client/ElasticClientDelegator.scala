@@ -1529,6 +1529,14 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     context: ConversionContext
   ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = delegate.scroll(statement, config)
 
+  /** SCHEMA-2 (D13) -- the delegate's: its schema cache, its reload memo. */
+  override private[client] def scrollWithSchema(statement: SearchStatement, config: ScrollConfig)(
+    implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): (Option[ResultSchema], Source[(ListMap[String, Any], ScrollMetrics), NotUsed]) =
+    delegate.scrollWithSchema(statement, config)
+
   /** Scroll and convert results into typed entities from an SQL query.
     *
     * @note
@@ -2004,6 +2012,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
     system: ActorSystem
   ): Future[ElasticResult[QueryResult]] =
     delegate.run(statement)
+
+  /** SCHEMA-2 (D14) -- the delegate's: its extensions, its schema cache, its reload memo. */
+  override def describe(sql: String): ElasticResult[Option[ResultSchema]] =
+    delegate.describe(sql)
+
+  override def describe(statement: query.Statement): ElasticResult[Option[ResultSchema]] =
+    delegate.describe(statement)
 
   // ==================== Extensions (delegate) ====================
 

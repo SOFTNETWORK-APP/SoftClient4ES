@@ -260,9 +260,9 @@ trait AggregateWithoutGroupBySpec extends AnyFlatSpecLike with ElasticDockerTest
   private def rows(sql: String): Either[String, Seq[ListMap[String, Any]]] =
     Try {
       Await.result(client.run(sql), 60.seconds) match {
-        case ElasticSuccess(QueryRows(rs, _))             => Right(rs)
+        case ElasticSuccess(QueryRows(rs, _, _))          => Right(rs)
         case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
-        case ElasticSuccess(QueryStream(stream, _)) =>
+        case ElasticSuccess(QueryStream(stream, _, _)) =>
           Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
         case ElasticSuccess(other) => Left(s"unexpected result $other")
         case ElasticFailure(error) => Left(error.message)

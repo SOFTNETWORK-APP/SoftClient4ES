@@ -279,24 +279,36 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
         agrees = Some(!column.converts)
       )
       (DateRoute.of(SQLTypes.Timestamp, Some(spec), dates), legSlot) match {
-        case (_, None) => Seq(s"[$f] no slot")
+        case (_, None)                  => Seq(s"[$f] no slot")
         case (DateRoute.Typed, Some(s)) =>
+          // SCHEMA-2 (D4, D12) -- a leg's row holds the value core's hit reader gives the column:
+          // the date its format reads (canonical), or, where it reads none, the value as stored
+          val canonical = new HitReading.Readers(ListMap.empty, dates, MultiValued.AsRead, "t")
+            .column("v", declared, Set.empty)
+            ._1
           (if (s.sqlType != declared || s.asStored.nonEmpty) Seq(s"[$f] typed as $s") else Nil) ++
-            formatRows.flatMap { case (_, json, millis, cause) =>
-              val value = received(json)
-              (cause, Try(s.read(value)), Try(reference(value))) match {
-                case (None, Success(z: ZonedDateTime), Success(r))
-                    if shown(z) == shown(r) && z.toInstant.toEpochMilli == millis =>
-                  typedRead += 1
-                  None
-                case (Some(c), Failure(e: IllegalArgumentException), Failure(r))
-                    if valueCauses(c) && e.getMessage == r.getMessage &&
-                      e.getMessage.contains("field v") && e.getMessage.contains(s"'$spec'") =>
-                  typedFailed += 1
-                  None
-                case (c, got, want) => Some(s"[$f] $json ($c): read $got, legReaders $want")
-              }
+          formatRows.flatMap { case (_, json, millis, cause) =>
+            val value = canonical(JacksonConfig.objectMapper.readTree(json))
+            (cause, Try(s.read(value)), Try(reference(value))) match {
+              case (None, Success(z: ZonedDateTime), Success(r))
+                  if shown(z) == shown(r) && z.toInstant.toEpochMilli == millis =>
+                typedRead += 1
+                None
+              // SCHEMA-2 (D4): a value whose spelling or offset the response parser erased is
+              // read from its text now, before that parser: the instant Elasticsearch indexed
+              case (Some(c), Success(z: ZonedDateTime), Success(r))
+                  if c.startsWith("erased-") && shown(z) == shown(r) &&
+                    z.toInstant.toEpochMilli == millis =>
+                typedRead += 1
+                None
+              case (Some(c), Failure(e: IllegalArgumentException), Failure(r))
+                  if valueCauses(c) && e.getMessage == r.getMessage &&
+                    e.getMessage.contains("field v") && e.getMessage.contains(s"'$spec'") =>
+                typedFailed += 1
+                None
+              case (c, got, want) => Some(s"[$f] $json ($c): read $got, legReaders $want")
             }
+          }
         case (DateRoute.AsStored(reason), Some(s)) =>
           (if (s.sqlType != varchar || s.asStored != Seq(LegSlot.AsStored("v", reason)))
              Seq(s"[$f] as stored, typed as $s")

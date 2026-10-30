@@ -344,25 +344,19 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
     }
   }
 
-  // 🔴 PINS A KNOWN DEFECT, not a contract -- delete this test when the defect is fixed.
-  //
-  // The same constant reaches the caller DIFFERENTLY on the two paths, MEASURED on real ES 8.18:
-  //   aggregation path (GROUP BY): `flag -> 2`         -- a clean scalar, projected from the AST
-  //   row path        (no GROUP BY): `flag -> List(2)` -- array-wrapped
-  //
-  // The wrap is the pre-existing `script_fields` defect (`jsonNodeToAny` keeps an ES per-field
-  // array as a List and nothing unwraps it), recorded in
-  // docs/issues/local-21.3-script-fields-values-are-array-wrapped.md. The aggregation side is the
-  // CORRECT one and is deliberately NOT wrapped to match: matching would spread a defect to a path
-  // that does not have it. Pinned so the divergence is visible rather than discovered.
-  it should "expose the known row-path array wrap, which the aggregation path does not share" in {
-    implicit val wrapCtx: ConversionContext = NativeContext
+  // The same constant reaches the caller the SAME way on the two paths: the aggregation path
+  // (GROUP BY) projects `flag -> 2` from the AST; the row path (no GROUP BY) reads Elasticsearch's
+  // `script_fields` array, which held it as `List(2)` until SCHEMA-2 (D5, #418 part 1) read a
+  // computed column's one-element array as ONE value.
+  it should "answer a constant as one value on the row path, as the aggregation path does" in {
+    implicit val rowCtx: ConversionContext = NativeContext
     client.search(
       SelectStatement("SELECT id, 2 AS flag FROM group_by_completeness LIMIT 2")
     ) match {
       case ElasticSuccess(response) =>
+        response.results should have size 2
         response.results.foreach { row =>
-          withClue(s"row path, row=$row: ") { row("flag") shouldBe List(2) }
+          withClue(s"row path, row=$row: ") { row("flag") shouldBe 2 }
         }
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}")
     }
@@ -1522,9 +1516,9 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
   /** The rows of a statement, through `GatewayApi.run` (JDBC / REPL / Flight SQL). */
   private def gatewayRows(sql: String): Either[String, Seq[ListMap[String, Any]]] =
     Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => Right(rows)
+      case ElasticSuccess(QueryRows(rows, _, _))        => Right(rows)
       case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
       case ElasticSuccess(other) => Left(s"unexpected result $other")
       case ElasticFailure(error) => Left(error.message)

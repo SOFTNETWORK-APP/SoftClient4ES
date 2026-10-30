@@ -91,6 +91,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
     val scrolledConfig = new AtomicReference[ScrollConfig]()
     val searchedStatement = new AtomicReference[SearchStatement]()
 
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
+
     override def scroll(
       statement: SearchStatement,
       config: ScrollConfig = ScrollConfig()
@@ -135,6 +153,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
 
     @volatile var scrolls: Seq[(SearchStatement, ScrollConfig)] = Seq.empty
     @volatile var executed: Seq[SearchStatement] = Seq.empty
+
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
 
     override def scroll(
       statement: SearchStatement,
@@ -224,6 +260,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
       rowsPerLeg.applyOrElse(i, (_: Int) => 0)
     }
 
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
+
     override def scroll(
       statement: SearchStatement,
       config: ScrollConfig = ScrollConfig()
@@ -266,6 +320,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
 
   private class UnexpectedVariantClient extends NopeClientApi {
     override protected def logger: Logger = testLogger
+
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
 
     override def scroll(
       statement: SearchStatement,
@@ -323,6 +395,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
 
     @volatile var scrolled: Seq[SearchStatement] = Seq.empty
 
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
+
     override def scroll(
       statement: SearchStatement,
       config: ScrollConfig = ScrollConfig()
@@ -357,6 +447,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
       else super.resolveWithSchema(multiple)
     }
 
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
+
     override def scroll(
       statement: SearchStatement,
       config: ScrollConfig = ScrollConfig()
@@ -386,6 +494,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
 
     @volatile private var legs = 0
     private def nextLeg(): Int = synchronized { legs += 1; legs }
+
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
 
     override def scroll(
       statement: SearchStatement,
@@ -1602,6 +1728,24 @@ class CoreDqlExtensionSpec extends AnyFlatSpec with Matchers {
           throw t
         case None => super.resolveWithSchema(multiple)
       }
+
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
 
     override def scroll(
       statement: SearchStatement,

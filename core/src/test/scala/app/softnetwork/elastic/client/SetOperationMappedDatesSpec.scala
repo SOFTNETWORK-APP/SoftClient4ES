@@ -207,26 +207,24 @@ class SetOperationMappedDatesSpec extends AnyFlatSpec with Matchers {
     plan(union("itemsd", "itemsd")) shouldBe Seq(None, None)
   }
 
-  it should "keep a date it cannot read as stored, where a converting column fails it" in {
-    // a region id: its offset comes from zone data -- the value as stored, never a failure
+  it should "answer a column of a format it cannot read for sure as VARCHAR, every value as stored" in {
+    // SCHEMA-2 (D12): a format core cannot read every value of for sure (a region id, whose
+    // offset comes from zone data) makes its column VARCHAR, as DuckDB types a text beside a
+    // date -- every value as stored, never a failure: its own text, the other branch's date in
+    // DuckDB's spelling
     answered(union("c_z", "ts"), 0, "\"2024-01-31 Europe/Paris\"") shouldBe
     "2024-01-31 Europe/Paris"
     answered(union("c_z", "ts"), 0, "[\"2024-01-31 Europe/Paris\"]") shouldBe
-    List("2024-01-31 Europe/Paris")
-    // the readable values of the column are still read
-    shown(answered(union("c_z", "ts"), 0, "\"2024-01-31 Z\"")) shouldBe
-    shown(utc("2024-01-31T00:00:00Z"))
-    shown(answered(union("c_z", "ts"), 1, "\"2024\"")) shouldBe
-    shown(utc("2024-01-01T00:00:00Z"))
+    "2024-01-31 Europe/Paris"
+    answered(union("c_z", "ts"), 0, "\"2024-01-31 Z\"") shouldBe "2024-01-31 Z"
+    answered(union("c_z", "ts"), 1, "\"2024\"") shouldBe "2024-01-01 00:00:00"
     // the Elasticsearch version not known: every date of a format as stored
     answered(union("c_es", "ts"), 0, "1706697000", version = None) shouldBe 1706697000
-    // a column that converts (a TIMESTAMP beside a DATE) fails it, as before
-    intercept[IllegalArgumentException](
-      answered(union("c_z", "d"), 0, "\"2024-01-31 Europe/Paris\"")
-    ).getMessage should include(
-      "Could not read '2024-01-31 Europe/Paris' as a TIMESTAMP when casting from source column k: " +
-      "core cannot read it with the date format 'yyyy-MM-dd VV' of field c_z as Elasticsearch 8 does"
-    )
+    // ...beside a DATE too, which it failed before: the column is VARCHAR, so nothing converts
+    // to a TIMESTAMP
+    answered(union("c_z", "d"), 0, "\"2024-01-31 Europe/Paris\"") shouldBe
+    "2024-01-31 Europe/Paris"
+    answered(union("c_z", "d"), 1, "\"2024-01-31\"") shouldBe "2024-01-31"
   }
 
   "An agreeing date field of a mapping format of its own" should "be read at every depth, every other entry as stored" in {
@@ -270,12 +268,20 @@ class SetOperationMappedDatesSpec extends AnyFlatSpec with Matchers {
   it should "ask the Elasticsearch version once, and only for a column it reads" in {
     var asked = 0
     def version: Option[String] = { asked += 1; Some("8.18.3") }
-    SetOperationValues.converters(resolved(union("c_def", "ts")), version)
+    // a statement with no date column asks nothing
+    SetOperationValues.converters(
+      resolved("SELECT n, s FROM t UNION ALL SELECT n, s FROM t"),
+      version
+    )
     asked shouldBe 0
+    // SCHEMA-2 (D5, D12): a date column of a format -- the default one too -- is typed by it, as
+    // its legs' hit readers read it: the version once per statement
+    SetOperationValues.converters(resolved(union("c_def", "ts")), version)
+    asked shouldBe 1
     SetOperationValues.converters(
       resolved("SELECT c_es, c_c1 FROM t UNION ALL SELECT ts, ts FROM t"),
       version
     )
-    asked shouldBe 1
+    asked shouldBe 2
   }
 }

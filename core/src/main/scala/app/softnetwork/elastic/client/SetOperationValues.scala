@@ -83,16 +83,43 @@ private[elastic] object SetOperationValues {
   private[client] def converters(
     multiple: MultiSearch,
     version: => Option[String]
-  ): Seq[Option[Array[Any => Any]]] =
-    MultiSearch.columnTypes(multiple.requests) match {
+  ): Seq[Option[Array[Any => Any]]] = {
+    val dates = DateReading(version)
+    // SCHEMA-2 (D12) -- the ONE typing the result schema reads too (`ResultSchemas.of`)
+    routedColumns(multiple.requests, multiple.resolvedOperators, dates) match {
       case Right(columns) if columns.exists(c => c.converts || readsMappedDates(c)) =>
         val names = columnNames(multiple.requests, columns.size)
-        val dates = DateReading(version)
         multiple.requests.indices.map(leg =>
           legConverters(multiple.requests(leg), leg, columns, names, dates)
         )
       case _ => multiple.requests.map(_ => None)
     }
+  }
+
+  /** SCHEMA-2 (D12) -- THE typing of a set operation's columns as core's `UNION ALL` reads them,
+    * for the result schema (`ResultSchemas.of`) and the converters ([[converters]]) alike (#292):
+    * `MultiSearch.columnTypes`, every TOP-LEVEL date position of a branch [[DateRoute.of]] answers
+    * as stored made `VARCHAR` -- and the column with it `VARCHAR` (DuckDB's text rule), its other
+    * branches converted to their text. A leg reads such a date as its text as stored (its
+    * `HitReading`), so the column holds one class. Every other column is `columnTypes`' own.
+    */
+  private[client] def routedColumns(
+    requests: Seq[SingleSearch],
+    operators: Seq[SetOperator],
+    dates: DateReading
+  ): Either[String, Seq[SetOperationColumn]] =
+    MultiSearch
+      .columnTypes(requests, operators)
+      .map(_.map { column =>
+        val branches = column.branches.map(_.map { branch =>
+          DateRoute.of(branch.sqlType, branch.format, dates) match {
+            case DateRoute.Typed       => branch
+            case DateRoute.AsStored(_) => SetOperationType(SQLTypes.Varchar)
+          }
+        })
+        if (branches == column.branches) column
+        else column.copy(result = SetOperationType(SQLTypes.Varchar), branches = branches)
+      })
 
   /** THE READER of each leg of a set operation, column by column -- in leg order, `None` for a leg
     * with nothing to read -- or, `Left`, the statement's refusal (`MultiSearch.branchTypes`'
@@ -110,12 +137,16 @@ private[elastic] object SetOperationValues {
     *     (`ElasticConversion.jsonNodeToAny`), AS ITS BRANCH DECLARES IT
     *     (`SetOperationColumn.branches`), with its mapping format, as Elasticsearch indexed it --
     *     at every depth, where the branches agree too. One class per type: an `INT` is an
-    *     `Integer`, a `BIGINT` a `Long`, a `SMALLINT` a `Short`, a `TINYINT` a `Byte`, a `DOUBLE` a
-    *     `Double`, a `REAL` a `Float`, a `BOOLEAN` a `Boolean`, a `DATE` a `LocalDate`, a
+    *     `Integer`, a `BIGINT` a `Long`, a `SMALLINT` and a `TINYINT` an `Integer` (D2), a `DOUBLE`
+    *     a `Double`, a `REAL` a `Float`, a `BOOLEAN` a `Boolean`, a `DATE` a `LocalDate`, a
     *     `TIMESTAMP` a `ZonedDateTime` in UTC, a `TIME` a `LocalTime`, a `VARCHAR` a `String`, a
-    *     `VARBINARY` the UTF-8 bytes of its base64 text, a `STRUCT` a `ListMap` of its fields in
-    *     the branch's order, a `GEO_POINT` a `ListMap` of `lat` and `lon` (`Double`s), an `ARRAY` a
+    *     `VARBINARY` the bytes its base64 text encodes, a `STRUCT` a `ListMap` of its fields in the
+    *     branch's order, a `GEO_POINT` a `ListMap` of `lat` and `lon` (`Double`s), an `ARRAY` a
     *     `List` of its element's class.
+    *   - A value core's hit reader already gave in that class's one form (SCHEMA-2, D12: a
+    *     `LocalDate`, a `LocalTime` or a `ZonedDateTime` at UTC to the millisecond, at a date of a
+    *     format core reads every value of for sure, `DateRoute.Typed`) is answered as it is, never
+    *     re-read by the format.
     *   - Elasticsearch's one-element array (`script_fields`) is ONE value, its empty array NULL.
     *   - A value core cannot read fails the statement, in the words core's `UNION ALL` uses: a date
     *     its format does not read, or does not read without guessing (a zone name), a point that is
@@ -1196,21 +1227,51 @@ private[elastic] object SetOperationValues {
         value => failure(value, detail)
       case Some(dialect) =>
         val format = MappedDateFormat(spec, dialect, dates.clock)
-        value =>
-          format.readValue(value) match {
-            case MappedDateFormat.Read(instant) => result(instant)
-            case MappedDateFormat.Rejected =>
-              failure(
-                value,
-                s"the date format '$spec' of field $field does not read it as ${dialect.label} does"
-              )
-            case MappedDateFormat.Undecidable(reason) =>
-              failure(
-                value,
-                s"core cannot read it with the date format '$spec' of field $field as " +
-                s"${dialect.label} does: $reason"
-              )
-          }
+        // SCHEMA-2 (D12) -- a value already in the result class's ONE form (a canonical row,
+        // read by its column's `HitReading`) is passed through: re-reading a `LocalDate` as
+        // `epoch_second` would fail it. That form is exactly what the reader gives -- a `DATE` a
+        // `LocalDate`, a `TIME` a `LocalTime`, a `TIMESTAMP` a `ZonedDateTime` AT UTC, the instant
+        // to the millisecond Elasticsearch keeps -- never what the response parser makes of a text
+        // (`ElasticConversion.jsonNodeToAny`: an offset `2024-01-31T10:30:00+02:00`, a region
+        // `…[Europe/Paris]`, nanoseconds), which the format still reads as Elasticsearch indexed
+        // it, or fails (R-11 / R-15). And only under a format the hit reader reads by
+        // (`DateRoute.Typed`: core reads every value of it for sure): under any other it reads
+        // the text as stored, so a value in that form is the response parser's. One class test
+        // per value.
+        val canonical: Any => Any =
+          if (format.unread.isDefined) ((_: Any) => null)
+          else
+            source match {
+              case SQLTypes.Date => { case d: LocalDate => d; case _ => null }
+              case SQLTypes.Time => {
+                case t: LocalTime if t.getNano % 1000000 == 0 => t
+                case _                                        => null
+              }
+              case _ => {
+                case z: ZonedDateTime if z.getZone == ZoneOffset.UTC && z.getNano % 1000000 == 0 =>
+                  z
+                case _ => null
+              }
+            }
+        value => {
+          val passed = if (value == null) null else canonical(value)
+          if (passed != null) passed
+          else
+            format.readValue(value) match {
+              case MappedDateFormat.Read(instant) => result(instant)
+              case MappedDateFormat.Rejected =>
+                failure(
+                  value,
+                  s"the date format '$spec' of field $field does not read it as ${dialect.label} does"
+                )
+              case MappedDateFormat.Undecidable(reason) =>
+                failure(
+                  value,
+                  s"core cannot read it with the date format '$spec' of field $field as " +
+                  s"${dialect.label} does: $reason"
+                )
+            }
+        }
     }
   }
 
@@ -1229,7 +1290,7 @@ private[elastic] object SetOperationValues {
     case other => other
   }
 
-  private val double: Any => Any = {
+  private[client] val double: Any => Any = {
     case s: String =>
       val t = s.trim
       if (t.isEmpty) null
@@ -1237,7 +1298,7 @@ private[elastic] object SetOperationValues {
     case other => other
   }
 
-  private val real: Any => Any = {
+  private[client] val real: Any => Any = {
     case s: String =>
       val t = s.trim
       if (t.isEmpty) null
@@ -1245,19 +1306,19 @@ private[elastic] object SetOperationValues {
     case other => other
   }
 
-  private val boolean: Any => Any = {
+  private[client] val boolean: Any => Any = {
     case "true"       => java.lang.Boolean.TRUE
     case "false" | "" => java.lang.Boolean.FALSE
     case other        => other
   }
 
-  private val timestamp: Any => Any = {
+  private[client] val timestamp: Any => Any = {
     case s: String if EpochMillis.pattern.matcher(s).matches() =>
       Instant.ofEpochMilli(s.toLong).atZone(ZoneOffset.UTC)
     case other => toTimestamp(other)
   }
 
-  private val date: Any => Any = {
+  private[client] val date: Any => Any = {
     case d: LocalDate => d
     case other =>
       timestamp(other) match {
@@ -1269,9 +1330,10 @@ private[elastic] object SetOperationValues {
   /** A value reaching a `VARBINARY` column (DuckDB's `BLOB`) as BYTES -- `Array[Byte]`, the class
     * of core's `VARBINARY` cell (`ValueCoercion.inferType`, `JavaValueConversion`).
     *
-    *   - A `VARBINARY` value is the bytes of the text Elasticsearch holds for it, a `binary`
-    *     field's base64, in UTF-8: the bytes the relational engine is handed for that field
-    *     (arrow's `VarBinaryVector`) and the bytes the JDBC driver's `getBytes` answers.
+    *   - A `VARBINARY` value is the bytes the text Elasticsearch holds for it encodes -- a `binary`
+    *     field's base64, DECODED (SCHEMA-2, Q5): the bytes the document was indexed with, the bytes
+    *     core's hit reader gives the column ([[base64]], one rule); a text that is not base64 is
+    *     its UTF-8 bytes, as before.
     *   - A text value is the bytes DuckDB's cast from `VARCHAR` to `BLOB` makes of it
     *     ([[blobOfText]]).
     */
@@ -1280,7 +1342,7 @@ private[elastic] object SetOperationValues {
       case SQLTypes.VarBinary => {
         case null           => null
         case b: Array[Byte] => b
-        case other          => other.toString.getBytes(StandardCharsets.UTF_8)
+        case other          => base64(other.toString)
       }
       case _ => {
         case null           => null
@@ -1288,6 +1350,14 @@ private[elastic] object SetOperationValues {
         case other          => blobOfText(textOf(other))
       }
     }
+
+  /** SCHEMA-2 (Q5) -- the bytes a `binary` field's base64 text encodes; a text that is not base64,
+    * its UTF-8 bytes. The ONE rule core's hit reader (`HitReading`) and a set operation's
+    * `VARBINARY` position read a `binary` value by.
+    */
+  private[client] def base64(text: String): Array[Byte] =
+    try java.util.Base64.getDecoder.decode(text)
+    catch { case _: IllegalArgumentException => text.getBytes(StandardCharsets.UTF_8) }
 
   /** DuckDB 1.5.5's cast of a `VARCHAR` to a `BLOB`, MEASURED value by value: every ASCII character
     * is its byte, `\xHH` (two hexadecimal digits) is the byte `HH`, and the cast FAILS -- the
@@ -1402,19 +1472,21 @@ private[elastic] object SetOperationValues {
     case other                => other
   }
 
+  /** SCHEMA-2 (D2) -- a `SMALLINT` is an `Integer` (JDBC Table B-3), its value a `SHORT`'s. */
   private val toShort: Any => Any = {
     case null                 => null
-    case s: java.lang.Short   => s
-    case n: java.lang.Number  => java.lang.Short.valueOf(n.shortValue())
-    case b: java.lang.Boolean => java.lang.Short.valueOf(if (b) 1.toShort else 0.toShort)
+    case i: java.lang.Integer => java.lang.Integer.valueOf(i.shortValue().toInt)
+    case n: java.lang.Number  => java.lang.Integer.valueOf(n.shortValue().toInt)
+    case b: java.lang.Boolean => java.lang.Integer.valueOf(if (b) 1 else 0)
     case other                => other
   }
 
+  /** SCHEMA-2 (D2) -- a `TINYINT` is an `Integer` (JDBC Table B-3), its value a `BYTE`'s. */
   private val toByte: Any => Any = {
     case null                 => null
-    case b: java.lang.Byte    => b
-    case n: java.lang.Number  => java.lang.Byte.valueOf(n.byteValue())
-    case b: java.lang.Boolean => java.lang.Byte.valueOf(if (b) 1.toByte else 0.toByte)
+    case i: java.lang.Integer => java.lang.Integer.valueOf(i.byteValue().toInt)
+    case n: java.lang.Number  => java.lang.Integer.valueOf(n.byteValue().toInt)
+    case b: java.lang.Boolean => java.lang.Integer.valueOf(if (b) 1 else 0)
     case other                => other
   }
 

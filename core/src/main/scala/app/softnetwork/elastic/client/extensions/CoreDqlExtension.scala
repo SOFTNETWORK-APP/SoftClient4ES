@@ -385,7 +385,9 @@ class CoreDqlExtension extends ExtensionSpi {
                       totalRows = None,
                       warning = warning
                     )
-                  )
+                  ),
+                  // SCHEMA-2 (D13) -- the schema every route of a `UNION ALL` carries
+                  schema = seam.toOption.flatMap(client.unionAllSchema)
                 )
               )
           }
@@ -648,8 +650,11 @@ class CoreDqlExtension extends ExtensionSpi {
     implicit val context: ConversionContext = NativeContext
     // The client's configured defaults (page size, slice ceiling — #238) plus the quota cap; the
     // cap is `.take(max)` on the MERGED stream, so it binds on the total whatever the slicing.
-    val source =
-      client.scroll(single, client.defaultScrollConfig.copy(maxDocuments = Some(max.toLong)))
+    val (schema, source) =
+      client.scrollWithSchema(
+        single,
+        client.defaultScrollConfig.copy(maxDocuments = Some(max.toLong))
+      )
     val warning =
       s"Result capped to $max rows (license quota). " +
       s"Add an explicit LIMIT <= $max, or upgrade for more rows."
@@ -659,6 +664,8 @@ class CoreDqlExtension extends ExtensionSpi {
       totalRows = None, // capped at source — pre-cap total intentionally not scanned (OQ-4)
       warning = warning
     )
-    Future.successful(ElasticSuccess(QueryStream(source, truncation = Some(signal))))
+    Future.successful(
+      ElasticSuccess(QueryStream(source, truncation = Some(signal), schema = schema))
+    )
   }
 }

@@ -27,6 +27,7 @@ import app.softnetwork.elastic.client.{
   ElasticQuery,
   ElasticResponse,
   LegProjection,
+  ResultSchema,
   SingleValueAggregateResult
 }
 import app.softnetwork.elastic.client.bulk._
@@ -1176,12 +1177,22 @@ class MetricsElasticClient(
   override def scroll(statement: SearchStatement, config: ScrollConfig)(implicit
     system: ActorSystem,
     context: ConversionContext
-  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] =
+    scrollWithSchema(statement, config)._2
+
+  /** SCHEMA-2 (D13) -- recorded as `scroll`: [[scroll]] is its source, so no metric is lost or
+    * counted twice.
+    */
+  override private[client] def scrollWithSchema(statement: SearchStatement, config: ScrollConfig)(
+    implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): (Option[ResultSchema], Source[(ListMap[String, Any], ScrollMetrics), NotUsed]) = {
     // Note: For streams, we measure at the beginning but not every element
     val startTime = System.currentTimeMillis()
-    val source = delegate.scroll(statement, config)
+    val (schema, source) = delegate.scrollWithSchema(statement, config)
 
-    source.watchTermination() { (_, done) =>
+    schema -> source.watchTermination() { (_, done) =>
       done.onComplete { result =>
         val duration = System.currentTimeMillis() - startTime
         val success = result.isSuccess

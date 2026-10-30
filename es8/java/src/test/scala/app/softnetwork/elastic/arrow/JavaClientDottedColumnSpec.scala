@@ -38,9 +38,9 @@ class JavaClientDottedColumnSpec extends DottedColumnSpec {
 
   /** Arrow's `ElasticSqlExecutor.extractRows`: every variant a gateway result takes. */
   private def extractRows(result: QueryResult): Seq[ListMap[String, Any]] = result match {
-    case QueryRows(rows, _)           => rows
+    case QueryRows(rows, _, _)        => rows
     case QueryStructured(response, _) => response.results
-    case QueryStream(stream, _) =>
+    case QueryStream(stream, _, _) =>
       Await.result(stream.map(_._1).runWith(akka.stream.scaladsl.Sink.seq), 60.seconds)
     case _ => Seq.empty
   }

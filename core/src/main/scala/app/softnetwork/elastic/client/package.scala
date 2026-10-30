@@ -19,7 +19,6 @@ package app.softnetwork.elastic
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.sql.function.aggregate._
 import app.softnetwork.elastic.sql.query.{SQLAggregation, SingleSearch}
-import app.softnetwork.elastic.sql.renderedTypeOf
 import com.typesafe.scalalogging.LazyLogging
 import org.slf4j.Logger
 
@@ -50,13 +49,17 @@ package object client extends SerializationApi {
     *   - the field aliases used
     * @param aggregations
     *   - the aggregations expected
+    * @param schema
+    *   - the statement's result schema, declared before any row (SCHEMA-2); `None` where none is
+    *     known
     */
   case class ElasticResponse(
     sql: Option[String] = None,
     query: JSONQuery,
     results: Seq[ListMap[String, Any]],
     fieldAliases: ListMap[String, String],
-    aggregations: ListMap[String, ClientAggregation]
+    aggregations: ListMap[String, ClientAggregation],
+    schema: Option[ResultSchema] = None
   )
 
   sealed trait ElasticAuthMethod {
@@ -320,8 +323,8 @@ package object client extends SerializationApi {
     *   gives that column (`SetOperationValues`), `null` where it already has it -- `None` for a
     *   branch with nothing to convert, which is every branch of a statement whose columns agree
     * @param context
-    *   how the BRANCH's rows are read: the context its own search reads them with (`TextColumns`,
-    *   the columns the branch declares VARCHAR) -- `None` for the caller's own
+    *   how the BRANCH's rows are read: the context its own search reads them with (`SchemaColumns`,
+    *   each value by its declared type) -- `None` for the caller's own
     */
   case class LegProjection(
     fieldAliases: ListMap[String, String],
@@ -591,7 +594,7 @@ package object client extends SerializationApi {
 
     /** The reader of each conversion of a bare UNNEST element column, keyed by its row column
       * (`ElementConversions`), applied where the row explosion places the element's value. Empty
-      * for every context but the one [[TextColumns.of]] builds for such a statement.
+      * for every context but the one [[SchemaColumns.of]] builds for such a statement.
       */
     private[client] def elementConversions: Map[String, Any => Any] = Map.empty
   }
@@ -608,44 +611,29 @@ package object client extends SerializationApi {
     */
   private[client] case object DocumentContext extends ConversionContext
 
-  /** The rows of a statement read natively (as [[NativeContext]]), except that the columns it
-    * declares VARCHAR are never re-read as a temporal: their text is their value.
-    *
-    * 🔴 A text that looks like a date or a time was parsed into a `java.time` value whatever the
-    * column was declared, so `DATETIME_FORMAT(ts, '%H:%i:%s')`, whose script returns `"00:00:00"`,
-    * answered `LocalTime` `00:00`: another class than the VARCHAR it reports, and another text.
-    * Built once per statement by [[TextColumns.of]], only around a [[NativeContext]].
+  /** SCHEMA-2 (D3) -- the rows of a statement read natively (as [[NativeContext]]), each value by
+    * its column's declared type where it is first read ([[HitReading]]), and the statement's
+    * declared [[ResultSchema]] carried to the response. The ONE per-statement native context, built
+    * by [[SchemaColumns.of]] around a [[NativeContext]] only.
     *
     * `doubleKeys` names the levels the statement sends as a numeric `terms` of doubles
     * (`SingleSearch.doubleKeyLevels`), whose non-finite keys a response writes as text
     * (`ElasticConversion.extractBucketKey`).
     */
-  private[client] final case class TextColumns(
-    columns: Set[String],
+  private[client] final case class SchemaColumns(
+    reading: HitReading,
     doubleKeys: Set[String] = Set.empty
   )(val elements: Map[String, Any => Any] = Map.empty)
       extends ConversionContext {
     override private[client] def elementConversions: Map[String, Any => Any] = elements
   }
 
-  private[client] object TextColumns {
+  private[client] object SchemaColumns {
 
-    /** `context` for the rows of `single`: [[TextColumns]] when it is native and `single` declares
-      * a VARCHAR column or sends a level as a numeric `terms` of doubles, `context` itself
-      * otherwise.
-      *
-      * The columns are named from the types the statement declares, each under the name its row
-      * carries it by:
-      *   - a column the SELECT reads bare (no function, no script), by its output name and by the
-      *     source column its document holds;
-      *   - a computed column (a function, a script field), by its output name ONLY: the column it
-      *     reads keeps its own type. Naming that column too re-read `ts` of `SELECT ts,
-      *     DATE_FORMAT(ts, '%Y') AS y` and `d` of `CAST(d AS VARCHAR) AS s` as texts;
-      *   - `*`, the columns the resolved schema declares VARCHAR.
-      *
-      * It also carries the reader of each conversion of a bare UNNEST element column `single`
-      * projects (`ElementConversions`), whose dates are read as the Elasticsearch `version` reads
-      * them (asked only when a date is read).
+    /** `context` for the rows of `single`: [[SchemaColumns]] when it is native, `context` itself
+      * otherwise. Its dates -- and the conversion of each bare UNNEST element column `single`
+      * projects (`ElementConversions`) -- are read as the Elasticsearch `version` reads them, asked
+      * only when a date is read.
       */
     def of(
       single: SingleSearch,
@@ -654,21 +642,24 @@ package object client extends SerializationApi {
     ): ConversionContext =
       context match {
         case NativeContext =>
-          val columns = single.select.fieldsWithComputedAliases.flatMap { field =>
-            if (field.identifier.identifierName == "*")
-              single.schema.toSeq.flatMap(_.columns.collect {
-                case column if column.dataType.isText => column.name
-              })
-            else if (!renderedTypeOf(field.identifier).isText) Nil
-            else if (field.identifier.functions.isEmpty && !field.isScriptField)
-              Seq(field.outputName, field.identifier.name).filter(_.nonEmpty)
-            else Seq(field.outputName).filter(_.nonEmpty)
-          }.toSet
-          val doubleKeys = single.doubleKeyLevels
           val elements = ElementConversions.of(single, version)
-          if (columns.isEmpty && doubleKeys.isEmpty && elements.isEmpty) context
-          else TextColumns(columns, doubleKeys)(elements)
+          SchemaColumns(
+            HitReading.of(
+              single,
+              SetOperationValues.DateReading(version),
+              HitReading.Default,
+              elements.keySet
+            ),
+            single.doubleKeyLevels
+          )(elements)
         case other => other
+      }
+
+    /** The schema a response read in `context` carries (D13). */
+    def schemaOf(context: ConversionContext): Option[ResultSchema] =
+      context match {
+        case s: SchemaColumns => s.reading.schema
+        case _                => None
       }
   }
 }

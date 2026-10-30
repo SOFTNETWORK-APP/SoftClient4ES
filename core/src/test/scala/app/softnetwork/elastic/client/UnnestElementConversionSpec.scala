@@ -66,7 +66,7 @@ class UnnestElementConversionSpec extends AnyFlatSpec with Matchers {
       |   {"_source": {"sku": null, "qty": null, "x": null, "at": null}}]}}}}
       |]}}""".stripMargin
 
-  /** The rows of `sql` read from [[response]] as core reads a statement's rows (`TextColumns.of`,
+  /** The rows of `sql` read from [[response]] as core reads a statement's rows (`SchemaColumns.of`,
     * the Elasticsearch 8 date dialect), or the failure.
     */
   private def rows(sql: String): Try[Seq[ListMap[String, Any]]] = {
@@ -75,7 +75,7 @@ class UnnestElementConversionSpec extends AnyFlatSpec with Matchers {
       case Left(reason) => Failure(new IllegalArgumentException(reason))
       case Right(_) =>
         implicit val context: ConversionContext =
-          TextColumns.of(single, NativeContext, Some("8.18.3"))
+          SchemaColumns.of(single, NativeContext, Some("8.18.3"))
         ElasticConversion.parseResponse(
           response,
           single.fieldAliases,

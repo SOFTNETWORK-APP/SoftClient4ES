@@ -64,6 +64,27 @@ class RestHighLevelClientScrollPageFailureSpec extends AnyWordSpec with Matchers
 
   private val noAggregations = ListMap.empty[String, SQLAggregation]
 
+  "both extractors" should {
+
+    "read a page in its statement's schema context: the rows and classes core's parse gives (SCHEMA-2, pages)" in {
+      val fixture = SchemaPageFixture
+      val context = fixture.context("6.8.23")
+      val page = tree(fixture.page)
+      val scroll = client.extractAllResults(
+        page,
+        fixture.fieldAliases,
+        noAggregations,
+        retainDocumentId = false
+      )(context)
+      val searchAfter =
+        client.extractHitsOnly(page, fixture.fieldAliases, retainDocumentId = false)(context)
+      Seq(scroll, searchAfter).foreach { rows =>
+        rows shouldBe fixture.expected
+        fixture.classes(rows) shouldBe fixture.classes(fixture.expected)
+      }
+    }
+  }
+
   "extractAllResults" should {
 
     "return one row per raw hit on a good page" in {

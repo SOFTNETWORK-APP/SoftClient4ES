@@ -179,9 +179,9 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
 
   /** Every variant a gateway result can take, as a consumer reads it (arrow's `extractRows`). */
   protected def rowsOfResult(result: QueryResult): Seq[ListMap[String, Any]] = result match {
-    case QueryRows(rows, _)           => rows
+    case QueryRows(rows, _, _)        => rows
     case QueryStructured(response, _) => response.results
-    case QueryStream(stream, _) =>
+    case QueryStream(stream, _, _) =>
       Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
     case other => fail(s"unexpected result $other")
   }
@@ -528,22 +528,31 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
         Seq("dn", "dz", "dn4").foreach(id =>
           withClue(s"$id: ")(s2(id).keySet shouldBe Set("id", "obj.a"))
         )
-        // a non-null flat spelling won, an array: the parent stays, as main returns it
-        s2("db")("obj") shouldBe Map("a" -> 30)
-        s2("dl")("obj") shouldBe List(Map("a" -> 5), Map("a" -> 50))
+        // SCHEMA-2 (D9): where a non-null flat spelling won, or the parent is an array, it is
+        // dropped too -- SCHEMA-12 A-1's recorded leak ends: the projection's columns only
+        Seq("db", "dl").foreach(id => withClue(s"$id: ")(s2(id).keySet shouldBe Set("id", "obj.a")))
         val s3 = byId(rowsOk(s"SELECT id, obj.x.y FROM $table", route))
-        s3("dx").keySet shouldBe Set("id", "obj.x.y")
-        s3("dmx")("obj") shouldBe Map("x.y" -> 10)
-        // a requested parent, an aliased source under it, an alias collision, a star (A-5, D5)
+        Seq("dx", "dmx").foreach(id =>
+          withClue(s"$id: ")(s3(id).keySet shouldBe Set("id", "obj.x.y"))
+        )
+        // a requested parent and a star keep it: it is one of their columns (A-5, D5)
         Seq(
           s"SELECT id, obj, obj.a FROM $table",
-          s"SELECT id, obj.a, obj.b AS k FROM $table",
-          s"SELECT id, obj.a, obj.a AS k FROM $table",
-          s"SELECT id, a AS z, obj.a FROM $table",
           s"SELECT *, obj.a FROM $table"
         ).foreach { sql =>
           withClue(s"$sql: ")(byId(rowsOk(sql, route))("dn") should contain key "obj")
         }
+        // an aliased source under it, an alias collision, a column beside it: SCHEMA-2 (D9) drops
+        // it -- the projection's columns only --, each column keeping its value
+        val aliased = byId(rowsOk(s"SELECT id, obj.a, obj.b AS k FROM $table", route))
+        aliased("dn").keySet shouldBe Set("id", "obj.a", "k")
+        String.valueOf(aliased("ds")("k")) shouldBe "6"
+        val collision = byId(rowsOk(s"SELECT id, obj.a, obj.a AS k FROM $table", route))
+        collision("dn").keySet shouldBe Set("id", "obj.a", "k")
+        String.valueOf(collision("dn")("k")) shouldBe "1"
+        val beside = byId(rowsOk(s"SELECT id, a AS z, obj.a FROM $table", route))
+        beside("dn").keySet shouldBe Set("id", "z", "obj.a")
+        String.valueOf(beside("dn")("z")) shouldBe "7"
       }
     }
   }

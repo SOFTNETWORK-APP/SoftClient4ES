@@ -23,8 +23,10 @@ object CsvFormatter {
   @tailrec
   def format(result: QueryResult): String = {
     result match {
-      case QueryRows(rows, _) if rows.nonEmpty =>
-        val columns = rows.head.keys.toSeq
+      case QueryRows(rows, _, schema) if rows.nonEmpty =>
+        // SCHEMA-2 (A-14) -- the header in schema order when the statement declares one: a row
+        // keeps its document's key order
+        val columns = schema.map(_.names).filter(_.nonEmpty).getOrElse(rows.head.keys.toSeq)
         val header = columns.mkString(",")
         val body = rows
           .map { row =>
@@ -34,7 +36,7 @@ object CsvFormatter {
         s"$header\n$body"
 
       case QueryStructured(response, _) if response.results.nonEmpty =>
-        format(QueryRows(response.results))
+        format(QueryRows(response.results, schema = response.schema))
 
       case _ =>
         "No data"
@@ -43,8 +45,10 @@ object CsvFormatter {
 
   private def escapeCsv(value: Any): String = {
     val str = value match {
-      case null  => ""
-      case other => other.toString
+      case null => ""
+      // SCHEMA-2 (D2) -- a VARBINARY's text is its base64, as in 0.24.0
+      case b: Array[Byte] => java.util.Base64.getEncoder.encodeToString(b)
+      case other          => other.toString
     }
 
     if (str.contains(",") || str.contains("\"") || str.contains("\n")) {

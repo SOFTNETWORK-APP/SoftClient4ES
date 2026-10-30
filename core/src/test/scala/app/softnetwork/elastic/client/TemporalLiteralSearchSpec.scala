@@ -124,23 +124,27 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     @volatile var scrolledStatements: Seq[app.softnetwork.elastic.sql.query.SearchStatement] =
       Seq.empty
 
-    override def scroll(
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
       statement: app.softnetwork.elastic.sql.query.SearchStatement,
       config: app.softnetwork.elastic.client.scroll.ScrollConfig
     )(implicit
       system: akka.actor.ActorSystem,
-      context: ConversionContext
-    ): akka.stream.scaladsl.Source[
-      (
-        scala.collection.immutable.ListMap[String, Any],
-        app.softnetwork.elastic.client.scroll.ScrollMetrics
-      ),
-      akka.NotUsed
-    ] = {
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = {
       scrolledStatements = scrolledStatements :+ statement
       // DELEGATE: the seam's own rejections (an unparseable literal throws before any stream
       // exists) are asserted by a neighbouring row, and swallowing them here would disarm it.
-      super.scroll(statement, config)
+      super.scrollWithSchema(statement, config)
     }
   }
 

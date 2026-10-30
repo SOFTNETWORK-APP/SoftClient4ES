@@ -23,11 +23,11 @@ import app.softnetwork.elastic.sql.schema.Schema
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
-import java.time.{LocalDate, LocalTime, ZonedDateTime}
+import java.time.{LocalTime, ZoneOffset, ZonedDateTime}
 import scala.collection.immutable.ListMap
 
 /** A column a statement declares VARCHAR is read as its text, never re-read as a temporal
-  * ([[TextColumns]]). The same statement is executed on every major by the shared testkit trait
+  * ([[SchemaColumns]]). The same statement is executed on every major by the shared testkit trait
   * `GroupedAggregateSemanticsSpec`.
   */
 class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
@@ -47,7 +47,8 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
   /** The value of `v` the hit `fields` entry `text` answers for `sql`. */
   private def valueOf(sql: String, text: String): Any = {
     val single = statement(sql)
-    implicit val context: ConversionContext = TextColumns.of(single, NativeContext)
+    implicit val context: ConversionContext =
+      SchemaColumns.of(single, NativeContext, Some("8.18.3"))
     val response =
       s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
          | {"_id": "a3", "_source": {"id": "a3"}, "fields": {"v": ["$text"]}}]}}""".stripMargin
@@ -77,7 +78,8 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
     */
   private def rowOf(sql: String, source: String, fields: String = "{}"): ListMap[String, Any] = {
     val single = statement(sql)
-    implicit val context: ConversionContext = TextColumns.of(single, NativeContext)
+    implicit val context: ConversionContext =
+      SchemaColumns.of(single, NativeContext, Some("8.18.3"))
     val response =
       s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [
          | {"_id": "a1", "_source": $source, "fields": $fields}]}}""".stripMargin
@@ -109,7 +111,8 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
       """{"id": "a1", "d": "2024-01-03"}""",
       """{"s": ["2024-01-03"]}"""
     )
-    cast("d") shouldBe LocalDate.of(2024, 1, 3)
+    // SCHEMA-2 (D2): `d`, a `date` field declared by no `_meta`, is a TIMESTAMP -- read at UTC
+    cast("d") shouldBe ZonedDateTime.of(2024, 1, 3, 0, 0, 0, 0, ZoneOffset.UTC)
     cast("s") shouldBe a[String]
   }
 
@@ -119,13 +122,13 @@ class DeclaredTextColumnSpec extends AnyFlatSpec with Matchers {
     rowOf("SELECT id, kd AS k2 FROM t", source)("k2") shouldBe "2025-03-31T10:00:00"
     val star = rowOf("SELECT * FROM t", source)
     star("kd") shouldBe "2025-03-31T10:00:00"
-    // the control: a DATE column of the same row keeps its type
-    star("d") shouldBe LocalDate.of(2024, 1, 3)
-    // and without a schema nothing is declared VARCHAR
+    // the control: a date column of the same row keeps its type (SCHEMA-2, D2: a TIMESTAMP)
+    star("d") shouldBe ZonedDateTime.of(2024, 1, 3, 0, 0, 0, 0, ZoneOffset.UTC)
+    // and without a schema no schema is declared (SCHEMA-2, D10: rows as read)
     val context: ConversionContext = Parser("SELECT * FROM t") match {
-      case Right(s: SingleSearch) => TextColumns.of(s, NativeContext)
+      case Right(s: SingleSearch) => SchemaColumns.of(s, NativeContext)
       case other                  => fail(s"$other")
     }
-    context shouldBe NativeContext
+    SchemaColumns.schemaOf(context) shouldBe None
   }
 }
