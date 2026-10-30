@@ -71,13 +71,16 @@ private[client] object ElementConversions {
     * -- for a statement without one. `version` is the Elasticsearch version its dates are read as,
     * asked only when a date is read.
     */
-  def of(single: SingleSearch, version: => Option[String]): Map[String, Any => Any] = {
+  def of(single: SingleSearch, version: => Option[String]): Map[String, Any => Any] =
+    of(single, DateReading(version))
+
+  /** The same, reading its dates by the statement's `dates` -- the one each of its date formats is
+    * built by, shared with its hit readers (SCHEMA-2).
+    */
+  private[client] def of(single: SingleSearch, dates: DateReading): Map[String, Any => Any] = {
     val conversions = UnnestScope.elementConversions(single)
     if (conversions.isEmpty) Map.empty
-    else {
-      val dates = DateReading(version)
-      conversions.map(c => c.output -> converter(single, c, dates)).toMap
-    }
+    else conversions.map(c => c.output -> converter(single, c, dates)).toMap
   }
 
   private def converter(

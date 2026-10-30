@@ -52,21 +52,27 @@ private[client] object DateRoute {
     dates: SetOperationValues.DateReading
   ): DateRoute =
     (sqlType, format) match {
-      case (SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.Time, Some(spec)) =>
-        dates.dialect match {
-          case None =>
-            AsStored(
-              s"the date format '$spec' is read as the Elasticsearch version does, " +
-              dates.elasticVersion.fold("which is not known")(v => s"and core reads dates of no $v")
-            )
-          case Some(dialect) =>
-            MappedDateFormat(spec, dialect, dates.clock).unread.fold[DateRoute](Typed) { why =>
-              AsStored(
-                s"core cannot read every value of the date format '$spec' as ${dialect.label} " +
-                s"does: $why"
-              )
-            }
+      case (SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.Time, Some(spec)) => dates.route(spec)
+      case _                                                                => Typed
+    }
+
+  /** The route of a date field of mapping format `spec`, from the format alone: decided ONCE per
+    * statement and format ([[SetOperationValues.DateReading.route]]), over the statement's one
+    * built format ([[SetOperationValues.DateReading.format]]).
+    */
+  private[client] def ofFormat(spec: String, dates: SetOperationValues.DateReading): DateRoute =
+    dates.format(spec) match {
+      case None =>
+        AsStored(
+          s"the date format '$spec' is read as the Elasticsearch version does, " +
+          dates.elasticVersion.fold("which is not known")(v => s"and core reads dates of no $v")
+        )
+      case Some(mapped) =>
+        mapped.unread.fold[DateRoute](Typed) { why =>
+          AsStored(
+            s"core cannot read every value of the date format '$spec' as " +
+            s"${mapped.dialect.label} does: $why"
+          )
         }
-      case _ => Typed
     }
 }

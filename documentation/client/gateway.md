@@ -234,10 +234,11 @@ Each value is read by its column's declared type, where it is first read:
 
 A one-element array is its element, an empty array NULL. A date field whose format core cannot read
 for sure (a zone name, a region id) is a VARCHAR, its text as stored; a date value Elasticsearch
-ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. A value a
-typed column cannot read is answered as stored: a number outside its type's range, which
-Elasticsearch did not index, is never narrowed. Aggregation values and window-enriched statements
-keep their reading in this release.
+ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. An
+integral column reads a fractional number or a numeric text as Elasticsearch indexed it, truncated
+toward zero. A value a typed column cannot read is answered as stored: a value Elasticsearch did not
+index (a number outside its type's range, a `long` text with surrounding spaces) is never narrowed.
+Aggregation values and window-enriched statements keep their reading in this release.
 
 ---
 

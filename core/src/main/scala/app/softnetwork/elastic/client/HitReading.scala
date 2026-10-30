@@ -25,6 +25,7 @@ import app.softnetwork.elastic.sql.query.{
   UnnestScope
 }
 import app.softnetwork.elastic.sql.query.MultiSearch.SetOperationType
+import app.softnetwork.elastic.sql.schema.Column
 import com.fasterxml.jackson.databind.JsonNode
 
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneOffset, ZonedDateTime}
@@ -119,7 +120,29 @@ private[client] object HitReading {
     multiValued: MultiValued = Default,
     elements: Set[String] = Set.empty
   ): HitReading = {
-    val schema = ResultSchemas.of(single, dates)
+    // each item's and each mapped column's type, computed ONCE per statement: the schema and the
+    // readers read the same value; so do the date formats and routes, built once by `dates`
+    val itemTypes = new java.util.IdentityHashMap[Field, SetOperationType]()
+    val typeOf: Field => SetOperationType = f => {
+      val known = itemTypes.get(f)
+      if (known ne null) known
+      else {
+        val t = MultiSearch.fieldType(f)
+        itemTypes.put(f, t)
+        t
+      }
+    }
+    val columnTypes = new java.util.IdentityHashMap[Column, SetOperationType]()
+    val columnTypeOf: Column => SetOperationType = c => {
+      val known = columnTypes.get(c)
+      if (known ne null) known
+      else {
+        val t = MultiSearch.columnType(c)
+        columnTypes.put(c, t)
+        t
+      }
+    }
+    val schema = ResultSchemas.of(single, dates, typeOf, columnTypeOf)
     val table = single.sources.headOption.getOrElse("")
     val aliases = single.fieldAliases
     val readers = new Readers(aliases, dates, multiValued, table)
@@ -153,7 +176,7 @@ private[client] object HitReading {
       if (star)
         table.columns.foreach { c =>
           if (!source.containsKey(c.name))
-            put(c.name, MultiSearch.columnType(c), keepUnder(c.name))
+            put(c.name, columnTypeOf(c), keepUnder(c.name))
         }
     }
     // explicit columns: a bare column (or a dotted column's parent and its flat spelling) by its
@@ -164,7 +187,7 @@ private[client] object HitReading {
       val id = f.identifier
       if (id.functions.nonEmpty || f.isScriptField) {
         val name = f.outputName
-        val t = MultiSearch.fieldType(f)
+        val t = typeOf(f)
         if (name.nonEmpty && !scripted.containsKey(name)) {
           if (single.schema.isDefined) scripted.put(name, readers.scripted(name, t))
           // no schema (D10): rows as today -- a column declared VARCHAR is its text, never re-read
@@ -173,7 +196,7 @@ private[client] object HitReading {
         }
       } else if (!id.nested && id.name.nonEmpty && single.schema.isDefined) {
         val name = id.name
-        val t = MultiSearch.fieldType(f)
+        val t = typeOf(f)
         val dot = name.indexOf('.')
         if (dot < 0) {
           if (!source.containsKey(name)) put(name, t, keepUnder(name))
@@ -203,7 +226,7 @@ private[client] object HitReading {
             mappings.foreach { case (subField, output) =>
               if (subField.indexOf('.') < 0 && !elements.contains(output))
                 fields.find(_.outputName == output).foreach { f =>
-                  val t = MultiSearch.fieldType(f)
+                  val t = typeOf(f)
                   if (readers.typed(t))
                     byField.put(subField, readers.column(output, t, Set.empty)._1)
                 }
@@ -490,12 +513,13 @@ private[client] object HitReading {
     ): (JsonNode => Any, Option[JsonNode => Any]) =
       sqlType match {
         case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int =>
-          val (min, max) = sqlType match {
-            case SQLTypes.TinyInt  => (Byte.MinValue.toLong, Byte.MaxValue.toLong)
-            case SQLTypes.SmallInt => (Short.MinValue.toLong, Short.MaxValue.toLong)
-            case _                 => (Int.MinValue.toLong, Int.MaxValue.toLong)
+          val range = sqlType match {
+            case SQLTypes.TinyInt  => WholeRange.ForTinyInt
+            case SQLTypes.SmallInt => WholeRange.ForSmallInt
+            case _                 => WholeRange.ForInt
           }
-          val range = new WholeRange(min, max, truncatedFirst = false)
+          val min = range.min
+          val max = range.max
           (
             node =>
               if (node.isInt) {
@@ -503,14 +527,14 @@ private[client] object HitReading {
                 if (v >= min && v <= max) Integer.valueOf(v) else asRead(node)
               } else
                 range.read(node) match {
-                  case l: java.lang.Long => Integer.valueOf(l.intValue())
-                  case null              => null
-                  case _                 => asRead(node)
+                  case i: java.lang.Integer => i
+                  case null                 => null
+                  case _                    => asRead(node)
                 },
             None
           )
         case SQLTypes.BigInt =>
-          val range = new WholeRange(Long.MinValue, Long.MaxValue, truncatedFirst = true)
+          val range = WholeRange.ForBigInt
           (
             node =>
               if (node.isInt || node.isLong) java.lang.Long.valueOf(node.longValue())
@@ -603,7 +627,9 @@ private[client] object HitReading {
       kind: app.softnetwork.elastic.sql.`type`.SQLType,
       spec: String
     ): JsonNode => Any = {
-      val format = MappedDateFormat(spec, dates.dialect.get, dates.clock)
+      // the statement's one format of `spec`, the one its route was decided on (`Typed`: the major
+      // is known)
+      val format = dates.format(spec).get
       val fast = spec == app.softnetwork.elastic.sql.query.TemporalLiterals.DefaultDateFormat
       val result: Instant => Any = kind match {
         case SQLTypes.Date => _.atZone(ZoneOffset.UTC).toLocalDate
@@ -665,51 +691,144 @@ private[client] object HitReading {
   /** What [[WholeRange.read]] answers for a value that is no value of its type. */
   private object OutOfType
 
-  /** SCHEMA-2 (D6) -- an integral type's values, `[min, max]`, read as Elasticsearch reads a value
-    * into that type: a whole number as it is, a decimal or a numeric text truncated toward zero
-    * (`coerce`, T row 5), a blank text NULL. A value outside the range is no value of the type --
-    * Elasticsearch refused it (`ignore_malformed`) and holds it in `_source` only -- so `read`
-    * answers [[OutOfType]] and the column keeps it as stored (`Unreadable.KeepAsStored`): narrowing
-    * it would wrap it. The range is checked as Elasticsearch checks it: `long` on the truncated
-    * value (`truncatedFirst`, `Numbers.toLong`), `integer` / `short` / `byte` on the value itself.
+  /** SCHEMA-2 (D6) -- an integral type's values read as Elasticsearch reads a value into that type,
+    * `coerce` on (T row 5), the same on 6.8.23, 7.17.29 and 8.18.3 (`NumberFieldMapper.value` /
+    * `parse(XContentParser, coerce)`, `AbstractXContentParser`, Jackson's `getIntValue` /
+    * `getShortValue` / `getLongValue`):
+    *
+    *   - an empty text is NULL (`textLength() == 0`);
+    *   - `integer`, `short` and `byte` read a JSON number through `getIntValue` -- a whole number
+    *     within `int`; a fractional one, as a `double`, within `int`, truncated toward zero --,
+    *     then `short` and `byte` check their own range on that `int`; a text through
+    *     `Double.parseDouble`, which trims and reads what it reads (`5f`, `NaN` as 0), `short`
+    *     checking its range on that `double`, `integer` and `byte` the `int` range on it, then
+    *     `byte` its own range on the truncated `int`;
+    *   - `long` reads a JSON number through `getLongValue` -- a fractional one, as a `double`,
+    *     within `long`, truncated --; a text through `Long.parseLong`, else `new BigDecimal`
+    *     (neither trims), truncated toward zero and checked on the truncated value.
+    *
+    * A value Elasticsearch refuses is no value of the type -- it holds it in `_source` only
+    * (`ignore_malformed`) -- so `read` answers [[OutOfType]] and the column keeps it as stored
+    * (`Unreadable.KeepAsStored`): narrowing it would wrap it. So is a `long` text with more than 19
+    * digits of scale either way where the majors disagree (7.17 and 8.18 refuse a scale below -19
+    * and read 0 above 19; 6.8 reads the value). No digit count or scale is computed in `Int`
+    * arithmetic, and no value is materialised beyond the digits its text holds.
     */
-  private[client] final class WholeRange(min: Long, max: Long, truncatedFirst: Boolean) {
+  private[client] sealed abstract class WholeRange {
 
-    private[this] val low = java.math.BigDecimal.valueOf(min)
-    private[this] val high = java.math.BigDecimal.valueOf(max)
+    /** A `java.lang.Integer` (`TINYINT`, `SMALLINT`, `INT`) or a `java.lang.Long` (`BIGINT`),
+      * `null` for an empty text, else [[OutOfType]].
+      */
+    def read(node: JsonNode): Any
+  }
 
-    /** A `java.lang.Long` within the range, `null` for a blank text, else [[OutOfType]]. */
-    def read(node: JsonNode): Any =
-      if (node.isIntegralNumber) {
-        if (node.canConvertToLong) whole(node.longValue()) else OutOfType
-      } else if (node.isBigDecimal) decimal(node.decimalValue())
-      else if (node.isNumber) {
-        val d = node.doubleValue()
-        if (java.lang.Double.isNaN(d) || java.lang.Double.isInfinite(d)) OutOfType
-        else decimal(java.math.BigDecimal.valueOf(d))
-      } else if (node.isTextual) {
-        val text = node.asText().trim
-        if (text.isEmpty) null
-        else
-          try decimal(new java.math.BigDecimal(text))
-          catch { case _: NumberFormatException => OutOfType }
-      } else OutOfType
+  private[client] object WholeRange {
 
-    private def whole(value: Long): Any =
-      if (value >= min && value <= max) java.lang.Long.valueOf(value) else OutOfType
+    /** `byte`: `parser.intValue(coerce)`, then the byte range on that `int`. */
+    val ForTinyInt: Ints =
+      new Ints(
+        Byte.MinValue.toInt,
+        Byte.MaxValue.toInt,
+        Int.MinValue.toDouble,
+        Int.MaxValue.toDouble
+      )
 
-    private def decimal(d: java.math.BigDecimal): Any = {
-      // the digits before the point, read off the scale: `1e1000000000` is never materialised
-      val integerDigits = d.precision() - d.scale()
-      if (d.signum() == 0 || integerDigits <= 0) java.lang.Long.valueOf(0L)
-      else if (integerDigits > 19) OutOfType
-      else {
-        val truncated = d.setScale(0, java.math.RoundingMode.DOWN)
-        val ranged = if (truncatedFirst) truncated else d
-        if (ranged.compareTo(low) >= 0 && ranged.compareTo(high) <= 0)
-          java.lang.Long.valueOf(truncated.longValue())
+    /** `short`: a number through `getShortValue` (`getIntValue`, then the short range on that
+      * `int`); a text checked on its `double`.
+      */
+    val ForSmallInt: Ints = new Ints(
+      Short.MinValue.toInt,
+      Short.MaxValue.toInt,
+      Short.MinValue.toDouble,
+      Short.MaxValue.toDouble
+    )
+
+    /** `integer`: the `int` range, on the `double` of a fractional number or a text. */
+    val ForInt: Ints =
+      new Ints(Int.MinValue, Int.MaxValue, Int.MinValue.toDouble, Int.MaxValue.toDouble)
+
+    /** The `int`-family reader: values `[min, max]`; a text's `double` checked within `[textLow,
+      * textHigh]` before it is truncated.
+      */
+    private[client] final class Ints(val min: Int, val max: Int, textLow: Double, textHigh: Double)
+        extends WholeRange {
+
+      def read(node: JsonNode): Any =
+        if (node.isIntegralNumber) {
+          if (node.canConvertToLong) {
+            val v = node.longValue()
+            if (v >= min && v <= max) java.lang.Integer.valueOf(v.toInt) else OutOfType
+          } else OutOfType
+        } else if (node.isNumber) truncated(node.doubleValue(), IntLow, IntHigh)
+        else if (node.isTextual) {
+          val text = node.asText()
+          if (text.isEmpty) null
+          else {
+            val d =
+              try java.lang.Double.valueOf(text)
+              catch { case _: NumberFormatException => null }
+            if (d eq null) OutOfType else truncated(d.doubleValue(), textLow, textHigh)
+          }
+        } else OutOfType
+
+      /** `d` within `[low, high]`, truncated toward zero (`(int) d`: `NaN` is 0), then within the
+        * type's range.
+        */
+      private def truncated(d: Double, low: Double, high: Double): Any =
+        if (d < low || d > high) OutOfType
+        else {
+          val i = d.toInt
+          if (i >= min && i <= max) java.lang.Integer.valueOf(i) else OutOfType
+        }
+    }
+
+    // Jackson's MIN_INT_D / MAX_INT_D / MIN_LONG_D / MAX_LONG_D
+    private val IntLow: Double = Int.MinValue.toDouble
+    private val IntHigh: Double = Int.MaxValue.toDouble
+    private val LongLow: Double = Long.MinValue.toDouble
+    private val LongHigh: Double = Long.MaxValue.toDouble
+    private val LongMin = java.math.BigDecimal.valueOf(Long.MinValue)
+    private val LongMax = java.math.BigDecimal.valueOf(Long.MaxValue)
+
+    /** `long`. */
+    object ForBigInt extends WholeRange {
+
+      def read(node: JsonNode): Any =
+        if (node.isIntegralNumber) {
+          if (node.canConvertToLong) java.lang.Long.valueOf(node.longValue()) else OutOfType
+        } else if (node.isNumber) {
+          val d = node.doubleValue()
+          if (d < LongLow || d > LongHigh) OutOfType else java.lang.Long.valueOf(d.toLong)
+        } else if (node.isTextual) text(node.asText())
         else OutOfType
-      }
+
+      private def text(text: String): Any =
+        if (text.isEmpty) null
+        else {
+          val whole =
+            try java.lang.Long.valueOf(text)
+            catch { case _: NumberFormatException => null }
+          if (whole ne null) whole
+          else {
+            val d =
+              try new java.math.BigDecimal(text)
+              catch { case _: NumberFormatException => null }
+            if (d eq null) OutOfType
+            else {
+              // the digits before the point, in Long arithmetic, read off the scale
+              val integerDigits = d.precision().toLong - d.scale()
+              if (d.scale() < -19) OutOfType
+              else if (d.signum() == 0 || integerDigits <= 0) java.lang.Long.valueOf(0L)
+              else if (d.scale() > 19 || integerDigits > 19) OutOfType
+              else {
+                val truncated = d.setScale(0, java.math.RoundingMode.DOWN)
+                if (truncated.compareTo(LongMin) >= 0 && truncated.compareTo(LongMax) <= 0)
+                  java.lang.Long.valueOf(truncated.longValue())
+                else OutOfType
+              }
+            }
+          }
+        }
     }
   }
 

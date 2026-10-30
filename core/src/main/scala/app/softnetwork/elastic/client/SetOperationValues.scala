@@ -430,6 +430,47 @@ private[elastic] object SetOperationValues {
     lazy val elasticVersion: Option[String] = version
     lazy val dialect: Option[MappedDateFormat.Dialect] =
       elasticVersion.flatMap(MappedDateFormat.Dialect.of)
+
+    // SCHEMA-2 (AC5) -- each mapping format the statement reads, and its route, built ONCE per
+    // statement (its major and clock are this reading's): the result schema, the hit readers, the
+    // UNNEST element conversions and the set-operation converters read the same value (#292)
+    private[this] var formats: java.util.HashMap[String, MappedDateFormat] = _
+    private[this] var routes: java.util.HashMap[String, DateRoute] = _
+
+    /** The mapping format `spec` as this statement's major reads it, built once per statement;
+      * `None` where the major is not known.
+      */
+    def format(spec: String): Option[MappedDateFormat] =
+      dialect.map { major =>
+        synchronized {
+          if (formats eq null) formats = new java.util.HashMap[String, MappedDateFormat]()
+          val known = formats.get(spec)
+          if (known ne null) known
+          else {
+            val built = MappedDateFormat(spec, major, clock)
+            formats.put(spec, built)
+            built
+          }
+        }
+      }
+
+    /** How a date field of mapping format `spec` is read ([[DateRoute.ofFormat]]), decided once per
+      * statement.
+      */
+    private[client] def route(spec: String): DateRoute =
+      synchronized {
+        if (routes eq null) routes = new java.util.HashMap[String, DateRoute]()
+        val known = routes.get(spec)
+        if (known ne null) known
+        else {
+          val decided = DateRoute.ofFormat(spec, this)
+          routes.put(spec, decided)
+          decided
+        }
+      }
+
+    /** How many mapping formats this statement has built (one per format it reads). */
+    private[client] def formatCount: Int = synchronized(if (formats eq null) 0 else formats.size)
   }
 
   private[client] object DateReading {
@@ -1219,14 +1260,14 @@ private[elastic] object SetOperationValues {
           s"Conversion Error: Could not read '$value' as a $typeName when casting from source " +
           s"column $column: $detail"
         )
-    dates.dialect match {
+    dates.format(spec) match {
       case None =>
         val detail =
           s"the date format '$spec' of field $field reads it as the Elasticsearch version does, " +
           dates.elasticVersion.fold("which is not known")(v => s"and core reads dates of no $v")
         value => failure(value, detail)
-      case Some(dialect) =>
-        val format = MappedDateFormat(spec, dialect, dates.clock)
+      case Some(format) =>
+        val dialect = format.dialect
         // SCHEMA-2 (D12) -- a value already in the result class's ONE form (a canonical row,
         // read by its column's `HitReading`) is passed through: re-reading a `LocalDate` as
         // `epoch_second` would fail it. That form is exactly what the reader gives -- a `DATE` a

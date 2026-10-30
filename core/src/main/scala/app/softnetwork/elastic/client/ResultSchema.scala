@@ -17,8 +17,9 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
-import app.softnetwork.elastic.sql.query.{FromlessSelect, MultiSearch, SingleSearch}
+import app.softnetwork.elastic.sql.query.{Field, FromlessSelect, MultiSearch, SingleSearch}
 import app.softnetwork.elastic.sql.query.MultiSearch.{SetOperationColumn, SetOperationType}
+import app.softnetwork.elastic.sql.schema.Column
 
 /** ONE column of a statement's result, declared BEFORE any row is read.
   *
@@ -67,11 +68,22 @@ private[client] object ResultSchemas {
     * `IndicesApi`, an es8/es9 alias, a mapping that could not be read).
     */
   def of(single: SingleSearch, dates: SetOperationValues.DateReading): Option[ResultSchema] =
+    of(single, dates, MultiSearch.fieldType _, MultiSearch.columnType _)
+
+  /** The same, over the types its caller computed once per statement for its own use (`typeOf`
+    * = `MultiSearch.fieldType`, `columnTypeOf` = `MultiSearch.columnType`): [[HitReading.of]].
+    */
+  private[client] def of(
+    single: SingleSearch,
+    dates: SetOperationValues.DateReading,
+    typeOf: Field => SetOperationType,
+    columnTypeOf: Column => SetOperationType
+  ): Option[ResultSchema] =
     single.schema.map { table =>
       ResultSchema(single.select.fieldsWithComputedAliases.flatMap { field =>
         if (HitReading.isStar(field))
-          table.columns.map(c => columnOf(c.name, MultiSearch.columnType(c), dates))
-        else Seq(columnOf(field.outputName, MultiSearch.fieldType(field), dates))
+          table.columns.map(c => columnOf(c.name, columnTypeOf(c), dates))
+        else Seq(columnOf(field.outputName, typeOf(field), dates))
       })
     }
 

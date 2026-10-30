@@ -297,17 +297,97 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     row("SELECT s FROM s2_t", """{"s": 40000}""")("s") shouldBe java.lang.Integer.valueOf(40000)
     row("SELECT tb FROM s2_t", """{"tb": "200"}""")("tb") shouldBe "200"
     row("SELECT n FROM s2_t", """{"n": "1e1000000000"}""")("n") shouldBe "1e1000000000"
-    // ...the bounds themselves are values, checked as Elasticsearch checks them: `byte`, `short`
-    // and `integer` on the value, `long` on the truncated value
+    // ...the bounds themselves are values, checked as Elasticsearch checks them (integral coercion
+    // below): `byte` on the int-truncated value, `long` on the truncated value
     row("SELECT n FROM s2_t", """{"n": -2147483648}""")("n") shouldBe
     java.lang.Integer.valueOf(Int.MinValue)
     row("SELECT tb FROM s2_t", """{"tb": "-128"}""")("tb") shouldBe java.lang.Integer.valueOf(-128)
-    row("SELECT tb FROM s2_t", """{"tb": "127.9"}""")("tb") shouldBe "127.9"
+    row("SELECT tb FROM s2_t", """{"tb": "127.9"}""")("tb") shouldBe java.lang.Integer.valueOf(127)
     row("SELECT l FROM s2_t", """{"l": "9223372036854775807.5"}""")("l") shouldBe
     java.lang.Long.valueOf(Long.MaxValue)
     row("SELECT l FROM s2_t", """{"l": "0.5e-1000000000"}""")("l") shouldBe java.lang.Long.valueOf(
       0L
     )
+  }
+
+  // integral coercion: NumberFieldMapper / AbstractXContentParser 6.8.23, 7.17.29 and 8.18.3,
+  // Jackson getIntValue / getShortValue / getLongValue; a value Elasticsearch refuses is kept as
+  // stored (D6)
+  private def read(column: String, json: String): Any =
+    row(s"SELECT $column FROM s2_t", s"""{"$column": $json}""")(column)
+
+  private def int(i: Int): java.lang.Integer = java.lang.Integer.valueOf(i)
+
+  private val integrals = Seq("tb", "s", "n", "l")
+
+  it should "keep an exponent near 2^31 as stored in every integral type (integral exponent)" in {
+    // `integer` / `short` / `byte` read Infinity (Double.parseDouble), `long` refuses a scale below
+    // -19: no value of the type, never 0
+    Seq("1e2147483647", "-1e2147483647", "123e2147483646").foreach { text =>
+      integrals.foreach { c =>
+        withClue(s"$c '$text': ")(read(c, s""""$text"""") shouldBe text)
+      }
+    }
+  }
+
+  it should "check TINYINT and SMALLINT ranges as Elasticsearch does (integral range)" in {
+    // byte: `parser.intValue(coerce)` -- a number truncated through Jackson's getIntValue, a text
+    // through Double.parseDouble -- then the byte range on that int
+    read("tb", "127.9") shouldBe int(127)
+    read("tb", "-128.5") shouldBe int(-128)
+    read("tb", "\"127.9\"") shouldBe int(127)
+    read("tb", "\"-128.5\"") shouldBe int(-128)
+    read("tb", "128.5") shouldBe java.lang.Double.valueOf(128.5)
+    read("tb", "-129.5") shouldBe java.lang.Double.valueOf(-129.5)
+    read("tb", "\"128.5\"") shouldBe "128.5"
+    read("tb", "\"-129.5\"") shouldBe "-129.5"
+    // short: a JSON number through getShortValue (getIntValue, then the short range on that int);
+    // a text checked on its double (`shortValue`'s string branch)
+    read("s", "32767.5") shouldBe int(32767)
+    read("s", "-32768.5") shouldBe int(-32768)
+    read("s", "32768.5") shouldBe java.lang.Double.valueOf(32768.5)
+    read("s", "-32769.5") shouldBe java.lang.Double.valueOf(-32769.5)
+    read("s", "\"32767\"") shouldBe int(32767)
+    read("s", "\"32767.5\"") shouldBe "32767.5"
+    read("s", "\"-32768.5\"") shouldBe "-32768.5"
+    // integer: the int range on the double, either node kind
+    read("n", "2147483646.5") shouldBe int(2147483646)
+    read("n", "\"2147483646.5\"") shouldBe int(2147483646)
+    read("n", "\"2147483647.5\"") shouldBe "2147483647.5"
+  }
+
+  it should "trim a text only where Elasticsearch does (integral whitespace)" in {
+    // Double.parseDouble trims, so `integer`, `short` and `byte` read ' 5 '; `long`'s
+    // Long.parseLong and BigDecimal do not, so Elasticsearch refuses it there; a blank text is
+    // refused by every integral type; an empty text is NULL (`textLength() == 0`)
+    Seq("tb", "s", "n").foreach(c => withClue(c)(read(c, "\" 5 \"") shouldBe int(5)))
+    read("l", "\" 5 \"") shouldBe " 5 "
+    integrals.foreach { c =>
+      withClue(c) {
+        read(c, "\" \"") shouldBe " "
+        read(c, "\"\"") shouldBe (null: Any)
+      }
+    }
+  }
+
+  it should "read a text and a fractional number by Elasticsearch's own parse (integral parse)" in {
+    // Double.parseDouble reads what it reads: a float suffix, and NaN as 0 (`(int) NaN`)
+    Seq("tb", "s", "n").foreach { c =>
+      withClue(c) {
+        read(c, "\"5f\"") shouldBe int(5)
+        read(c, "\"NaN\"") shouldBe int(0)
+        read(c, "\"Infinity\"") shouldBe "Infinity"
+      }
+    }
+    read("l", "\"NaN\"") shouldBe "NaN"
+    // long: a JSON fractional number through getLongValue -- the double, truncated; a text with
+    // more than 19 digits of scale either way, where 6.8 and 7.17 / 8.18 disagree, as stored
+    read("l", "1.2345678901234567E18") shouldBe
+    java.lang.Long.valueOf(1.2345678901234567e18.toLong)
+    read("l", "-7.9") shouldBe java.lang.Long.valueOf(-7L)
+    read("l", "\"0e20\"") shouldBe "0e20"
+    read("l", "\"5.000000000000000000001\"") shouldBe "5.000000000000000000001"
+    read("l", "\"0.000000000000000000001\"") shouldBe java.lang.Long.valueOf(0L)
   }
 
   it should "answer a page the same rows and classes on every parse route (pages)" in {
@@ -399,6 +479,33 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     ZonedDateTime.of(2024, 1, 31, 10, 30, 0, 555000000, ZoneOffset.UTC)
     HitReading.DefaultDates.read("2024-01-31T10:30:00.5555") shouldBe null
     HitReading.DefaultDates.read("2024-02-30T10:00:00") shouldBe null
+  }
+
+  "A statement's date fields" should "share ONE built format and route per mapping format (AC5)" in {
+    val dates = DateReading(Some("8.18.3"))
+    // ts, dm and obj.d: Elasticsearch's default format; c_c1 `yyyy/MM/dd`; c_des `epoch_second`
+    val reading =
+      HitReading.of(statement("SELECT ts, dm, obj, c_c1, c_des, n FROM s2_t"), dates)
+    reading.schema.map(_.names) shouldBe Some(Seq("ts", "dm", "obj", "c_c1", "c_des", "n"))
+    dates.formatCount shouldBe 3
+    val default = app.softnetwork.elastic.sql.query.TemporalLiterals.DefaultDateFormat
+    (dates.format(default).get eq dates.format(default).get) shouldBe true
+    (dates.route("yyyy/MM/dd") eq dates.route("yyyy/MM/dd")) shouldBe true
+    dates.formatCount shouldBe 3
+    // ...and the values read through it are the ones the date cells above pin
+    val r = row(
+      "SELECT ts, c_c1, c_des FROM s2_t",
+      """{"ts": "2024-01-31T10:30:00", "c_c1": "2024/01/31", "c_des": 1706697000}"""
+    )
+    r.values.toSeq shouldBe Seq(
+      utc(2024, 1, 31, 10, 30),
+      utc(2024, 1, 31),
+      LocalDate.of(2024, 1, 31)
+    )
+    // an unknown major builds none, and routes every date field as stored
+    val unknown = DateReading(None)
+    DateRoute.of(SQLTypes.Timestamp, Some(default), unknown) shouldBe a[DateRoute.AsStored]
+    unknown.formatCount shouldBe 0
   }
 
   "The strict projection" should "hand an in-order row back as the same instance (identity)" in {

@@ -642,11 +642,13 @@ package object client extends SerializationApi {
     ): ConversionContext =
       context match {
         case NativeContext =>
-          val elements = ElementConversions.of(single, version)
+          // ONE date reading per statement: each date format built once, for every reader
+          val dates = SetOperationValues.DateReading(version)
+          val elements = ElementConversions.of(single, dates)
           SchemaColumns(
             HitReading.of(
               single,
-              SetOperationValues.DateReading(version),
+              dates,
               HitReading.Default,
               elements.keySet
             ),
