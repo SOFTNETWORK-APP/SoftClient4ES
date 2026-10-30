@@ -61,8 +61,11 @@ object ValueCoercion {
   // ─── Coercions ───────────────────────────────────────────────────────────────
 
   def coerceToString(value: Any): String = value match {
-    case null           => null
-    case s: String      => s
+    case null      => null
+    case s: String => s
+    // SCHEMA-2 (D2) -- core reads a VARBINARY as its decoded bytes; its TEXT stays the base64
+    // Elasticsearch holds, as in 0.24.0 (JDBC `getString`, arrow's VARCHAR writer)
+    case b: Array[Byte] => java.util.Base64.getEncoder.encodeToString(b)
     case seq: Seq[_]    => seq.mkString("[", ", ", "]")
     case map: Map[_, _] => map.map { case (k, v) => s"$k: $v" }.mkString("{", ", ", "}")
     case other          => other.toString

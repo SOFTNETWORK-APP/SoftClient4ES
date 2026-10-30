@@ -35,6 +35,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.sql
 import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.client.extensions.CoreDqlExtension
 import app.softnetwork.elastic.sql.query.{
   AlterTable,
   AlterTableSetting,
@@ -157,8 +158,10 @@ class SearchExecutor(api: ScrollApi with SearchApi, logger: Logger)
           }
         } else {
           logger.info(s"▶ Executing scroll search on index ${single.from.tables.mkString(",")}")
+          // SCHEMA-2 (D13) -- the stream carries the statement's schema, known before any row
+          val (schema, source) = api.scrollWithSchema(single)
           Future.successful(
-            ElasticSuccess(QueryStream(api.scroll(single)))
+            ElasticSuccess(QueryStream(source, schema = schema))
           )
         }
 
@@ -2026,7 +2029,12 @@ class FromlessSelectExecutor(
           case ElasticSuccess(row) =>
             val offset = statement.limit.flatMap(_.offset).map(_.offset).getOrElse(0)
             val max = statement.limit.map(_.limit).getOrElse(1)
-            ElasticSuccess(QueryRows(Seq(row).drop(offset).take(max)))
+            ElasticSuccess(
+              QueryRows(
+                Seq(row).drop(offset).take(max),
+                schema = Some(ResultSchemas.of(statement))
+              )
+            )
           case ElasticFailure(error) => ElasticFailure(error)
         }
     }
@@ -2271,6 +2279,81 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
       case refusal: ElasticError => Future.successful(refused(refusal))
     }
   }
+
+  /** SCHEMA-2 (D14, A-19) -- the result schema `run(sql)` would carry, running NOTHING: no search,
+    * no subquery; a mapping may be read (the attach, and an explicit path's reload, D10). ONE query
+    * -- a SELECT, a set operation, a FROM-less SELECT -- else a 400. A statement another extension
+    * than core's handles answers `None` (its layer types it); a statement `run` refuses before
+    * executing anything is refused with `run`'s status and message, through the SAME resolve body
+    * (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's values
+    * or Elasticsearch surfaces at `run` only. `None` where no schema is known.
+    */
+  def describe(sql: String): ElasticResult[Option[ResultSchema]] =
+    GatewayApi.splitStatements(sql) match {
+      case statement :: Nil =>
+        Parser(statement) match {
+          case Right(parsed) => describe(parsed)
+          case Left(l) =>
+            ElasticResult.failure(
+              ElasticError(
+                message = GatewayApi.parseRejectionMessage(statement, l.msg),
+                cause = l.cause,
+                statusCode = Some(400),
+                operation = Some("describe")
+              )
+            )
+        }
+      case _ => describeRefusal("DESCRIBE answers exactly one query")
+    }
+
+  /** [[describe]] over a parsed statement. */
+  def describe(statement: Statement): ElasticResult[Option[ResultSchema]] =
+    statement match {
+      case _: SelectStatement | _: SingleSearch | _: MultiSearch | _: FromlessSelect =>
+        extensionRegistry.findHandler(statement) match {
+          case Some(extension) if !extension.isInstanceOf[CoreDqlExtension] =>
+            ElasticResult.success(None)
+          case _ => describeQuery(statement)
+        }
+      case _ =>
+        describeRefusal(
+          "DESCRIBE answers a query only: a SELECT, a set operation or a FROM-less SELECT"
+        )
+    }
+
+  /** [[describe]] over a query core's own handler runs. */
+  private def describeQuery(statement: Statement): ElasticResult[Option[ResultSchema]] =
+    statement match {
+      case select: SelectStatement =>
+        select.statement match {
+          case Some(single: SingleSearch)  => describeQuery(single.copy(score = select.score))
+          case Some(multiple: MultiSearch) => describeQuery(multiple)
+          case _ =>
+            describeRefusal(
+              select.parseError.getOrElse(
+                s"SELECT statement could not be translated into a search query: $statement"
+              )
+            )
+        }
+      case single: SingleSearch =>
+        resolveWithSchema(single, executeSubqueries = false).map(statementSchema)
+      case multiple: MultiSearch =>
+        resolveWithSchema(multiple, executeSubqueries = false).map(unionAllSchema)
+      case fromless: FromlessSelect =>
+        fromless.validate() match {
+          case Left(reason) => describeRefusal(reason)
+          case Right(_)     => ElasticResult.success(Some(ResultSchemas.of(fromless)))
+        }
+      case _ =>
+        describeRefusal(
+          "DESCRIBE answers a query only: a SELECT, a set operation or a FROM-less SELECT"
+        )
+    }
+
+  private def describeRefusal(message: String): ElasticResult[Option[ResultSchema]] =
+    ElasticResult.failure(
+      ElasticError(message = message, statusCode = Some(400), operation = Some("describe"))
+    )
 
   private def dispatch(
     statement: Statement

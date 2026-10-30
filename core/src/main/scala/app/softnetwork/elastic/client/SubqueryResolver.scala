@@ -82,12 +82,34 @@ object SubqueryResolver {
     * object's.
     */
   def resolve(single: SingleSearch, api: SearchApi): ElasticResult[SingleSearch] =
+    resolve(single, api, executes = true)
+
+  /** [[resolve]], or -- `executes = false` (SCHEMA-2, D14: `GatewayApi.describe`) -- its
+    * PRE-EXECUTION checks only, the same arms of [[resolveOne]] (a body that is no query, a
+    * correlated body, a bare-name correlation), with nothing executed: the statement comes back
+    * unchanged, or with the refusal `run` gives before executing anything. One walk, a parameter --
+    * never a copy (#292).
+    */
+  private[client] def resolve(
+    single: SingleSearch,
+    api: SearchApi,
+    executes: Boolean
+  ): ElasticResult[SingleSearch] =
     resolve(
       single,
       s => api.search(s)(EntityContext), // an absent key stays ABSENT — never null-filled
       api.scopeCorrelation(single, _),
-      api.innerColumnType
+      api.innerColumnType,
+      executes
     )
+
+  private[client] def resolve(
+    single: SingleSearch,
+    execute: Execute,
+    correlation: SingleSearch => Option[String] = _ => None,
+    columnType: ColumnType = (_, _) => None
+  ): ElasticResult[SingleSearch] =
+    resolve(single, execute, correlation, columnType, executes = true)
 
   /** Test seam: the inner executor, the bare-name correlation check and the inner column's mapped
     * type are injected, so the whole two-phase contract is provable Docker-free. `columnType(inner,
@@ -97,13 +119,14 @@ object SubqueryResolver {
   private[client] def resolve(
     single: SingleSearch,
     execute: Execute,
-    correlation: SingleSearch => Option[String] = _ => None,
-    columnType: ColumnType = (_, _) => None
+    correlation: SingleSearch => Option[String],
+    columnType: ColumnType,
+    executes: Boolean
   ): ElasticResult[SingleSearch] =
     single.where.flatMap(_.criteria) match {
       case None => ElasticResult.success(single)
       case Some(criteria) =>
-        rewrite(criteria, execute, correlation, columnType) match {
+        rewrite(criteria, execute, correlation, columnType, executes) match {
           case Right(c) if c eq criteria => ElasticResult.success(single)
           case Right(c)    => ElasticResult.success(single.copy(where = Some(Where(Some(c)))))
           case Left(error) => ElasticResult.failure(error)
@@ -119,28 +142,29 @@ object SubqueryResolver {
     criteria: Criteria,
     execute: Execute,
     correlation: SingleSearch => Option[String],
-    columnType: ColumnType
+    columnType: ColumnType,
+    executes: Boolean
   ): Either[ElasticError, Criteria] = criteria match {
     case p: Predicate =>
       for {
-        l <- rewrite(p.leftCriteria, execute, correlation, columnType)
-        r <- rewrite(p.rightCriteria, execute, correlation, columnType)
+        l <- rewrite(p.leftCriteria, execute, correlation, columnType, executes)
+        r <- rewrite(p.rightCriteria, execute, correlation, columnType, executes)
       } yield
         if ((l eq p.leftCriteria) && (r eq p.rightCriteria)) p
         else p.copy(leftCriteria = l, rightCriteria = r)
     case n: ElasticNested =>
-      rewrite(n.criteria, execute, correlation, columnType).map(c =>
+      rewrite(n.criteria, execute, correlation, columnType, executes).map(c =>
         if (c eq n.criteria) n else n.copy(criteria = c)
       )
     case n: ElasticChild =>
-      rewrite(n.criteria, execute, correlation, columnType).map(c =>
+      rewrite(n.criteria, execute, correlation, columnType, executes).map(c =>
         if (c eq n.criteria) n else n.copy(criteria = c)
       )
     case n: ElasticParent =>
-      rewrite(n.criteria, execute, correlation, columnType).map(c =>
+      rewrite(n.criteria, execute, correlation, columnType, executes).map(c =>
         if (c eq n.criteria) n else n.copy(criteria = c)
       )
-    case s: SubqueryCriteria => resolveOne(s, execute, correlation, columnType)
+    case s: SubqueryCriteria => resolveOne(s, execute, correlation, columnType, executes)
     case other               => Right(other)
   }
 
@@ -148,7 +172,8 @@ object SubqueryResolver {
     node: SubqueryCriteria,
     execute: Execute,
     correlation: SingleSearch => Option[String],
-    columnType: ColumnType
+    columnType: ColumnType,
+    executes: Boolean
   ): Either[ElasticError, Criteria] =
     node.inner match {
       // Unreachable after `validate()`; `GatewayApi.run(statement)` does not validate a
@@ -166,6 +191,8 @@ object SubqueryResolver {
       case Some(inner) =>
         correlation(inner) match {
           case Some(reason) => Left(bad(reason))
+          // SCHEMA-2 (D14) -- `describe`: the checks above only, nothing executed
+          case None if !executes => Right(node)
           case None =>
             node match {
               case in: InSubquery     => resolveIn(in, inner, execute, columnType)

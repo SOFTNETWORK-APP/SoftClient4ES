@@ -67,8 +67,8 @@ class ShowTablesTableTypeSpec
 
   private def showTables(mappings: Map[String, String]): Seq[ListMap[String, Any]] =
     new StubMappings(mappings).run("SHOW TABLES").futureValue match {
-      case ElasticSuccess(QueryRows(rows, _)) => rows
-      case other                              => fail(s"expected QueryRows, got $other")
+      case ElasticSuccess(QueryRows(rows, _, _)) => rows
+      case other                                 => fail(s"expected QueryRows, got $other")
     }
 
   /** Derived from the SAME sealed-hierarchy walk `TableTypeVocabularySpec` uses (reachable here

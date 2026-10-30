@@ -126,9 +126,9 @@ trait GroupedAggregateSemanticsSpec
   /** The rows of a statement, through `GatewayApi.run` (JDBC / REPL / Flight SQL). */
   private def rowsOf(sql: String): Seq[ListMap[String, Any]] =
     Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
       case ElasticSuccess(other) => fail(s"[$sql] unexpected result $other")
       case ElasticFailure(error) => fail(s"[$sql] failed: ${error.message}")
@@ -567,9 +567,10 @@ trait GroupedAggregateSemanticsSpec
     instant(cell(formatted, "ts")) shouldBe at("2025-03-31T10:00:00Z")
     cell(formatted, "ts") shouldBe a[ZonedDateTime]
     cell(formatted, "y") shouldBe "2025"
-    // DuckDB: d DATE 2024-01-03, s VARCHAR
+    // DuckDB: d DATE 2024-01-03, s VARCHAR -- `d` is a `date` field no type declares: a
+    // TIMESTAMP (SCHEMA-2, D2), its midnight at UTC
     val cast = rowsOf(s"SELECT id, d, CAST(d AS VARCHAR) AS s FROM $index WHERE id = 'a1'").head
-    cell(cast, "d") shouldBe LocalDate.of(2024, 1, 3)
+    cell(cast, "d") shouldBe ZonedDateTime.of(2024, 1, 3, 0, 0, 0, 0, ZoneOffset.UTC)
     cell(cast, "s") shouldBe a[String]
   }
 
@@ -579,8 +580,8 @@ trait GroupedAggregateSemanticsSpec
     "2025-03-31T10:00:00"
     val star = rowsOf(s"SELECT * FROM $index WHERE id = 'a1'").head
     cell(star, "kd") shouldBe "2025-03-31T10:00:00"
-    // the control: the DATE and TIMESTAMP columns of the same row keep their types
-    cell(star, "d") shouldBe LocalDate.of(2024, 1, 3)
+    // the control: the date columns of the same row keep their type, a TIMESTAMP (SCHEMA-2, D2)
+    cell(star, "d") shouldBe ZonedDateTime.of(2024, 1, 3, 0, 0, 0, 0, ZoneOffset.UTC)
     cell(star, "ts") shouldBe a[ZonedDateTime]
   }
 

@@ -150,9 +150,9 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
   /** id -> the single projected column, through `GatewayApi.run` (JDBC / REPL / sidecar venue). */
   private def gatewayById(sql: String, column: String): Map[String, String] = {
     val rows = Await.result(client.run(sql), 60.seconds) match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
       case ElasticSuccess(other) => fail(s"Unexpected result: $other\n$sql")
       case ElasticFailure(error) => fail(s"Query failed: ${error.message}\n$sql")
@@ -576,9 +576,9 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
   private def diffRows(sql: String): Either[String, Seq[ListMap[String, Any]]] =
     Try {
       Await.result(client.run(sql), 60.seconds) match {
-        case ElasticSuccess(QueryRows(rows, _))           => Right(rows)
+        case ElasticSuccess(QueryRows(rows, _, _))        => Right(rows)
         case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
-        case ElasticSuccess(QueryStream(stream, _)) =>
+        case ElasticSuccess(QueryStream(stream, _, _)) =>
           Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
         case ElasticSuccess(other) => Left(s"unexpected result $other")
         case ElasticFailure(error) => Left(error.message)
@@ -1714,9 +1714,9 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
       case ElasticFailure(error) => Left("run" -> error)
       case ElasticSuccess(result) =>
         Try(result match {
-          case QueryRows(rows, _)           => rows
+          case QueryRows(rows, _, _)        => rows
           case QueryStructured(response, _) => response.results
-          case QueryStream(stream, _) =>
+          case QueryStream(stream, _, _) =>
             Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
           case other => throw new IllegalStateException(s"Unexpected result: $other")
         }).toEither.left.map("consumed" -> _)

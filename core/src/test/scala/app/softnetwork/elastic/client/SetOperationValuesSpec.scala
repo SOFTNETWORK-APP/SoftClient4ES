@@ -342,7 +342,8 @@ class SetOperationValuesSpec extends AnyFlatSpec with Matchers {
       (SQLTypes.Timestamp, SQLTypes.Timestamp, Instant.parse("2024-01-31T10:30:00Z"), zoned),
       (SQLTypes.Timestamp, SQLTypes.Timestamp, java.lang.Long.valueOf(1706697000000L), zoned),
       (SQLTypes.Date, SQLTypes.Timestamp, LocalDate.parse("2024-01-31"), midnight),
-      (SQLTypes.VarBinary, SQLTypes.VarBinary, "YWI=", utf8("YWI=")),
+      // SCHEMA-2 (Q5): a `binary` field's base64 is the bytes it encodes
+      (SQLTypes.VarBinary, SQLTypes.VarBinary, "YWI=", utf8("ab")),
       (SQLTypes.VarBinary, SQLTypes.VarBinary, utf8("ab"), utf8("ab")),
       (SQLTypes.Varchar, SQLTypes.VarBinary, "x", utf8("x")),
       (SQLTypes.BigInt, SQLTypes.Varchar, Integer.valueOf(1), "1"),
@@ -612,10 +613,12 @@ class SetOperationValuesSpec extends AnyFlatSpec with Matchers {
 
   private def bytesOf(v: Any): Seq[Int] = v.asInstanceOf[Array[Byte]].toSeq.map(_ & 0xff)
 
-  "A VARBINARY value reaching a VARBINARY column" should "be the bytes of the text Elasticsearch holds" in {
+  "A VARBINARY value reaching a VARBINARY column" should "be the bytes the text Elasticsearch holds encodes" in {
     val f = converter(SQLTypes.VarBinary, SQLTypes.VarBinary)
-    // a `binary` field's base64, read as its UTF-8 bytes -- what arrow and the JDBC driver read
-    bytesOf(f("YWI=")) shouldBe utf8("YWI=").toSeq.map(_ & 0xff)
+    // SCHEMA-2 (Q5): a `binary` field's base64, DECODED -- the bytes core's hit reader gives it
+    bytesOf(f("YWI=")) shouldBe utf8("ab").toSeq.map(_ & 0xff)
+    // a text that is not base64: its UTF-8 bytes, as before
+    bytesOf(f("not base64!")) shouldBe utf8("not base64!").toSeq.map(_ & 0xff)
     kind(f("YWI=")) shouldBe classOf[Array[Byte]]
     val raw = Array[Byte](1, 2, -1)
     f(raw) shouldBe raw
@@ -830,7 +833,7 @@ class SetOperationValuesSpec extends AnyFlatSpec with Matchers {
     // a DOUBLE beside an INT: a Double in both
     fieldA(union("ox", "oi"), 0, Integer.valueOf(2)) shouldBe shown(java.lang.Double.valueOf(2.0))
     // a VARBINARY beside a VARCHAR: bytes in both
-    fieldA(union("obin", "ov"), 0, "YWI=") shouldBe shown(utf8("YWI="))
+    fieldA(union("obin", "ov"), 0, "YWI=") shouldBe shown(utf8("ab"))
     fieldA(union("obin", "ov"), 1, "x") shouldBe shown(utf8("x"))
     // a TIMESTAMP beside a DATE: a ZonedDateTime in both, whatever form the timestamp was read in
     val midnight = ZonedDateTime.parse("2024-01-31T00:00:00Z")

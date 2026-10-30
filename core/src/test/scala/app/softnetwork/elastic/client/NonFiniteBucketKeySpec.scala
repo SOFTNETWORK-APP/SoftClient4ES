@@ -60,7 +60,7 @@ class NonFiniteBucketKeySpec extends AnyFlatSpec with Matchers {
       .map(_("kk"))
   }
 
-  private val ofStatement: SingleSearch => ConversionContext = TextColumns.of(_, NativeContext)
+  private val ofStatement: SingleSearch => ConversionContext = SchemaColumns.of(_, NativeContext)
 
   "a double key level" should "answer its non-finite keys as Doubles" in {
     statement("SELECT EXP(n) AS kk FROM t GROUP BY EXP(n)").doubleKeyLevels shouldBe Set("kk")

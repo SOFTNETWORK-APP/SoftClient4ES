@@ -90,9 +90,9 @@ trait JavaClientConversion { _: JavaClientCompanion =>
     *
     * This is the single-parse hits path (softclient4es-arrow#160): each `_source` node is
     * re-parented into the envelope untouched — no serialization, no re-parse. The row parser reads
-    * exactly `_id`, `_source`, `inner_hits` and `fields` per hit, so hits carrying `inner_hits` or
-    * `fields` (UNNEST legs, script fields) fall back to a whole-hit [[convertToTree]] to keep full
-    * shape fidelity — still token-level, never a string.
+    * exactly `_id`, `_source`, `_ignored`, `inner_hits` and `fields` per hit, so hits carrying
+    * `inner_hits` or `fields` (UNNEST legs, script fields) fall back to a whole-hit
+    * [[convertToTree]] to keep full shape fidelity — still token-level, never a string.
     */
   protected def hitsToResponseNode(hits: _root_.java.util.List[Hit[ObjectNode]]): ObjectNode = {
     val root = JacksonConfig.objectMapper.createObjectNode()
@@ -102,6 +102,16 @@ trait JavaClientConversion { _: JavaClientCompanion =>
         val hitNode = hitsArray.addObject()
         Option(hit.id()).foreach(id => hitNode.put("_id", id))
         Option(hit.source()).foreach(source => hitNode.set[JsonNode]("_source", source))
+        // SCHEMA-2 (D8) -- the fields Elasticsearch ignored (`ignore_malformed`): core answers a
+        // date it ignored as NULL, as the clients reading the raw body do
+        val ignored = hit.ignored()
+        if (ignored != null && !ignored.isEmpty) {
+          val paths = hitNode.putArray("_ignored")
+          ignored.forEach { path =>
+            paths.add(path)
+            ()
+          }
+        }
       } else {
         hitsArray.add(convertToTree(hit))
       }

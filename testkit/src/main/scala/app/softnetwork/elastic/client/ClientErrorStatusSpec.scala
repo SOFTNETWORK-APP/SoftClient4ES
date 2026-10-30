@@ -235,9 +235,9 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
     shardFixture
     val result = Await.result(client.run(rowSql), timeout)
     def rows: Seq[Any] = result match {
-      case ElasticSuccess(QueryRows(rows, _))           => rows
+      case ElasticSuccess(QueryRows(rows, _, _))        => rows
       case ElasticSuccess(QueryStructured(response, _)) => response.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Await.result(stream.map(_._1).runWith(Sink.seq), timeout)
       case ElasticSuccess(other) => Seq(other)
       case ElasticFailure(_)     => Seq.empty
@@ -463,9 +463,9 @@ trait ClientErrorStatusSpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
     */
   private def answeredRows(sql: String): Seq[ListMap[String, Any]] =
     Await.result(client.run(sql), timeout) match {
-      case ElasticSuccess(QueryRows(rows, _))    => rows
+      case ElasticSuccess(QueryRows(rows, _, _)) => rows
       case ElasticSuccess(QueryStructured(r, _)) => r.results
-      case ElasticSuccess(QueryStream(stream, _)) =>
+      case ElasticSuccess(QueryStream(stream, _, _)) =>
         Try(Await.result(stream.map(_._1).runWith(Sink.seq), timeout)).fold(
           e => fail(s"$sql -> the stream failed: ${e.getMessage}"),
           rows => rows

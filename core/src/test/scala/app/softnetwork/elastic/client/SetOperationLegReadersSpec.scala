@@ -205,8 +205,9 @@ class SetOperationLegReadersSpec extends AnyFlatSpec with Matchers {
     val want: Seq[Any] = Seq(
       Integer.valueOf(5),
       java.lang.Long.valueOf(5L),
-      java.lang.Short.valueOf(5.toShort),
-      java.lang.Byte.valueOf(5.toByte),
+      // SCHEMA-2 (D2): a SMALLINT and a TINYINT are Integers (JDBC Table B-3)
+      Integer.valueOf(5),
+      Integer.valueOf(5),
       java.lang.Double.valueOf(5.0),
       java.lang.Float.valueOf(0.5f),
       java.lang.Boolean.TRUE,
@@ -214,7 +215,8 @@ class SetOperationLegReadersSpec extends AnyFlatSpec with Matchers {
       utc("2024-01-31T10:30:00Z"),
       LocalTime.parse("10:30:00"),
       "a",
-      "YWI=".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+      // SCHEMA-2 (Q5): a binary's base64 is the bytes it encodes
+      "ab".getBytes(java.nio.charset.StandardCharsets.UTF_8),
       // the branch's fields, in its order
       ListMap(
         "e" -> utc("2024-01-31T10:30:00Z"),

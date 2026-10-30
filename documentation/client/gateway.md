@@ -174,6 +174,72 @@ Raw Elasticsearch response:
 QueryStructured(ElasticResponse)
 ```
 
+#### The result schema
+
+Every SELECT result carries its **declared schema**, known before any row is read:
+
+```scala
+case class ResultColumn(
+  name: String,                        // the column's output name
+  sqlType: SQLType,                    // VARCHAR, INT, BIGINT, DOUBLE, REAL, BOOLEAN, DATE, TIMESTAMP, ...
+  nullable: Boolean = true,            // always true in this release
+  fields: Seq[ResultColumn] = Nil,     // a STRUCT's fields (by name), a GEO_POINT's lat / lon
+  element: Option[ResultColumn] = None // an ARRAY's element
+)
+case class ResultSchema(columns: Seq[ResultColumn])
+
+QueryRows(rows, truncation, schema: Option[ResultSchema])
+QueryStream(stream, truncation, schema: Option[ResultSchema])
+QueryStructured(response, truncation).schema // = response.schema
+```
+
+- The columns are in SELECT order; `SELECT *` lists the mapping's columns in their table order.
+  A row keeps its document's key order: read a value **by name**, present it in schema order.
+- `schema` is `None` when no mapping is known (an index that cannot be read, an alias on the ES 8/9
+  clients) and for DDL / DML / SHOW results.
+- A positional pattern binds every field: `case QueryRows(rows, _, _)`. The shape immune to a future
+  field is `case q: QueryRows => q.rows`.
+
+`describe(sql)` answers the schema `run(sql)` would carry **without running the query** (no search,
+no subquery; a mapping may be read):
+
+```scala
+gateway.describe("SELECT id, ts FROM events") // ElasticSuccess(Some(ResultSchema(...)))
+```
+
+It accepts one query (a SELECT, a set operation, a FROM-less SELECT) and refuses anything else with
+a `400`; a statement `run` refuses before executing anything is refused with the same status and
+message. A statement handled by another extension than core's (a cross-index JOIN under the arrow
+extension) answers `None`.
+
+#### Value classes
+
+Each value is read by its column's declared type, where it is first read:
+
+| Column type | Value class |
+| --- | --- |
+| TINYINT, SMALLINT, INT | `java.lang.Integer` |
+| BIGINT | `java.lang.Long` |
+| DOUBLE | `java.lang.Double` |
+| REAL | `java.lang.Float` |
+| BOOLEAN | `java.lang.Boolean` |
+| VARCHAR (keyword, text) | `String` -- a number stored in a keyword stays its text |
+| DATE | `java.time.LocalDate` |
+| TIMESTAMP | `java.time.ZonedDateTime` at UTC, read with the field's mapping format |
+| TIME | `java.time.LocalTime` |
+| VARBINARY | `Array[Byte]`, the decoded bytes (its text is still the base64) |
+| STRUCT | `ListMap` of its declared fields |
+| GEO_POINT | `ListMap("lat" -> Double, "lon" -> Double)`, whatever spelling was indexed |
+| ARRAY | `List` of its elements |
+
+A one-element array is its element, an empty array NULL. A date field whose format core cannot read
+for sure (a zone name, a region id) is a VARCHAR, its text as stored; a date value Elasticsearch
+ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. An
+integral column reads a fractional number or a numeric text as Elasticsearch indexed it, truncated
+toward zero. A value a typed column cannot read is answered as stored: a value Elasticsearch did not
+index (a number outside its type's range, a `long` text with surrounding spaces) is never narrowed.
+Aggregation values and window-enriched statements keep their reading in this release.
+
 ---
 
 ### DML Results

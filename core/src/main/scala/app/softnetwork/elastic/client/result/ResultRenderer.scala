@@ -48,11 +48,11 @@ object ResultRenderer {
       case EmptyResult =>
         renderEmpty()
 
-      case QueryRows(rows, _) =>
-        renderTable(rows, executionTime)
+      case QueryRows(rows, _, schema) =>
+        renderTable(rows, executionTime, schema)
 
       case QueryStructured(response, _) =>
-        renderTable(response.results, executionTime)
+        renderTable(response.results, executionTime, response.schema)
 
       case DmlResult(inserted, updated, deleted, rejected) =>
         renderDml(inserted, updated, deleted, rejected, executionTime)
@@ -69,7 +69,7 @@ object ResultRenderer {
       case SQLResult(sql) =>
         renderSql(sql)
 
-      case QueryStream(_, _) =>
+      case QueryStream(_, _, _) =>
         renderStreamInfo()
 
       case StreamResult(estimatedSize, _) =>
@@ -87,13 +87,21 @@ object ResultRenderer {
 
   // ==================== Table Rendering ====================
 
-  private def renderTable(rows: Seq[Map[String, Any]], executionTime: Duration): String = {
+  private[result] def renderTable(
+    rows: Seq[Map[String, Any]],
+    executionTime: Duration,
+    schema: Option[app.softnetwork.elastic.client.ResultSchema] = None
+  ): String = {
     if (rows.isEmpty) {
       return s"${emoji("✅")} ${green("No rows returned")} ${gray(s"(${executionTime.toMillis}ms)")}"
     }
 
-    // Extract columns
-    val columnNames: Seq[String] = rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty)
+    // Extract columns -- SCHEMA-2 (A-14): in schema order when the statement declares one, a row
+    // keeping its document's key order
+    val columnNames: Seq[String] = schema
+      .map(_.names)
+      .filter(_.nonEmpty)
+      .getOrElse(rows.headOption.map(_.keys.toSeq).getOrElse(Seq.empty))
 
     // Prepare headers with colors
     val headers = columnNames.map(col => bold(cyan(col)))
@@ -164,6 +172,8 @@ object ResultRenderer {
       case b: Boolean                             => if (b) green("true") else red("false")
       case d: java.time.temporal.TemporalAccessor => magenta(d.toString)
       case seq: Seq[_]                            => s"[${seq.map(formatValue).mkString(", ")}]"
+      // SCHEMA-2 (D2) -- a VARBINARY's text is its base64, as in 0.24.0
+      case b: Array[Byte] => java.util.Base64.getEncoder.encodeToString(b)
       case map: Map[_, _] =>
         s"{${map.map { case (k, v) => s"$k: ${formatValue(v)}" }.mkString(", ")}}"
       case other => other.toString

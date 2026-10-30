@@ -358,9 +358,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   private def gatewayRows(sql: String): Either[String, Seq[ListMap[String, Any]]] =
     Try {
       Await.result(client.run(sql), 60.seconds) match {
-        case ElasticSuccess(QueryRows(rs, _))             => Right(rs)
+        case ElasticSuccess(QueryRows(rs, _, _))          => Right(rs)
         case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
-        case ElasticSuccess(QueryStream(stream, _)) =>
+        case ElasticSuccess(QueryStream(stream, _, _)) =>
           Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
         case ElasticSuccess(other) => Left(s"unexpected result $other")
         case ElasticFailure(error) => Left(error.message)
@@ -391,18 +391,21 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
 
   /** A number answered in exactly this class, on every row -- what tells a `Double` from an
     * `Integer`, which `Num` and `Numeric` accept alike: a `Double` for a fractional type; for a
-    * whole one the class Elasticsearch's JSON hands it back in, an `Integer` when it fits one and a
-    * `Long` past it (a BIGINT 3 is read as an `Integer` 3, as `CAST(n AS BIGINT)` itself is).
+    * whole one its declared type's class (SCHEMA-2, D2), an `INT` an `Integer` and a `BIGINT` a
+    * `Long`, whatever class Elasticsearch's JSON hands it back in (0.24.0 read a BIGINT 3 as an
+    * `Integer` 3).
     */
   private final case class Classed(value: Double, cls: Class[_]) extends Expected
 
   private def doubleOf(value: Double): Expected = Classed(value, classOf[java.lang.Double])
 
-  private def wholeOf(value: Long): Expected =
-    Classed(
-      value.toDouble,
-      if (value.isValidInt) classOf[java.lang.Integer] else classOf[java.lang.Long]
-    )
+  /** A whole number of a `BIGINT` -- the widest whole type of its arguments: an INT beside a
+    * BIGINT, an integer literal included.
+    */
+  private def wholeOf(value: Long): Expected = Classed(value.toDouble, classOf[java.lang.Long])
+
+  /** A whole number of an `INT`. */
+  private def intOf(value: Int): Expected = Classed(value.toDouble, classOf[java.lang.Integer])
 
   /** An instant read from the clock while the statement ran: between `from` and `to`. */
   private final case class Within(from: Instant, to: Instant) extends Expected
@@ -2866,7 +2869,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
           // a cast over a KEYWORD is the type it casts to, never its column's: whole numbers
           cv(
             "GREATEST(CAST(s AS INT), n)",
-            answers(wholeOf(3), wholeOf(5), wholeOf(12), Null, wholeOf(10))
+            answers(intOf(3), intOf(5), intOf(12), Null, intOf(10))
           ),
           cv("GREATEST(n, 3000000000)", bigint),
           cv(

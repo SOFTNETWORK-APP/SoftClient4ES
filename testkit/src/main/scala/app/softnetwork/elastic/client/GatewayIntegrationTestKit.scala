@@ -128,7 +128,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
     }
     res.isSuccess shouldBe true
     res.toOption.get match {
-      case QueryStream(stream, _) =>
+      case QueryStream(stream, _, _) =>
         val sink =
           Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
             case (acc, (row, _)) =>
@@ -224,7 +224,7 @@ trait GatewayIntegrationTestKit extends AnyFlatSpecLike with Matchers with Scala
     renderResults(startTime, res)
     res.isSuccess shouldBe true
     res.toOption.get match {
-      case QueryStream(stream, _) =>
+      case QueryStream(stream, _, _) =>
         val sink =
           Sink.fold[Seq[ListMap[String, Any]], (ListMap[String, Any], ScrollMetrics)](Seq.empty) {
             case (acc, (row, _)) => acc :+ normalizeRow(row)

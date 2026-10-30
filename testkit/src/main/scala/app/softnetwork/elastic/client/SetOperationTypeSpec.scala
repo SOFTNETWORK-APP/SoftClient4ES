@@ -973,9 +973,9 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
           }
         case _ =>
           Await.result(client.run(sql), 60.seconds) match {
-            case ElasticSuccess(QueryRows(rs, _))             => Right(rs)
+            case ElasticSuccess(QueryRows(rs, _, _))          => Right(rs)
             case ElasticSuccess(QueryStructured(response, _)) => Right(response.results)
-            case ElasticSuccess(QueryStream(stream, _)) =>
+            case ElasticSuccess(QueryStream(stream, _, _)) =>
               Right(Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds))
             case ElasticSuccess(other) => Left(s"unexpected result $other")
             case ElasticFailure(error) => Left(error.message)
@@ -1081,6 +1081,9 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
 
   private def utf8(s: String): Array[Byte] = s.getBytes(java.nio.charset.StandardCharsets.UTF_8)
 
+  /** A `binary` field's value as core reads it: the bytes its base64 encodes (SCHEMA-2, Q5). */
+  private def decoded(base64: String): Array[Byte] = java.util.Base64.getDecoder.decode(base64)
+
   private val routes = Seq(("run", false), ("search", false), ("search", true))
 
   private def textUnion(items: Seq[String], limited: Boolean): String =
@@ -1089,12 +1092,12 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
       .mkString(" UNION ALL ")
 
   /** A `VARBINARY` beside text: DuckDB's `BLOB` (the lead's ruling of 2026-10-07). Every row is
-    * BYTES (`Array[Byte]`, core's `VARBINARY` cell): a `binary` field's base64 read as its UTF-8
-    * bytes, as the relational engine and the JDBC driver read it, and a text value cast to bytes as
-    * DuckDB 1.5.5 casts a `VARCHAR` to a `BLOB` (MEASURED: an ASCII character is its byte).
+    * BYTES (`Array[Byte]`, core's `VARBINARY` cell): a `binary` field's base64 DECODED -- the bytes
+    * it was indexed with (SCHEMA-2, Q5) --, and a text value cast to bytes as DuckDB 1.5.5 casts a
+    * `VARCHAR` to a `BLOB` (MEASURED: an ASCII character is its byte).
     */
   it should "answer a VARBINARY beside text as DuckDB's BLOB, on every route" in {
-    val bin: TextDoc => Any = d => binaryOf.get(d.id).map(utf8).orNull
+    val bin: TextDoc => Any = d => binaryOf.get(d.id).map(decoded).orNull
     val s: TextDoc => Any = d => d.s.map(utf8).orNull
     val x: TextDoc => Any = _ => utf8("x")
     val cases: Seq[Seq[(String, TextDoc => Any)]] = Seq(
@@ -1181,7 +1184,7 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
     val kw: TextDoc => Any = d => temporalKeywordOf.get(d.id).orNull
     val textOfN: Doc => Any = r => opt(r.n.map(_.toString))
     val bytesOfKw: TextDoc => Any = d => temporalKeywordOf.get(d.id).map(utf8).orNull
-    val bin: TextDoc => Any = d => binaryOf.get(d.id).map(utf8).orNull
+    val bin: TextDoc => Any = d => binaryOf.get(d.id).map(decoded).orNull
     val wrong = routes.flatMap { case (route, limited) =>
       val limit = if (limited) " LIMIT 100" else ""
       val asText =
@@ -1496,8 +1499,8 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
       ("TIMESTAMP", "t3") -> Map("TIMESTAMP" -> at1030, "VARCHAR" -> "2024-01-31 10:30:00"),
       ("TIMESTAMP", "t4") -> Map("TIMESTAMP" -> at1030, "VARCHAR" -> "2024-01-31 10:30:00"),
       ("TIMESTAMP", "t5") -> Map("TIMESTAMP" -> at1030, "VARCHAR" -> "2024-01-31 10:30:00"),
-      ("VARBINARY", "t1") -> Map("VARBINARY" -> utf8("YWI="), "VARCHAR" -> "YWI="),
-      ("VARBINARY", "t2") -> Map("VARBINARY" -> utf8("eA=="), "VARCHAR" -> "eA=="),
+      ("VARBINARY", "t1") -> Map("VARBINARY" -> decoded("YWI="), "VARCHAR" -> "YWI="),
+      ("VARBINARY", "t2") -> Map("VARBINARY" -> decoded("eA=="), "VARCHAR" -> "eA=="),
       ("VARCHAR", "t1")   -> Map("VARBINARY" -> utf8("x"), "VARCHAR" -> "x"),
       ("VARCHAR", "t2")   -> Map("VARBINARY" -> utf8("y"), "VARCHAR" -> "y")
     )
@@ -1674,8 +1677,11 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
           m.asInstanceOf[scala.collection.Map[String, Any]].getOrElse("a", null)
         case (_, other) => ("unexpected", other)
       }
+    // SCHEMA-2 (D5): a date of the default format too is read by it, as Elasticsearch indexed it
+    // -- the year 2024 written as a text and as a number is 2024-01-01 --, where 0.24.0 kept it as
+    // read (`"2024"`, `2024`)
     val wrong = for {
-      f <- formatted.filter(_.format.isDefined)
+      f <- formatted
       (depth, item, partner) <- Seq(
         ("column", s"c_${f.key}", if (f.declared == "DATE") "pd" else "pts"),
         ("field", s"f_${f.key}", if (f.declared == "DATE") "fd" else "fts")
@@ -1714,39 +1720,23 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
             )
       }
     } yield error
-    // the control: dates of the default format keep their values as read -- the year 2024 written
-    // as a text and as a number -- at the column and at an object's field
-    val control = for {
-      (depth, item, partner) <- Seq(("column", "c_def", "pts"), ("field", "f_def", "fts"))
-      (route, limited)       <- routes
-      sql = Seq(item, partner)
-        .map(i => s"SELECT $i AS k FROM $formatTable" + (if (limited) " LIMIT 100" else ""))
-        .mkString(" UNION ALL ")
-      error <- rowsOf(sql, route) match {
-        case Left(e) => Some(s"[$route] [$sql] failed: $e")
-        case Right(rows) =>
-          val got = rows.map(r => shown(at(depth, r.getOrElse("k", null))))
-          if (got.contains(("2024", "String")) && got.contains((2024, "Integer"))) None
-          else Some(s"[$route] [$sql] read ${got.mkString(", ")}")
-      }
-    } yield error
-    (wrong ++ control) shouldBe empty
+    wrong shouldBe empty
   }
 
   /** A date core cannot read without guessing -- a region id, whose offset comes from zone data --
-    * and a value of several values -- an array of arrays -- where its branches AGREE are answered
-    * as stored, at the column and at an object's field, on every route, as they always were: no
-    * statement core answered fails. Where its branches disagree the date converts, and fails the
-    * statement, naming the value, the field and the format.
+    * and a value of several values -- an array of arrays -- are answered as stored, at the column
+    * and at an object's field, on every route: no statement core answered fails. SCHEMA-2 (D12): at
+    * the column, such a format makes the column VARCHAR, as DuckDB types a text beside a date
+    * -- the other branch's date in DuckDB's spelling --, beside a DATE too, which failed before.
     */
-  it should "keep an agreeing date it cannot read as stored, and fail it where it converts" in {
+  it should "keep a date it cannot read as stored, its column VARCHAR at the top" in {
     def sql(left: String, right: String, limited: Boolean): String =
       Seq(left, right)
         .map(i => s"SELECT $i AS k FROM $zoneTable" + (if (limited) " LIMIT 100" else ""))
         .mkString(" UNION ALL ")
     val kept = for {
       (left, right, stored, partner) <- Seq(
-        ("z", "ts", zoned: Any, ZonedDateTime.parse("2024-02-01T00:00:00Z"): Any),
+        ("z", "ts", zoned: Any, "2024-02-01 00:00:00": Any),
         (
           "fz",
           "fts",
@@ -1783,18 +1773,18 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
           if (got == want) None else Some(s"[$route] [$statement] answered $got instead of $want")
       }
     } yield error
-    val failed = for {
+    val besideDate = for {
       (route, limited) <- routes
       statement = sql("z", "d", limited)
       error <- rowsOf(statement, route) match {
-        case Left(msg)
-            if msg.contains(s"Could not read '$zoned' as a TIMESTAMP") &&
-              msg.contains(s"the date format '$zoneFormat' of field z") =>
-          None
-        case other => Some(s"[$route] [$statement] answered $other instead of failing")
+        case Right(rows) =>
+          val got = rows.map(_.getOrElse("k", null)).sortBy(String.valueOf)
+          val want = Seq(zoned, null, null, "2024-02-01").sortBy(String.valueOf)
+          if (got == want) None else Some(s"[$route] [$statement] answered $got instead of $want")
+        case Left(e) => Some(s"[$route] [$statement] failed: $e")
       }
     } yield error
-    (kept ++ failed) shouldBe empty
+    (kept ++ besideDate) shouldBe empty
   }
 
   it should "refuse by name only a date beside a number, before anything runs" in {

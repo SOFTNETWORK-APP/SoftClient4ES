@@ -4150,6 +4150,24 @@ package object query {
       Operand(branch, field, declaredType, positionType(declaredType, column))
     }
 
+    /** SCHEMA-2 (D1) -- the type of ONE projection item, as a set operation types its position
+      * ([[positionType]]): the result schema of a statement and the typing of its set-operation
+      * positions are this one rule (#292), never two.
+      */
+    private[elastic] def fieldType(field: Field): SetOperationType =
+      operandOf(0, field).valueType
+
+    /** SCHEMA-2 (D1) -- each item a statement DECLARES with its type ([[fieldType]]); `None` for a
+      * statement that projects a bare `*`, whose width is its mapping's.
+      */
+    private[elastic] def projectionTypes(s: SingleSearch): Option[Seq[(Field, SetOperationType)]] =
+      declared(s).map(_ => s.select.fieldsWithComputedAliases.map(f => f -> fieldType(f)))
+
+    /** SCHEMA-2 (D1) -- a mapped column's type, as [[positionType]] types it: `SELECT *`'s columns.
+      */
+    private[elastic] def columnType(c: Column): SetOperationType =
+      positionType(c.dataType, Some(c))
+
     /** A declared type as a set operation types it, built once at every depth: a scalar folded
       * ([[unionOperandType]]); a list with its element's type; a `STRUCT` with its fields -- its
       * column's, read from the schema, BY NAME: the schema read from a mapping holds an object's

@@ -134,6 +134,24 @@ class ScrollSettingsSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAl
     val scrolledConfig = new AtomicReference[ScrollConfig]()
     val scrolledStatement = new AtomicReference[SearchStatement]()
 
+    /** SCHEMA-2 (D13) -- the production routes open a stream through `scrollWithSchema`. */
+    override private[client] def scrollWithSchema(
+      statement: app.softnetwork.elastic.sql.query.SearchStatement,
+      config: app.softnetwork.elastic.client.scroll.ScrollConfig
+    )(implicit
+      system: akka.actor.ActorSystem,
+      context: app.softnetwork.elastic.client.ConversionContext
+    ): (
+      Option[app.softnetwork.elastic.client.ResultSchema],
+      akka.stream.scaladsl.Source[
+        (
+          scala.collection.immutable.ListMap[String, Any],
+          app.softnetwork.elastic.client.scroll.ScrollMetrics
+        ),
+        akka.NotUsed
+      ]
+    ) = None -> scroll(statement, config)
+
     override def scroll(
       statement: SearchStatement,
       config: ScrollConfig

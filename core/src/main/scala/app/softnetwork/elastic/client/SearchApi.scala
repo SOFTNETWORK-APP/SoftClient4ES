@@ -142,7 +142,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * (AD-17). The only self-consistent predicate is "this statement emits Painless over a column",
     * i.e. `shouldBeScripted` across the clauses.
     */
-  private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] = {
+  private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] =
+    resolveWithSchema(single, executeSubqueries = true)
+
+  /** [[resolveWithSchema]] 's ONE body (SCHEMA-2, D14): `executeSubqueries = false` -- what
+    * `GatewayApi.describe` runs -- replaces phase one's execution by its pre-execution checks
+    * (`SubqueryResolver.resolve(_, _, executes = false)`), every other step -- the attach, the
+    * explicit path's reload (D10), every refusal -- unchanged.
+    */
+  private[client] def resolveWithSchema(
+    single: SingleSearch,
+    executeSubqueries: Boolean
+  ): ElasticResult[SingleSearch] = {
     // Story 22.1 (epic 22 AD-5) — THE seam. Every direct-API path crosses it BEFORE routing
     // (`search`, `searchAsync`, `searchWithInnerHits`, `ScrollApi.scroll`, and `IndicesApi`'s
     // by-query DELETE/UPDATE bodies through `resolveDmlWithSchema`), and none of them passes
@@ -172,7 +183,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     val phaseOne: SingleSearch =
       if (!single.hasWhereSubqueries) single
       else
-        SubqueryResolver.resolve(single, this) match {
+        SubqueryResolver.resolve(single, this, executes = executeSubqueries) match {
           case ElasticSuccess(rewritten) => rewritten
           case ElasticFailure(error)     => return ElasticResult.failure(error)
         }
@@ -191,8 +202,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         lookupSchema(sources) match {
           case Some(lookup) =>
             lookup match {
-              case Success(ElasticSuccess(schema)) =>
+              case Success(ElasticSuccess(cached)) =>
                 schemaMisses.remove(source)
+                // SCHEMA-2 (D10) -- an explicitly selected path the cached mapping lacks reloads it
+                // ONCE per TTL (memoized), so a field mapped since is read by its type
+                val schema = reloadedFor(phaseOne, sources, cached)
                 TemporalLiterals(phaseOne, schema) match {
                   case Right(literalsResolved) =>
                     // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
@@ -290,6 +304,85 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           )
         )
       case Right(_) => ElasticResult.success(statement)
+    }
+
+  /** SCHEMA-2 (D10) -- the (source, path) pairs whose mapping was reloaded for an explicitly
+    * selected path it lacked, and when: another statement selecting that path within the source's
+    * TTL reads no mapping.
+    *
+    * Keys are caller-supplied names, so the memo is bounded the way [[schemaMisses]] is: above
+    * [[schemaPathReloadPurgeThreshold]] entries an insert also drops the expired ones (each by its
+    * source's TTL), and if it is STILL above four times the threshold (a client selecting thousands
+    * of distinct unmapped names inside one TTL) it keeps only the insert's own entries -- the worst
+    * case is then one mapping read per statement selecting such a name, never unbounded memory.
+    */
+  private[this] lazy val schemaPathReloads =
+    new java.util.concurrent.ConcurrentHashMap[(String, String), java.lang.Long]()
+
+  private val schemaPathReloadPurgeThreshold = 256
+
+  /** Current size of the D10 reload memo (tests). */
+  private[client] def schemaPathReloadCount: Int = schemaPathReloads.size()
+
+  /** Remember that `source`'s mapping was reloaded at `now` for `paths` (D10), bounded. */
+  private def rememberPathReloads(source: String, paths: Seq[String], now: Long): Unit = {
+    paths.foreach(p => schemaPathReloads.put((source, p), java.lang.Long.valueOf(now)))
+    if (schemaPathReloads.size() > schemaPathReloadPurgeThreshold) {
+      schemaPathReloads
+        .entrySet()
+        .removeIf((e: java.util.Map.Entry[(String, String), java.lang.Long]) =>
+          now - e.getValue >= schemaCacheTtlMsFor(e.getKey._1)
+        )
+      if (schemaPathReloads.size() > schemaPathReloadPurgeThreshold * 4) {
+        schemaPathReloads.clear()
+        paths.foreach(p => schemaPathReloads.put((source, p), java.lang.Long.valueOf(now)))
+      }
+    }
+  }
+
+  /** The paths `statement` selects explicitly (a bare column, not `*`, not a function, not an
+    * UNNEST element, not a metadata field).
+    */
+  private def explicitPaths(statement: SingleSearch): Seq[String] =
+    statement.select.fields.collect {
+      case f
+          if f.identifier.functions.isEmpty && !f.identifier.nested &&
+            f.identifier.name.nonEmpty && f.identifier.name != "*" &&
+            !f.identifier.name.startsWith("_") =>
+        f.identifier.name
+    }.distinct
+
+  /** `schema`, or -- when `statement` selects a path it lacks on ONE concrete source, not reloaded
+    * for that path within the source's TTL -- the source's mapping read again
+    * (`IndicesApi.invalidateSchema`, then [[lookupSchema]]); `schema` when the reload fails.
+    */
+  private def reloadedFor(statement: SingleSearch, sources: Seq[String], schema: Schema): Schema =
+    this match {
+      case indices: IndicesApi
+          if sources.size == 1 && !sources.head.contains("*") && !sources.head.contains(",") =>
+        val source = sources.head
+        val missing = explicitPaths(statement).filter(p => schema.find(p).isEmpty)
+        if (missing.isEmpty) schema
+        else {
+          val now = System.currentTimeMillis()
+          val ttl = schemaCacheTtlMsFor(source)
+          val fresh = missing.filter { p =>
+            Option(schemaPathReloads.get((source, p))).forall(at => now - at >= ttl)
+          }
+          if (fresh.isEmpty) schema
+          else {
+            rememberPathReloads(source, fresh, now)
+            logger.debug(
+              s"Mapping of '$source' reloaded for ${fresh.mkString(", ")}, absent from its cached schema"
+            )
+            indices.invalidateSchema(source)
+            lookupSchema(sources) match {
+              case Some(Success(ElasticSuccess(reloaded))) => reloaded
+              case _                                       => schema
+            }
+          }
+        }
+      case _ => schema
     }
 
   /** THE schema lookup for a statement's sources, for every consumer -- the attach
@@ -519,7 +612,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private[client] def forgetAllSchemaMisses(): Unit = schemaMisses.clear()
 
   /** [[resolveWithSchema]] over every request of a `UNION ALL`; the first rejection wins. */
-  private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] = {
+  private[client] def resolveWithSchema(multiple: MultiSearch): ElasticResult[MultiSearch] =
+    resolveWithSchema(multiple, executeSubqueries = true)
+
+  /** [[resolveWithSchema]] over every request, each through the single statement's ONE body. */
+  private[client] def resolveWithSchema(
+    multiple: MultiSearch,
+    executeSubqueries: Boolean
+  ): ElasticResult[MultiSearch] = {
     // Story 22.6 — only `UNION ALL` is an Elasticsearch `_msearch`; UNION (de-duplicating),
     // UNION DISTINCT, INTERSECT [ALL] and EXCEPT [ALL] all need the relational engine. Refuse HERE,
     // before any branch is resolved or any request is built: this is the ONE seam every direct-API
@@ -532,7 +632,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     val zero: ElasticResult[Seq[SingleSearch]] = ElasticResult.success(Seq.empty)
     multiple.requests.foldLeft(zero) {
       case (ElasticSuccess(acc), request) =>
-        resolveWithSchema(request) match {
+        (if (executeSubqueries) resolveWithSchema(request)
+         else resolveWithSchema(request, executeSubqueries = false)) match {
           case ElasticSuccess(resolved) => ElasticResult.success(acc :+ resolved)
           case ElasticFailure(error)    => ElasticResult.failure(error)
         }
@@ -665,7 +766,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
           multiple.requests.map(rowInvariantsOf),
           unionAllLegProjections(multiple)
-        )
+        ).map(_.copy(schema = unionAllSchema(multiple)))
 
       case _ =>
         logger.error(
@@ -806,7 +907,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 query,
                 success.value,
                 fieldAliases,
-                aggs
+                aggs,
+                SchemaColumns.schemaOf(context)
               )
             )
           case ElasticFailure(error) =>
@@ -1026,7 +1128,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           multiple.requests.headOption.map(_.nestedHitsMappings).getOrElse(Map.empty),
           multiple.requests.map(rowInvariantsOf),
           unionAllLegProjections(multiple)
-        )
+        ).map(_.map(_.copy(schema = unionAllSchema(multiple))))
 
       case _ =>
         val query = statement.sql
@@ -1099,7 +1201,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                     query,
                     success.value,
                     fieldAliases,
-                    aggs
+                    aggs,
+                    SchemaColumns.schemaOf(context)
                   )
                 )
               )
@@ -1951,7 +2054,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       // Step 3: Enrich results
       enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
 
-    } yield enrichedResponse
+    } yield enrichedResponse.copy(schema = statementSchema(request))
   }
 
   // ========================================================================
@@ -2447,7 +2550,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )(TextColumns.of(single, context, setOperationVersion)).map(inGroupedRowOrder(single, _))
+          )(SchemaColumns.of(single, context, setOperationVersion))
+            .map(inGroupedRowOrder(single, _))
     }
   }
 
@@ -2488,7 +2592,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             extractOutputFieldNames(single),
             UnnestScope.rowExplosion(single),
             rowInvariantsOf(single)
-          )(ec, TextColumns.of(single, context, setOperationVersion))
+          )(ec, SchemaColumns.of(single, context, setOperationVersion))
             .map(_.map(inGroupedRowOrder(single, _)))
     }
   }
@@ -2632,8 +2736,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         // the plan that built THIS leg's request -- never one made from the merged map
         toClientAggregations(leg.sqlAggregations),
         convert,
-        // ...read as THIS leg reads its rows on its own: its VARCHAR columns as their text
-        Some(TextColumns.of(leg, context, setOperationVersion))
+        // ...read as THIS leg reads its rows on its own: each value by its declared type
+        Some(SchemaColumns.of(leg, context, setOperationVersion))
       )
     }
   }
@@ -2653,9 +2757,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         response.results.map(normalise)
       },
       multiple.fieldAliases,
-      toClientAggregations(multiple.sqlAggregations)
+      toClientAggregations(multiple.sqlAggregations),
+      unionAllSchema(multiple)
     )
   }
+
+  /** SCHEMA-2 (D12) -- a `UNION ALL`'s result schema, typed as its converters type its columns. */
+  private[client] def unionAllSchema(multiple: MultiSearch): Option[ResultSchema] =
+    ResultSchemas.of(multiple, SetOperationValues.DateReading(setOperationVersion))
+
+  /** SCHEMA-2 (D13) -- the schema of `single` as written, read before any row: what a
+    * window-enriched statement's response carries (never its base query's).
+    */
+  private[client] def statementSchema(single: SingleSearch): Option[ResultSchema] =
+    ResultSchemas.of(single, SetOperationValues.DateReading(setOperationVersion))
 
   private def requiresScrollPaging(limit: Option[Limit]): Boolean =
     limit match {
@@ -2767,14 +2882,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     // deterministic `_doc` order); the statement's LIMIT was stripped above, so ScrollApi's own
     // clamp cannot see it and the clamp must be applied here. The no-LIMIT branch inherits the
     // configured ceiling (`maxSlices = None`).
-    scrollApi
-      .scroll(
-        statement,
-        scrollApi.defaultScrollConfig.copy(
-          maxDocuments = maxDocuments,
-          maxSlices = if (single.limit.isDefined) Some(1) else None
-        )
+    val (schema, source) = scrollApi.scrollWithSchema(
+      statement,
+      scrollApi.defaultScrollConfig.copy(
+        maxDocuments = maxDocuments,
+        maxSlices = if (single.limit.isDefined) Some(1) else None
       )
+    )
+    source
       .map(_._1)
       .drop(offset)
       .runWith(Sink.seq)
@@ -2786,7 +2901,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
             elasticQuery.query,
             rows,
             single.fieldAliases,
-            ListMap.empty
+            ListMap.empty,
+            schema
           )
         )
       }

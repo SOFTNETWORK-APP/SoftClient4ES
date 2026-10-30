@@ -2526,6 +2526,8 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |FROM dql_users
         |ORDER BY id ASC;""".stripMargin
 
+    // SCHEMA-2 (D9, #418 part 2): the projection's columns only -- the parent `profile` its dotted
+    // columns read is no longer leaked into the row
     val res = client.run(sql).futureValue
     assertSelectResult(
       System.nanoTime(),
@@ -2535,29 +2537,25 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
           "id"        -> 1,
           "full_name" -> "Alice",
           "city"      -> "Paris",
-          "followers" -> 100,
-          "profile"   -> Map("city" -> "Paris", "followers" -> 100)
+          "followers" -> 100
         ),
         Map(
           "id"        -> 2,
           "full_name" -> "Bob",
           "city"      -> "Lyon",
-          "followers" -> 50,
-          "profile"   -> Map("city" -> "Lyon", "followers" -> 50)
+          "followers" -> 50
         ),
         Map(
           "id"        -> 3,
           "full_name" -> "Chloe",
           "city"      -> "Paris",
-          "followers" -> 200,
-          "profile"   -> Map("city" -> "Paris", "followers" -> 200)
+          "followers" -> 200
         ),
         Map(
           "id"        -> 4,
           "full_name" -> "David",
           "city"      -> "Marseille",
-          "followers" -> 10,
-          "profile"   -> Map("city" -> "Marseille", "followers" -> 10)
+          "followers" -> 10
         )
       )
     )
@@ -3444,6 +3442,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
         |FROM dql_users
         |ORDER BY id ASC;""".stripMargin
 
+    // SCHEMA-2 (D5, #418 part 1): a computed column's one-element array is ONE value
     val res = client.run(sql).futureValue
     assertSelectResult(
       System.nanoTime(),
@@ -3451,55 +3450,55 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
       Seq(
         Map(
           "id"          -> 1,
-          "name_concat" -> Seq("Alice_suffix"),
-          "name_sub"    -> Seq("Al"),
-          "name_lower"  -> Seq("alice"),
-          "name_upper"  -> Seq("ALICE"),
-          "name_trim"   -> Seq("Alice"),
-          "name_len"    -> Seq(5),
-          "name_repl"   -> Seq("Xlice"),
-          "name_left"   -> Seq("A"),
-          "name_right"  -> Seq("e"),
-          "name_rev"    -> Seq("ecilA")
+          "name_concat" -> "Alice_suffix",
+          "name_sub"    -> "Al",
+          "name_lower"  -> "alice",
+          "name_upper"  -> "ALICE",
+          "name_trim"   -> "Alice",
+          "name_len"    -> 5,
+          "name_repl"   -> "Xlice",
+          "name_left"   -> "A",
+          "name_right"  -> "e",
+          "name_rev"    -> "ecilA"
         ),
         Map(
           "id"          -> 2,
-          "name_concat" -> Seq("Bob_suffix"),
-          "name_sub"    -> Seq("Bo"),
-          "name_lower"  -> Seq("bob"),
-          "name_upper"  -> Seq("BOB"),
-          "name_trim"   -> Seq("Bob"),
-          "name_len"    -> Seq(3),
-          "name_repl"   -> Seq("Bob"),
-          "name_left"   -> Seq("B"),
-          "name_right"  -> Seq("b"),
-          "name_rev"    -> Seq("boB")
+          "name_concat" -> "Bob_suffix",
+          "name_sub"    -> "Bo",
+          "name_lower"  -> "bob",
+          "name_upper"  -> "BOB",
+          "name_trim"   -> "Bob",
+          "name_len"    -> 3,
+          "name_repl"   -> "Bob",
+          "name_left"   -> "B",
+          "name_right"  -> "b",
+          "name_rev"    -> "boB"
         ),
         Map(
           "id"          -> 3,
-          "name_concat" -> Seq("Chloe_suffix"),
-          "name_sub"    -> Seq("Ch"),
-          "name_lower"  -> Seq("chloe"),
-          "name_upper"  -> Seq("CHLOE"),
-          "name_trim"   -> Seq("Chloe"),
-          "name_len"    -> Seq(5),
-          "name_repl"   -> Seq("Chloe"),
-          "name_left"   -> Seq("C"),
-          "name_right"  -> Seq("e"),
-          "name_rev"    -> Seq("eolhC")
+          "name_concat" -> "Chloe_suffix",
+          "name_sub"    -> "Ch",
+          "name_lower"  -> "chloe",
+          "name_upper"  -> "CHLOE",
+          "name_trim"   -> "Chloe",
+          "name_len"    -> 5,
+          "name_repl"   -> "Chloe",
+          "name_left"   -> "C",
+          "name_right"  -> "e",
+          "name_rev"    -> "eolhC"
         ),
         Map(
           "id"          -> 4,
-          "name_concat" -> Seq("David_suffix"),
-          "name_sub"    -> Seq("Da"),
-          "name_lower"  -> Seq("david"),
-          "name_upper"  -> Seq("DAVID"),
-          "name_trim"   -> Seq("David"),
-          "name_len"    -> Seq(5),
-          "name_repl"   -> Seq("David"),
-          "name_left"   -> Seq("D"),
-          "name_right"  -> Seq("d"),
-          "name_rev"    -> Seq("divaD")
+          "name_concat" -> "David_suffix",
+          "name_sub"    -> "Da",
+          "name_lower"  -> "david",
+          "name_upper"  -> "DAVID",
+          "name_trim"   -> "David",
+          "name_len"    -> 5,
+          "name_repl"   -> "David",
+          "name_left"   -> "D",
+          "name_right"  -> "d",
+          "name_rev"    -> "divaD"
         )
       )
     )

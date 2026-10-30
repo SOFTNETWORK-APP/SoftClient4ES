@@ -158,7 +158,7 @@ trait ReplIntegrationTestKit
 
     val success = res.asInstanceOf[ExecutionSuccess]
     success.result match {
-      case QueryStream(stream, _) =>
+      case QueryStream(stream, _, _) =>
         val sink = Sink.fold[Seq[Map[String, Any]], (Map[String, Any], ScrollMetrics)](Seq.empty) {
           case (acc, (row, _)) => acc :+ normalizeRow(row)
         }

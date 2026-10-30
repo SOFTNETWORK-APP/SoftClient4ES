@@ -110,6 +110,33 @@ class JavaClientConversionSpec extends AnyWordSpec with Matchers {
       hitNode.has("_source") shouldBe false
     }
 
+    "carry the fields Elasticsearch ignored on the fast branch (SCHEMA-2, D8)" in {
+      val src = sourceNode()
+      val hit = Hit.of[ObjectNode] { builder =>
+        builder.index("idx")
+        builder.id("5")
+        builder.source(src)
+        builder.ignored("dm")
+        builder
+      }
+      val hitNode = Companion
+        .envelope(Collections.singletonList(hit))
+        .path("hits")
+        .path("hits")
+        .get(0)
+      hitNode.get("_source") should be theSameInstanceAs src
+      hitNode.path("_ignored").isArray shouldBe true
+      hitNode.path("_ignored").size() shouldBe 1
+      hitNode.path("_ignored").get(0).asText() shouldBe "dm"
+      // a hit Elasticsearch ignored nothing of carries no `_ignored`
+      Companion
+        .envelope(Collections.singletonList(hitOf(Some("6"), Some(sourceNode()))))
+        .path("hits")
+        .path("hits")
+        .get(0)
+        .has("_ignored") shouldBe false
+    }
+
     "produce an empty hits array for no hits" in {
       val hits = Companion
         .envelope(Collections.emptyList[Hit[ObjectNode]]())

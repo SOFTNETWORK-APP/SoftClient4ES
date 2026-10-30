@@ -66,6 +66,19 @@ class RestHighLevelClientScrollPageFailureSpec extends AnyWordSpec with Matchers
 
   "extractAllResults" should {
 
+    "read a page in its statement's schema context: the rows and classes core's parse gives (SCHEMA-2, pages)" in {
+      // `extractHitsOnly` is private here; it reads its page through the same core parse
+      val fixture = SchemaPageFixture
+      val rows = client.extractAllResults(
+        tree(fixture.page),
+        fixture.fieldAliases,
+        noAggregations,
+        retainDocumentId = false
+      )(fixture.context("7.17.29"))
+      rows shouldBe fixture.expected
+      fixture.classes(rows) shouldBe fixture.classes(fixture.expected)
+    }
+
     "return one row per raw hit on a good page" in {
       client
         .extractAllResults(goodPage, ListMap.empty, noAggregations, retainDocumentId = false)

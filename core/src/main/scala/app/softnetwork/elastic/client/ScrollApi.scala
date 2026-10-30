@@ -271,23 +271,37 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   )(implicit
     system: ActorSystem,
     context: ConversionContext
-  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] = {
+  ): Source[(ListMap[String, Any], ScrollMetrics), NotUsed] =
+    scrollWithSchema(statement, config)._2
+
+  /** SCHEMA-2 (D13) -- [[scroll]] with the statement's result schema, declared before any row: the
+    * resolve is synchronous, so the schema is known when the source is returned. ONE pipeline:
+    * [[scroll]] is its source. A window-enriched statement's schema is the statement's as written,
+    * never its base query's; `None` where no schema is known.
+    */
+  private[client] def scrollWithSchema(
+    statement: SearchStatement,
+    config: ScrollConfig = defaultScrollConfig
+  )(implicit
+    system: ActorSystem,
+    context: ConversionContext
+  ): (Option[ResultSchema], Source[(ListMap[String, Any], ScrollMetrics), NotUsed]) = {
     implicit def timestamp: Long = System.currentTimeMillis()
     statement match {
       // Select statement
       case select: SelectStatement =>
         select.statement match {
           case Some(single: SingleSearch) =>
-            scroll(single.copy(score = select.score), config)
+            scrollWithSchema(single.copy(score = select.score), config)
 
           case Some(multiple: MultiSearch) =>
-            scroll(multiple, config)
+            scrollWithSchema(multiple, config)
 
           case None =>
             // Issue #389 / F7 -- carry the parser's OWN reason. A whole family of SEMANTIC refusals
             // reaches this branch, each naming a clause and a remedy; the generic sentence threw
             // every one of them away.
-            Source.failed(
+            None -> Source.failed(
               new IllegalArgumentException(
                 (statement match {
                   case s: SelectStatement => s.parseError
@@ -324,14 +338,14 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             _.isAggregation
           ) || single.scriptFields.nonEmpty)
         )
-          return scrollWithWindowEnrichment(single, config0)
+          return statementSchema(single) -> scrollWithWindowEnrichment(single, config0)
 
         val requestedFields = extractOutputFieldNames(single)
-        // the columns `single` declares VARCHAR are read as their text (`TextColumns`), and each
+        // each value of `single` read by its declared type (`SchemaColumns`), and each
         // conversion of a bare UNNEST element column by its reader, its dates as the cluster's
         // major reads them (`ElementConversions`)
         val textContext: ConversionContext =
-          TextColumns.of(
+          SchemaColumns.of(
             single,
             context,
             this match {
@@ -365,7 +379,7 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         // The rows of a GROUP BY, in the order, past the offset and to the count the statement
         // asks for (`ElasticConversion.orderGroupedRows`). They are the rows of ONE aggregation
         // response, so collecting them holds nothing the response did not already.
-        GroupedRowOrder.of(single) match {
+        SchemaColumns.schemaOf(textContext) -> (GroupedRowOrder.of(single) match {
           case Some(order) =>
             rows
               .fold(Vector.empty[(ListMap[String, Any], ScrollMetrics)])(_ :+ _)
@@ -378,16 +392,16 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
                   .toList
               )
           case None => rows
-        }
+        })
 
       // Multi search
       case _: MultiSearch =>
-        Source.failed(
+        None -> Source.failed(
           new UnsupportedOperationException("Scrolling is not supported for multi-search queries")
         )
 
       case _ =>
-        Source.failed(
+        None -> Source.failed(
           new IllegalArgumentException("Scrolling is only supported for SELECT statements")
         )
     }

@@ -433,8 +433,8 @@ trait ElasticConversion {
 
     // the levels the statement sends as a numeric `terms` of doubles (`SingleSearch.doubleKeyLevels`)
     val doubleKeys: Set[String] = context match {
-      case TextColumns(_, keys) => keys
-      case _                    => Set.empty
+      case s: SchemaColumns => s.doubleKeys
+      case _                => Set.empty
     }
 
     val rows = (hitsNode, aggsNode) match {
@@ -670,19 +670,23 @@ trait ElasticConversion {
   )(implicit context: ConversionContext): Seq[ListMap[String, Any]] = {
     // One decision per parse — the per-row hot path does no `_id` work when it is not kept
     val withDocumentId = retainDocumentId || keepsDocumentId(requestedFields)
-    // ...and none for the columns declared VARCHAR unless the statement declares some
-    val text: Set[String] = context match {
-      case TextColumns(columns, _) => columns
-      case _                       => Set.empty
+    context match {
+      // SCHEMA-2 (D4) -- every value read by its column's declared type, where it is first read
+      case s: SchemaColumns => parseHitsByPlan(hits, fieldAliases, withDocumentId, s.reading)
+      case _                => parseHitsAsRead(hits, fieldAliases, withDocumentId)
     }
+  }
+
+  /** The hits of a statement read in a context that types none of its values (an entity, a
+    * document, a window-enriched statement): every value as `jsonNodeToAny` reads it.
+    */
+  private def parseHitsAsRead(
+    hits: List[JsonNode],
+    fieldAliases: ListMap[String, String],
+    withDocumentId: Boolean
+  ): Seq[ListMap[String, Any]] =
     hits.map { hit =>
-      var source =
-        if (text.isEmpty) extractSource(hit, fieldAliases)
-        else
-          Option(hit.get("_source"))
-            .filter(_.isObject)
-            .map(jsonNodeToMap(_, fieldAliases, text))
-            .getOrElse(ListMap.empty)
+      var source = extractSource(hit, fieldAliases)
       fieldAliases.foreach(entry => {
         if (!source.contains(entry._2)) {
           findKeyValue(entry._1, source) match {
@@ -697,13 +701,133 @@ trait ElasticConversion {
       val fieldsNode = Option(hit.path("fields"))
         .filter(!_.isMissingNode)
       val fields = fieldsNode
-        .map(n =>
-          if (text.isEmpty) jsonNodeToMap(n, fieldAliases)
-          else jsonNodeToMap(n, fieldAliases, text)
-        )
+        .map(n => jsonNodeToMap(n, fieldAliases))
         .getOrElse(ListMap.empty)
       source ++ metadata ++ innerHits ++ fields
     }
+
+  /** SCHEMA-2 (D4, D6-D8) -- the hits of a statement read through its plan ([[HitReading]]): each
+    * `_source` key the projection touches, each computed column's `fields` entry and each UNNEST
+    * element field by its column's reader, before any re-read as a temporal; every other key as it
+    * always was. A date column the hit's `_ignored` names follows Elasticsearch's verdict, per
+    * value: a cell of one value is NULL, an array keeps the elements its format reads and answers
+    * the others NULL ([[HitReading.onIgnored]]). A several-element cell a scalar column refuses
+    * ([[MultiValued.Fail]]) fails the statement, naming the document.
+    */
+  private def parseHitsByPlan(
+    hits: List[JsonNode],
+    fieldAliases: ListMap[String, String],
+    withDocumentId: Boolean,
+    reading: HitReading
+  ): Seq[ListMap[String, Any]] =
+    hits.map { hit =>
+      try {
+        val ignored: java.util.Set[String] =
+          if (reading.readsIgnored) ignoredOf(hit) else null
+        var source = hit.get("_source") match {
+          case node if node != null && node.isObject =>
+            readSource(node, fieldAliases, reading, ignored)
+          case _ => ListMap.empty[String, Any]
+        }
+        fieldAliases.foreach(entry => {
+          if (!source.contains(entry._2)) {
+            findKeyValue(entry._1, source) match {
+              case Some(value) => source += (entry._2 -> value)
+              case None        =>
+            }
+          }
+        })
+        val metadata =
+          if (withDocumentId) extractHitId(hit) else ListMap.empty[String, Any]
+        val innerHits = extractInnerHits(hit, fieldAliases, reading.inner)
+        val fieldsNode = hit.get("fields")
+        val fields =
+          if (fieldsNode != null && fieldsNode.isObject)
+            readScripted(fieldsNode, fieldAliases, reading)
+          else ListMap.empty[String, Any]
+        source ++ metadata ++ innerHits ++ fields
+      } catch {
+        case cell: HitReading.MultiValuedCell =>
+          throw new IllegalArgumentException(
+            HitReading.multiValuedMessage(cell, Option(hit.get("_id")).map(_.asText()))
+          )
+      }
+    }
+
+  /** The paths a hit's `_ignored` names (D8): `null` when it names none. */
+  private def ignoredOf(hit: JsonNode): java.util.Set[String] = {
+    val node = hit.get("_ignored")
+    if (node == null || !node.isArray || node.size() == 0) null
+    else {
+      val paths = new java.util.HashSet[String]()
+      val it = node.elements()
+      while (it.hasNext) paths.add(it.next().asText())
+      paths
+    }
+  }
+
+  /** A hit's `_source` through the plan (D4): a key it holds by its reader, a flat dotted key under
+    * `*` folded into its mapped parent (a non-null flat value wins, A-3), an unmapped key under `*`
+    * dropped, any other key as read.
+    */
+  private def readSource(
+    node: JsonNode,
+    fieldAliases: ListMap[String, String],
+    reading: HitReading,
+    ignored: java.util.Set[String]
+  ): ListMap[String, Any] = {
+    val entries = ListMap.newBuilder[String, Any]
+    var folds: ListBuffer[(String, String, JsonNode)] = null
+    val it = node.properties().iterator()
+    while (it.hasNext) {
+      val e = it.next()
+      val key = e.getKey
+      val reader = reading.source.get(key)
+      if (reader ne null) {
+        val onIgnored =
+          if ((ignored ne null) && ignored.contains(key)) reading.onIgnored(key) else null
+        val value = if (onIgnored ne null) onIgnored(e.getValue) else reader(e.getValue)
+        entries += fieldAliases.getOrElse(key, key) -> value
+      } else {
+        val parent = reading.foldsUnder(key)
+        if (parent ne null) {
+          if (folds eq null) folds = ListBuffer.empty
+          folds += ((parent, key, e.getValue))
+        } else if (!reading.star)
+          entries += fieldAliases.getOrElse(key, key) -> jsonNodeToAny(e.getValue, fieldAliases)
+      }
+    }
+    val row = entries.result()
+    if (folds eq null) row
+    else
+      folds.foldLeft(row) { case (acc, (parent, key, value)) =>
+        reading.flatReaders(key)(value) match {
+          case null => acc
+          case v =>
+            val path = key.substring(parent.length + 1).split("\\.").toList
+            acc + (parent -> ElasticConversion.withPath(acc.getOrElse(parent, null), path, v))
+        }
+      }
+  }
+
+  /** A hit's `fields` through the plan: a computed column's entry by its reader (one value, not
+    * Elasticsearch's array), any other entry as read.
+    */
+  private def readScripted(
+    node: JsonNode,
+    fieldAliases: ListMap[String, String],
+    reading: HitReading
+  ): ListMap[String, Any] = {
+    val entries = ListMap.newBuilder[String, Any]
+    val it = node.properties().iterator()
+    while (it.hasNext) {
+      val e = it.next()
+      val reader = reading.scripted.get(e.getKey)
+      entries += fieldAliases.getOrElse(e.getKey, e.getKey) -> (
+        if (reader ne null) reader(e.getValue) else jsonNodeToAny(e.getValue, fieldAliases)
+      )
+    }
+    entries.result()
   }
 
   /** Normalize a row to ensure all requested fields are present in the original SQL SELECT order.
@@ -860,6 +984,15 @@ trait ElasticConversion {
         case EntityContext => false
         case _             => true
       }
+      // SCHEMA-2 (D9) -- a hit-row statement read by its plan is projected STRICTLY: an entry no
+      // column declares is dropped, but `_id` and the nested-hit keys (`HitReading.keep`). Decided
+      // once per stream; `null` (every extra kept, as before) for every other context.
+      val strictKeep: java.util.Set[String] = context match {
+        case s: SchemaColumns if s.reading.strict =>
+          new java.util.HashSet[String](java.util.Arrays.asList(s.reading.keep.toSeq: _*))
+        case _ => null
+      }
+      val strict = strictKeep ne null
       // a converted value changes the row, so a converting projection never hands a row back as is
       val rebuilds = renames || (convs ne null)
       if (fieldIndex.size() != len) {
@@ -873,7 +1006,18 @@ trait ElasticConversion {
         //     hand-written duplicate projection reaches.
         if (!renames) {
           val requestedSet = sourceFields.toSet
-          if (convs eq null) row => normalizeRowOrdered(row, sourceFields, requestedSet)
+          if (strict)
+            row =>
+              normalizeRowOrdered(row, sourceFields, requestedSet)
+                .filter(entry => requestedSet.contains(entry._1) || strictKeep.contains(entry._1))
+                .map { entry =>
+                  if (convs eq null) entry
+                  else {
+                    val j = sourceFields.indexOf(entry._1)
+                    if (j >= 0 && (convs(j) ne null)) entry._1 -> convs(j)(entry._2) else entry
+                  }
+                }
+          else if (convs eq null) row => normalizeRowOrdered(row, sourceFields, requestedSet)
           else {
             // the column a repeated name keeps is its FIRST position, and so is its conversion
             val convertByName = new java.util.HashMap[String, Any => Any](len * 2)
@@ -906,7 +1050,10 @@ trait ElasticConversion {
               j += 1
             }
             row.foreach { entry =>
-              if (!sourceSet.contains(entry._1) && !targetNames.contains(entry._1))
+              if (
+                !sourceSet.contains(entry._1) && !targetNames.contains(entry._1) &&
+                (!strict || strictKeep.contains(entry._1))
+              )
                 builder += entry
             }
             builder.result()
@@ -944,12 +1091,23 @@ trait ElasticConversion {
                 seen(idx.intValue) = true
               } else if (renames && targetNames.contains(entry._1)) {
                 // a stray entry wearing a result column's name — dropped, see `targetNames`
-              } else {
+              } else if (!strict || strictKeep.contains(entry._1)) {
                 if (extras eq null) extras = new ListBuffer[(String, Any)]
                 extras += entry
               }
             }
           }
+          // SCHEMA-2 (D9) -- under the strict projection, the entries after an in-order match are
+          // read here, OFF the per-entry path above (#354's +3.6 %): an undeclared one drops it
+          var dropped = false
+          if (strict && !rebuilds && passthrough)
+            while (it.hasNext) {
+              val entry = it.next()
+              if (strictKeep.contains(entry._1)) {
+                if (extras eq null) extras = new ListBuffer[(String, Any)]
+                extras += entry
+              } else dropped = true
+            }
           // Under a rename -- or a conversion -- the loop may have stopped on `passthrough` with
           // entries still to come; none of them can be a source name (a row map's keys are unique
           // and all `len` of them were just consumed), so they are extras -- subject, under a
@@ -957,14 +1115,17 @@ trait ElasticConversion {
           if (rebuilds) {
             while (it.hasNext) {
               val entry = it.next()
-              if (!renames || !targetNames.contains(entry._1)) {
+              if (
+                (!renames || !targetNames.contains(entry._1)) &&
+                (!strict || strictKeep.contains(entry._1))
+              ) {
                 if (extras eq null) extras = new ListBuffer[(String, Any)]
                 extras += entry
               }
             }
           }
           // An in-order strict prefix needs no rebuild either when missing fields are skipped
-          if (!rebuilds && (passthrough || (inOrder && !nullFillMissing))) row
+          if (!rebuilds && !dropped && (passthrough || (inOrder && !nullFillMissing))) row
           else {
             val builder = ListMap.newBuilder[String, Any]
             var j = 0
@@ -1080,12 +1241,15 @@ trait ElasticConversion {
   /** Extract inner_hits from a hit (for nested or parent-child queries) */
   private def extractInnerHits(
     hit: JsonNode,
-    fieldAliases: ListMap[String, String]
+    fieldAliases: ListMap[String, String],
+    readers: Map[String, java.util.HashMap[String, JsonNode => Any]] = Map.empty
   ): ListMap[String, Any] = {
     Option(hit.get("inner_hits")) match {
       case Some(n: ObjectNode) =>
         var entries: Seq[(String, Any)] = Seq.empty
         n.forEachEntry { case (innerHitName, innerHitData) =>
+          // SCHEMA-2 (D4) -- an UNNEST element's fields by their columns' readers
+          val byField = readers.getOrElse(innerHitName, null)
           // Extract the hits array from inner_hits
           val innerHitsList = Option(innerHitData.path("hits").path("hits"))
             .filter(_.isArray)
@@ -1097,12 +1261,14 @@ trait ElasticConversion {
                   // Inner-hit `_id` is never needed internally: only expose it when the
                   // document-id column is enabled (nested rows are out of reach of the
                   // top-level egress strip).
-                  val source = extractSource(innerHit, fieldAliases)
+                  val source =
+                    if (byField eq null) extractSource(innerHit, fieldAliases)
+                    else readElement(innerHit, fieldAliases, byField)
                   val metadata =
                     if (includeDocumentId) extractHitId(innerHit) else ListMap.empty[String, Any]
 
                   // Recursively handle nested inner_hits if present
-                  val nestedInnerHits = extractInnerHits(innerHit, fieldAliases)
+                  val nestedInnerHits = extractInnerHits(innerHit, fieldAliases, readers)
 
                   source ++ metadata ++ nestedInnerHits
                 }
@@ -1116,6 +1282,27 @@ trait ElasticConversion {
       case _ => ListMap.empty
     }
   }
+
+  /** An inner hit's `_source`, its element fields by their readers, every other key as read. */
+  private def readElement(
+    innerHit: JsonNode,
+    fieldAliases: ListMap[String, String],
+    byField: java.util.HashMap[String, JsonNode => Any]
+  ): ListMap[String, Any] =
+    innerHit.get("_source") match {
+      case node if node != null && node.isObject =>
+        val entries = ListMap.newBuilder[String, Any]
+        val it = node.properties().iterator()
+        while (it.hasNext) {
+          val e = it.next()
+          val reader = byField.get(e.getKey)
+          entries += fieldAliases.getOrElse(e.getKey, e.getKey) -> (
+            if (reader ne null) reader(e.getValue) else jsonNodeToAny(e.getValue, fieldAliases)
+          )
+        }
+        entries.result()
+      case _ => ListMap.empty
+    }
 
   /** Parse recursively aggregations from Elasticsearch response with parent context
     */
@@ -1920,36 +2107,6 @@ trait ElasticConversion {
     }
   }
 
-  /** [[jsonNodeToMap]], with the top-level entries named in `text` -- the columns a statement
-    * declares VARCHAR ([[TextColumns]]) -- read as their text, never re-read as a temporal.
-    */
-  private[client] def jsonNodeToMap(
-    node: JsonNode,
-    fieldAliases: ListMap[String, String],
-    text: Set[String]
-  ): ListMap[String, Any] =
-    node match {
-      case n: ObjectNode =>
-        var entries: Seq[(String, Any)] = Seq.empty
-        n.forEachEntry { (name, e) =>
-          val column = fieldAliases.getOrElse(name, name)
-          val value =
-            if (text.contains(column) || text.contains(name)) jsonNodeToText(e, fieldAliases)
-            else jsonNodeToAny(e, fieldAliases)
-          entries ++= Seq(column -> value)
-        }
-        ListMap(entries: _*)
-      case _ =>
-        ListMap.empty
-    }
-
-  /** [[jsonNodeToAny]] with no temporal inference: a text is its own value. */
-  private def jsonNodeToText(node: JsonNode, fieldAliases: ListMap[String, String]): Any =
-    if (node != null && node.isTextual) node.asText()
-    else if (node != null && node.isArray)
-      node.elements().asScala.map(jsonNodeToText(_, fieldAliases)).toList
-    else jsonNodeToAny(node, fieldAliases)
-
   /** Convert a JsonNode to Any (primitive types, List, Map)
     */
   def jsonNodeToAny(node: JsonNode, fieldAliases: ListMap[String, String]): Any = {
@@ -1986,6 +2143,21 @@ object ElasticConversion extends ElasticConversion {
     * `elastic.include-document-id` is enabled.
     */
   val DocumentIdField: String = "_id"
+
+  /** `current` (a map, or nothing) with `value` placed at `path` (SCHEMA-2, A-3: a flat dotted key
+    * folded into its parent).
+    */
+  private[client] def withPath(current: Any, path: List[String], value: Any): Any =
+    path match {
+      case Nil => value
+      case head :: tail =>
+        current match {
+          case m: Map[_, _] =>
+            val map = m.asInstanceOf[Map[String, Any]]
+            map + (head -> withPath(map.getOrElse(head, null), tail, value))
+          case _ => ListMap(head -> withPath(null, tail, value))
+        }
+    }
 
   /** The texts a response writes a non-finite double key as (`extractBucketKey`). */
   private[client] val NonFiniteKeys: Set[String] = Set("Infinity", "-Infinity", "NaN")
