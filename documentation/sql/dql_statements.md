@@ -89,10 +89,9 @@ ORDER BY id ASC;
 - Aliases (`AS full_name`, `AS city`) are returned as column names.
 - An un-aliased nested field is returned under its dotted name:
   `SELECT id, profile.city FROM dql_users` returns the columns `id` and `profile.city`. The parent
-  object `profile` is normally left out of these rows. A row can still carry it, for example when
-  the `SELECT` list also names `profile`, contains `*`, or reads another field of `profile` under
-  an alias (`profile.followers AS followers`). Rows read into a typed entity (`searchAs`) keep the
-  parent object.
+  object `profile` is in a row only when the `SELECT` list names `profile` or contains `*` (*since
+  `0.25.0`*): reading another field of `profile`, under an alias or not (`profile.followers AS
+  followers`), does not add it. Rows read into a typed entity (`searchAs`) keep the parent object.
 
 ---
 
@@ -840,8 +839,10 @@ position holds ONE class: a `DOUBLE` a `Double`, a `BIGINT` a `Long`, a `TIMESTA
 bytes, a `VARCHAR` a string, a list a list of its element's type, an object a map of its fields
 in order — which is the type JDBC and Arrow report, since they read it from the first value. A
 position whose branches already have one type is returned as each branch reads it, nothing
-converted: a branch over an aggregate keeps the form an aggregate answers, a `Double`, so `SELECT
-MAX(n) ... UNION ALL SELECT n ...` answers `10.0` beside `3` and `5`.
+converted, and a branch over an aggregate answers the class of the aggregate's type (*since
+`0.25.0`*: a `Double` before). So, `n` being an `INT` column, `SELECT MAX(n) AS k FROM t UNION ALL
+SELECT n AS k FROM t WHERE n < 10` is an `INT` column answering the `Integer`s `10`, `3` and `5`,
+while `SUM(n)`, a `BIGINT`, in place of `MAX(n)` makes a `BIGINT` column of `Long`s.
 
 Each value is first read as the type its field is declared with, as Elasticsearch indexed it, and
 only then converted: a value Elasticsearch accepted as text is the value its queries see. In an
@@ -862,10 +863,10 @@ second on Elasticsearch 6; `"2024/01/31"` in a `yyyy/MM/dd` field is a date, not
 format `"2024"` and `2024` are the year 2024. A value computed by the statement (a function, a
 `CAST`) has no format: there, digits are epoch milliseconds and an ISO text is its instant. A date
 whose branches already agree -- a column, or a field of an object or of a list of objects at any
-depth -- is read the same way, in every branch, as soon as one of its branches is a field with a
-`format` of its own (`epoch_second`, `yyyy/MM/dd`, ...), every other value of the row as read, while
-a date position whose branches all have the default format, a multi-valued value and a date core
-cannot read (a zone name, say) are returned as stored.
+depth -- is read the same way, in every branch, with its field's format, the default format
+included (*since `0.25.0`*: a date whose branches all had the default format, and a multi-valued
+date, were returned as stored); a multi-valued date is the list of its values, each read so, and a
+date core cannot read (below) is returned as stored.
 
 A value is read only where its reading is the same on every Java version core runs on (8, 11, 17
 and 21) and equal to the instant the Elasticsearch major indexed, measured value by value on
@@ -880,37 +881,47 @@ Elasticsearch 8 indexes `2024-01-31` as `2023-12-31`, the first day of the week-
 week, and Elasticsearch 7 as `2024-01-01`; a year with no month and an hour (`2024T10` in a
 `strict_date_optional_time` field) is `1970-01-01 10:00:00`.
 
-A value its field's format does not read fails the statement, naming the value, the field and the
-format, and so does a value core cannot read without guessing, rather than be read as a date it
-may not be:
+A date field whose format core cannot read every value of for sure is read as its text as stored,
+decided from the format before any row is read (*since `0.25.0`*: a position that converts failed):
+the column is a `VARCHAR`, its other branches' values spelled as text (below), and at a field of an
+object the value is returned as stored. Such a format is one with:
 
 - a pattern letter, a width or a combination of letters that no measurement covers — two zone
-  letters included (an offset beside a zone id, Joda-Time's `ZZ ZZZ`) — and a name of
+  letters included (an offset beside a zone id, Joda-Time's `ZZ ZZZ`) — or a name of
   Elasticsearch 6.8's `8`-prefixed mode;
-- a zone id or a zone name other than `UTC`, `GMT` and `UT`, in every format, the default
-  included: a region id (`Europe/Paris` in a `VV` or a Joda-Time `ZZZ` letter, in the default
-  format, or in brackets after an offset, `+05:00[Europe/Paris]`) and an abbreviation or a long
-  name (`CET`, `PST`, `Pacific Time`). Its offset comes from zone data, and the zone data core's
-  Java version holds is not the one Elasticsearch indexed the value with: `2023-07-01T12:00:00
-  America/Mexico_City` is `17:00:00Z` on Elasticsearch 8.18.3 and `18:00:00Z` with older zone data,
-  and `IST` is UTC on Elasticsearch 8 and Israel time on Elasticsearch 7;
-- a value whose reading would depend on the Java version core runs on: a localized offset (`O`,
+- a zone letter that reads a zone id or a zone name: a region id (`Europe/Paris` in a `VV` or a
+  Joda-Time `ZZZ` letter, or in brackets after an offset, `+05:00[Europe/Paris]`) or an
+  abbreviation or a long name (`CET`, `PST`, `Pacific Time`). Its offset comes from zone data, and
+  the zone data core's Java version holds is not the one Elasticsearch indexed the value with:
+  `2023-07-01T12:00:00 America/Mexico_City` is `17:00:00Z` on Elasticsearch 8.18.3 and `18:00:00Z`
+  with older zone data, and `IST` is UTC on Elasticsearch 8 and Israel time on Elasticsearch 7;
+- a letter whose reading would depend on the Java version core runs on: a localized offset (`O`,
   `OOOO`, `ZZZZ`: `GMT+1`), which Java 8 parses differently from later versions; a fraction right
   after digits of a variable width (`yyyyMMddHHmmssSSS`); and, in Elasticsearch 6.8's `8`-prefixed
-  mode, an AM/PM with no hour (`8yyyy a`), which Java 16 and later set to 06:00 or 18:00, and a week
-  past the last of its week-based year (`2020-53-7` in a `8YYYY-ww-e` field), which Java 21
-  rejects;
+  mode, an AM/PM with no hour (`8yyyy a`), which Java 16 and later set to 06:00 or 18:00.
+
+A value Elasticsearch did not index — one its field's format does not read, kept in the document by
+`ignore_malformed` — is `NULL` (*since `0.25.0`*: a position that converts failed). A value core
+cannot read in a format it reads otherwise fails the statement at a position that converts, naming
+the value, the field and the format, rather than be read as a date it may not be, and is returned as
+stored where the branches agree:
+
+- a zone id or a zone name other than `UTC`, `GMT` and `UT` in a format with no zone letter, the
+  default format included (`2025-07-01T12:00:00America/Asuncion`);
+- in Elasticsearch 6.8's `8`-prefixed mode, a week past the last of its week-based year
+  (`2020-53-7` in a `8YYYY-ww-e` field), which Java 21 rejects;
 - a value the response already gives as a date or a time, without the offset or the digits its
   format reads (`10:30:00Z` in a `time` field);
 - a fractional JSON number (`1706697000.0`) whose digits, which Elasticsearch read, the number no
   longer pins to the millisecond.
 
 ```sql
--- ts is a TIMESTAMP field of format 'yyyy/MM/dd' holding '31-01-2024', s a KEYWORD
+-- s is a KEYWORD; ts is a date field
 SELECT ts AS k FROM t UNION ALL SELECT s AS k FROM t;
--- Error: Conversion Error: Could not read '31-01-2024' as a TIMESTAMP when casting from source column k: the date format 'yyyy/MM/dd' of field ts does not read it as Elasticsearch 8 does
--- a zone name
--- Error: Conversion Error: Could not read '2024-01-31T10:30:00 CET' as a TIMESTAMP when casting from source column k: core cannot read it with the date format 'yyyy-MM-dd'T'HH:mm:ss z' of field ts as Elasticsearch 8 does: the zone 'CET' is a region id or a zone name, whose offset comes from the zone data of the JVM reading it, not Elasticsearch's: core reads only Z, an offset, UTC, GMT and UT
+-- ts of format 'yyyy-MM-dd'T'HH:mm:ss z' holding '2024-01-31T10:30:00 CET': one VARCHAR column ('2024-01-31T10:30:00 CET', ..., 'a', ...)
+-- ts of format 'yyyy/MM/dd' with ignore_malformed holding '31-01-2024': NULL, beside 'a', ...
+-- ts of the default format holding '2025-07-01T12:00:00America/Asuncion':
+-- Error: Conversion Error: Could not read '2025-07-01T12:00:00America/Asuncion' as a TIMESTAMP when casting from source column k: core cannot read it with the date format 'strict_date_optional_time||epoch_millis' of field ts as Elasticsearch 8 does: the zone 'America/Asuncion' is a region id or a zone name, whose offset comes from the zone data of the JVM reading it, not Elasticsearch's: core reads only Z, an offset, UTC, GMT and UT
 ```
 
 The readings were measured on Elasticsearch 6.8.23, 7.17.29 and 8.18.3. The other minor versions
@@ -1476,18 +1487,31 @@ ORDER BY COUNT(*) DESC;
     `WEEKDAY(created_at)`, `DATE_FORMAT(created_at, '%Y-%m')`, `ISNULL(city)`, `UPPER(city)`) is a
     `terms` level on the function's script: one group per value of the function.
 
-  The key of such a function reads back as the type it reports: a number for a function that
-  answers one (`YEAR(created_at)` answers `2024`, `n + 0` a number), ordered as a number
-  (`ORDER BY DAY(created_at) DESC` answers `31, 20, 11, 5, 3`), beside a `HAVING` condition on the
-  key too, and text otherwise. A conditional
+  The key of such a function reads back as the type it reports, in that type's class: a number for a
+  function that answers one (`YEAR(created_at)` answers the `BIGINT` `2024`, a `Long`; `n + 0` a
+  number), ordered as a number (`ORDER BY DAY(created_at) DESC` answers `31, 20, 11, 5, 3`), beside
+  a `HAVING` condition on the key too; a `BOOLEAN` for a predicate (`ISNULL(city)` answers `true`
+  and `false`); a date for a function that answers one (`LAST_DAY(created_at)` answers the `DATE`
+  `2024-01-31`, `DATE_TRUNC(created_at, MONTH)` the `TIMESTAMP` `2024-01-01T00:00Z`); and text for a
+  function that answers text (`UPPER(city)`, `DATE_FORMAT(created_at, '%Y-%m')`) (*since `0.25.0`*:
+  a `BOOLEAN` key read back as text, and so could a date key, depending on the function and the
+  column's format). A conditional
   key (`COALESCE(n, 2)`, `GREATEST`, `LEAST`, a `CASE`) is grouped as a number only when every one
   of its arguments is that kind of number: over a `scaled_float`, `ip` or `geo_point` column, or a
   column no mapping types, it keeps text keys, so no two values are merged. A key over a field the
   index does not map reads that field as `NULL`, and its rows form no group (a `GROUP BY` level forms
-  no `NULL` group). A bare
-  `DATE` column's key reads back as a timestamp at midnight UTC. On Elasticsearch 6, a key that
-  formats a date column as stored (`DATE_FORMAT(created_at, …)`, `DATETIME_FORMAT(created_at, …)`)
-  is refused: truncate the column first, `DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m')` or
+  no `NULL` group). A bare column's key reads back as its column's type: a `BOOLEAN` key as `true`
+  or `false`, a `BIGINT` key as a `Long`, an `INT` key as an `Integer`, a `TIMESTAMP` key as its
+  instant at UTC, and a `DATE` key as its day, `2024-01-31` (*since `0.25.0`*: a `BOOLEAN` key read
+  back as text, an `INT` key as a `Long`, a `BIGINT` key holding a value the size of epoch
+  milliseconds as a timestamp, a date key of a custom format other than ISO as text, and a `DATE`
+  key of the default format as a timestamp at midnight UTC). A key of a `DATE` column that
+  is not a whole UTC day, the column holding a time of day, keeps the reading it had before
+  `0.25.0`: a timestamp at UTC under the default format (`2024-01-31T10:30Z`), its text in the
+  column's format under a format other than ISO (`1706697000` in an `epoch_second` column). On
+  Elasticsearch 6, a key that formats a date column as stored
+  (`DATE_FORMAT(created_at, …)`, `DATETIME_FORMAT(created_at, …)`) is refused: truncate the column
+  first, `DATE_FORMAT(DATE_TRUNC(created_at, DAY), '%Y-%m')` or
   `DATETIME_FORMAT(DATE_TRUNC(created_at, SECOND), …)`.
 - `HAVING` filters groups based on aggregate conditions.
 - Translated to Elasticsearch aggregations.

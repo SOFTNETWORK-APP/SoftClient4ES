@@ -620,9 +620,28 @@ not give yet:
 
 ## Windows: partitions that read NULL
 
-A window answers NULL on every row when its `PARTITION BY` column is one the `SELECT` list does not
-return (`MIN(n) OVER (PARTITION BY g)` without `g` in the `SELECT`), or a `BOOLEAN` column. Return the
-partition column in the `SELECT` list.
+A window answers NULL on every row when a `PARTITION BY` column is one the `SELECT` list does not
+return (`MIN(n) OVER (PARTITION BY g)` without `g` in the `SELECT`) and the `SELECT` list contains
+no `*`, which fetches the whole document: every window of the statement then reads NULL, and so does
+the column each one aggregates (`n`) when the `SELECT` list returns it. Return the partition columns
+in the `SELECT` list. A `date` partition column whose format has a zone name, read as its stored
+text, is the exception: it is matched by its instant whether the `SELECT` list returns it or not,
+unless another window's partition column is not returned (*since `0.25.0`*: it read NULL). A
+returned `BOOLEAN`, `TIMESTAMP`, `BIGINT` or whole-day `DATE` partition column is answered
+(*since `0.25.0`*: a `BOOLEAN`, `TIMESTAMP` or whole-day `DATE` one read NULL, and so did a `BIGINT`
+one holding values the size of epoch milliseconds).
+
+These partitions still read NULL on every row, the window and the column it aggregates alike:
+
+- a zone-name `date` partition column returned under another name (`pz AS pz2`);
+- a partition column whose name a computed item of the `SELECT` list takes (`UPPER(g) AS g`), that
+  item reading NULL too;
+- a `date_nanos` partition column whose format has a zone name;
+- a partition column an index pattern, a list of indices or an alias maps as a zone-name `date` in
+  one index and as a `keyword` in another.
+
+And a row with no value of the partition column, or with several, reads NULL for the window and for
+the column it aggregates, whatever the other rows answer.
 
 ## GROUP BY: the NULL group, and keys over UNNEST
 
@@ -666,11 +685,15 @@ partition column in the `SELECT` list.
   text and stored value round differently then differs from DuckDB: `0.35` rounds to `0.4` in the
   view, where DuckDB rounds the `REAL` `0.35` (`0.3499999940…`) to `0.3`. A plain query over the
   same column answers as DuckDB. Declare the column `DOUBLE` to avoid it.
-- **JDBC and Arrow Flight read a plain query's column types from its values**, not from the type the
-  column declares: a `BIGINT` column holding small whole numbers is reported as an `INTEGER`
-  (`Int32`), and a computed column whose rows carry whole and decimal numbers alike can mix
-  `Long` and `Double` values. A set operation (`UNION ALL` and the others) is typed from the
-  declared types.
+- **JDBC and Arrow Flight read a plain query's column types from its values.** The values the engine
+  reads by type carry the class of their column's declared type (*since `0.25.0`*), so a `BIGINT`
+  column is reported as a `BIGINT` (`Int(64)`) whatever its values, and a computed column the engine
+  declares `DOUBLE` holds a `Double` on every row. A value the engine answers as stored keeps its
+  own class (see [Value classes](../client/gateway.md#value-classes)), and a column the engine types
+  only as `NUMERIC` or `ANY` can carry whole and decimal numbers alike: there, the column is
+  reported as the type of its first value. JDBC reports a `TINYINT` or `SMALLINT` column, whose
+  values are `Integer`s, as an `INTEGER`. A set operation (`UNION ALL` and the others) is typed from
+  the declared types.
 
 ## Coming in the upcoming release (Quarter 1 2027)
 

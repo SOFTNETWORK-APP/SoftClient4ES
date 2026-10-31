@@ -244,8 +244,9 @@ Aggregation values follow the same table:
 - A GROUP BY key is read by its column's type: a `boolean` key is a `Boolean`, a date key the
   `java.time` value of its epoch milliseconds at UTC (whatever the mapping format), a `long` key a
   `Long`, a keyword key its text (a keyword spelling a date or a time stays text). A `DATE` key that
-  is not exactly a day, or a `TIME` key that is not a time of day of 1970-01-01, keeps its stored
-  reading.
+  is not exactly a day, or a `TIME` key that is not a time of day of 1970-01-01, keeps the reading
+  `0.24.0` gave it (a `DATE` key: a timestamp at UTC under the default format, its text in the
+  column's format under a format other than ISO).
 - A metric is read by its column's type, exactly: `COUNT` is a `Long` on every client, `MIN` /
   `MAX` of an integer an `Integer` (a `Long` for a `long`), of a date its `java.time` value at UTC,
   of a boolean a `Boolean`. A value the class cannot hold unchanged (a sum beyond `Long`, a
@@ -258,13 +259,15 @@ Aggregation values follow the same table:
   `ARRAY_AGG(DISTINCT d)` keeps one value per instant).
 - A window-enriched statement (`... OVER (PARTITION BY p ...)`) reads its rows by type and
   partitions on the same values: a `BOOLEAN`, `TIMESTAMP`, `BIGINT` or whole-day `DATE` partition
-  column is answered, and the rows hold only the SELECT's columns. A partition column the SELECT
-  does not project is read only when the whole document is fetched, as with `SELECT *`.
+  column is answered, and the rows of a statement without `*` hold only the SELECT's columns. A
+  partition column the SELECT does not project is read only when the whole document is fetched,
+  as with `SELECT *`: otherwise every window of the statement reads NULL, and so does the column
+  each one aggregates.
   A `date` partition column (not `date_nanos`) read as its stored text (a format with a zone name)
   is matched by its instant, as Elasticsearch buckets it, whether the SELECT projects it under its
-  own name or not at all; a projected one still shows its stored text. Projected under another
-  name (`pz AS pz2`), or shadowed by a computed column of the SELECT that takes its name, it is
-  not matched that way.
+  own name or not at all, unless another window's partition column is not projected; a projected
+  one still shows its stored text. Projected under another name (`pz AS pz2`), or shadowed by a
+  computed column of the SELECT that takes its name, it is not matched that way.
 
 ---
 

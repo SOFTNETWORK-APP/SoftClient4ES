@@ -228,9 +228,10 @@ SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
 
 **NULL Handling:**
 - NULL values are ignored
-- If all values are NULL, or over no row, returns `0.0`: the engine keeps Elasticsearch's own sum
-  of no value, where ANSI SQL answers NULL. `AVG`, `MIN`, `MAX`, the `STDDEV` / `VARIANCE` family
-  and the percentiles answer NULL there, and `COUNT` answers `0`.
+- If all values are NULL, or over no row, returns zero — `0` (a `BIGINT`) over an integer column,
+  `0.0` over a `REAL` or a `DOUBLE` one (*since `0.25.0`*: `0.0` over every column): the engine
+  keeps Elasticsearch's own sum of no value, where ANSI SQL answers NULL. `AVG`, `MIN`, `MAX`, the
+  `STDDEV` / `VARIANCE` family and the percentiles answer NULL there, and `COUNT` answers `0`.
 
 **Examples:**
 

@@ -170,11 +170,16 @@ elastic.credentials {
 | `ARRAY<STRUCT>` | `nested`    | `List<Struct>`              |
 
 The table is the declared mapping. A plain query's Arrow schema is inferred from the values of its
-rows (a `BIGINT` column holding small whole numbers arrives as `Int(32)`); a set operation's
-branches are typed from the declared types above when the statement is planned, and a JOIN result
-carries DuckDB's types. A column the reader cannot answer — a dictionary-encoded column, an Arrow
-type it has no reader for — fails naming the column instead of reading `NULL` (*since
-arrow-extensions `0.3.4`*).
+rows; the engine answers every value it reads by type in the class of its column's declared type
+(*since engine `0.25.0`*), so the schema follows the table: a `BIGINT` column arrives as `Int(64)`
+whatever its values, and a computed column the engine declares `DOUBLE` (`x * 2` over a `DOUBLE`
+column) as `Float(DOUBLE)` — in the advertised schema and in the stream alike. A value the engine
+answers as stored keeps its own class (see [Value classes](gateway.md#value-classes)), and a column
+the engine types only as `NUMERIC` or `ANY` can carry whole and decimal numbers alike: there, the
+column takes the type of its first value. A set operation's branches are typed from the declared
+types above when the statement is planned, and a JOIN result carries DuckDB's types. A column the
+reader cannot answer — a dictionary-encoded column, an Arrow type it has no reader for — fails
+naming the column instead of reading `NULL` (*since arrow-extensions `0.3.4`*).
 
 ---
 
