@@ -45,8 +45,8 @@ import org.scalatest.matchers.should.Matchers
   *
   * What an operand IS for these rules:
   *   - `NOW()` is a DATETIME, which these rules read as an instant, like a TIMESTAMP;
-  *   - an aggregate is the metric it produces: `COUNT` a BIGINT, `AVG` a DOUBLE, `SUM` its column's
-  *     number, `MIN` / `MAX` what they aggregate;
+  *   - an aggregate is the metric it produces: `COUNT` a BIGINT, `AVG` a DOUBLE, `SUM` a BIGINT
+  *     over a whole column and a DOUBLE over a fractional one, `MIN` / `MAX` what they aggregate;
   *   - `CASE`, `COALESCE`, `GREATEST` and `LEAST` are the least common supertype of their branches
   *     or arguments, `NULLIF` its first argument -- `GREATEST` / `LEAST` over dates included, a
   *     DATE when every argument is one, a TIMESTAMP when they mix;
@@ -129,7 +129,8 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
     Operand("GREATEST(n, 2)", Whole, "BIGINT"),
     Operand("LEAST(x, 1.5)", Fractional, "DOUBLE"),
     Operand("AVG(n)", Fractional, "DOUBLE", aggregate = true, ddl = false),
-    Operand("SUM(n)", Whole, "INT", aggregate = true, ddl = false),
+    // SCHEMA-2b (A-20): a SUM over a whole column is a BIGINT
+    Operand("SUM(n)", Whole, "BIGINT", aggregate = true, ddl = false),
     Operand("COUNT(d)", Whole, "BIGINT", aggregate = true, ddl = false),
     Operand("CAST(NULL AS DATE)", DateKind, "DATE"),
     Operand("CAST(NULL AS INT)", Whole, "INT"),

@@ -238,7 +238,33 @@ ignored (`ignore_malformed`) is NULL, and the other values of the same array kee
 integral column reads a fractional number or a numeric text as Elasticsearch indexed it, truncated
 toward zero. A value a typed column cannot read is answered as stored: a value Elasticsearch did not
 index (a number outside its type's range, a `long` text with surrounding spaces) is never narrowed.
-Aggregation values and window-enriched statements keep their reading in this release.
+
+Aggregation values follow the same table:
+
+- A GROUP BY key is read by its column's type: a `boolean` key is a `Boolean`, a date key the
+  `java.time` value of its epoch milliseconds at UTC (whatever the mapping format), a `long` key a
+  `Long`, a keyword key its text (a keyword spelling a date or a time stays text). A `DATE` key that
+  is not exactly a day, or a `TIME` key that is not a time of day of 1970-01-01, keeps its stored
+  reading.
+- A metric is read by its column's type, exactly: `COUNT` is a `Long` on every client, `MIN` /
+  `MAX` of an integer an `Integer` (a `Long` for a `long`), of a date its `java.time` value at UTC,
+  of a boolean a `Boolean`. A value the class cannot hold unchanged (a sum beyond `Long`, a
+  fractional result over an integer column) is answered as Elasticsearch computed it, never
+  rounded.
+- `SUM` is declared `BIGINT` over an integer column of any width and `DOUBLE` over a `REAL` or a
+  `DOUBLE` column, as DuckDB widens a sum: `SELECT SUM(n)` over an `integer` field answers a
+  `Long`, a `CREATE TABLE ... AS SELECT SUM(n) ...` maps the column `long`.
+- A `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` value is read by its column's type (an
+  `ARRAY_AGG(DISTINCT d)` keeps one value per instant).
+- A window-enriched statement (`... OVER (PARTITION BY p ...)`) reads its rows by type and
+  partitions on the same values: a `BOOLEAN`, `TIMESTAMP`, `BIGINT` or whole-day `DATE` partition
+  column is answered, and the rows hold only the SELECT's columns. A partition column the SELECT
+  does not project is read only when the whole document is fetched, as with `SELECT *`.
+  A `date` partition column (not `date_nanos`) read as its stored text (a format with a zone name)
+  is matched by its instant, as Elasticsearch buckets it, whether the SELECT projects it under its
+  own name or not at all; a projected one still shows its stored text. Projected under another
+  name (`pz AS pz2`), or shadowed by a computed column of the SELECT that takes its name, it is
+  not matched that way.
 
 ---
 

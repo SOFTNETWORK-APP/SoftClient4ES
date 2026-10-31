@@ -555,12 +555,15 @@ trait UnnestFunctionRefusalExecutionSpec
   "a window over UNNEST columns beside a parent function" should "keep its rows" in {
     // The window's argument is evaluated per element of its nested aggregation, and the parent
     // function reads the parent, where it is visible: the rule accepts both. Over ARITHMETIC of the
-    // UNNEST columns -- a window over a BARE one answers NULL (recorded, not this rule's).
+    // UNNEST columns -- a window over a BARE one answers NULL (recorded, not this rule's). `i.n` is
+    // a `long`, so SUM(i.n * 1) is an integer sum: BIGINT, a Long (A-20), as an integer SUM is an
+    // integer type elsewhere -- DuckDB 1.5.5 `SELECT typeof(sum(i)) FROM (VALUES (4), (6)) t(i)` =
+    // HUGEINT; the value is unchanged.
     val expected = parents
       .flatMap(p =>
         p.items.map { it =>
           val name = p.name.toUpperCase(_root_.java.util.Locale.ROOT)
-          s"${p.id}|${it.k}|$name|${p.items.map(_.n).sum.toDouble}"
+          s"${p.id}|${it.k}|$name|${p.items.map(_.n).sum}"
         }
       )
       .sorted

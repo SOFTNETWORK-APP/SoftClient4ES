@@ -309,7 +309,8 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
         (
           "arithmetic (per group)",
           "SELECT g, SUM(n) + '1.5' AS v FROM t GROUP BY g",
-          "output 'INT' is not compatible with input 'VARCHAR'"
+          // SUM over a whole column is declared BIGINT
+          "output 'BIGINT' is not compatible with input 'VARCHAR'"
         )
       )
     ) { (site, sql, refusal) =>

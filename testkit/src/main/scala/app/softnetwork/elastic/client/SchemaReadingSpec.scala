@@ -55,6 +55,17 @@ import scala.util.Try
   *     reload (AC6, Elasticsearch 7+);
   *   - "describe": `describe(sql)` = `run(sql)`'s schema (AC1).
   *
+  * SCHEMA-2b -- aggregation values and window statements by type, on fixtures `s2b_t` / `s2b_w`:
+  *
+  *   - "aggregation rows": Table A (AC3);
+  *   - "aggregation classes": every non-null value of an aggregation column has D2's class on every
+  *     aggregation route (AC2): one-shot search, `searchAsync`, the `scroll()` API, the `_msearch`
+  *     legs of a UNION ALL;
+  *   - "window oracle": every partition column of `s2b_w` x {one-shot, async, scroll} x {rn, s, f}
+  *     answers the fixture's arithmetic (AC4);
+  *   - "describe aggregates": `describe(sql)` = `run(sql)`'s schema over aggregate, top_hits, Case
+  *     4 and window statements (AC1).
+  *
   * PUBLIC API ONLY but `describe` and the schema: the same fixture runs as the T0 baseline probe on
   * a main clone.
   */
@@ -119,15 +130,71 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     client.refresh(index)
   }
 
+  // SCHEMA-2b fixtures: Table A (`s2b_t`) and the window oracle (`s2b_w`)
+  protected val aggTable = "s2b_t"
+  protected val windowTable = "s2b_w"
+
+  private val aggMapping: String =
+    """{"_meta": {"columns": {"c_des": {"data_type": "DATE"}}},
+      | "properties": {
+      |  "id": {"type": "keyword"}, "b": {"type": "boolean"},
+      |  "dc": {"type": "date", "format": "yyyy/MM/dd"},
+      |  "c_des": {"type": "date", "format": "epoch_second"},
+      |  "big": {"type": "long"}, "n": {"type": "integer"}, "k": {"type": "keyword"},
+      |  "x": {"type": "double"}, "r": {"type": "float"}
+      |}}""".stripMargin
+
+  /** Table A: `big` {42, 1706697000000}, `n` sum 15 max 10, `k` "10:30"; `a3` holds only a
+    * whole-day `c_des` (A-25).
+    */
+  private val aggDocs: Seq[(String, String)] = Seq(
+    "a1" -> """{"id":"a1","b":true,"dc":"2024/01/31","c_des":1706697000,"big":42,"n":5,"k":"10:30","x":1.5,"r":0.5}""",
+    "a2" -> """{"id":"a2","b":true,"dc":"2024/02/01","big":1706697000000,"n":10,"k":"10:30","x":2.5,"r":1.5}""",
+    "a3" -> """{"id":"a3","c_des":1706659200}"""
+  )
+
+  /** `pz` (a zone-name format, read as stored) exists from Elasticsearch 7 on: 6.8's Joda-Time
+    * cannot parse a zone name, so it would refuse the documents.
+    */
+  protected lazy val zoneNames: Boolean = major >= 7
+
+  // `pn` is the spec's `pi` (PI is a reserved word)
+  private def windowMapping: String =
+    """{"_meta": {"columns": {"pd": {"data_type": "DATE"}, "pe": {"data_type": "DATE"}}},
+      | "properties": {
+      |  "id": {"type": "keyword"}, "n": {"type": "integer"},
+      |  "pk1": {"type": "keyword"}, "pk2": {"type": "keyword"}, "pu": {"type": "keyword"},
+      |  "pt": {"type": "date"}, "pb": {"type": "boolean"},
+      |  "pd": {"type": "date", "format": "epoch_second"}, "pe": {"type": "date"},""".stripMargin +
+    (if (zoneNames) """ "pz": {"type": "date", "format": "yyyy-MM-dd HH:mm z"},""" else "") +
+    """ "pn": {"type": "integer"}}}"""
+
+  private def windowDocs: Seq[(String, String)] = {
+    def pz(text: String): String = if (zoneNames) s""","pz":"$text"""" else ""
+    Seq(
+      "w1" -> s"""{"id":"w1","n":1,"pk1":"10:30","pk2":"2024-01-31","pu":"x","pt":"2024-01-31T10:30:00.123456Z","pb":true,"pd":1706659200,"pe":"2024-01-31T00:00:00Z"${pz(
+        "2024-01-31 10:30 UTC"
+      )},"pn":7}""",
+      "w2" -> s"""{"id":"w2","n":2,"pk1":"10:30","pk2":"2024-01-31","pu":"x","pt":"2024-01-31T10:30:00.123Z","pb":true,"pd":1706697000,"pe":"2024-01-31T10:30:00Z"${pz(
+        "2024-01-31 11:30 CET"
+      )},"pn":7}""",
+      "w3" -> s"""{"id":"w3","n":4,"pk1":"11:00","pk2":"2024-02-01","pu":"y","pt":"2024-02-01T00:00:00Z","pb":false,"pd":1706709600,"pe":"2024-01-31T00:00:00Z"${pz(
+        "2024-02-01 00:00 UTC"
+      )},"pn":8}"""
+    )
+  }
+
   override def beforeAll(): Unit = {
     super.beforeAll()
-    Seq(table, q4, q4d).foreach(drop)
+    Seq(table, q4, q4d, aggTable, windowTable).foreach(drop)
     load(table, mapping, docs)
+    load(aggTable, aggMapping, aggDocs)
+    load(windowTable, windowMapping, windowDocs)
     ()
   }
 
   override def afterAll(): Unit = {
-    Seq(table, q4, q4d).foreach(drop)
+    Seq(table, q4, q4d, aggTable, windowTable).foreach(drop)
     super.afterAll()
   }
 
@@ -378,6 +445,243 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       s"SELECT id, n + 1 AS v FROM $table LIMIT 5",
       s"SELECT c_des AS d FROM $table LIMIT 5 UNION ALL SELECT ts AS d FROM $table LIMIT 5",
       s"SELECT id FROM $table WHERE n IN (SELECT n FROM $table WHERE id = 't3') LIMIT 5"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val described: ElasticResult[Option[ResultSchema]] = client.describe(sql)
+        described shouldBe ElasticSuccess(answer(runOk(sql))._2)
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-2b -- Table A (AC3)
+  // -------------------------------------------------------------------------------------------
+
+  private def byKey(sql: String, key: String): Map[Any, ListMap[String, Any]] =
+    rowsOf(sql).map(r => r.getOrElse(key, null) -> r).toMap
+
+  "Table A" should "give the aggregation rows' answers (AC3)" in {
+    // 20a
+    byKey(s"SELECT b, COUNT(*) AS c FROM $aggTable GROUP BY b", "b").keySet shouldBe
+    Set[Any](java.lang.Boolean.TRUE)
+    // 20b: a custom-format date key from its epoch millis, at Z
+    val dc = byKey(s"SELECT dc, COUNT(*) AS c FROM $aggTable GROUP BY dc", "dc").keySet
+    dc shouldBe Set[Any](utc(2024, 1, 31), utc(2024, 2, 1))
+    dc.foreach(v => v.asInstanceOf[ZonedDateTime].getZone shouldBe ZoneOffset.UTC)
+    // 20c: BIGINT always a Long
+    val big = byKey(s"SELECT big, COUNT(*) AS c FROM $aggTable GROUP BY big", "big").keySet
+    big shouldBe Set[Any](java.lang.Long.valueOf(42L), java.lang.Long.valueOf(1706697000000L))
+    big.map(_.getClass.getName) shouldBe Set("java.lang.Long")
+    // 20d (A-25): 10:30 keeps main's reading (a counted residual), the whole day is a LocalDate
+    val cDes = byKey(s"SELECT c_des, COUNT(*) AS c FROM $aggTable GROUP BY c_des", "c_des").keySet
+    cDes should contain(LocalDate.of(2024, 1, 31))
+    cDes.filterNot(_ == LocalDate.of(2024, 1, 31)).map(_.getClass.getName) shouldBe
+    Set("java.lang.String")
+    // 20e / 20f
+    byKey(s"SELECT n, COUNT(*) AS c FROM $aggTable GROUP BY n", "n").keySet shouldBe
+    Set[Any](Integer.valueOf(5), Integer.valueOf(10))
+    byKey(s"SELECT k, COUNT(*) AS c FROM $aggTable GROUP BY k", "k").keySet shouldBe Set[Any](
+      "10:30"
+    )
+    // 21a-21d
+    val metrics = one(
+      s"SELECT MAX(dc) AS d, SUM(n) AS s, MAX(n) AS m, COUNT(*) AS c, COUNT(n) AS cn FROM $aggTable"
+    )
+    metrics("d") shouldBe utc(2024, 2, 1)
+    metrics("d").asInstanceOf[ZonedDateTime].getZone shouldBe ZoneOffset.UTC
+    metrics("s") shouldBe java.lang.Long.valueOf(15L)
+    metrics("m") shouldBe Integer.valueOf(10)
+    metrics("c") shouldBe java.lang.Long.valueOf(3L)
+    metrics("cn") shouldBe java.lang.Long.valueOf(2L)
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-2b -- aggregation classes (AC2)
+  // -------------------------------------------------------------------------------------------
+
+  /** The aggregation routes (AC2, B13): one-shot `search`, `run` (`searchAsync`), the `scroll()`
+    * API (classic scroll), and the `_msearch` legs of a UNION ALL (aggregation legs never take the
+    * per-leg route).
+    */
+  protected def onAggregationRoute(
+    route: String,
+    sql: String
+  ): (Seq[ListMap[String, Any]], Option[ResultSchema]) =
+    route match {
+      case "search" =>
+        client.search(SelectStatement(sql))(NativeContext) match {
+          case ElasticSuccess(r)     => (r.results, r.schema)
+          case ElasticFailure(error) => fail(s"[$route] $sql: ${error.message}")
+        }
+      case "searchAsync" => answer(runOk(sql))
+      case "scroll" =>
+        val (schema, source) = client.scrollWithSchema(SelectStatement(sql))(system, NativeContext)
+        (Await.result(source.map(_._1).runWith(Sink.seq), 60.seconds), schema)
+      case "msearch" => answer(runOk(s"$sql UNION ALL $sql"))
+    }
+
+  protected val aggregationRoutes: Seq[String] = Seq("search", "searchAsync", "scroll", "msearch")
+
+  "Every aggregation route" should "answer every value of a typed column in D2's class (AC2)" in {
+    // residuals excluded by construction: no inexact DATE key, no ARRAY_AGG column (A-21), no
+    // statistics map
+    Seq(
+      s"SELECT b, COUNT(*) AS c FROM $aggTable GROUP BY b",
+      s"SELECT dc, COUNT(*) AS c, MAX(n) AS m FROM $aggTable GROUP BY dc",
+      s"SELECT big, SUM(n) AS s FROM $aggTable GROUP BY big",
+      s"SELECT n, MIN(x) AS mx, MAX(r) AS mr FROM $aggTable GROUP BY n",
+      s"SELECT k, COUNT(n) AS c, SUM(n) AS s, AVG(n) AS a, MAX(dc) AS d, MAX(b) AS mb FROM $aggTable GROUP BY k",
+      s"SELECT k, b, COUNT(*) AS c FROM $aggTable GROUP BY k, b",
+      s"SELECT COUNT(*) AS c, SUM(n) AS s, MAX(n) AS m, MIN(big) AS mb, MAX(dc) AS d FROM $aggTable",
+      s"SELECT COUNT(*) AS c, SUM(n) AS s, MIN(n) AS m FROM $aggTable WHERE id = 'none'",
+      s"SELECT k, SUM(n) AS s FROM $aggTable GROUP BY k HAVING SUM(n) > 1",
+      s"SELECT k, MAX(n) - MIN(n) AS d, SUM(n) + 1 AS s1 FROM $aggTable GROUP BY k",
+      // Case 4: hits beside global metrics
+      s"SELECT id, COUNT(*) OVER () AS c, MAX(pt) OVER () AS m FROM $windowTable LIMIT 5"
+    ).foreach { sql =>
+      aggregationRoutes.foreach { route =>
+        withClue(s"[$route] [$sql] ") {
+          val (rows, schema) = onAggregationRoute(route, sql)
+          rows should not be empty
+          classMisses(rows, schema.getOrElse(fail("no schema"))) shouldBe empty
+        }
+      }
+    }
+  }
+
+  it should "read top_hits elements canonically (ARRAY_AGG DISTINCT over a date)" in {
+    val row = one(s"SELECT ARRAY_AGG(DISTINCT dc) AS a FROM $aggTable")
+    row("a") match {
+      case s: Seq[_] =>
+        // a3 holds no `dc`: its element is NULL, as SQL keeps it -- DuckDB 1.5.5 `SELECT
+        // array_agg(DISTINCT x) FROM (VALUES (DATE '2024-01-31'), (NULL), (DATE '2024-02-01'),
+        // (DATE '2024-01-31')) t(x)` = [NULL, 2024-01-31, 2024-02-01]; 0.24.0 answers that NULL too
+        s.toSet shouldBe Set[Any](utc(2024, 1, 31), utc(2024, 2, 1), null)
+        s.filter(_ != null).foreach(_ shouldBe a[ZonedDateTime])
+      case other => fail(s"ARRAY_AGG answered $other")
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-2b -- the window oracle (AC4)
+  // -------------------------------------------------------------------------------------------
+
+  private def windowSql(p: String, selected: Boolean = true, head: String = "id, n"): String =
+    s"SELECT $head${if (selected) s", $p" else ""}, " +
+    s"ROW_NUMBER() OVER (PARTITION BY $p ORDER BY id) AS rn, " +
+    s"SUM(n) OVER (PARTITION BY $p) AS s, " +
+    s"FIRST_VALUE(n) OVER (PARTITION BY $p ORDER BY id) AS f FROM $windowTable"
+
+  /** The window routes: one-shot sync (LIMIT 100), async (`run`, LIMIT 100), scroll (no LIMIT). */
+  private def onWindowRoute(route: String, sql: String): Seq[ListMap[String, Any]] =
+    route match {
+      case "search" =>
+        client.search(SelectStatement(s"$sql LIMIT 100"))(NativeContext) match {
+          case ElasticSuccess(r)     => r.results
+          case ElasticFailure(error) => fail(s"[$route] $sql: ${error.message}")
+        }
+      case "searchAsync" => answer(runOk(s"$sql LIMIT 100"))._1
+      case "scroll"      => answer(runOk(sql))._1
+    }
+
+  /** The fixture's arithmetic: id -> (rn, s, f), `null` where the partition is not answered. */
+  private type Oracle = Map[String, (Any, Any, Any)]
+
+  private def answered(rn: Long, s: Long, f: Int): (Any, Any, Any) =
+    (java.lang.Long.valueOf(rn), java.lang.Long.valueOf(s), Integer.valueOf(f))
+
+  private val none: (Any, Any, Any) = (null, null, null)
+
+  // {w1, w2} share a partition and w3 has its own: n 1 + 2 = 3, and 4
+  private val pairs: Oracle =
+    Map("w1" -> answered(1, 3, 1), "w2" -> answered(2, 3, 1), "w3" -> answered(1, 4, 4))
+
+  private def oracles: Seq[(String, Oracle)] = Seq(
+    "pk1" -> pairs,
+    "pk2" -> pairs,
+    // w1 / w2 hold the same millisecond (w1's micros truncated as Elasticsearch indexes them)
+    "pt" -> pairs,
+    "pb" -> pairs,
+    "pn" -> pairs,
+    // only w1 is exactly a day (A-23): w2 (10:30) and w3 (14:00) answer as main does (NULL)
+    "pd" -> Map("w1" -> answered(1, 1, 1), "w2" -> none, "w3" -> none),
+    // w1 / w3 at 00:00 share the day; w2 at 10:30 pairs as on main (equal instants)
+    "pe" -> Map("w1" -> answered(1, 5, 1), "w2" -> answered(1, 2, 2), "w3" -> answered(2, 5, 1))
+  ) ++ (
+    // read as stored, partitioned by instant, as Elasticsearch buckets a date: w1 2024-01-31
+    // 10:30 UTC = w2 11:30 CET (CET = UTC+1 in January) = 1706697000000 ms, one bucket {w1, w2}
+    // (n 1 + 2); w3 2024-02-01 00:00 UTC alone (n 4)
+    if (zoneNames) Seq("pz" -> pairs) else Nil
+  )
+
+  private def assertOracle(route: String, sql: String, oracle: Oracle, columns: Seq[String]): Unit =
+    withClue(s"[$route] [$sql] ") {
+      val rows = onWindowRoute(route, sql)
+      rows.map(_.keys.toSeq).distinct shouldBe Seq(columns)
+      val byId = rows.map(r => r("id").toString -> r).toMap
+      byId.keySet shouldBe oracle.keySet
+      oracle.foreach { case (id, (rn, s, f)) =>
+        withClue(s"$id ") {
+          val row = byId(id)
+          (row("rn"), row("s"), row("f")) shouldBe ((rn, s, f))
+        }
+      }
+    }
+
+  "The window oracle" should "answer every partition column by the fixture's arithmetic (AC4)" in {
+    for {
+      (p, oracle) <- oracles
+      route       <- Seq("search", "searchAsync", "scroll")
+    } assertOracle(route, windowSql(p), oracle, Seq("id", "n", p, "rn", "s", "f"))
+  }
+
+  it should "answer an unselected partition column only where the whole document is fetched (B10)" in {
+    Seq("search", "searchAsync", "scroll").foreach { route =>
+      // its `_source` is not fetched: NULL, as on main (recorded, not fixed)
+      assertOracle(
+        route,
+        windowSql("pu", selected = false),
+        Map("w1" -> none, "w2" -> none, "w3" -> none),
+        Seq("id", "n", "rn", "s", "f")
+      )
+    }
+    Seq("search", "searchAsync", "scroll").foreach { route =>
+      // a computed column alone fetches the whole `_source`: answered, the carried column dropped
+      withClue(s"[$route] UPPER(id) ") {
+        val rows = onWindowRoute(route, windowSql("pu", selected = false, head = "UPPER(id) AS u"))
+        rows.map(_.keys.toSeq).distinct shouldBe Seq(Seq("u", "rn", "s", "f"))
+        rows.map(r => r("u").toString -> r("s")).toMap shouldBe Map(
+          "W1" -> java.lang.Long.valueOf(3L),
+          "W2" -> java.lang.Long.valueOf(3L),
+          "W3" -> java.lang.Long.valueOf(4L)
+        )
+      }
+      // `*` fetches it too
+      withClue(s"[$route] * ") {
+        val rows = onWindowRoute(route, windowSql("pu", selected = false, head = "*"))
+        rows.map(r => r("id").toString -> r("s")).toMap shouldBe Map(
+          "w1" -> java.lang.Long.valueOf(3L),
+          "w2" -> java.lang.Long.valueOf(3L),
+          "w3" -> java.lang.Long.valueOf(4L)
+        )
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-2b -- describe = run's schema (AC1)
+  // -------------------------------------------------------------------------------------------
+
+  "describe" should "answer run's schema over aggregate, top_hits, Case 4 and window statements (AC1)" in {
+    Seq(
+      s"SELECT b, COUNT(*) AS c FROM $aggTable GROUP BY b",
+      s"SELECT dc, SUM(n) AS s, MAX(n) AS m, MAX(dc) AS d FROM $aggTable GROUP BY dc",
+      s"SELECT COUNT(*) AS c, SUM(n) AS s, SUM(x) AS sx, SUM(r) AS sr FROM $aggTable",
+      s"SELECT k, MAX(n) - MIN(n) AS d, SUM(n) + 1 AS s1 FROM $aggTable GROUP BY k",
+      s"SELECT k, FIRST(dc) AS f FROM $aggTable GROUP BY k",
+      s"SELECT id, COUNT(*) OVER () AS c, MAX(pt) OVER () AS m FROM $windowTable LIMIT 5",
+      s"${windowSql("pb")} LIMIT 100",
+      windowSql("pt")
     ).foreach { sql =>
       withClue(s"[$sql] ") {
         val described: ElasticResult[Option[ResultSchema]] = client.describe(sql)

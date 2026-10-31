@@ -69,9 +69,12 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
       |  "n": {"type": "integer"}, "bin": {"type": "binary"}, "k": {"type": "keyword"}
       |}}""".stripMargin
 
+  // SCHEMA-2b: `z` sums two INTs of 2,000,000,000 -- beyond the INT range (A-20)
   private val docs: Seq[(String, String)] = Seq(
     "c1" -> """{"id":"c1","ts":"2024-01-31T10:30:00","c_des":1706697000,"c_c1":"2024/01/31","n":1,"bin":"aGVsbG8=","k":"a"}""",
-    "c2" -> """{"id":"c2","ts":"2024-02-01T00:00:00Z","c_des":1706745600,"c_c1":"2024/02/01","n":2,"k":"b"}"""
+    "c2" -> """{"id":"c2","ts":"2024-02-01T00:00:00Z","c_des":1706745600,"c_c1":"2024/02/01","n":2,"k":"b"}""",
+    "c3" -> """{"id":"c3","n":2000000000,"k":"z"}""",
+    "c4" -> """{"id":"c4","n":2000000000,"k":"z"}"""
   )
 
   override def beforeAll(): Unit = {
@@ -201,5 +204,82 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
       case other                        => fail(s"$other")
     }
     count.map(_.asInstanceOf[Number].longValue()) shouldBe Some(docs.size.toLong)
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-2b -- the consumers' forms over aggregation rows
+  // ---------------------------------------------------------------------------------------------
+
+  "Arrow" should "read aggregation rows through both match shapes, a SUM beyond INT a Long (A-20)" in {
+    val sql = s"SELECT k, SUM(n) AS s, COUNT(*) AS c, MAX(n) AS m FROM $table GROUP BY k"
+    val result = run(sql)
+    val (rows, schema) = rowsAndSchema(result)
+    extractRows(result).map(_.toMap) shouldBe rows.map(_.toMap)
+    val names = schema.getOrElse(fail("no schema")).names
+    names shouldBe Seq("k", "s", "c", "m")
+    rows.foreach(row => names.foreach(n => row.contains(n) shouldBe true))
+    val z = rows.find(_("k") == "z").getOrElse(fail(s"no group z in $rows"))
+    z("s") shouldBe java.lang.Long.valueOf(4000000000L)
+    z("c") shouldBe java.lang.Long.valueOf(2L)
+    z("m") shouldBe Integer.valueOf(2000000000)
+  }
+
+  it should "read an aggregation leg row through its leg readers unchanged (D12)" in {
+    val sql =
+      s"SELECT k, SUM(n) AS s FROM $table GROUP BY k UNION SELECT k, SUM(n) AS s FROM $table GROUP BY k"
+    val multiple = Parser(sql) match {
+      case Right(m: MultiSearch) =>
+        m.copy(requests = m.requests.map(r => r.update(Some(client.loadSchema(table).get))))
+      case other => fail(s"$other")
+    }
+    val legs = SetOperationValues
+      .legSchemas(multiple.requests, multiple.resolvedOperators, Some("8.18.3"))
+      .fold(refusal => fail(refusal), identity)
+    multiple.requests.zip(legs).foreach { case (leg, schema) =>
+      val rows = extractRows(run(leg.sql))
+      rows should not be empty
+      val names = leg.select.fieldsWithComputedAliases.map(_.outputName)
+      schema.foreach { s =>
+        rows.foreach { row =>
+          names.zip(s.slots).foreach {
+            case (name, Some(slot)) =>
+              val cell = row.getOrElse(name, null)
+              slot.read(cell) shouldBe cell
+            case _ =>
+          }
+        }
+      }
+    }
+  }
+
+  "The JDBC driver" should "read aggregation rows by its match" in {
+    val rows = run(s"SELECT k, SUM(n) AS s FROM $table GROUP BY k") match {
+      case QueryRows(rows, _, _)        => rows
+      case QueryStructured(response, _) => response.results
+      case QueryStream(stream, _, _) =>
+        Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+      case other => fail(s"$other")
+    }
+    rows.map(r => ValueCoercion.coerceToString(r("k")) -> r("s")).toMap shouldBe Map(
+      "a" -> java.lang.Long.valueOf(1L),
+      "b" -> java.lang.Long.valueOf(2L),
+      "z" -> java.lang.Long.valueOf(4000000000L)
+    )
+  }
+
+  "The extensions" should "fold a GROUP BY count(*) row as they do" in {
+    val counts = run(s"SELECT k, count(*) as nb FROM $table GROUP BY k") match {
+      case QueryRows(rows, _, _)        => rows
+      case QueryStructured(response, _) => response.results
+      case QueryStream(stream, _, _) =>
+        Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+      case other => fail(s"$other")
+    }
+    // `MaterializedViewExtension.extractCount` keeps an Int / a Long / a String
+    counts.map(_("nb")).foreach {
+      case _: java.lang.Long | _: java.lang.Integer | _: String =>
+      case other => fail(s"count(*) answered ${other.getClass.getName}")
+    }
+    counts.map(_("nb").asInstanceOf[Number].longValue()).sum shouldBe docs.size.toLong
   }
 }

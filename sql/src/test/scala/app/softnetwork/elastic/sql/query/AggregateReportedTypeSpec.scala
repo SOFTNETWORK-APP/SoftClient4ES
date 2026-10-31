@@ -108,32 +108,14 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
   /** DuckDB refuses the input: it is not part of the type rule, so the cell is left out. */
   private case object Refused extends Cell
 
-  private val wholeWidth: Map[SQLType, Int] =
-    Map(SQLTypes.TinyInt -> 1, SQLTypes.SmallInt -> 2, SQLTypes.Int -> 3, SQLTypes.BigInt -> 4)
-
-  /** A whole SUM stays whole, at least as wide as the summed column. */
-  private def wholeAtLeast(column: SQLType): SQLType => Unit = produced =>
-    withClue(s"a SUM of $column is $produced: ") {
-      wholeWidth.get(produced).exists(_ >= wholeWidth(column)) shouldBe true
-    }
-
-  /** A fractional SUM stays fractional. */
-  private val fractional: SQLType => Unit = produced =>
-    withClue(s"a SUM of a fractional column is $produced: ") {
-      Set[SQLType](SQLTypes.Real, SQLTypes.Double) should contain(produced)
-    }
-
-  // 🔴 Open: core keeps the summed column's width, DuckDB widens a whole sum to HUGEINT and a REAL
-  // sum to DOUBLE. Which one core follows is still to be decided, so no cell pins a SUM's width.
-  private val sumWidthIsOpen =
-    "the width of a SUM is an open decision (core keeps the column's, DuckDB widens)"
-
   private val count: Kind => Cell = _ => Pinned(SQLTypes.BigInt)
 
+  // SCHEMA-2b (A-20): a SUM widens as DuckDB widens it -- a whole sum is DuckDB's HUGEINT, of which
+  // core's BIGINT holds every whole sum Elasticsearch computes below 2^63, and a REAL sum a DOUBLE
   private val sum: Kind => Cell = k =>
     k.family match {
-      case WholeNumber      => Agreed(sumWidthIsOpen, wholeAtLeast(k.sqlType))
-      case FractionalNumber => Agreed(sumWidthIsOpen, fractional)
+      case WholeNumber      => Pinned(SQLTypes.BigInt)
+      case FractionalNumber => Pinned(SQLTypes.Double)
       // DuckDB counts the trues as a HUGEINT; core declares the DOUBLE Elasticsearch's sum answers
       case Bool => Agreed("SUM of a BOOLEAN: DuckDB HUGEINT, core DOUBLE")
       case _    => Refused
@@ -305,11 +287,8 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
   }
 
   private val windows: List[(String, Cell)] = List(
-    "SELECT COUNT(n) OVER (PARTITION BY g) AS a FROM t" -> Pinned(SQLTypes.BigInt),
-    "SELECT SUM(i8) OVER (PARTITION BY g) AS a FROM t" -> Agreed(
-      sumWidthIsOpen,
-      wholeAtLeast(SQLTypes.TinyInt)
-    ),
+    "SELECT COUNT(n) OVER (PARTITION BY g) AS a FROM t"                  -> Pinned(SQLTypes.BigInt),
+    "SELECT SUM(i8) OVER (PARTITION BY g) AS a FROM t"                   -> Pinned(SQLTypes.BigInt),
     "SELECT AVG(n) OVER (PARTITION BY g) AS a FROM t"                    -> Pinned(SQLTypes.Double),
     "SELECT MAX(n) OVER (PARTITION BY g) AS a FROM t"                    -> Pinned(SQLTypes.Int),
     "SELECT FIRST_VALUE(d) OVER (PARTITION BY g ORDER BY n) AS a FROM t" -> Pinned(SQLTypes.Date),
@@ -373,9 +352,10 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  // Not pinned to a width (open decision, see `sumWidthIsOpen`): what holds either way is that a
-  // whole SUM stays whole and at least as wide as its column, and a fractional SUM stays fractional.
-  it should "keep a SUM whole over a whole column and fractional over a fractional one" in {
+  // SCHEMA-2b (A-20): a whole SUM is a BIGINT whatever its column's width -- three INTs of
+  // 2,000,000,000 sum beyond an INT -- and a fractional SUM a DOUBLE, a REAL one included
+  // (Elasticsearch's `sum` is a double); a CTAS maps them `long` and `double`
+  it should "declare a SUM BIGINT over a whole column and DOUBLE over a fractional one" in {
     for (name <- List("i8", "i16", "n", "l", "r", "x"))
       assertCell(s"SELECT SUM($name) AS a FROM t", sum(kind(name)))
   }
