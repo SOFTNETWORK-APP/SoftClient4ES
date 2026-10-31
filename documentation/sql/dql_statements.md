@@ -1530,10 +1530,11 @@ ORDER BY COUNT(*) DESC;
 - Over **no matching document**, with no `GROUP BY`: a `MAX`, a `MIN` or an `AVG` is NULL, and so
   is a calculation that reads one; `COUNT(*)` is `0` (`COUNT(*) * 2` is `0`, and
   `HAVING COUNT(*) = 0` keeps the one row). A calculation over `COUNT(column)`,
-  `COUNT(DISTINCT column)` or `SUM(column)` is evaluated too — `COUNT(n) * 2` is `0`, `SUM(x) * 2`
-  is `0.0`, `SUM` over no value being `0.0` — on Elasticsearch 7.17 and later. Elasticsearch 6.8
-  cannot evaluate it (it refuses the `keep_values` gap policy), so such a calculation is NULL
-  there.
+  `COUNT(DISTINCT column)` or `SUM(column)` is evaluated too — `COUNT(n) * 2` is `0`, and `SUM`
+  over no value is zero, `0` over an integer column and `0.0` over a `REAL` or a `DOUBLE` one, so
+  `SUM(n) + 1` is `1` over an integer `n` (*since `0.25.0`*: `0.0` over every column) — on
+  Elasticsearch 7.17 and later. Elasticsearch 6.8 cannot evaluate it (it refuses the `keep_values`
+  gap policy), so such a calculation is NULL there.
 - `HAVING` may reference a `SELECT` aggregate by its alias (`COUNT(*) AS cnt ... HAVING cnt > 1`),
   including the alias of an arithmetic expression over aggregates (`... AS price_range ... HAVING
   price_range > 10`); `BETWEEN`, `IN` and `NOT` apply to aggregates as to columns.
