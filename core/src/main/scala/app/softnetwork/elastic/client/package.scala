@@ -619,12 +619,18 @@ package object client extends SerializationApi {
     * `doubleKeys` names the levels the statement sends as a numeric `terms` of doubles
     * (`SingleSearch.doubleKeyLevels`), whose non-finite keys a response writes as text
     * (`ElasticConversion.extractBucketKey`).
+    *
+    * `aggregates` (SCHEMA-2b, B1 / A-22) reads the statement's aggregation response by type: its
+    * bucket keys, metrics and top_hits values ([[AggregateReading]]). Built only by
+    * [[SchemaColumns.of]]; a context that does not carry it reads them as 0.24.0 did.
     */
   private[client] final case class SchemaColumns(
     reading: HitReading,
     doubleKeys: Set[String] = Set.empty
-  )(val elements: Map[String, Any => Any] = Map.empty)
-      extends ConversionContext {
+  )(
+    val elements: Map[String, Any => Any] = Map.empty,
+    val aggregates: AggregateReading = AggregateReading.Empty
+  ) extends ConversionContext {
     override private[client] def elementConversions: Map[String, Any => Any] = elements
   }
 
@@ -640,6 +646,15 @@ package object client extends SerializationApi {
       context: ConversionContext,
       version: => Option[String] = None
     ): ConversionContext =
+      read(single, context, version, _ => Set.empty)
+
+    /** [[of]], the keys of the levels `instants` names read as their buckets' instants. */
+    private def read(
+      single: SingleSearch,
+      context: ConversionContext,
+      version: => Option[String],
+      instants: SetOperationValues.DateReading => Set[String]
+    ): ConversionContext =
       context match {
         case NativeContext =>
           // ONE date reading per statement: each date format built once, for every reader
@@ -653,8 +668,74 @@ package object client extends SerializationApi {
               elements.keySet
             ),
             single.doubleKeyLevels
+          )(elements, AggregateReading.of(single, dates, instants(dates)))
+        case other => other
+      }
+
+    /** SCHEMA-2b (B7 a) -- `context` for the rows of `base`, the base query of the window-enriched
+      * statement `request` (`SearchApi.createBaseQuery`): [[of]] 's reading, with each plain
+      * PARTITION BY column of `request` read by its type and carried through the projection
+      * (`HitReading.of(carried)`), so the base row holds the partition key the window values are
+      * joined on -- a column paired by instant (`PartitionKeys.instantColumns`, the set
+      * [[ofWindowAggregation]] reads too) by its `epoch_millis` doc value too
+      * (`HitReading.of(instants)`, which the base request asks); `context` itself when it is not
+      * native.
+      */
+    def ofWindowBase(
+      request: SingleSearch,
+      base: SingleSearch,
+      context: ConversionContext,
+      version: => Option[String]
+    ): ConversionContext =
+      context match {
+        case NativeContext =>
+          val dates = SetOperationValues.DateReading(version)
+          val elements = ElementConversions.of(base, dates)
+          SchemaColumns(
+            HitReading.of(
+              base,
+              dates,
+              HitReading.Default,
+              elements.keySet,
+              request.windowFunctions.flatMap(_.buckets),
+              PartitionKeys.instantColumns(request, dates)
+            ),
+            base.doubleKeyLevels
           )(elements)
         case other => other
+      }
+
+    /** SCHEMA-2b -- `context` for the response of `aggRequest`, the window aggregation request of
+      * the window-enriched statement `request`: [[of]] 's reading, the key of each partition column
+      * paired by instant (`PartitionKeys.instantColumns`, the set [[ofWindowBase]] reads too) read
+      * as the bucket's instant; `context` itself when it is not native.
+      */
+    def ofWindowAggregation(
+      request: SingleSearch,
+      aggRequest: SingleSearch,
+      context: ConversionContext,
+      version: => Option[String]
+    ): ConversionContext =
+      read(aggRequest, context, version, dates => PartitionKeys.instantColumns(request, dates))
+
+    /** The partition columns' doc values the base query of a window statement read in `context`
+      * asks (`PartitionKeys.withInstantDocValues`), sorted; none elsewhere.
+      */
+    def instantFields(context: ConversionContext): Seq[String] =
+      context match {
+        case s: SchemaColumns if !s.reading.instants.isEmpty =>
+          s.reading.instants.keySet().toArray(new Array[String](0)).toSeq.sorted
+        case _ => Nil
+      }
+
+    /** The row keys of those doc values (`PartitionKeys.instantKey`): dropped by the final
+      * projection; none elsewhere.
+      */
+    def instantRowKeys(context: ConversionContext): Seq[String] =
+      context match {
+        case s: SchemaColumns if !s.reading.instants.isEmpty =>
+          s.reading.instants.values().toArray(new Array[String](0)).toSeq
+        case _ => Nil
       }
 
     /** The schema a response read in `context` carries (D13). */

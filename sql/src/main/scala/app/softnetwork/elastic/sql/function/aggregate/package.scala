@@ -56,9 +56,12 @@ package object aggregate {
       *
       *   - `COUNT` counts: BIGINT, whatever it counts.
       *   - `AVG` averages: DOUBLE.
-      *   - `SUM` adds: the summed column's numeric type (whole stays whole, fractional stays
-      *     fractional); a sum of anything else is the DOUBLE Elasticsearch answers -- a sum of
-      *     dates is not a date.
+      *   - `SUM` adds, as DuckDB widens a sum: a `BIGINT` over any whole column (`TINYINT` to
+      *     `BIGINT`) -- DuckDB's `HUGEINT`, of which a `BIGINT` holds every whole sum Elasticsearch
+      *     computes below 2^63 --, a `DOUBLE` over a `REAL` or a `DOUBLE`; a sum of anything else
+      *     is the DOUBLE Elasticsearch answers -- a sum of dates is not a date. The column's own
+      *     width overflowed (`SUM(n)` of three integers of 2,000,000,000 is not an `INT`), and a
+      *     `REAL` sum is computed by Elasticsearch as a double.
       *   - `MIN`, `MAX`, `FIRST_VALUE`, `LAST_VALUE` return one of the values they aggregate: the
       *     REPORTED type of the aggregated chain, so a DATE stays a DATE and `MAX(CAST(ts AS
       *     DATE))` is a DATE.
@@ -78,11 +81,9 @@ package object aggregate {
           case AVG | _: AvgAgg     => SQLTypes.Double
           case SUM | _: SumAgg =>
             aggregated match {
-              case whole @ (SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int |
-                  SQLTypes.BigInt) =>
-                whole
-              case fractional @ (SQLTypes.Real | SQLTypes.Double) => fractional
-              case _                                              => SQLTypes.Double
+              case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt =>
+                SQLTypes.BigInt
+              case _ => SQLTypes.Double
             }
           case MIN | MAX | _: MinAgg | _: MaxAgg | _: FirstValue | _: LastValue => aggregated
           case other =>

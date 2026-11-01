@@ -261,13 +261,19 @@ The JDBC driver supports the full SQL Gateway syntax:
 - **SHOW/DESCRIBE** — Tables, pipelines, watchers, enrich policies
 
 **Column types.** A plain query's `ResultSetMetaData` is inferred from the first non-null value of
-each column, not from the type the column declares: a `BIGINT` column holding small whole numbers
-is reported as `INTEGER`, and `getLong` still reads it as a long. A set operation's columns follow
-the declared types. On a JOIN result (*since arrow-extensions `0.3.4`*) the columns carry DuckDB's
-types, an integer getter throws `SQLException` on a value outside its type's range instead of
-answering a wrapped value, `getBigDecimal` of a `BIGINT` is exact, and a column the reader has no
-mapping for (a dictionary-encoded column, for instance) fails naming the column instead of reading
-`NULL`.
+each column. The engine answers every value it reads by type in the class of its column's declared
+type (*since engine `0.25.0`*), so the inferred type is the declared one: a `BIGINT` column is
+reported as `BIGINT`, its small values included, and `getObject` answers a `Long` on every row; a
+computed column the engine declares `DOUBLE` (`x * 2` over a `DOUBLE` column) is reported as
+`DOUBLE` and answers a `Double` on every row. A `TINYINT` or `SMALLINT` column, whose values are
+`Integer`s, is reported as `INTEGER`. A value the engine answers as stored keeps its own class (see
+[Value classes](gateway.md#value-classes)), and a column the engine types only as `NUMERIC` or `ANY`
+can carry whole and decimal numbers alike: there, the column is reported as the type of its first
+value. A set operation's columns follow the declared types. On a JOIN result (*since
+arrow-extensions `0.3.4`*) the columns carry DuckDB's types, an integer getter throws `SQLException`
+on a value outside its type's range instead of answering a wrapped value, `getBigDecimal` of a
+`BIGINT` is exact, and a column the reader has no mapping for (a dictionary-encoded column, for
+instance) fails naming the column instead of reading `NULL`.
 
 ---
 

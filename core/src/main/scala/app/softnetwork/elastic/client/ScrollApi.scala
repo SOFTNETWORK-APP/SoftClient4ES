@@ -824,6 +824,19 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       sql = Some(baseQuery.sql)
     )
 
+    // SCHEMA-2b (B7 a) -- the base rows read by their base query's plan, each PARTITION BY column
+    // carried by its type
+    val baseContext: ConversionContext =
+      SchemaColumns.ofWindowBase(
+        request,
+        baseQuery,
+        context,
+        this match {
+          case api: VersionApi => api.dateDialectVersion
+          case _               => None
+        }
+      )
+
     // Execute window aggregations first
     val windowCacheFuture: Future[ElasticResult[WindowCache]] =
       Future(executeWindowAggregations(request, aggRequest, aggQuery))
@@ -834,15 +847,19 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     // Determine if we should keep the document ID in the output
     val shouldKeepDocumentId = keepsDocumentId(outputFields)
 
-    // Built once per stream — never per row (#229)
-    val normalizeOutputRow = rowNormalizer(outputFields)
+    // Built once per stream — never per row (#229): the base side's partition keys (B8), its
+    // request -- every route's one, asking the doc values of the partition columns paired by
+    // instant -- and the final projection, which drops `_id` unless it is kept (B7 d)
+    val partitionKeys = PartitionKeys.of(request, baseContext)
+    val enrichedBaseQuery = windowBaseQuery(baseElasticQuery, baseContext)
+    val project = windowRowProjection(request, baseContext)
 
     Source
       .futureSource(
         windowCacheFuture.map {
           case ElasticSuccess(cache) =>
             scrollWithMetrics(
-              baseElasticQuery,
+              enrichedBaseQuery,
               baseQuery.fieldAliases,
               baseQuery.sqlAggregations,
               // The base rows must carry `_id`: the ordinal lookup below matches each row to
@@ -851,14 +868,12 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
               baseQuery.sorts.nonEmpty,
               extractOutputFieldNames(baseQuery),
               baseQuery.nestedHitsMappings
-            )
+            )(system, baseContext)
               .map { case (doc, metrics) =>
-                val enrichedDoc = enrichDocumentWithWindowValues(doc, cache, request)
-                var normalizedDoc = normalizeOutputRow(enrichedDoc)
-                if (!shouldKeepDocumentId) {
-                  normalizedDoc = normalizedDoc - ElasticConversion.DocumentIdField
-                }
-                (normalizedDoc, metrics)
+                (
+                  project(enrichDocumentWithWindowValues(doc, cache, request, partitionKeys)),
+                  metrics
+                )
               }
 
           case ElasticFailure(error) =>

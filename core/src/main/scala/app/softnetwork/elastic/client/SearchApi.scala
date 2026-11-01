@@ -2044,15 +2044,26 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
     logger.info(s"🪟 Detected ${request.windowFunctions.size} window functions")
 
+    // SCHEMA-2b (B7 a) -- the base rows read by their base query's plan, each PARTITION BY column
+    // carried by its type, so both sides of the join read a partition column by ONE rule
+    val baseQuery = createBaseQuery(request)
+    val baseContext =
+      SchemaColumns.ofWindowBase(request, baseQuery, context, setOperationVersion)
+
     for {
       // Step 1: Execute window aggregations
       windowCache <- executeWindowAggregations(request)
 
       // Step 2: Execute base query (without window functions)
-      baseResponse <- executeBaseQuery(request)
+      baseResponse <- executeBaseQuery(baseQuery)(timestamp, baseContext)
 
       // Step 3: Enrich results
-      enrichedResponse <- enrichResponseWithWindowValues(baseResponse, windowCache, request)
+      enrichedResponse <- enrichResponseWithWindowValues(
+        baseResponse,
+        windowCache,
+        request,
+        baseContext
+      )
 
     } yield enrichedResponse.copy(schema = statementSchema(request))
   }
@@ -2102,6 +2113,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       s"🔍 Executing window aggregation query:\n${aggRequest.sql}"
     )
 
+    // SCHEMA-2b (B7 b, c) -- the window aggregation's own reading: its partition keys, metrics and
+    // top_hits values by type; a partition column paired by instant by its bucket's instant
+    val aggContext =
+      SchemaColumns.ofWindowAggregation(request, aggRequest, context, setOperationVersion)
+
     for {
       // Use singleSearch to execute aggregation
       aggResponse <- singleSearch(
@@ -2110,10 +2126,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         aggRequest.sqlAggregations,
         extractOutputFieldNames(aggRequest),
         aggRequest.nestedHitsMappings
-      )
+      )(aggContext)
 
       // Parse aggregation results into cache
-      cache <- parseWindowAggregationsToCache(aggResponse, request)
+      cache <- parseWindowAggregationsToCache(aggResponse, request, aggContext)
 
     } yield cache
   }
@@ -2144,7 +2160,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     */
   private def parseWindowAggregationsToCache(
     response: ElasticResponse,
-    request: SingleSearch
+    request: SingleSearch,
+    context: ConversionContext
   ): ElasticResult[WindowCache] = {
 
     logger.info(
@@ -2167,8 +2184,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         }
       }
 
+    // SCHEMA-2b (B8) -- the cache side's partition keys, built once
+    val partitionKeys = PartitionKeys.of(request, context)
+
     val cache = aggRows.map { row =>
-      val partitionKey = extractPartitionKey(row, request)
+      val partitionKey = PartitionKey(partitionKeys.of(row))
       val windowValues = extractWindowValues(row, response.aggregations)
       val rankings = extractRankings(row, rankingWindows)
       partitionKey -> windowValues.copy(rankings = rankings)
@@ -2228,23 +2248,25 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   // BASE QUERY EXECUTION
   // ========================================================================
 
-  /** Execute base query without window functions
+  /** Execute the base query (the statement without its window functions, `createBaseQuery`), its
+    * rows read in `context` (`SchemaColumns.ofWindowBase`).
     */
   private def executeBaseQuery(
-    request: SingleSearch
+    baseQuery: SingleSearch
   )(implicit timestamp: Long, context: ConversionContext): ElasticResult[ElasticResponse] = {
-
-    val baseQuery = createBaseQuery(request)
 
     logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
 
     // Retain `_id` on the parsed rows: the enrichment step matches each base row to its
     // ranking ordinals by document id. The id is stripped after enrichment.
     singleSearchInternal(
-      ElasticQuery(
-        baseQuery,
-        collection.immutable.Seq(baseQuery.sources: _*),
-        sql = Some(baseQuery.sql)
+      windowBaseQuery(
+        ElasticQuery(
+          baseQuery,
+          collection.immutable.Seq(baseQuery.sources: _*),
+          sql = Some(baseQuery.sql)
+        ),
+        context
       ),
       baseQuery.fieldAliases,
       baseQuery.sqlAggregations,
@@ -2254,6 +2276,21 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     )
   }
 
+  /** The search of a window statement's base query (`base`, as translated), its rows read in
+    * `baseContext` (`SchemaColumns.ofWindowBase`): every route's ONE request (one-shot, async,
+    * scroll), which also asks the `epoch_millis` doc value of each partition column paired by
+    * instant (`PartitionKeys.instantColumns`); `base` itself when none is. Built once per
+    * statement.
+    */
+  private[client] def windowBaseQuery(
+    base: ElasticQuery,
+    baseContext: ConversionContext
+  ): ElasticQuery = {
+    val fields = SchemaColumns.instantFields(baseContext)
+    if (fields.isEmpty) base
+    else base.copy(query = PartitionKeys.withInstantDocValues(base.query, fields))
+  }
+
   /** Create base query by removing window functions from SELECT: `SingleSearch.withoutWindows`, the
     * ONE derivation the parse-time UNNEST rule judges too (`UnnestScope`), so the statement that is
     * judged and the statement that runs cannot diverge.
@@ -2261,30 +2298,6 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   protected def createBaseQuery(
     request: SingleSearch
   ): SingleSearch = request.withoutWindows
-
-  /** Extract partition key from aggregation row
-    */
-  private def extractPartitionKey(
-    row: ListMap[String, Any],
-    request: SingleSearch
-  ): PartitionKey = {
-
-    // Get all partition fields from window functions
-    val partitionFields = request.windowFunctions
-      .flatMap(_.partitionBy)
-      .map(_.aliasOrName)
-      .distinct
-
-    if (partitionFields.isEmpty) {
-      return PartitionKey(ListMap("__global__" -> true))
-    }
-
-    val keyValues = partitionFields.flatMap { field =>
-      row.get(field).map(field -> _)
-    }
-
-    PartitionKey(ListMap(keyValues: _*))
-  }
 
   /** Extract window function values from aggregation row
     */
@@ -2307,30 +2320,61 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private def enrichResponseWithWindowValues(
     response: ElasticResponse,
     cache: WindowCache,
-    request: SingleSearch
-  )(implicit context: ConversionContext): ElasticResult[ElasticResponse] = {
+    request: SingleSearch,
+    baseContext: ConversionContext
+  ): ElasticResult[ElasticResponse] = {
 
     val baseRows = response.results
-    val outputFields = extractOutputFieldNames(request)
 
-    // Determine ONCE whether the document ID stays in the output — never per row
-    val shouldKeepDocumentId = keepsDocumentId(outputFields)
+    // Built once for the whole result set — never per row (#229): the base side's partition keys
+    // (B8) and the final projection (B7 d)
+    val partitionKeys = PartitionKeys.of(request, baseContext)
+    val project = windowRowProjection(request, baseContext)
 
-    // Built once for the whole result set — never per row (#229)
-    val normalizeOutputRow = rowNormalizer(outputFields)
-
-    // Enrich each row with window values, then normalize field order. The base rows carry
-    // their `_id` (see singleSearchInternal with retainDocumentId = true) for the ordinal
-    // lookup — strip it on the way out unless the document-id column is enabled or `_id`
-    // is selected. Only window-enriched rows ever pay this per-row strip.
+    // Enrich each row with window values, then project it. The base rows carry their `_id` (see
+    // singleSearchInternal with retainDocumentId = true) for the ordinal lookup — the projection
+    // drops it unless the document-id column is enabled or `_id` is selected.
     val enrichedRows = baseRows.map { row =>
-      val enriched = enrichDocumentWithWindowValues(row, cache, request)
-      val normalized = normalizeOutputRow(enriched)
-      if (shouldKeepDocumentId) normalized
-      else normalized - ElasticConversion.DocumentIdField
+      project(enrichDocumentWithWindowValues(row, cache, request, partitionKeys))
     }
 
     ElasticResult.success(response.copy(results = enrichedRows))
+  }
+
+  /** SCHEMA-2b (B7 d) -- the final projection of a window-enriched statement's rows, built once per
+    * statement: under its schema, STRICT over the statement as written (D9), `_id` kept only where
+    * the statement keeps it, so the partition columns its base rows carried are dropped after the
+    * join, in the projection's one rebuild; elsewhere today's normalization, then `_id` stripped --
+    * and the doc values of the partition columns paired by instant, wherever the rows hold them.
+    */
+  private[client] def windowRowProjection(
+    request: SingleSearch,
+    baseContext: ConversionContext
+  ): ListMap[String, Any] => ListMap[String, Any] = {
+    val outputFields = extractOutputFieldNames(request)
+    val keepId = keepsDocumentId(outputFields)
+    baseContext match {
+      case s: SchemaColumns
+          if s.reading.schema.isDefined && outputFields.nonEmpty &&
+            !request.select.fieldsWithComputedAliases.exists(HitReading.isStar) =>
+        rowNormalizer(outputFields)(
+          SchemaColumns(
+            HitReading.projection(
+              if (keepId) Set(ElasticConversion.DocumentIdField) else Set.empty
+            )
+          )()
+        )
+      case _ =>
+        val normalize = rowNormalizer(outputFields)(baseContext)
+        val instants = SchemaColumns.instantRowKeys(baseContext)
+        if (instants.isEmpty) {
+          if (keepId) normalize
+          else row => normalize(row) - ElasticConversion.DocumentIdField
+        } else {
+          val internal = if (keepId) instants else ElasticConversion.DocumentIdField +: instants
+          row => normalize(row) -- internal
+        }
+    }
   }
 
   /** Enrich a single document with window values
@@ -2339,6 +2383,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     doc: ListMap[String, Any],
     cache: WindowCache,
     request: SingleSearch
+  ): ListMap[String, Any] =
+    enrichDocumentWithWindowValues(doc, cache, request, PartitionKeys.of(request, NativeContext))
+
+  /** [[enrichDocumentWithWindowValues]] over the base side's partition keys (SCHEMA-2b, B8), built
+    * once per statement.
+    */
+  private[client] def enrichDocumentWithWindowValues(
+    doc: ListMap[String, Any],
+    cache: WindowCache,
+    request: SingleSearch,
+    partitionKeys: PartitionKeys
   ): ListMap[String, Any] = {
 
     if (request.windowFunctions.isEmpty) {
@@ -2346,7 +2401,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }
 
     // Build partition key from document
-    val partitionKey = extractPartitionKey(doc, request)
+    val partitionKey = PartitionKey(partitionKeys.of(doc))
     val rowId = doc.get("_id").map(_.toString).getOrElse("")
 
     val rankingAliases: Seq[String] =

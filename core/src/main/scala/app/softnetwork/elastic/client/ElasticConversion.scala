@@ -437,6 +437,12 @@ trait ElasticConversion {
       case _                => Set.empty
     }
 
+    // SCHEMA-2b (B1) -- the statement's aggregation values by type; 0.24.0's reading elsewhere
+    val reading: AggregateReading = context match {
+      case s: SchemaColumns => s.aggregates
+      case _                => AggregateReading.Empty
+    }
+
     val rows = (hitsNode, aggsNode) match {
       case (Some(hits), None) if hits.nonEmpty =>
         // Case 1 : only hits
@@ -447,34 +453,36 @@ trait ElasticConversion {
       case (None, Some(aggs)) =>
         // Case 2 : only aggregations
         val ret =
-          parseAggregations(
+          parseAggregationsWith(
             aggs,
             rowInvariants,
             fieldAliases,
             aggregations,
             rootDocCount,
-            doubleKeys
+            doubleKeys,
+            reading
           )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.isEmpty =>
         // Case 3 : aggregations with no hits
         val ret =
-          parseAggregations(
+          parseAggregationsWith(
             aggs,
             rowInvariants,
             fieldAliases,
             aggregations,
             rootDocCount,
-            doubleKeys
+            doubleKeys,
+            reading
           )
         combineAggregationRows(ret)
 
       case (Some(hits), Some(aggs)) if hits.nonEmpty =>
         // Case 4 : Hits + global aggregations + top_hits aggregations
-        val globalMetrics = extractGlobalMetrics(aggs, aggregations)
+        val globalMetrics = extractGlobalMetricsWith(aggs, aggregations, reading)
         val allTopHits = extractAggregationValues(
-          extractAllTopHits(aggs, fieldAliases, aggregations),
+          extractAllTopHitsWith(aggs, fieldAliases, aggregations, reading),
           aggregations
         )
         val parsed = parseSimpleHits(hits, fieldAliases, fields, retainDocumentId)
@@ -819,13 +827,20 @@ trait ElasticConversion {
     reading: HitReading
   ): ListMap[String, Any] = {
     val entries = ListMap.newBuilder[String, Any]
+    val instants = reading.instants
     val it = node.properties().iterator()
     while (it.hasNext) {
       val e = it.next()
-      val reader = reading.scripted.get(e.getKey)
-      entries += fieldAliases.getOrElse(e.getKey, e.getKey) -> (
-        if (reader ne null) reader(e.getValue) else jsonNodeToAny(e.getValue, fieldAliases)
-      )
+      // SCHEMA-2b -- a partition column's `epoch_millis` doc value: its instant, under its own row
+      // key, beside the column's stored value (`PartitionKeys.instantColumns`)
+      val instantKey = if (instants.isEmpty) null else instants.get(e.getKey)
+      if (instantKey ne null) entries += instantKey -> PartitionKeys.instantOf(e.getValue)
+      else {
+        val reader = reading.scripted.get(e.getKey)
+        entries += fieldAliases.getOrElse(e.getKey, e.getKey) -> (
+          if (reader ne null) reader(e.getValue) else jsonNodeToAny(e.getValue, fieldAliases)
+        )
+      }
     }
     entries.result()
   }
@@ -1321,6 +1336,29 @@ trait ElasticConversion {
     aggregations: ListMap[String, ClientAggregation],
     docCount: Option[Long] = None,
     doubleKeys: Set[String] = Set.empty
+  ): Seq[ListMap[String, Any]] =
+    parseAggregationsWith(
+      aggsNode,
+      parentContext,
+      fieldAliases,
+      aggregations,
+      docCount,
+      doubleKeys,
+      AggregateReading.Empty
+    )
+
+  /** [[parseAggregations]], each bucket key, metric and top_hits value read by `reading`
+    * (SCHEMA-2b, B2-B5) -- the statement's [[AggregateReading]], or [[AggregateReading.Empty]] for
+    * 0.24.0's.
+    */
+  private[client] def parseAggregationsWith(
+    aggsNode: JsonNode,
+    parentContext: ListMap[String, Any],
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, ClientAggregation],
+    docCount: Option[Long],
+    doubleKeys: Set[String],
+    reading: AggregateReading
   ): Seq[ListMap[String, Any]] = {
 
     if (aggsNode.isMissingNode || !aggsNode.isObject) {
@@ -1402,19 +1440,20 @@ trait ElasticConversion {
         }
 
         // Recursively parse subaggregations
-        parseAggregations(
+        parseAggregationsWith(
           subAggsNode,
           currentContext,
           fieldAliases,
           aggregations,
           docCountOf(aggValue, "doc_count").orElse(docCount),
-          doubleKeys
+          doubleKeys,
+          reading
         )
       }
     } else if (bucketAggs.isEmpty) {
       // No buckets : it is a leaf aggregation (metrics or top_hits)
-      val metrics = extractMetrics(aggsNode, aggregations, docCount)
-      val allTopHits = extractAllTopHits(aggsNode, fieldAliases, aggregations)
+      val metrics = extractMetricsWith(aggsNode, aggregations, docCount, reading)
+      val allTopHits = extractAllTopHitsWith(aggsNode, fieldAliases, aggregations, reading)
 
       if (allTopHits.nonEmpty) {
         Seq(parentContext ++ metrics ++ allTopHits)
@@ -1426,12 +1465,21 @@ trait ElasticConversion {
     } else {
       // Handle each aggregation with buckets
       bucketAggs.flatMap { case (aggName, buckets, _) =>
+        // SCHEMA-2b (B2) -- the level's key reader, looked up once per level
+        val keyReader = reading.key(aggName)
+        val doubleLevel = doubleKeys.contains(aggName)
         buckets.flatMap { bucket =>
           val bucketDocCount = docCountOf(bucket, "doc_count")
-          val metrics = extractMetrics(bucket, aggregations, bucketDocCount)
-          val allTopHits = extractAllTopHits(bucket, fieldAliases, aggregations)
+          val metrics = extractMetricsWith(bucket, aggregations, bucketDocCount, reading)
+          val allTopHits = extractAllTopHitsWith(bucket, fieldAliases, aggregations, reading)
 
-          val bucketKey = extractBucketKey(bucket, doubleKeys.contains(aggName))
+          val bucketKey =
+            if (keyReader eq null) extractBucketKey(bucket, doubleLevel)
+            else
+              keyReader.read(bucket, doubleLevel) match {
+                case AggregateReading.Unread => extractBucketKey(bucket, doubleLevel)
+                case typed                   => typed
+              }
 
           // The synthetic whole-table bucket a `HAVING` with no `GROUP BY` is wrapped in is
           // TRANSPARENT: it exists only to give the `having_filter` bucket_selector a multi-bucket
@@ -1464,13 +1512,14 @@ trait ElasticConversion {
             /*subAggFields.foreach { entry =>
               subAggsNode.set(entry.getKey, entry.getValue) // FIXME
             }*/
-            parseAggregations(
+            parseAggregationsWith(
               subAggsNode,
               currentContext,
               fieldAliases,
               aggregations,
               bucketDocCount,
-              doubleKeys
+              doubleKeys,
+              reading
             )
           } else {
             Seq(currentContext)
@@ -1733,6 +1782,18 @@ trait ElasticConversion {
     aggsNode: JsonNode,
     aggregations: ListMap[String, ClientAggregation],
     docCount: Option[Long] = None
+  ): ListMap[String, Any] =
+    extractMetricsWith(aggsNode, aggregations, docCount, AggregateReading.Empty)
+
+  /** [[extractMetrics]], each metric's `value` read by `reading` (SCHEMA-2b, B3 / B4) AFTER the
+    * empty-input and no-value arms, which stay first: Elasticsearch 8's typed client has turned a
+    * `null` into `0.0` before any reader could see it.
+    */
+  private[client] def extractMetricsWith(
+    aggsNode: JsonNode,
+    aggregations: ListMap[String, ClientAggregation],
+    docCount: Option[Long],
+    reading: AggregateReading
   ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
@@ -1779,7 +1840,13 @@ trait ElasticConversion {
             .filter(_ => !emptyInput)
             .filter(!_.isNull)
             .map { metricValue =>
-              val numericValue = if (aggregations.get(name).exists(_.temporal)) {
+              // SCHEMA-2b (B3) -- by its column's type, exactly; a value the class does not hold
+              // unchanged is kept as stored, below
+              val reader = reading.metric(name)
+              val typed = if (reader eq null) AggregateReading.Unread else reader(metricValue)
+              val numericValue = if (AggregateReading.Unread != typed) {
+                typed
+              } else if (aggregations.get(name).exists(_.temporal)) {
                 temporalValueOf(value, metricValue)
               } else if (metricValue.isIntegralNumber) {
                 metricValue.asLong()
@@ -1899,6 +1966,18 @@ trait ElasticConversion {
     aggsNode: JsonNode,
     fieldAliases: ListMap[String, String],
     aggregations: ListMap[String, ClientAggregation]
+  ): ListMap[String, Any] =
+    extractAllTopHitsWith(aggsNode, fieldAliases, aggregations, AggregateReading.Empty)
+
+  /** [[extractAllTopHits]], each `FIRST_VALUE` / `LAST_VALUE` / `ARRAY_AGG` hit's aggregated column
+    * read by its column's reader (SCHEMA-2b, B5) -- before `distinct`, which then runs on canonical
+    * values. A ranking window's hits are read as today (internal, never projected).
+    */
+  private[client] def extractAllTopHitsWith(
+    aggsNode: JsonNode,
+    fieldAliases: ListMap[String, String],
+    aggregations: ListMap[String, ClientAggregation],
+    reading: AggregateReading
   ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
@@ -1944,8 +2023,12 @@ trait ElasticConversion {
           val isRanking = agg.exists(_.ranking)
           def optionalHitId(hit: JsonNode): ListMap[String, Any] =
             if (includeDocumentId) extractHitId(hit) else ListMap.empty
+          // SCHEMA-2b (B5) -- the aggregated column's reader, looked up once per top_hits
+          val byField = if (isRanking) null else reading.top(topHitName)
           val processedHits = hits.map { hit =>
-            val source = extractSource(hit, fieldAliases)
+            val source =
+              if (byField eq null) extractSource(hit, fieldAliases)
+              else readElement(hit, fieldAliases, byField)
             if (hasMultipleValues) {
               if (isRanking) {
                 val metadata = extractHitId(hit)
@@ -2011,6 +2094,18 @@ trait ElasticConversion {
   def extractGlobalMetrics(
     aggsNode: JsonNode,
     aggregations: ListMap[String, ClientAggregation]
+  ): ListMap[String, Any] =
+    extractGlobalMetricsWith(aggsNode, aggregations, AggregateReading.Empty)
+
+  /** [[extractGlobalMetrics]], each `value` read by `reading` (SCHEMA-2b, B6), looked up by the
+    * normalized name, under today's key. A temporal metric without `value_as_string` keeps today's
+    * reading: this path has no no-value arm, and Elasticsearch 8's missing `0.0` must not become
+    * the epoch.
+    */
+  private[client] def extractGlobalMetricsWith(
+    aggsNode: JsonNode,
+    aggregations: ListMap[String, ClientAggregation],
+    reading: AggregateReading
   ): ListMap[String, Any] = {
     aggsNode match {
       case n: ObjectNode =>
@@ -2028,14 +2123,25 @@ trait ElasticConversion {
           ) {
             val metricValue = value.get("value")
             if (!metricValue.isNull) {
-              val value = if (metricValue.isIntegralNumber) {
+              val reader = reading.metric(key)
+              val typed =
+                if (
+                  (reader eq null) || (aggregations.get(key).exists(_.temporal) && {
+                    val text = value.get("value_as_string")
+                    text == null || text.isNull
+                  })
+                ) AggregateReading.Unread
+                else reader(metricValue)
+              val read = if (AggregateReading.Unread != typed) {
+                typed
+              } else if (metricValue.isIntegralNumber) {
                 metricValue.asLong()
               } else if (metricValue.isFloatingPointNumber) {
                 metricValue.asDouble()
               } else {
                 metricValue.asText()
               }
-              entries ++= Seq(name -> value)
+              entries ++= Seq(name -> read)
             }
           }
         }

@@ -1132,8 +1132,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
               case Some(m: Map[_, _]) =>
                 // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
                 m.asInstanceOf[Map[String, Any]].get("birthDate") match {
+                  // SCHEMA-2b (B5): a top_hits value read by its column's type, a TIMESTAMP at Z
                   case Some(t: Temporal) =>
-                    t should ===(LocalDate.parse("1967-11-21"))
+                    t should ===(LocalDate.parse("1967-11-21").atStartOfDay(ZoneOffset.UTC))
                   case Some(d: Double) =>
                     d should ===(
                       LocalDate
@@ -1166,8 +1167,9 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
               case Some(m: Map[_, _]) =>
                 // Elasticsearch 7.14+ returns an object for first/last aggregations on date fields
                 m.asInstanceOf[Map[String, Any]].get("birthDate") match {
+                  // SCHEMA-2b (B5): a top_hits value read by its column's type, a TIMESTAMP at Z
                   case Some(t: Temporal) =>
-                    t should ===(LocalDate.parse("1969-05-09"))
+                    t should ===(LocalDate.parse("1969-05-09").atStartOfDay(ZoneOffset.UTC))
                   case Some(d: Double) =>
                     d should ===(
                       LocalDate
@@ -1216,7 +1218,8 @@ trait ElasticClientSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
           }
           .map(_.toString)
         birthDates.nonEmpty shouldBe true
-        birthDates should contain allOf ("1999-05-09", "2002-05-09") // LocalDate instances sorted ASC
+        // SCHEMA-2b (B5): each element read by its column's type -- a TIMESTAMP at Z, sorted ASC
+        birthDates should contain allOf ("1999-05-09T00:00Z", "2002-05-09T00:00Z")
       case Failure(f) => fail(f.getMessage)
     }
   }

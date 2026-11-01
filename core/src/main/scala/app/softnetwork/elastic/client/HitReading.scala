@@ -18,6 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query.{
+  Bucket,
   Field,
   GroupedRowOrder,
   MultiSearch,
@@ -60,7 +61,11 @@ private[client] object MultiValued {
   *     NULL;
   *   - `strict` / `keep`: the projection drops every undeclared key, but `keep` (D9);
   *   - `star`: a bare `SELECT *` -- unmapped top-level keys dropped, a flat dotted key folded into
-  *     its mapped parent (A-3).
+  *     its mapped parent (A-3);
+  *   - `instants`: SCHEMA-2b -- on the base side of a window statement, each partition column
+  *     paired by instant (`PartitionKeys.instantColumns`): its hit `fields` entry (the
+  *     `epoch_millis` doc value the base query asks) by the row key it is read under
+  *     (`PartitionKeys.instantKey`), beside the column's stored `_source` value.
   *
   * A key the plan does not hold is read as it always was (`ElasticConversion.jsonNodeToAny`). Built
   * ONCE per statement: per row, only the readers run.
@@ -74,7 +79,8 @@ private[client] final class HitReading(
   val strict: Boolean,
   val keep: Set[String],
   private[client] val star: Boolean,
-  private[client] val flatReaders: String => JsonNode => Any
+  private[client] val flatReaders: String => JsonNode => Any,
+  private[client] val instants: java.util.HashMap[String, String]
 ) {
 
   /** Whether a hit's `_ignored` must be read (D8): the plan reads some `_source` key as a date. */
@@ -104,6 +110,10 @@ private[client] object HitReading {
   private[client] def isStar(field: Field): Boolean =
     field.identifier.identifierName == "*" && field.identifier.functions.isEmpty
 
+  /** A computed SELECT item: read from the hit's `fields` by its output name (`scripted`). */
+  private[client] def isComputed(field: Field): Boolean =
+    field.identifier.functions.nonEmpty || field.isScriptField
+
   /** Thrown by a scalar reader under [[MultiValued.Fail]]; the hit loop names the document. */
   private[client] final class MultiValuedCell(val column: String, val table: String)
       extends RuntimeException(column, null, false, false)
@@ -114,11 +124,43 @@ private[client] object HitReading {
     s"declared as one value: declare it a list with ALTER TABLE ${cell.table} ALTER COLUMN " +
     s"${cell.column} TYPE ARRAY<...>"
 
+  /** A plan that reads nothing and projects STRICTLY, keeping `keep` (D9): the final projection of
+    * a window-enriched statement (SCHEMA-2b, B7 d), whose rows were read by their base query's
+    * plan.
+    */
+  private[client] def projection(keep: Set[String]): HitReading =
+    new HitReading(
+      None,
+      new java.util.HashMap[String, JsonNode => Any](),
+      new java.util.HashMap[String, JsonNode => Any](),
+      Map.empty,
+      new java.util.HashMap[String, JsonNode => Any](),
+      strict = true,
+      keep,
+      star = false,
+      _ => null,
+      new java.util.HashMap[String, String]()
+    )
+
+  /** @param carried
+    *   SCHEMA-2b (B7 a) -- the PARTITION BY levels of the window-enriched statement whose base
+    *   query `single` is: each plain column of them is read by its type -- a `DATE` / `TIME` one
+    *   only where it is exactly a day / a time of day ([[Readers.exact]], A-23) -- and kept by the
+    *   strict projection, so the base row carries the partition key the window values are joined
+    *   on.
+    * @param instants
+    *   the carried columns paired by instant (`PartitionKeys.instantColumns`, the statement's one
+    *   decision, taken as it is): each one's hit `fields` entry -- its `epoch_millis` doc value --
+    *   read under `PartitionKeys.instantKey` and kept by the strict projection; its `_source` value
+    *   stays as stored.
+    */
   def of(
     single: SingleSearch,
     dates: SetOperationValues.DateReading,
     multiValued: MultiValued = Default,
-    elements: Set[String] = Set.empty
+    elements: Set[String] = Set.empty,
+    carried: Seq[Bucket] = Nil,
+    instants: Set[String] = Set.empty
   ): HitReading = {
     // each item's and each mapped column's type, computed ONCE per statement: the schema and the
     // readers read the same value; so do the date formats and routes, built once by `dates`
@@ -185,7 +227,7 @@ private[client] object HitReading {
       scala.collection.mutable.LinkedHashMap.empty[String, ListBuffer[(String, SetOperationType)]]
     fields.filterNot(isStar).foreach { f =>
       val id = f.identifier
-      if (id.functions.nonEmpty || f.isScriptField) {
+      if (isComputed(f)) {
         val name = f.outputName
         val t = typeOf(f)
         if (name.nonEmpty && !scripted.containsKey(name)) {
@@ -216,6 +258,30 @@ private[client] object HitReading {
     paths.foreach { case (parent, under) =>
       if (!source.containsKey(parent)) source.put(parent, readers.paths(parent, under.toList))
     }
+    // SCHEMA-2b (B7 a) -- each plain PARTITION BY column of the window statement: read by the type
+    // its key is read with (`MultiSearch.bucketType`), a DATE / TIME one exactly (A-23), and kept
+    val carriedKeys: Seq[String] =
+      if (single.schema.isEmpty) Nil
+      else
+        carried.flatMap { b =>
+          val id = b.identifier
+          val name = id.name
+          if (id.nested || id.functions.nonEmpty || name.isEmpty || name.indexOf('.') >= 0) None
+          else {
+            val t = MultiSearch.bucketType(b)
+            t.sqlType match {
+              case SQLTypes.Date | SQLTypes.Time => source.put(name, readers.exact(name, t))
+              case _ => if (!source.containsKey(name)) put(name, t, keepUnder(name))
+            }
+            Some(name)
+          }
+        }
+    // SCHEMA-2b -- each carried column paired by instant: its `epoch_millis` doc value, under its
+    // own row key (never over the stored value). `instants` is the statement's ONE decision
+    // (`PartitionKeys.instantColumns`), the window aggregation's too: taken as it is
+    val instantKeys = new java.util.HashMap[String, String]()
+    if (single.schema.isDefined)
+      instants.foreach(name => instantKeys.put(name, PartitionKeys.instantKey(name)))
     // UNNEST element fields, by inner hit; a column with an element conversion keeps its raw value
     val inner: Map[String, java.util.HashMap[String, JsonNode => Any]] =
       if (single.schema.isEmpty) Map.empty
@@ -239,7 +305,8 @@ private[client] object HitReading {
     // `_id` when it is kept, and every inner hit the row explosion reads AFTER the scroll's
     // normalizer -- an UNNEST its WHERE filters per element included (`UnnestScope.rowExplosion`)
     val keep: Set[String] = Set(ElasticConversion.DocumentIdField) ++
-      single.nestedHitsMappings.keySet ++ UnnestScope.rowExplosion(single).keySet
+      single.nestedHitsMappings.keySet ++ UnnestScope.rowExplosion(single).keySet ++ carriedKeys ++
+      instantKeys.values().toArray(new Array[String](0))
     // a flat dotted key folded under `*` (rare): its reader built once per path, on first use
     val flatCache = new java.util.concurrent.ConcurrentHashMap[String, JsonNode => Any]()
     val flatReaders: String => JsonNode => Any = path => {
@@ -263,7 +330,8 @@ private[client] object HitReading {
       strict,
       keep,
       star && schema.isDefined && fields.forall(isStar),
-      flatReaders
+      flatReaders,
+      instantKeys
     )
   }
 
@@ -328,6 +396,50 @@ private[client] object HitReading {
             )
           )
       }
+
+    /** SCHEMA-2b (A-23) -- a `DATE` / `TIME` column read EXACTLY, as the key of its aggregation
+      * level is (`AggregateReading`): a value its format reads to an instant that is exactly a UTC
+      * day (`DATE`) or a time of day of 1970-01-01 (`TIME`) is that day / time; any other value as
+      * read (D6, `Unreadable.KeepAsStored`), so it pairs with a key read as it always was. Any
+      * other type -- and a date read as stored, or with no format -- is [[column]] 's reader.
+      */
+    def exact(name: String, t: SetOperationType): JsonNode => Any =
+      (t.sqlType, t.format) match {
+        case (kind @ (SQLTypes.Date | SQLTypes.Time), Some(spec))
+            if DateRoute.of(kind, t.format, dates) == DateRoute.Typed =>
+          val instantOf = instants(spec)
+          scalar(
+            name,
+            node => {
+              val instant = instantOf(node)
+              val value = if (instant eq null) null else AggregateReading.exactly(kind, instant)
+              if (value != null) value else asRead(node)
+            }
+          )
+        case _ => column(name, t, Set.empty)._1
+      }
+
+    /** The instant a date field's value is under its mapping format `spec` -- the format
+      * [[byFormat]] reads it with --, `null` where the format does not read it.
+      */
+    private def instants(spec: String): JsonNode => Instant = {
+      val format = dates.format(spec).get
+      val fast = spec == app.softnetwork.elastic.sql.query.TemporalLiterals.DefaultDateFormat
+      node => {
+        val z = if (fast && node.isTextual) DefaultDates.read(node.asText()) else null
+        if (z ne null) z.toInstant
+        else {
+          val outcome =
+            if (node.isTextual) format.read(node.asText())
+            else if (node.isNumber) format.readValue(node.numberValue())
+            else MappedDateFormat.Rejected
+          outcome match {
+            case MappedDateFormat.Read(instant) => instant
+            case _                              => null
+          }
+        }
+      }
+    }
 
     /** A computed column's `fields` entry: Elasticsearch's array unwrapped (#418 part 1). */
     def scripted(name: String, t: SetOperationType): JsonNode => Any =

@@ -37,7 +37,9 @@ Aggregate functions perform calculations on sets of rows and return a single res
 **The type of an aggregate column** (*since `0.24.0`*) is the type the aggregate produces — what
 `DESCRIBE`, a `CREATE TABLE … AS SELECT` mapping, a materialized view and the JDBC / Arrow metadata
 declare: `COUNT` is `BIGINT`; `AVG`, the `STDDEV` / `VARIANCE` family and the percentiles are
-`DOUBLE`; `SUM` keeps the summed column's numeric type; `MIN`, `MAX`, `FIRST_VALUE` and `LAST_VALUE`
+`DOUBLE`; `SUM` is `BIGINT` over an integer column of any width and `DOUBLE` over a `REAL` or a
+`DOUBLE` column (*since `0.25.0`*: it kept the summed column's type, which overflowed); `MIN`, `MAX`,
+`FIRST_VALUE` and `LAST_VALUE`
 keep the type of the expression they aggregate (`MAX(YEAR(d))` is `BIGINT`, `MAX(CAST(ts AS DATE))`
 a `DATE`). The values are unchanged. `MIN` / `MAX` over `ROUND(x, n)` or a `DATEDIFF` report
 `NUMERIC`, which a `CREATE TABLE … AS SELECT` cannot map: it fails at index creation
@@ -220,13 +222,16 @@ SUM(expr) OVER (PARTITION BY partition_expr, ...) --(since v0.14.0)
   ignored.
 
 **Output:**
-- `NUMERIC` - Sum of values (same type as input, or promoted)
+- `BIGINT` over an integer column (`TINYINT` to `BIGINT`), `DOUBLE` over a `REAL` or a `DOUBLE`
+  column (*since `0.25.0`*). A sum beyond the `BIGINT` range, or a fractional sum over an integer
+  expression, is answered as the double Elasticsearch computed.
 
 **NULL Handling:**
 - NULL values are ignored
-- If all values are NULL, or over no row, returns `0.0`: the engine keeps Elasticsearch's own sum
-  of no value, where ANSI SQL answers NULL. `AVG`, `MIN`, `MAX`, the `STDDEV` / `VARIANCE` family
-  and the percentiles answer NULL there, and `COUNT` answers `0`.
+- If all values are NULL, or over no row, returns zero — `0` (a `BIGINT`) over an integer column,
+  `0.0` over a `REAL` or a `DOUBLE` one (*since `0.25.0`*: `0.0` over every column): the engine
+  keeps Elasticsearch's own sum of no value, where ANSI SQL answers NULL. `AVG`, `MIN`, `MAX`, the
+  `STDDEV` / `VARIANCE` family and the percentiles answer NULL there, and `COUNT` answers `0`.
 
 **Examples:**
 

@@ -88,14 +88,22 @@ SELECT CAST(MAX(salary) AS BIGINT) AS m FROM emp GROUP BY dept;
 
 All four spellings behave the same way — `::`, `CAST`, `TRY_CAST` and `CONVERT`.
 
-Cast the aggregate's **input** instead. This is equivalent for every aggregate whose result type
-follows its argument (`MIN`, `MAX`, `SUM`, `AVG`, the `STDDEV` / `VARIANCE` family, the percentiles):
+Cast the aggregate's **input** instead. This is equivalent for `MIN` and `MAX`, whose result type
+follows their argument:
 
 ```sql
 -- Both supported
 SELECT MAX(salary::BIGINT) AS m FROM emp GROUP BY dept;
 SELECT MAX(CAST(salary AS BIGINT)) AS m FROM emp GROUP BY dept;
 ```
+
+`COUNT`, `SUM`, `AVG`, the `STDDEV` / `VARIANCE` family and the percentiles produce a type of their
+own (see [Aggregate functions](functions_aggregate.md#overview)): `COUNT` is a `BIGINT`; `AVG`, the
+`STDDEV` / `VARIANCE` family and the percentiles are `DOUBLE`, whatever their input; `SUM` is a
+`BIGINT` over an input of any whole-number type and a `DOUBLE` over a `REAL` or a `DOUBLE` (*since
+`0.25.0`*: it kept the summed column's type, which overflowed), so `SUM(CAST(x AS INT))` is a
+`BIGINT`, not an `INT`. For these, casting the input converts each value before it is aggregated,
+which is not the same as converting the result.
 
 Casting is unrestricted everywhere an aggregate is not involved — the SELECT list, `WHERE`,
 `ORDER BY`, and inside another function:

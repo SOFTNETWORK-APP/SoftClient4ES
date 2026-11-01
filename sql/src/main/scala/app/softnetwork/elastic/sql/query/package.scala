@@ -4080,8 +4080,10 @@ package object query {
       * `DATE` although Painless reads a `TIMESTAMP`), with DuckDB's reading of a whole number
       * literal -- an `INTEGER` when it fits one, as `SELECT 1` is.
       */
-    private def declaredOperandType(field: Field): SQLType = {
-      val id = field.identifier
+    private def declaredOperandType(field: Field): SQLType =
+      declaredOperandType(field.identifier)
+
+    private def declaredOperandType(id: Identifier): SQLType = {
       if (id.name.isEmpty)
         id.functions match {
           case (l: LongValue) :: Nil if l.value.isValidInt => SQLTypes.Int
@@ -4141,14 +4143,26 @@ package object query {
       def at(t: SetOperationType): Operand = copy(valueType = t)
     }
 
-    private def operandOf(branch: Int, field: Field): Operand = {
-      val declaredType = declaredOperandType(field)
-      val column = field.identifier match {
-        case id: GenericIdentifier if id.functions.isEmpty => id.col
-        case _                                             => None
+    private def operandOf(branch: Int, field: Field): Operand =
+      Operand(branch, field, declaredOperandType(field), identifierType(field.identifier))
+
+    /** The type of ONE identifier as a set operation types a projection item of it: its declared
+      * type ([[declaredOperandType]]) at every depth, a bare column's date format included
+      * ([[positionType]]).
+      */
+    private def identifierType(id: Identifier): SetOperationType = {
+      val column = id match {
+        case g: GenericIdentifier if g.functions.isEmpty => g.col
+        case _                                           => None
       }
-      Operand(branch, field, declaredType, positionType(declaredType, column))
+      positionType(declaredOperandType(id), column)
     }
+
+    /** SCHEMA-2b (B2) -- the type of the key of the aggregation level `b` (a GROUP BY level, a
+      * window's PARTITION BY): the type a projection item of its identifier has ([[fieldType]]), so
+      * the key of a selected level and its column are typed by ONE rule (#292).
+      */
+    private[elastic] def bucketType(b: Bucket): SetOperationType = identifierType(b.identifier)
 
     /** SCHEMA-2 (D1) -- the type of ONE projection item, as a set operation types its position
       * ([[positionType]]): the result schema of a statement and the typing of its set-operation
