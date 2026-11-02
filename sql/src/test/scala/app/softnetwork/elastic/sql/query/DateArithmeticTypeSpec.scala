@@ -354,12 +354,14 @@ class DateArithmeticTypeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "INTERVAL arithmetic and DATEDIFF" should "keep the types they had" in {
+  // INTERVAL arithmetic keeps its types; DATEDIFF / TIMESTAMPDIFF report BIGINT (SCHEMA-5 D5), the
+  // type DuckDB 1.5.5 answers for `date_diff` over a DATE and a TIMESTAMP (T0-5, RUN 2026-11-02)
+  "INTERVAL arithmetic and DATEDIFF" should "keep the types they had, DATEDIFF a BIGINT" in {
     Seq(
       "d - INTERVAL 1 DAY"        -> SQLTypes.Timestamp,
       "ts + INTERVAL 2 HOUR"      -> SQLTypes.Timestamp,
-      "DATEDIFF(d, d)"            -> SQLTypes.Numeric,
-      "TIMESTAMPDIFF(DAY, d, ts)" -> SQLTypes.Numeric
+      "DATEDIFF(d, d)"            -> SQLTypes.BigInt,
+      "TIMESTAMPDIFF(DAY, d, ts)" -> SQLTypes.BigInt
     ).foreach { case (expression, t) =>
       Parser(s"SELECT $expression AS x FROM ev") match {
         case Right(ss: SingleSearch) =>

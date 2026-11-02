@@ -331,8 +331,9 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
 
   // MIN / MAX return one of the values they aggregate, so they report what their chain reports.
   // This is an equality and pins no value: the chain's own type is the chain's question. A date
-  // part reports BIGINT, as DuckDB answers (pinned in `DatePartReportedTypeSpec`); ROUND and
-  // DATEDIFF report NUMERIC in core, where DuckDB answers DOUBLE and BIGINT, pre-existing.
+  // part reports BIGINT, as DuckDB answers (pinned in `DatePartReportedTypeSpec`); ROUND reports
+  // its operand's type and DATEDIFF a BIGINT, as DuckDB answers (pinned in
+  // `NumericWidthReportedTypeSpec`).
   it should "declare MIN / MAX over YEAR, MONTH, EXTRACT, ROUND or DATEDIFF as that function" in {
     for (
       (aggregate, chain) <- List(

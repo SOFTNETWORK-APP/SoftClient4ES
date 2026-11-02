@@ -208,110 +208,104 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
     )
   }
 
-  /** A quoted number is read as a VALUE of the other operand's type, as PostgreSQL's input for that
-    * type reads it (the lead's ruling of 2026-10-05). Beside a whole-number type, `'1.5'` and
-    * `'1.0'` are no integer -- PostgreSQL 16: `invalid input syntax for type integer`, for a
-    * comparison and for `n + '1.5'` alike -- so the literal stays text and is refused by name at
-    * every site that reads one; beside DOUBLE, REAL or DECIMAL (a DOUBLE here) any number is one.
+  /** Every rendering of a statement: its WHERE, its group filter and its script fields. */
+  private def renderedOf(sql: String): String = {
+    val search = parsed(sql).update(Some(schema))
+    val ctx = PainlessContext(context = PainlessContextType.Query)
+    val where = search.where.flatMap(_.criteria).map(_.painless(Some(ctx))).getOrElse("")
+    val having = search.having.flatMap(_.criteria).map(_.painless(None)).getOrElse("")
+    val fields = search.scriptFields.filterNot(_.isAggregation).map(_.painless(Some(ctx)))
+    (Seq(ctx.toString, where, having) ++ fields).mkString(" ")
+  }
+
+  /** A quoted number beside a whole-number operand is read as DuckDB 1.5.5 casts the string to that
+    * type (the lead's ruling R-54 of 2026-11-02, which supersedes the PostgreSQL integer input of
+    * 2026-10-05 for the whole types): the whole number it rounds to, half away from zero, at every
+    * site that reads one -- T0-5: `'1.5'::INTEGER` = 2, `'1.0'` = 1, `'1e2'` = 100, `'4.5'` = 5
+    * (half away from zero), `n > '1.5'` = `n > 2`, `IN ('1.5','3')` = `IN (2, 3)`, `5::INTEGER -
+    * '0.4'`
+    * = 5. Past BIGINT after rounding it is a value of no integer type and stays text, refused by
+    * name as before. DuckDB's own refusals are not copied: its binder error on `+` / `*` (`n +
+    * '1.5'` is `n + 2` here). Beside DOUBLE, REAL or DECIMAL (a DOUBLE here) any number is one.
     */
   "a quoted number beside a whole-number operand" should
-  "be a whole number, refused by name otherwise, and any number beside a fractional one" in {
+  "be the whole number it rounds to, refused past BIGINT, and any number beside a fractional one" in {
     forAll(
       Table(
-        ("site", "sql", "refusal"),
+        ("site", "sql", "rendered"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = '1.5'", "== 2L"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = '1.0'", "== 1L"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = '-2.5'", "== -3L"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = '-0.5'", "== -1L"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = '1.4'", "== 1L"),
+        ("comparison (INT)", "SELECT id FROM t WHERE NULLIF(n, 0) = ' 2.5 '", "== 3L"),
+        ("comparison (BIGINT)", "SELECT id FROM t WHERE COALESCE(big, 0) = '1.5'", "== 2L"),
+        ("comparison (BIGINT)", "SELECT id FROM t WHERE COALESCE(big, 0) = '1.0'", "== 1L"),
         (
-          "comparison (INT)",
-          "SELECT id FROM t WHERE NULLIF(n, 0) = '1.5'",
-          "'INT' is not compatible with 'VARCHAR'"
-        ),
-        (
-          "comparison (INT)",
-          "SELECT id FROM t WHERE NULLIF(n, 0) = '1.0'",
-          "'INT' is not compatible with 'VARCHAR'"
-        ),
-        (
-          "comparison (BIGINT)",
-          "SELECT id FROM t WHERE COALESCE(big, 0) = '1.5'",
-          "'BIGINT' is not compatible with 'VARCHAR'"
-        ),
-        (
-          "comparison (BIGINT)",
-          "SELECT id FROM t WHERE COALESCE(big, 0) = '1.0'",
-          "'BIGINT' is not compatible with 'VARCHAR'"
+          "BIGINT max",
+          "SELECT id FROM t WHERE COALESCE(big, 0) = '9223372036854775807.4'",
+          "== 9223372036854775807L"
         ),
         (
           "CASE condition",
           "SELECT id, CASE WHEN COALESCE(n, 0) = '1.5' THEN 1 ELSE 0 END AS v FROM t",
-          "'BIGINT' is not compatible with 'VARCHAR'"
+          "== 2L"
+        ),
+        ("an exponent", "SELECT id FROM t WHERE NULLIF(n, 0) = '1e3'", "== 1000L"),
+        ("an exponent", "SELECT id FROM t WHERE NULLIF(n, 0) = '1.45e1'", "== 15L"),
+        ("IN", "SELECT id FROM t WHERE NULLIF(n, 0) IN ('1', '1.5')", "2L"),
+        ("BETWEEN", "SELECT id FROM t WHERE COALESCE(big, 0) BETWEEN '1' AND '1.5'", "<= 2L"),
+        ("NULLIF (INT)", "SELECT NULLIF(n, '1.5') AS v FROM t", "== 2L"),
+        ("NULLIF (BIGINT)", "SELECT NULLIF(big, '1.0') AS v FROM t", "== 1L"),
+        (
+          "CASE <expr> WHEN (INT)",
+          "SELECT CASE n WHEN '1.5' THEN 1 ELSE 0 END AS v FROM t",
+          "= 2L"
         ),
         (
-          "an exponent",
-          "SELECT id FROM t WHERE NULLIF(n, 0) = '1e3'",
-          "'INT' is not compatible with 'VARCHAR'"
+          "CASE <expr> WHEN (BIGINT)",
+          "SELECT CASE big WHEN '1.0' THEN 1 ELSE 0 END AS v FROM t",
+          "= 1L"
         ),
+        // a group filter compares the metric with the number
+        ("HAVING", "SELECT g FROM t GROUP BY g HAVING MAX(n) > '4.5'", "> 5L"),
+        ("IN (HAVING)", "SELECT g FROM t GROUP BY g HAVING MAX(big) IN ('1', '1.0')", "1L"),
+        ("arithmetic (INT)", "SELECT n + '1.5' AS v FROM t", "+ 2L"),
+        ("arithmetic (INT, literal first)", "SELECT '1.0' * n AS v FROM t", "1L *"),
+        ("arithmetic (BIGINT)", "SELECT big - '1.0' AS v FROM t", "- 1L"),
+        ("arithmetic (INT)", "SELECT n - '0.4' AS v FROM t", "- 0L"),
+        ("a literal on the left (A-42)", "SELECT id FROM t WHERE '1.5' < COALESCE(n, 0)", "2L <"),
+        ("a date part", "SELECT id FROM t WHERE YEAR(d) = '2024.4'", "== 2024L")
+      )
+    ) { (site, sql, rendered) =>
+      withClue(s"[$site] [$sql] ") {
+        parsed(sql)
+        resolved(sql) shouldBe Right(())
+        renderedOf(sql) should include(rendered)
+      }
+    }
+    // per group: the bucket script reads the metric, the type rule the whole number
+    resolved("SELECT g, SUM(n) + '1.5' AS v FROM t GROUP BY g") shouldBe Right(())
+    forAll(
+      Table(
+        ("site", "sql", "refusal"),
         (
           "past BIGINT",
           "SELECT id FROM t WHERE COALESCE(big, 0) = '99999999999999999999'",
           "'BIGINT' is not compatible with 'VARCHAR'"
         ),
         (
-          "IN",
-          "SELECT id FROM t WHERE NULLIF(n, 0) IN ('1', '1.5')",
-          "'INT' is not compatible with 'VARCHAR'"
-        ),
-        (
-          "IN (HAVING)",
-          "SELECT g FROM t GROUP BY g HAVING MAX(big) IN ('1', '1.0')",
+          "past BIGINT after rounding",
+          "SELECT id FROM t WHERE COALESCE(big, 0) = '9223372036854775807.5'",
           "'BIGINT' is not compatible with 'VARCHAR'"
         ),
         (
-          "BETWEEN",
-          "SELECT id FROM t WHERE COALESCE(big, 0) BETWEEN '1' AND '1.0'",
-          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+          "an exponent past BIGINT",
+          "SELECT id FROM t WHERE NULLIF(n, 0) = '1e999999999'",
+          "'INT' is not compatible with 'VARCHAR'"
         ),
-        ("NULLIF (INT)", "SELECT NULLIF(n, '1.5') AS v FROM t", "compares INT with VARCHAR"),
-        (
-          "NULLIF (BIGINT)",
-          "SELECT NULLIF(big, '1.0') AS v FROM t",
-          "compares BIGINT with VARCHAR"
-        ),
-        (
-          "CASE <expr> WHEN (INT)",
-          "SELECT CASE n WHEN '1.5' THEN 1 ELSE 0 END AS v FROM t",
-          "CASE WHEN conditions must be of the same type as the expression"
-        ),
-        (
-          "CASE <expr> WHEN (BIGINT)",
-          "SELECT CASE big WHEN '1.0' THEN 1 ELSE 0 END AS v FROM t",
-          "CASE WHEN conditions must be of the same type as the expression"
-        ),
-        // a group filter compares the metric, which is no text
-        (
-          "HAVING",
-          "SELECT g FROM t GROUP BY g HAVING MAX(n) > '4.5'",
-          "HAVING cannot be applied to MAX(n) > '4.5'"
-        ),
-        (
-          "arithmetic (INT)",
-          "SELECT n + '1.5' AS v FROM t",
-          "output 'INT' is not compatible with input 'VARCHAR'"
-        ),
-        (
-          "arithmetic (INT, literal first)",
-          "SELECT '1.0' * n AS v FROM t",
-          "output 'VARCHAR' is not compatible with input 'INT'"
-        ),
-        (
-          "arithmetic (BIGINT)",
-          "SELECT big - '1.0' AS v FROM t",
-          "output 'BIGINT' is not compatible with input 'VARCHAR'"
-        ),
-        (
-          "arithmetic (per group)",
-          "SELECT g, SUM(n) + '1.5' AS v FROM t GROUP BY g",
-          // SUM over a whole column is declared BIGINT
-          "output 'BIGINT' is not compatible with input 'VARCHAR'"
-        )
+        ("no number", "SELECT id FROM t WHERE NULLIF(n, 0) = 'NaN'", "'INT' is not compatible"),
+        ("no number", "SELECT n + 'abc' AS v FROM t", "is not compatible with input 'VARCHAR'")
       )
     ) { (site, sql, refusal) =>
       withClue(s"[$site] [$sql] ") {
@@ -617,8 +611,9 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
     )
   }
 
-  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer`: a quoted fraction
-    * beside `ABS` of an integer is refused by name, a whole number read; its value is that integer.
+  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer` and DuckDB's: a
+    * quoted fraction beside `ABS` of an integer is the whole number it rounds to (R-54), a text
+    * that spells no number is refused by name; its value is that integer.
     */
   "ABS" should "be typed by its argument" in {
     reported("SELECT ABS(n) AS a, ABS(big) AS b, ABS(x) AS c FROM t") shouldBe Map(
@@ -628,25 +623,27 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
     )
     forAll(
       Table(
+        ("sql", "rendered"),
+        ("SELECT id FROM t WHERE ABS(n) = '1.5'", "== 2L"),
+        ("SELECT id FROM t WHERE ABS(n) = '1.0'", "== 1L"),
+        ("SELECT id FROM t WHERE ABS(big) = '1.5'", "== 2L"),
+        ("SELECT id FROM t WHERE ABS(n) IN ('1', '1.5')", "2L"),
+        ("SELECT id FROM t WHERE ABS(n) BETWEEN '1' AND '1.5'", "2L"),
+        ("SELECT NULLIF(ABS(n), '1.5') AS v FROM t", "== 2L"),
+        ("SELECT CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END AS v FROM t", "== 2L")
+      )
+    ) { (sql, rendered) =>
+      withClue(s"[$sql] ") {
+        parsed(sql)
+        resolved(sql) shouldBe Right(())
+        renderedOf(sql) should include(rendered)
+      }
+    }
+    forAll(
+      Table(
         ("sql", "refusal"),
-        ("SELECT id FROM t WHERE ABS(n) = '1.5'", "'INT' is not compatible with 'VARCHAR'"),
-        ("SELECT id FROM t WHERE ABS(n) = '1.0'", "'INT' is not compatible with 'VARCHAR'"),
-        ("SELECT id FROM t WHERE ABS(big) = '1.5'", "'BIGINT' is not compatible with 'VARCHAR'"),
-        ("SELECT id FROM t WHERE ABS(n) IN ('1', '1.5')", "'INT' is not compatible with 'VARCHAR'"),
-        (
-          "SELECT id FROM t WHERE ABS(n) BETWEEN '1' AND '1.5'",
-          "output 'INT' is not compatible with input 'VARCHAR'"
-        ),
-        ("SELECT ABS(n) + '1.5' AS v FROM t", "is not compatible with input 'VARCHAR'"),
-        ("SELECT id FROM t WHERE ABS(n) + '1.5' > 0", "ABS(n) + '1.5'"),
-        (
-          "SELECT NULLIF(ABS(n), '1.5') AS v FROM t",
-          "with VARCHAR: NULLIF requires two arguments of comparable types"
-        ),
-        (
-          "SELECT CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END AS v FROM t",
-          "'INT' is not compatible with 'VARCHAR'"
-        )
+        ("SELECT id FROM t WHERE ABS(n) = 'abc'", "'INT' is not compatible with 'VARCHAR'"),
+        ("SELECT ABS(n) + 'abc' AS v FROM t", "is not compatible with input 'VARCHAR'")
       )
     ) { (sql, refusal) =>
       withClue(s"[$sql] ") {
@@ -705,5 +702,49 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
       "PRIMARY KEY (id))"
     )
     withClue(stored)(stored should include("? 1 : 0"))
+  }
+
+  /** The whole number a decimal text rounds to beside a whole type, as DuckDB 1.5.5 casts it (T0-5,
+    * RUN 2026-11-02: half away from zero), BIGINT-bounded, and computed without a division by a
+    * power of ten whatever the exponent (D16).
+    */
+  "ComparisonRule.roundedWhole" should "round half away from zero within BIGINT, in bounded time" in {
+    import app.softnetwork.elastic.sql.ComparisonRule.roundedWhole
+    forAll(
+      Table(
+        ("text", "rounded"),
+        ("1.5", Some(2L)),
+        ("2.5", Some(3L)),
+        ("-1.5", Some(-2L)),
+        ("-2.5", Some(-3L)),
+        ("1.4", Some(1L)),
+        (" 1.5 ", Some(2L)),
+        ("1e2", Some(100L)),
+        ("1.5e1", Some(15L)),
+        ("1.45e1", Some(15L)),
+        ("1.0", Some(1L)),
+        ("0.5", Some(1L)),
+        ("-0.5", Some(-1L)),
+        (".5", Some(1L)),
+        ("-0.4", Some(0L)),
+        ("2.5e-1", Some(0L)),
+        ("1e-400", Some(0L)),
+        ("1e-999999999", Some(0L)),
+        ("-1e-999999999", Some(0L)),
+        ("9223372036854775807.4", Some(Long.MaxValue)),
+        ("9223372036854775807.5", None),
+        ("-9223372036854775808.4", Some(Long.MinValue)),
+        ("-9223372036854775808.5", None),
+        ("12345678901234567890123456789e-10", Some(1234567890123456789L)),
+        ("1e999999999", None),
+        ("NaN", None),
+        ("Infinity", None),
+        ("0x10", None),
+        ("1_000", None),
+        ("abc", None)
+      )
+    ) { (text, rounded) =>
+      withClue(s"['$text'] ")(roundedWhole(text) shouldBe rounded)
+    }
   }
 }

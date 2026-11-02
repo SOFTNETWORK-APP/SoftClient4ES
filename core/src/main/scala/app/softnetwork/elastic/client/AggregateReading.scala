@@ -634,17 +634,51 @@ private[client] object PartitionKeys {
     * itself when `fields` is empty.
     */
   private[client] def withInstantDocValues(query: String, fields: Seq[String]): String =
-    if (fields.isEmpty) query
+    baseRequest(query, fields, Nil)
+
+  /** The `_source` paths the base request of a COMPUTED-ONLY window statement asks (D4): the
+    * distinct, non-empty name of every PARTITION BY column -- with or without a function, a dotted
+    * path kept --, whether a schema is attached or not. Such a base fetches no `_source`
+    * (`SingleSearch.sourceless`), yet its rows read their partition keys from it (B10): asked here,
+    * the `_source` subtree each key reads is the one the whole document gave, so every key answers
+    * as it did, with a narrower payload. Its caller asks it only for a sourceless base: a base with
+    * a plain column keeps its own includes.
+    */
+  private[client] def sourceColumns(request: SingleSearch): Seq[String] =
+    request.windowFunctions
+      .flatMap(_.partitionBy)
+      .map(_.name)
+      .filter(_.nonEmpty)
+      .distinct
+
+  /** `query` (a window statement's base search body) asking each column of `instants` as its
+    * `epoch_millis` doc value ([[withInstantDocValues]]) and, when `includes` is not empty, the
+    * `_source` of those paths only (`{"includes": …}`, in place of the `false` a sourceless base is
+    * sent with, [[sourceColumns]]): ONE parse for both. `query` itself when both are empty. Built
+    * once per statement.
+    */
+  private[client] def baseRequest(
+    query: String,
+    instants: Seq[String],
+    includes: Seq[String]
+  ): String =
+    if (instants.isEmpty && includes.isEmpty) query
     else
       JacksonConfig.objectMapper.readTree(query) match {
         case root: ObjectNode =>
-          val docValues = root.get("docvalue_fields") match {
-            case existing: ArrayNode => existing
-            case _                   => root.putArray("docvalue_fields")
+          if (instants.nonEmpty) {
+            val docValues = root.get("docvalue_fields") match {
+              case existing: ArrayNode => existing
+              case _                   => root.putArray("docvalue_fields")
+            }
+            instants.foreach { field =>
+              docValues.addObject().put("field", field).put("format", "epoch_millis")
+              ()
+            }
           }
-          fields.foreach { field =>
-            docValues.addObject().put("field", field).put("format", "epoch_millis")
-            ()
+          if (includes.nonEmpty) {
+            val paths = root.putObject("_source").putArray("includes")
+            includes.foreach(path => paths.add(path))
           }
           JacksonConfig.objectMapper.writeValueAsString(root)
         case _ => query

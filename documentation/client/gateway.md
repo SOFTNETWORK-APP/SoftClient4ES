@@ -232,6 +232,15 @@ Each value is read by its column's declared type, where it is first read:
 | GEO_POINT | `ListMap("lat" -> Double, "lon" -> Double)`, whatever spelling was indexed |
 | ARRAY | `List` of its elements |
 
+A statement whose SELECT items are all computed -- literals, arithmetic, functions, casts, `CASE`
+(`SELECT 2 AS k FROM t`, `SELECT n + 1 AS v FROM t`) -- asks Elasticsearch for no `_source`
+(*since `0.25.0`*: the whole document was fetched): its script fields read doc values, so its rows
+hold only its columns on every route (one-shot, async, scroll / PIT, `UNION ALL` legs), with a
+schema or without. An `INSERT … SELECT` of such a statement writes only its columns, and is refused
+by name when it does not project the target's PRIMARY KEY or PARTITION BY column; an entity read
+(`searchAs…`) leaves a field the statement does not select at `None` (its default), and fails on a
+required one.
+
 A one-element array is its element, an empty array NULL. A date field whose format core cannot read
 for sure (a zone name, a region id) is a VARCHAR, its text as stored; a date value Elasticsearch
 ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. An
@@ -260,9 +269,10 @@ Aggregation values follow the same table:
 - A window-enriched statement (`... OVER (PARTITION BY p ...)`) reads its rows by type and
   partitions on the same values: a `BOOLEAN`, `TIMESTAMP`, `BIGINT` or whole-day `DATE` partition
   column is answered, and the rows of a statement without `*` hold only the SELECT's columns. A
-  partition column the SELECT does not project is read only when the whole document is fetched,
-  as with `SELECT *`: otherwise every window of the statement reads NULL, and so does the column
-  each one aggregates.
+  partition column the SELECT does not project is read when the statement selects `*`, or no plain
+  column at all (`SELECT UPPER(id) AS u, SUM(n) OVER (PARTITION BY p)`: its partition columns'
+  `_source` is fetched, and nothing else); beside a plain column every window of the statement
+  reads NULL, and so does the column each one aggregates.
   A `date` partition column (not `date_nanos`) read as its stored text (a format with a zone name)
   is matched by its instant, as Elasticsearch buckets it, whether the SELECT projects it under its
   own name or not at all, unless another window's partition column is not projected; a projected

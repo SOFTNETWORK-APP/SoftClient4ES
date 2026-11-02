@@ -2055,7 +2055,10 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       windowCache <- executeWindowAggregations(request)
 
       // Step 2: Execute base query (without window functions)
-      baseResponse <- executeBaseQuery(baseQuery)(timestamp, baseContext)
+      baseResponse <- executeBaseQuery(baseQuery, windowBaseSourceIncludes(request, baseQuery))(
+        timestamp,
+        baseContext
+      )
 
       // Step 3: Enrich results
       enrichedResponse <- enrichResponseWithWindowValues(
@@ -2252,7 +2255,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * rows read in `context` (`SchemaColumns.ofWindowBase`).
     */
   private def executeBaseQuery(
-    baseQuery: SingleSearch
+    baseQuery: SingleSearch,
+    sourceIncludes: Seq[String]
   )(implicit timestamp: Long, context: ConversionContext): ElasticResult[ElasticResponse] = {
 
     logger.info(s"🔍 Executing base query without window functions ${baseQuery.sql}")
@@ -2266,7 +2270,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
           collection.immutable.Seq(baseQuery.sources: _*),
           sql = Some(baseQuery.sql)
         ),
-        context
+        context,
+        sourceIncludes
       ),
       baseQuery.fieldAliases,
       baseQuery.sqlAggregations,
@@ -2279,17 +2284,32 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   /** The search of a window statement's base query (`base`, as translated), its rows read in
     * `baseContext` (`SchemaColumns.ofWindowBase`): every route's ONE request (one-shot, async,
     * scroll), which also asks the `epoch_millis` doc value of each partition column paired by
-    * instant (`PartitionKeys.instantColumns`); `base` itself when none is. Built once per
-    * statement.
+    * instant (`PartitionKeys.instantColumns`) and, for a computed-only base, the `_source` of its
+    * partition columns (`sourceIncludes`, [[windowBaseSourceIncludes]]) -- in one parse; `base`
+    * itself when neither is. Built once per statement.
     */
   private[client] def windowBaseQuery(
     base: ElasticQuery,
-    baseContext: ConversionContext
+    baseContext: ConversionContext,
+    sourceIncludes: Seq[String] = Nil
   ): ElasticQuery = {
     val fields = SchemaColumns.instantFields(baseContext)
-    if (fields.isEmpty) base
-    else base.copy(query = PartitionKeys.withInstantDocValues(base.query, fields))
+    if (fields.isEmpty && sourceIncludes.isEmpty) base
+    else base.copy(query = PartitionKeys.baseRequest(base.query, fields, sourceIncludes))
   }
+
+  /** D4 -- the `_source` paths the base request of the window statement `request` asks: the
+    * PARTITION BY columns of a COMPUTED-ONLY base (`SingleSearch.sourceless`, the one predicate
+    * both bridges' source filter reads), which its rows read from `_source` (B10) and which a
+    * sourceless request would not fetch (`PartitionKeys.sourceColumns`). `Nil` for a base with a
+    * plain column, `*` or `_id` (its own includes, as on main: an unselected partition column stays
+    * NULL there, B10) and for a global window (`_source: false` kept).
+    */
+  private[client] def windowBaseSourceIncludes(
+    request: SingleSearch,
+    baseQuery: SingleSearch
+  ): Seq[String] =
+    if (baseQuery.sourceless) PartitionKeys.sourceColumns(request) else Nil
 
   /** Create base query by removing window functions from SELECT: `SingleSearch.withoutWindows`, the
     * ONE derivation the parse-time UNNEST rule judges too (`UnnestScope`), so the statement that is

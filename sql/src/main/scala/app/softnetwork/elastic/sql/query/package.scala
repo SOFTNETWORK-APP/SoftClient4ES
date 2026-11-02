@@ -1087,6 +1087,20 @@ package object query {
         Seq.empty
     }
 
+    /** A ROW statement whose rows read no `_source` key: every SELECT item is computed (#418 part
+      * 2). Its script fields read doc values, so Elasticsearch is asked `"_source": false` and the
+      * rows hold only the selected columns, on every path.
+      *
+      * 🔴 ONE predicate (#292): both bridges' source filter, core's window base request and the
+      * INSERT … SELECT key check read it. `scriptFields.nonEmpty` rules out an aggregate, a GROUP
+      * BY and a window (they empty it); `*`, `_id` and every plain column are in `fields`; a nested
+      * item or an UNNEST row explosion reads its inner hits' `_source`.
+      */
+    lazy val sourceless: Boolean =
+      !deleteByQuery && !updateByQuery && fields.isEmpty && scriptFields.nonEmpty &&
+      !select.fields.exists(_.identifier.nested) && nestedHitsMappings.isEmpty &&
+      UnnestScope.rowExplosion(this).isEmpty
+
     /** The row-invariant SELECT items and their values, keyed by OUTPUT column name (FOLD-IN 1).
       *
       * An aggregation response has no hits, so `script_fields` -- which is how a constant is
@@ -2594,6 +2608,9 @@ package object query {
           val removed = e.excludes(b, not = false, empty).values
           def fractional(v: Any): Boolean =
             SingleSearch.fractionalReading(String.valueOf(v)).isDefined
+          // an element is judged by what its key filter SENDS (`Bucket.keyFilterTexts`): a quoted
+          // `'1.5'` beside the integer key is sent as the 2 it rounds to (R-54) and is kept
+          def sendsFractional(v: Any): Boolean = b.keyFilterTexts(v).exists(fractional)
           val values = kept ++ removed
           if (!values.exists(fractional)) None
           else if (values.forall(fractional)) Some(Left(removed.nonEmpty))
@@ -2605,7 +2622,7 @@ package object query {
                     Some(
                       InExpr(
                         in.identifier,
-                        DoubleValues(vs.filterNot(v => fractional(v.value))),
+                        DoubleValues(vs.filterNot(v => sendsFractional(v.value))),
                         in.maybeNot
                       )
                     )
@@ -2613,7 +2630,7 @@ package object query {
                     Some(
                       InExpr(
                         in.identifier,
-                        FloatValues(vs.filterNot(v => fractional(v.value))),
+                        FloatValues(vs.filterNot(v => sendsFractional(v.value))),
                         in.maybeNot
                       )
                     )
@@ -2621,7 +2638,7 @@ package object query {
                     Some(
                       InExpr(
                         in.identifier,
-                        StringValues(vs.filterNot(v => fractional(v.value))),
+                        StringValues(vs.filterNot(v => sendsFractional(v.value))),
                         in.maybeNot
                       )
                     )

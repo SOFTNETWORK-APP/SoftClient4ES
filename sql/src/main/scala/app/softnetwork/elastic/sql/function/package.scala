@@ -56,6 +56,20 @@ package object function {
     def rendersNullOnFailure: Boolean = false
   }
 
+  /** A function whose whole-number width date arithmetic reads in a QUERY only: `DATEDIFF` (its
+    * BIGINT) and `ROUND` (its operand's whole type). Outside a query -- an ingest processor, a
+    * transform -- `ArithmeticExpression` reads such an operand as the NUMERIC these functions
+    * declared before they reported a width: a fractional number of days.
+    *
+    * 🔴 The ALTER-churn rule (`SQLTypeUtils.convertsArms`): a processor's source is persisted and
+    * diffed, and `d + DATEDIFF(d, d2)` moved from `Math.round(lv1 * 86400000.0)` to `lv1 *
+    * 86400000L`, the same value for a whole number of days, so `ALTER` would re-create a processor
+    * nobody changed. Only the date-arithmetic reading is held back: `reportedType` itself answers
+    * the width in every scope, so a quoted number beside these functions is still the whole number
+    * it rounds to in a processor (R-54).
+    */
+  trait WholeDaysInQueryOnly extends Function
+
   trait FunctionWithIdentifier extends Function with Updateable {
     def identifier: Identifier
 

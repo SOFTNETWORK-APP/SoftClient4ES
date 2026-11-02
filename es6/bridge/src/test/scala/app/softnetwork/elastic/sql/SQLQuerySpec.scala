@@ -1979,6 +1979,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SelectStatement(isnull)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
     """{
       |  "query": {
@@ -1992,7 +1993,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  },
-      |  "_source": true
+      |  "_source": false
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
@@ -2013,6 +2014,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       .replaceAll("!=", " != ")
       .replaceAll("&&", " && ")
       .replaceAll("\\|\\|", " || ")
+      .replace("\"_source\" : false", "\"_source\":false")
   }
 
   it should "handle is_notnull function as script field" in {
@@ -2296,8 +2298,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val select: ElasticSearchRequest = SelectStatement(greatest2)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
-    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.max(param1, param2)))"}}},"_source":true}"""
+    """{"query":{"match_all":{}},"script_fields":{"hi":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.max(param1, param2)))"}}},"_source":false}"""
   }
 
   it should "handle GREATEST 3-arg as script field" in {
@@ -2312,8 +2315,9 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     val select: ElasticSearchRequest = SelectStatement(least2)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
-    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.min(param1, param2)))"}}},"_source":true}"""
+    """{"query":{"match_all":{}},"script_fields":{"lo":{"script":{"lang":"painless","source":"def param1 = (doc['price_us'].size() == 0 ? null : doc['price_us'].value); def param2 = (doc['price_eu'].size() == 0 ? null : doc['price_eu'].value); (param1 == null ? param2 : (param2 == null ? param1 : Math.min(param1, param2)))"}}},"_source":false}"""
   }
 
   it should "handle LEAST 3-arg as script field" in {
@@ -2562,6 +2566,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SelectStatement(extract)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
     """{
       |  "query": {
@@ -2659,7 +2664,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  },
-      |  "_source": true
+      |  "_source": false
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
@@ -3347,6 +3352,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SelectStatement(extractors)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
     """{
       |  "query": {
@@ -3444,7 +3450,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  },
-      |  "_source": true
+      |  "_source": false
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
@@ -3489,6 +3495,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       SelectStatement(geoDistance)
     val query = select.query
     println(query)
+    // SCHEMA-5 D2 -- every item is computed: no `_source` is fetched (RUN: ComputedProjectionSpec)
     query shouldBe
     """{
       |  "query": {
@@ -3568,7 +3575,7 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
       |      }
       |    }
       |  },
-      |  "_source": true
+      |  "_source": false
       |}""".stripMargin
       .replaceAll("\\s+", "")
       .replace("NANO_OF_SECOND,0,9,true", "NANO_OF_SECOND, 0, 9, true")
@@ -5277,4 +5284,54 @@ class SQLQuerySpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  // SCHEMA-5 D16 (R-54) -- a quoted number beside a whole-declared BARE column: the query sends the
+  // whole number the one comparison rule rounds it to, half away from zero (DuckDB 1.5.5 T0-5:
+  // `'1.5'::INTEGER` = 2, `'1e2'` = 100), on every DSL arm, so Elasticsearch compares what the type
+  // rule and every script compare; a whole-number text keeps its bytes, a DOUBLE column and a text
+  // that spells no number keep the literal (RUN: ComputedProjectionSpec, "a quoted number")
+  it should "send a quoted number beside a whole-declared bare column as the integer it rounds to" in {
+    import app.softnetwork.elastic.sql.`type`.SQLTypes
+    import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
+    val schema = SchemaTable(
+      "t",
+      columns = List(
+        Column("g", SQLTypes.Keyword),
+        Column("n", SQLTypes.Int),
+        Column("x", SQLTypes.Double)
+      )
+    )
+    val json = new com.fasterxml.jackson.databind.ObjectMapper()
+    def filterOf(where: String): String =
+      SelectStatement(s"SELECT g FROM t WHERE $where").statement match {
+        case Some(s: SingleSearch) =>
+          val request: ElasticSearchRequest = s.update(Some(schema))
+          json.readTree(request.query).get("query").toString
+        case other => fail(s"[$where] $other")
+      }
+    def term(v: String): String = s"""{"term":{"n":{"value":"$v"}}}"""
+    def filter(q: String): String = s"""{"bool":{"filter":[$q]}}"""
+    def not(q: String): String =
+      filter(s"""{"bool":{"must_not":[$q],"filter":[{"exists":{"field":"n"}}]}}""")
+    Seq(
+      "n = '1.5'"                 -> filter(term("2")),
+      "n = ' 2.5 '"               -> filter(term("3")),
+      "n = '-0.5'"                -> filter(term("-1")),
+      "n = '1.0'"                 -> filter(term("1")),
+      "n = '1e3'"                 -> filter(term("1000")),
+      "n <> '1.5'"                -> not(term("2")),
+      "n < '1.5'"                 -> filter("""{"range":{"n":{"lt":"2"}}}"""),
+      "n > '1.5'"                 -> filter("""{"range":{"n":{"gt":"2"}}}"""),
+      "n >= '2.5'"                -> filter("""{"range":{"n":{"gte":"3"}}}"""),
+      "n <= '-2.5'"               -> filter("""{"range":{"n":{"lte":"-3"}}}"""),
+      "n IN ('1.5', '3')"         -> filter("""{"terms":{"n":["2","3"]}}"""),
+      "n NOT IN ('1.5')"          -> not("""{"terms":{"n":["2"]}}"""),
+      "n BETWEEN '1.5' AND '2.4'" -> filter("""{"range":{"n":{"gte":"2","lte":"2"}}}"""),
+      // unchanged: a whole-number text, a text that spells no number, a DOUBLE column
+      "n = '2'"   -> filter(term("2")),
+      "n = 'abc'" -> filter(term("abc")),
+      "x = '1.5'" -> filter("""{"term":{"x":{"value":"1.5"}}}""")
+    ).foreach { case (where, expected) =>
+      withClue(s"[$where] ")(filterOf(where) shouldBe expected)
+    }
+  }
 }

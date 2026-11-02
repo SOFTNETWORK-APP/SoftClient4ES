@@ -18,7 +18,12 @@ package app.softnetwork.elastic.sql.operator.math
 
 import app.softnetwork.elastic.sql._
 import app.softnetwork.elastic.sql.`type`._
-import app.softnetwork.elastic.sql.function.{BinaryFunction, FunctionChain, TransformFunction}
+import app.softnetwork.elastic.sql.function.{
+  BinaryFunction,
+  FunctionChain,
+  TransformFunction,
+  WholeDaysInQueryOnly
+}
 import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
 import app.softnetwork.elastic.sql.function.cond.{functionsOf, Case, NullIf, NumericReducer}
 import app.softnetwork.elastic.sql.function.time.DateDiff
@@ -179,35 +184,23 @@ case class ArithmeticExpression(
       })
 
   /** A string LITERAL beside a NUMBER is the number it spells -- the ONE comparison rule's reading
-    * (`ComparisonRule.readingOf`), as PostgreSQL reads `n + '1'`: 4 for n = 3, where the
-    * concatenation `"31"` was answered. Beside a whole-number operand only a whole number is one:
-    * PostgreSQL refuses `n + '1.5'` over an integer `n` (`invalid input syntax for type integer`),
-    * and so does the operand match here, the literal staying text. Beside anything else it stays
-    * what it is (a temporal beside it is date arithmetic, which reads it itself).
+    * (`ComparisonRule.readingOf`), `n + '1'` = 4 for n = 3, where the concatenation `"31"` was
+    * answered. Beside a whole-number operand it is the whole number the text rounds to, half away
+    * from zero, as DuckDB casts it (R-54): `n + '1.5'` is `n + 2`, typed as `n + '1'` (DuckDB's
+    * binder refuses `+` / `*` here; that refusal is not copied). Beside anything else it stays what
+    * it is (a temporal beside it is date arithmetic, which reads it itself).
     *
-    * Each operand's reading is computed ONCE per expression and memoised (`ComparisonRule` says why
-    * with no lock): every `argTypes` (so every `out`) and every rendering asks it, and a reading is
-    * a parse.
+    * Each operand's reading is computed ONCE per expression and per scope, and memoised
+    * (`SQLTypeUtils.PerScope`; `ComparisonRule` says why with no lock): every `argTypes` (so every
+    * `out`) and every rendering asks it, and a reading is a parse read against a declared type.
     */
   private def literalNumber(operand: PainlessScript): Option[ComparisonRule.NumberReading] =
-    if (operand eq left) {
-      var number = _leftNumber
-      if (number eq null) {
-        number = numberBeside(left, right)
-        _leftNumber = number
-      }
-      number
-    } else if (operand eq right) {
-      var number = _rightNumber
-      if (number eq null) {
-        number = numberBeside(right, left)
-        _rightNumber = number
-      }
-      number
-    } else numberBeside(operand, left)
+    if (operand eq left) _leftNumber(numberBeside(left, right))
+    else if (operand eq right) _rightNumber(numberBeside(right, left))
+    else numberBeside(operand, left)
 
-  private[this] var _leftNumber: Option[ComparisonRule.NumberReading] = null
-  private[this] var _rightNumber: Option[ComparisonRule.NumberReading] = null
+  private[this] val _leftNumber = new SQLTypeUtils.PerScope[Option[ComparisonRule.NumberReading]]
+  private[this] val _rightNumber = new SQLTypeUtils.PerScope[Option[ComparisonRule.NumberReading]]
 
   private def numberBeside(
     operand: PainlessScript,
@@ -219,27 +212,18 @@ case class ArithmeticExpression(
 
   /** The temporal a string literal operand is read as beside the other one
     * (`ArithmeticExpression.temporalString`: `d - '2024-01-31'`), computed ONCE per expression and
-    * memoised -- the date-arithmetic rendering asks it per operand and per guard.
+    * per scope, and memoised (`SQLTypeUtils.PerScope`) -- the date-arithmetic rendering asks it per
+    * operand and per guard.
     */
   private def literalTemporal(operand: PainlessScript): Option[ComparisonRule.TemporalReading] =
-    if (operand eq left) {
-      var temporal = _leftTemporal
-      if (temporal eq null) {
-        temporal = ArithmeticExpression.temporalString(left, right)
-        _leftTemporal = temporal
-      }
-      temporal
-    } else if (operand eq right) {
-      var temporal = _rightTemporal
-      if (temporal eq null) {
-        temporal = ArithmeticExpression.temporalString(right, left)
-        _rightTemporal = temporal
-      }
-      temporal
-    } else ArithmeticExpression.temporalString(operand, left)
+    if (operand eq left) _leftTemporal(ArithmeticExpression.temporalString(left, right))
+    else if (operand eq right) _rightTemporal(ArithmeticExpression.temporalString(right, left))
+    else ArithmeticExpression.temporalString(operand, left)
 
-  private[this] var _leftTemporal: Option[ComparisonRule.TemporalReading] = null
-  private[this] var _rightTemporal: Option[ComparisonRule.TemporalReading] = null
+  private[this] val _leftTemporal =
+    new SQLTypeUtils.PerScope[Option[ComparisonRule.TemporalReading]]
+  private[this] val _rightTemporal =
+    new SQLTypeUtils.PerScope[Option[ComparisonRule.TemporalReading]]
 
   override def argTypes: List[SQLType] = args.map(argTypeOf)
 
@@ -315,11 +299,18 @@ case class ArithmeticExpression(
     * two dates, or a fraction of a day between two instants -- lives only in the declaration.
     * Folding `out` is what typed `MAX(d) - MIN(d)` TIMESTAMP and answered it in milliseconds.
     *
-    * Computed once per instance: `out` reads `baseType` on every call, and the operands of an
-    * instance do not change -- resolution (`update`) builds a new one.
+    * Computed once per instance and per scope (`SQLTypeUtils.PerScope`): `out` reads `baseType` on
+    * every call, and the operands of an instance do not change -- resolution (`update`) builds a
+    * new one. An operand's declared type may depend on the scope (`DATE_TRUNC` over a date is a
+    * TIMESTAMP in a query only, a DATEDIFF is a fractional number of days outside one), so a query
+    * and an ingest processor rendering the same node each read their own classification, whichever
+    * asks first.
     */
-  private[sql] lazy val dateArithmetic: Option[ArithmeticExpression.DateArithmetic] =
-    ArithmeticExpression.dateArithmetic(this)
+  private[sql] def dateArithmetic: Option[ArithmeticExpression.DateArithmetic] =
+    _dateArithmetic(ArithmeticExpression.dateArithmetic(this))
+
+  private[this] val _dateArithmetic =
+    new SQLTypeUtils.PerScope[Option[ArithmeticExpression.DateArithmetic]]
 
   /** The type a consumer DECLARING a column for this expression reports: DATE for a date moved by
     * whole days, although Painless renders it as the UTC instant that day starts at.
@@ -1198,13 +1189,25 @@ object ArithmeticExpression {
             case SQLTypes.Date                                              => CalendarDate
             case SQLTypes.Timestamp | SQLTypes.DateTime | SQLTypes.Temporal => Moment
             case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt =>
-              Days(fractional = false)
+              Days(fractional = SQLTypeUtils.rendersOutsideQuery && wholeInQueryOnly(o))
             case SQLTypes.Double | SQLTypes.Real | SQLTypes.Numeric => Days(fractional = true)
             // a TIME is outside these rules, and an unknown type cannot be judged
             case t if t == SQLTypes.Time || t.isUnknown => Undecided
             case _                                      => NonNumber
           }
       }
+
+  /** Is `o` a whole number whose width a [[WholeDaysInQueryOnly]] function reports (`DATEDIFF`,
+    * `ROUND` over an integer)? Outside a query such an operand is the fractional number of days it
+    * was read as before the function reported a width, so an ingest processor or a transform keeps
+    * its bytes (the ALTER-churn rule); a query moves by whole days.
+    */
+  private def wholeInQueryOnly(o: PainlessScript): Boolean = o match {
+    case _: WholeDaysInQueryOnly => true
+    case i: Identifier if !i.isAggregation =>
+      i.functions.headOption.exists(_.isInstanceOf[WholeDaysInQueryOnly])
+    case _ => false
+  }
 
   /** One operand beside the other: a string literal that spells a date or a timestamp beside a
     * temporal is that temporal ([[temporalString]]); anything else is what it is alone.

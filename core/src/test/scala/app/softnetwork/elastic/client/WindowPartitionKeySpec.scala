@@ -391,6 +391,64 @@ class WindowPartitionKeySpec extends AnyFlatSpec with Matchers {
     ) shouldBe """{"docvalue_fields":[{"field":"x"},{"field":"pz","format":"epoch_millis"}]}"""
   }
 
+  // D4 -- a computed-only base fetches no `_source` (`SingleSearch.sourceless`), yet its rows read
+  // their partition keys from it (B10): its request asks the `_source` of those columns only, in
+  // the parse that asks the instants; a base with a plain column keeps its includes (an unselected
+  // partition column stays NULL there, B10, recorded), a global window keeps `_source: false`
+  it should "ask the _source of its partition columns for a computed-only base, in one parse" in {
+    val json = new com.fasterxml.jackson.databind.ObjectMapper()
+    // the body both bridges send for a sourceless base (`fetchSource false`, es6 and es8 alike)
+    val sourceless = """{"query":{"match_all":{}},"_source":false}"""
+    def rewritten(sql: String): (Seq[String], String) = {
+      val request = statement(sql)
+      val base = request.withoutWindows
+      val includes = client.windowBaseSourceIncludes(request, base)
+      val ctx = SchemaColumns.ofWindowBase(request, base, NativeContext, Some(version))
+      (
+        includes,
+        client.windowBaseQuery(ElasticQuery(sourceless, Seq("s2b_w")), ctx, includes).query
+      )
+    }
+    // plain, unselected: its partition column
+    val (pu, puBody) =
+      rewritten("SELECT UPPER(id) AS u, SUM(n) OVER (PARTITION BY pu) AS s FROM s2b_w")
+    pu shouldBe Seq("pu")
+    json.readTree(puBody) shouldBe json.readTree(
+      """{"query":{"match_all":{}},"_source":{"includes":["pu"]}}"""
+    )
+    // several windows, a dotted path, a function over a column: each name once
+    rewritten(
+      "SELECT 2 AS k, SUM(n) OVER (PARTITION BY pk1, pk2) AS s, " +
+      "ROW_NUMBER() OVER (PARTITION BY pk1, obj.a ORDER BY id) AS rn, " +
+      "COUNT(*) OVER (PARTITION BY UPPER(pk2)) AS c FROM s2b_w"
+    )._1 shouldBe Seq("pk1", "pk2", "obj.a")
+    // paired by instant: the doc value and the includes, one parse
+    val (pz, pzBody) =
+      rewritten("SELECT UPPER(id) AS u, SUM(n) OVER (PARTITION BY pz) AS s FROM s2b_w")
+    pz shouldBe Seq("pz")
+    json.readTree(pzBody) shouldBe json.readTree(
+      """{"query":{"match_all":{}},"_source":{"includes":["pz"]},
+        | "docvalue_fields":[{"field":"pz","format":"epoch_millis"}]}""".stripMargin
+    )
+    // a global window keeps `_source: false`
+    val (global, globalBody) = rewritten("SELECT UPPER(id) AS u, COUNT(*) OVER () AS c FROM s2b_w")
+    global shouldBe empty
+    globalBody shouldBe sourceless
+    // a base with a plain column, `*` or `_id` keeps its own includes
+    Seq(
+      "SELECT id, SUM(n) OVER (PARTITION BY pu) AS s FROM s2b_w",
+      "SELECT *, SUM(n) OVER (PARTITION BY pu) AS s FROM s2b_w",
+      "SELECT _id, SUM(n) OVER (PARTITION BY pu) AS s FROM s2b_w"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val request = statement(sql)
+        client.windowBaseSourceIncludes(request, request.withoutWindows) shouldBe empty
+      }
+    }
+    // neither instants nor includes: the body itself
+    PartitionKeys.baseRequest(sourceless, Nil, Nil) shouldBe sourceless
+  }
+
   it should "pair by instant on both sides through ONE function (instantColumns)" in {
     val dates = SetOperationValues.DateReading(Some(version))
     PartitionKeys.instantColumns(windowStatement("pz"), dates) shouldBe Set("pz")

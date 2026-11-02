@@ -363,6 +363,24 @@ package object time {
     override def inputType: SQLTemporal = SQLTypes.Temporal // par défaut
     override def outputType: SQLTemporal = SQLTypes.Temporal // idem
 
+    /** A truncation REPORTS a TIMESTAMP over an operand that reports a date -- a DATE, a DATETIME
+      * or a TIMESTAMP: a column, CURRENT_DATE, CURRENT_TIMESTAMP / NOW, a cast, DATE_PARSE,
+      * LAST_DAY, a DATE_ADD -- at every unit, the type DuckDB 1.5.5 answers for `date_trunc` over a
+      * DATE and a TIMESTAMP (and the UTC instant core's TIMESTAMP is for its TIMESTAMP WITH TIME
+      * ZONE over `current_timestamp`). Its rows are read by the TIMESTAMP reader, which takes every
+      * receiver -- a doc value, a `LocalDate`, a scripted key's text -- to a UTC `ZonedDateTime`.
+      *
+      * 🔴 In a query only, `DateAdd.reportedOverDate`'s gate: an ingest processor and a transform,
+      * whose date arithmetic and GREATEST / LEAST read this type, keep their bytes. Any other
+      * operand (a TIME, an operand of unknown type) answers as before: what its rendering is
+      * (`Identifier.reportedType`'s fallback). `inputType`, `outputType` and the Painless are
+      * unchanged.
+      */
+    override def reportedType: SQLType = identifier.reportedType match {
+      case _: SQLDate | _: SQLDateTime if !SQLTypeUtils.rendersOutsideQuery => SQLTypes.Timestamp
+      case _                                                                => super.reportedType
+    }
+
     override def sql: String = DateTrunc.sql
     override def toSQL(base: String): String =
       if (transactSql) s"$sql(${unit.sql}, $base)"
@@ -937,11 +955,24 @@ package object time {
     spelling: DateDiffSpelling = DateDiffSpelling.DateFirst
   ) extends DateTimeFunction
       with BinaryFunction[SQLDateTime, SQLDateTime, SQLNumeric]
-      with PainlessScript {
+      with PainlessScript
+      with WholeDaysInQueryOnly {
     override def fun: Option[PainlessScript] = Some(DateDiff)
 
     override def inputType: SQLDateTime = SQLTypes.DateTime
     override def outputType: SQLNumeric = SQLTypes.Numeric
+
+    /** Every spelling REPORTS a BIGINT, the type DuckDB 1.5.5 answers for `date_diff` over a DATE,
+      * a TIMESTAMP and a TIME (`DateDiffFun`); the Painless `ChronoUnit.between` answers a `long`.
+      *
+      * 🔴 `outputType` stays NUMERIC, as the date parts' does ([[Extract.reportedType]]): it is
+      * what `coerce` and the count's own Painless read, so no byte moves. `reportedType` is what a
+      * consumer that DECLARES a column reads -- `describe`, a set-operation slot, a GROUP BY key
+      * level, MIN / MAX / SUM, a `CREATE TABLE … AS SELECT` mapping -- and NUMERIC there was a
+      * column no index could be created with (a `scaled_float` without a `scaling_factor`) and a
+      * value read as whatever class the script answered.
+      */
+    override def reportedType: SQLType = SQLTypes.BigInt
 
     override def left: PainlessScript = start
     override def right: PainlessScript = end

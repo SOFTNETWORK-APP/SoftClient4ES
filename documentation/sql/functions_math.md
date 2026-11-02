@@ -129,7 +129,11 @@ ROUND(x, n)
 - `n` (optional) - `INT` (number of decimal places, default: 0)
 
 **Output:**
-- `DOUBLE`
+- the type of `x`, as DuckDB types it, at every `n`: a `TINYINT`, `SMALLINT`, `INT` or `BIGINT`
+  operand gives that type, a `REAL` a `REAL`, a `DOUBLE` (or a `DECIMAL` cast, a `DOUBLE` here) a
+  `DOUBLE`; an operand of no known number type gives `NUMERIC` (*since `0.25.0`*: `NUMERIC` for every
+  operand). A `GROUP BY ROUND(n)` key over an integer column is an integer, a `CREATE TABLE … AS
+  SELECT` maps the column by that type, and `SUM(ROUND(n))` over an integer column is a `BIGINT`.
 
 A half is rounded away from zero, as DuckDB rounds: `ROUND(2.5)` is `3`, `ROUND(-2.5)` is `-3`,
 `ROUND(-1.25, 1)` is `-1.3`. With decimal places the value is DuckDB's `round(x * 10^n) / 10^n`
@@ -137,6 +141,12 @@ A half is rounded away from zero, as DuckDB rounds: `ROUND(2.5)` is `3`, `ROUND(
 computed column alike. `ROUND` of `NULL` is `NULL`. Over a `REAL` (`float`) operand with decimal
 places the rounding is computed in single precision, as DuckDB rounds a `FLOAT`: `ROUND(r, 1)` of
 the float `7.75` is the float `7.8`, read back as `7.800000190734863` (*since `0.24.0`*).
+
+To tens, hundreds, … (a negative `n`) the value is DuckDB's `round(x / 10^-n) * 10^-n`, exact for
+every whole number: `ROUND(423789293, -5)` is `423800000` (*since `0.25.0`*: `423799999` over an
+`INT` column). In a query, an integer operand whose rounded value leaves its type's range fails the
+statement with *"Overflow in ROUND of integer"* (`ROUND(CAST(127 AS TINYINT), -1)`,
+`ROUND(CAST(2147483647 AS INT), -1)`), where DuckDB 1.5.5 wraps it.
 
 **Examples:**
 ```sql
@@ -158,7 +168,7 @@ SELECT ROUND(-123.456, 2) AS r;
 
 -- Round to tens place (negative decimals)
 SELECT ROUND(123.456, -1) AS r;
--- Result: 120
+-- Result: 120.0 (a DOUBLE operand gives a DOUBLE)
 
 -- Round prices
 SELECT 
@@ -295,7 +305,8 @@ POW(x, y)
 - `y` - `NUMERIC` (exponent)
 
 **Output:**
-- `NUMERIC`
+- `DOUBLE`, whatever `x`, as DuckDB types it (*since `0.25.0`*: `NUMERIC`, which a
+  `CREATE TABLE … AS SELECT` could not map)
 
 **Examples:**
 ```sql
@@ -351,7 +362,8 @@ SQRT(x)
 - `x` - `NUMERIC` (≥ 0)
 
 **Output:**
-- `NUMERIC`
+- `DOUBLE`, whatever `x`, as DuckDB types it (*since `0.25.0`*: `NUMERIC`, which a
+  `CREATE TABLE … AS SELECT` could not map)
 
 **Examples:**
 ```sql
@@ -417,7 +429,8 @@ LOG(x)
 - `x` - `NUMERIC` (> 0)
 
 **Output:**
-- `NUMERIC`
+- `DOUBLE`, whatever `x`, as DuckDB types it (*since `0.25.0`*: `NUMERIC`, which a
+  `CREATE TABLE … AS SELECT` could not map)
 
 **Examples:**
 ```sql
@@ -460,7 +473,8 @@ LOG10(x)
 - `x` - `NUMERIC` (> 0)
 
 **Output:**
-- `NUMERIC`
+- `DOUBLE`, whatever `x`, as DuckDB types it (*since `0.25.0`*: `NUMERIC`, which a
+  `CREATE TABLE … AS SELECT` could not map)
 
 **Examples:**
 ```sql
@@ -512,7 +526,8 @@ EXP(x)
 - `x` - `NUMERIC`
 
 **Output:**
-- `NUMERIC`
+- `DOUBLE`, whatever `x`, as DuckDB types it (*since `0.25.0`*: `NUMERIC`, which a
+  `CREATE TABLE … AS SELECT` could not map)
 
 **Examples:**
 ```sql

@@ -851,7 +851,12 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     // request -- every route's one, asking the doc values of the partition columns paired by
     // instant -- and the final projection, which drops `_id` unless it is kept (B7 d)
     val partitionKeys = PartitionKeys.of(request, baseContext)
-    val enrichedBaseQuery = windowBaseQuery(baseElasticQuery, baseContext)
+    val enrichedBaseQuery =
+      windowBaseQuery(
+        baseElasticQuery,
+        baseContext,
+        windowBaseSourceIncludes(request, baseQuery)
+      )
     val project = windowRowProjection(request, baseContext)
 
     Source

@@ -2178,7 +2178,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   )
 
   "a quoted number" should
-  "be a value of the other operand's type, as PostgreSQL reads it: any number beside a DOUBLE, a whole one beside an integer" in {
+  "be a value of the other operand's type: any number beside a DOUBLE, the whole number it rounds to beside an integer" in {
     run(s"CREATE TABLE $numberTable (id KEYWORD, n INT, big BIGINT, x DOUBLE, PRIMARY KEY (id))")
     bulk(numberTable, numberDocs)
     def values(r1: Expected, r2: Expected, r3: Expected, r4: Expected): Map[String, Expected] =
@@ -2233,44 +2233,50 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
           numberTable
         ),
         comparisonVerdict("n + '1'", values(Num(2), Num(3), Num(-2), Null), numberTable),
-        // beside an integer, '1.5' and '1.0' are no integer: refused by name, as PostgreSQL 16
-        // refuses them (`invalid input syntax for type integer`)
-        refused(
-          s"SELECT id, CASE WHEN COALESCE(n, 0) = '1.5' THEN 1 ELSE 0 END AS x FROM $numberTable",
-          "'BIGINT' is not compatible with 'VARCHAR'"
+        // beside an integer, a quoted fraction is the whole number it rounds to, half away from
+        // zero, as DuckDB 1.5.5 casts it (R-54, T0-5: '1.5'::INTEGER = 2, '1.0' = 1): n = 1, 2, -3,
+        // NULL and big = 1, 10000000000, -3, NULL
+        comparisonVerdict(
+          "CASE WHEN COALESCE(n, 0) = '1.5' THEN 1 ELSE 0 END",
+          values(Num(0), Num(1), Num(0), Num(0)),
+          numberTable
         ),
-        refused(
-          s"SELECT id, CASE WHEN NULLIF(n, 0) = '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
-          "'INT' is not compatible with 'VARCHAR'"
+        comparisonVerdict(
+          "CASE WHEN NULLIF(n, 0) = '1.0' THEN 1 ELSE 0 END",
+          values(Num(1), Num(0), Num(0), Num(0)),
+          numberTable
         ),
-        refused(
-          s"SELECT id, CASE WHEN COALESCE(big, 0) = '1.5' THEN 1 ELSE 0 END AS x FROM $numberTable",
-          "'BIGINT' is not compatible with 'VARCHAR'"
+        comparisonVerdict(
+          "CASE WHEN COALESCE(big, 0) = '1.5' THEN 1 ELSE 0 END",
+          values(Num(0), Num(0), Num(0), Num(0)),
+          numberTable
         ),
-        refused(
-          s"SELECT id, CASE WHEN COALESCE(big, 0) = '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
-          "'BIGINT' is not compatible with 'VARCHAR'"
+        comparisonVerdict(
+          "CASE WHEN COALESCE(big, 0) = '1.0' THEN 1 ELSE 0 END",
+          values(Num(1), Num(0), Num(0), Num(0)),
+          numberTable
         ),
-        refused(
-          s"SELECT id FROM $numberTable WHERE COALESCE(n, 0) IN ('1', '1.5')",
-          "'BIGINT' is not compatible with 'VARCHAR'"
-        ),
-        refused(
+        kept(s"SELECT id FROM $numberTable WHERE COALESCE(n, 0) IN ('1', '1.5')", Set("r1", "r2")),
+        kept(
           s"SELECT id FROM $numberTable WHERE COALESCE(big, 0) BETWEEN '1' AND '1.0'",
-          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+          Set("r1")
         ),
-        refused(s"SELECT id, NULLIF(n, '1.5') AS x FROM $numberTable", "compares INT with VARCHAR"),
-        refused(
-          s"SELECT id, CASE big WHEN '1.0' THEN 1 ELSE 0 END AS x FROM $numberTable",
-          "CASE WHEN conditions must be of the same type as the expression"
+        comparisonVerdict("NULLIF(n, '1.5')", values(Num(1), Null, Num(-3), Null), numberTable),
+        comparisonVerdict(
+          "CASE big WHEN '1.0' THEN 1 ELSE 0 END",
+          values(Num(1), Num(0), Num(0), Num(0)),
+          numberTable
         ),
-        refused(
-          s"SELECT id, n + '1.5' AS x FROM $numberTable",
-          "output 'INT' is not compatible with input 'VARCHAR'"
+        comparisonVerdict("n + '1.5'", values(Num(3), Num(4), Num(-1), Null), numberTable),
+        comparisonVerdict(
+          "big - '1.0'",
+          values(Num(0), Num(9999999999.0), Num(-4), Null),
+          numberTable
         ),
+        // past BIGINT after rounding: no integer, refused by name as before
         refused(
-          s"SELECT id, big - '1.0' AS x FROM $numberTable",
-          "output 'BIGINT' is not compatible with input 'VARCHAR'"
+          s"SELECT id, CASE WHEN COALESCE(big, 0) = '9223372036854775807.5' THEN 1 ELSE 0 END AS x FROM $numberTable",
+          "'BIGINT' is not compatible with 'VARCHAR'"
         )
       )
     )
@@ -2989,13 +2995,13 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     )
   }
 
-  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer`. Beside `ABS` of an
-    * INT, a quoted fraction is no integer and is refused by name, as PostgreSQL refuses it
-    * (`invalid input syntax for type integer`), where NUMERIC read it as a number; a whole number
-    * is read. Its value is that integer, and a `CREATE TABLE … AS SELECT` declares it -- it failed
-    * to create the index (`scaling_factor` is required by a NUMERIC column).
+  /** `ABS` is typed by its argument, as PostgreSQL's `abs(integer) -> integer` and DuckDB's. Beside
+    * `ABS` of an INT, a quoted fraction is the whole number it rounds to, as DuckDB casts it
+    * (R-54), where NUMERIC read it as a number; a text that spells no number is refused by name.
+    * Its value is that integer, and a `CREATE TABLE … AS SELECT` declares it -- it failed to create
+    * the index (`scaling_factor` is required by a NUMERIC column).
     */
-  "ABS" should "be typed by its argument, refusing a quoted fraction beside ABS of an integer" in {
+  "ABS" should "be typed by its argument, reading a quoted fraction beside ABS of an integer as an integer" in {
     val computedTable = "date_arithmetic_abs_cc"
     val ctas = "date_arithmetic_abs_ctas"
     run(
@@ -3017,30 +3023,28 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       verdict(
         "ABS typed by its argument",
         Seq(
-          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.5'", notInteger),
-          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.0'", notInteger),
-          refusedBy(
-            s"SELECT id FROM $operandTable WHERE ABS(n) + '1.5' > 0",
-            "Type mismatch",
-            "ABS(n) + '1.5'"
+          // beside ABS of an integer a quoted fraction is the whole number it rounds to, as DuckDB
+          // 1.5.5 casts it (R-54): ABS(n) = 3, 5, 2, NULL, 10; '1.5' is 2, '1.0' is 1
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.5'", Set("r3")),
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) = '1.0'", Set.empty),
+          // (`ABS(n) + '1.5'` is not run here: arithmetic over ABS of an integer fails to compile
+          // in Elasticsearch whatever the other operand -- `ABS(n) + 1` on main too, its widening
+          // cast wraps ABS's NULL-guarded ternary. Left out, no failure pinned: a pre-existing
+          // renderer defect, not this story's (architect ruling A-44).)
+          comparisonVerdict(
+            "CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END",
+            answers(Num(0), Num(0), Num(1), Num(0), Num(0)),
+            operandTable
           ),
-          refusedBy(
-            s"SELECT id, ABS(n) + '1.5' AS x FROM $operandTable",
-            "is not compatible with input 'VARCHAR'"
+          comparisonVerdict(
+            "NULLIF(ABS(n), '1.5')",
+            answers(Whole(3), Whole(5), Null, Null, Whole(10)),
+            operandTable
           ),
-          refusedBy(
-            s"SELECT id, CASE WHEN ABS(n) = '1.5' THEN 1 ELSE 0 END AS x FROM $operandTable",
-            notInteger
-          ),
-          refusedBy(
-            s"SELECT id, NULLIF(ABS(n), '1.5') AS x FROM $operandTable",
-            "with VARCHAR: NULLIF requires two arguments of comparable types"
-          ),
-          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) IN ('1', '1.5')", notInteger),
-          refusedBy(
-            s"SELECT id FROM $operandTable WHERE ABS(n) BETWEEN '1' AND '1.5'",
-            "output 'INT' is not compatible with input 'VARCHAR'"
-          ),
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) IN ('1', '1.5')", Set("r3")),
+          kept(s"SELECT id FROM $operandTable WHERE ABS(n) BETWEEN '1' AND '2.5'", Set("r3", "r1")),
+          // a text that spells no number is refused by name
+          refusedBy(s"SELECT id FROM $operandTable WHERE ABS(n) = 'abc'", notInteger),
           // a whole number beside ABS of an integer, any number beside ABS of a DOUBLE
           kept(s"SELECT id FROM $operandTable WHERE ABS(n) = '2'", Set("r3")),
           kept(s"SELECT id FROM $operandTable WHERE ABS(x) = '1.5'", Set("r2")),
