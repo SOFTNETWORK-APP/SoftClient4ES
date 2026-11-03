@@ -63,7 +63,8 @@ case class ComputedProjectionRequiredRow(id: String, k: Long)
   *   - "widths": DATEDIFF, ROUND, EXP / LOG / LOG10 / SQRT / POW, the date parts and DATE_TRUNC
   *     declare DuckDB's type, one class per column, in every position (AC4);
   *   - "#418": every statement of the issue (AC7);
-  *   - "ROUND to a negative scale": DuckDB's values, an integer overflow refused (AC6, A-39);
+  *   - "ROUND to a negative scale": DuckDB's values, a narrower integer a BIGINT, a BIGINT overflow
+  *     refused (AC6, A-39, R-67);
   *   - "CTAS": the mappings (AC5);
   *   - "INSERT … SELECT": a key-less computed-only SELECT refused before any write (A-38);
   *   - "quoted numbers": a quoted number beside a whole type is the whole number it rounds to (AC9,
@@ -86,8 +87,9 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
   protected val pk1 = "s5_pk1"
   protected val pk2 = "s5_pk2"
   protected val nokey = "s5_nokey"
+  protected val overflow = "s5_ovf"
 
-  private val ctasTables: Seq[String] = (0 until 8).map(i => s"s5_c$i")
+  private val ctasTables: Seq[String] = (0 until 9).map(i => s"s5_c$i")
 
   protected lazy val major: Int = Try(elasticVersion.takeWhile(_ != '.').toInt).getOrElse(8)
 
@@ -131,7 +133,7 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    (Seq(table, pk1, pk2, nokey) ++ ctasTables).foreach(drop)
+    (Seq(table, pk1, pk2, nokey, overflow) ++ ctasTables).foreach(drop)
     client
       .createIndex(table, settings = """{"number_of_shards": 2, "number_of_replicas": 0}""")
       .get shouldBe true
@@ -151,7 +153,7 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     Try(
       raw("POST", "/_aliases", s"""{"actions":[{"remove":{"index":"$table","alias":"$alias"}}]}""")
     )
-    (Seq(table, pk1, pk2, nokey) ++ ctasTables).foreach(drop)
+    (Seq(table, pk1, pk2, nokey, overflow) ++ ctasTables).foreach(drop)
     super.afterAll()
   }
 
@@ -443,6 +445,8 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     unit   <- Seq("DAY", "HOUR")
   } yield spelling.format(a, b, unit)
 
+  // R-67: to a negative scale a TINYINT / SMALLINT / INT is a BIGINT (DuckDB keeps INTEGER and
+  // wraps a value leaving it); its rounded value always fits
   private val rounds: Seq[(String, SQLType)] =
     (for {
       (operand, t) <- Seq(
@@ -452,7 +456,10 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
         "r"   -> SQLTypes.Real
       )
       scale <- Seq("", ", 0", ", 1", ", -1", ", -5")
-    } yield s"ROUND($operand$scale)" -> t) :+ ("ROUND(ti)" -> SQLTypes.TinyInt)
+    } yield {
+      val declared = if (t == SQLTypes.Int && scale.contains("-")) SQLTypes.BigInt else t
+      s"ROUND($operand$scale)" -> declared
+    }) ++ Seq("ROUND(ti)" -> SQLTypes.TinyInt, "ROUND(ti, -1)" -> SQLTypes.BigInt)
 
   private val maths: Seq[String] =
     Seq("EXP(ti)", "LOG(pos)", "LOG10(pos)", "SQRT(pos)", "POW(n, 2)", "POWER(x, 2)")
@@ -520,6 +527,8 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     "DATEDIFF(d, d2)" -> SQLTypes.BigInt,
     "ROUND(n)"        -> SQLTypes.Int,
     "ROUND(big, -1)"  -> SQLTypes.BigInt,
+    "ROUND(n, -1)"    -> SQLTypes.BigInt,
+    "ROUND(ti, -1)"   -> SQLTypes.BigInt,
     "ROUND(x, 1)"     -> SQLTypes.Double,
     "ROUND(r)"        -> SQLTypes.Real,
     "SQRT(pos)"       -> SQLTypes.Double,
@@ -663,19 +672,36 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
   // ROUND to a negative scale (AC6, D8, A-39)
   // -------------------------------------------------------------------------------------------
 
-  "ROUND to a negative scale" should "answer DuckDB's values and fail an integer overflow (AC6)" in {
+  "ROUND to a negative scale" should "answer DuckDB's values and fail a BIGINT overflow (AC6)" in {
     def byId(sql: String): Map[String, Any] =
       rowsOf(sql).map(r => String.valueOf(r("id")) -> r("v")).toMap
-    // DuckDB 1.5.5: round(423789293::INTEGER, -5) = 423800000, round(n, -1) over 2, 3, -2, 1000
-    byId(s"SELECT id, ROUND(n, -5) AS v FROM $table")("r5") shouldBe Integer.valueOf(423800000)
+    // DuckDB 1.5.5: round(423789293::INTEGER, -5) = 423800000, round(n, -1) over 2, 3, -2, 1000;
+    // an INT rounded to a negative scale is a BIGINT here (R-67), where DuckDB keeps INTEGER
+    byId(s"SELECT id, ROUND(n, -5) AS v FROM $table")("r5") shouldBe
+    java.lang.Long.valueOf(423800000L)
     byId(s"SELECT id, ROUND(n, -1) AS v FROM $table") shouldBe Map(
-      "r1" -> Integer.valueOf(0),
-      "r2" -> Integer.valueOf(0),
-      "r3" -> Integer.valueOf(0),
+      "r1" -> java.lang.Long.valueOf(0L),
+      "r2" -> java.lang.Long.valueOf(0L),
+      "r3" -> java.lang.Long.valueOf(0L),
       "r4" -> null,
-      "r5" -> Integer.valueOf(423789290),
-      "r6" -> Integer.valueOf(1000)
+      "r5" -> java.lang.Long.valueOf(423789290L),
+      "r6" -> java.lang.Long.valueOf(1000L)
     )
+    // R-67: a narrower integer's rounded value always fits the BIGINT it is declared, where its
+    // own type would overflow (DuckDB 1.5.5 wraps: -126, -2147483646); main answered the double
+    // 2.14748365E9
+    Seq(
+      s"SELECT id, ROUND(CAST(127 AS TINYINT), -1) AS v FROM $table WHERE id = 'r1'" -> 130L,
+      s"SELECT id, ROUND(CAST(2147483647 AS INT), -1) AS v FROM $table WHERE id = 'r1'" ->
+      2147483650L,
+      s"SELECT id, ROUND(ti, -1) AS v FROM $table WHERE id = 'r1'" -> 130L,
+      s"SELECT id, ROUND(ti, -1) AS v FROM $table WHERE id = 'r2'" -> -130L
+    ).foreach { case (sql, expected) =>
+      withClue(s"[$sql] ") {
+        rowsOf(sql).map(_("v")) shouldBe Seq(java.lang.Long.valueOf(expected))
+        typeOf(sql, "v") shouldBe SQLTypes.BigInt
+      }
+    }
     // round(42::BIGINT, -1) = 40, round(-7, -1) = -10, round(1706697000000, -5) = 1706697000000
     val big = byId(s"SELECT id, ROUND(big, -1) AS v FROM $table")
     big("r1") shouldBe java.lang.Long.valueOf(40L)
@@ -685,18 +711,28 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     // round(423789293.5::DOUBLE, -1) = 423789290.0, round(-2.5, -1) = -0.0
     byId(s"SELECT id, ROUND(x, -1) AS v FROM $table")("r5") shouldBe
     java.lang.Double.valueOf(423789290.0)
-    // A-39 -- an integer rounded out of its type's range
-    Seq(
-      s"SELECT ROUND(CAST(127 AS TINYINT), -1) AS v FROM $table",
-      // T0-5's `2147483647::INTEGER`: an untyped whole literal is a BIGINT operand in core
-      s"SELECT ROUND(CAST(2147483647 AS INT), -1) AS v FROM $table",
-      s"SELECT id, ROUND(ti, -1) AS v FROM $table"
-    ).foreach { sql =>
-      withClue(s"[$sql] ") {
-        attempt(sql) match {
-          case Left(error) => error should include("Overflow in ROUND of integer")
-          case Right(rows) => fail(s"answered $rows")
-        }
+    // A-39 -- a BIGINT rounded out of its range fails the query: 9223372036854775807 rounded to
+    // tens is 9223372036854775810, past the BIGINT range, where DuckDB 1.5.5 wraps it
+    // (round(9223372036854775807::BIGINT, -1) = -9223372036854775800, run 2026-11-03)
+    client
+      .createIndex(overflow, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .get shouldBe true
+    client
+      .setMapping(
+        overflow,
+        """{"properties": {"id": {"type": "keyword"}, "big": {"type": "long"}}}"""
+      )
+      .get shouldBe true
+    client.index(overflow, "o1", """{"id":"o1","big":9223372036854775807}""") match {
+      case ElasticSuccess(true) =>
+      case other                => fail(s"indexing o1 into $overflow: $other")
+    }
+    client.refresh(overflow)
+    val sql = s"SELECT id, ROUND(big, -1) AS v FROM $overflow"
+    withClue(s"[$sql] ") {
+      attempt(sql) match {
+        case Left(error) => error should include("Overflow in ROUND of integer")
+        case Right(rows) => fail(s"answered $rows")
       }
     }
   }
@@ -723,7 +759,9 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
       s"SELECT pk, MAX(DATEDIFF(d, d2)) AS v FROM $table GROUP BY pk" -> "long",
       s"SELECT pk, SUM(DATEDIFF(d, d2)) AS v FROM $table GROUP BY pk" -> "long",
       s"SELECT pk, SUM(ROUND(n)) AS v FROM $table GROUP BY pk"        -> "long",
-      s"SELECT id, SQRT(pos) AS v FROM $table"                        -> "double"
+      s"SELECT id, SQRT(pos) AS v FROM $table"                        -> "double",
+      // R-67: a negative-scale ROUND over an INT is a BIGINT
+      s"SELECT id, ROUND(n, -1) AS v FROM $table" -> "long"
     ).zip(ctasTables).foreach { case ((select, expected), target) =>
       withClue(s"[$select] ") {
         runOk(s"CREATE TABLE $target AS $select")

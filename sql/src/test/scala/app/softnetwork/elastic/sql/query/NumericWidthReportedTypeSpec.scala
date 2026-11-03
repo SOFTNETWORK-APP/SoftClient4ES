@@ -26,8 +26,8 @@ import org.scalatest.matchers.should.Matchers
 /** The computed columns core declared NUMERIC or TEMPORAL declare DuckDB's type (#418).
   *
   *   - DATEDIFF / DATE_DIFF / TIMESTAMPDIFF, every spelling: BIGINT (DuckDB `date_diff`);
-  *   - ROUND: its operand's type at every scale (DuckDB `RoundFun`), NUMERIC over an operand of no
-  *     known number type;
+  *   - ROUND: its operand's type (DuckDB `RoundFun`), but a BIGINT for a TINYINT, SMALLINT or INT
+  *     rounded to a negative scale, NUMERIC over an operand of no known number type;
   *   - EXP / LOG / LOG10 / SQRT / POW: DOUBLE (DuckDB `numeric.cpp`);
   *   - DATE_TRUNC over an operand that reports a date: TIMESTAMP (DuckDB `date_trunc`), in a query
   *     only -- an ingest processor or a transform reads the type it read before.
@@ -35,13 +35,16 @@ import org.scalatest.matchers.should.Matchers
   * The type REPORTED: `describe`, the readers, set-operation slots, the GROUP BY key level, MIN /
   * MAX / SUM and a `CREATE TABLE … AS SELECT` read it. `outputType` -- what `coerce` and the
   * function's own Painless read -- is unchanged, so a script keeps its bytes, but for the
-  * negative-scale ROUND, which renders DuckDB's form (and refuses an integer overflow in a query).
+  * negative-scale ROUND, which renders DuckDB's form (and refuses a BIGINT overflow in a query).
   *
   * The oracle is DuckDB 1.5.5 (`typeof(...)`, run 2026-11-02): `round` over DOUBLE / INTEGER /
   * FLOAT / BIGINT = DOUBLE / INTEGER / FLOAT / BIGINT at every scale; `date_diff` BIGINT; `sqrt`,
   * `exp`, `log10`, `ln`, `pow` DOUBLE; `date_trunc('day', DATE)` / `(TIMESTAMP)` TIMESTAMP,
   * `(current_timestamp)` TIMESTAMP WITH TIME ZONE (core's TIMESTAMP is the UTC instant);
-  * `round(423789293::INTEGER, -5)` = 423800000.
+  * `round(423789293::INTEGER, -5)` = 423800000. A narrower integer rounded to a negative scale is a
+  * BIGINT here, where DuckDB keeps its type and wraps what leaves it (`round(127::TINYINT, -1)` =
+  * -126, `round(2147483647::INTEGER, -1)` = -2147483646, run 2026-11-03): only the label differs,
+  * the value (130, 2147483650) always fits a BIGINT.
   */
 class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
 
@@ -172,9 +175,11 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
 
   behavior of "ROUND"
 
-  private val scales: List[String] = List("", ", 0", ", 1", ", -1", ", -5")
+  private val scales: List[String] = List("", ", 0", ", 1")
 
-  it should "report its operand's type at every scale, mapped by it" in {
+  private val negativeScales: List[String] = List(", -1", ", -5")
+
+  it should "report its operand's type at a scale of zero or more, mapped by it" in {
     for (
       (operand, expected, es) <- List(
         ("ti", SQLTypes.TinyInt, "byte"),
@@ -186,6 +191,26 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
       );
       scale <- scales
     ) assertDeclared(s"SELECT ROUND($operand$scale) AS a FROM t", expected, es)
+  }
+
+  // R-67 -- to a negative scale a TINYINT, SMALLINT or INT is a BIGINT: its rounded value always
+  // fits one (ROUND(2147483647, -1) = 2147483650), where its own type would overflow
+  it should "report BIGINT for a narrower integer at a negative scale, its type otherwise" in {
+    for (
+      (operand, expected, es) <- List(
+        ("ti", SQLTypes.BigInt, "long"),
+        ("sm", SQLTypes.BigInt, "long"),
+        ("n", SQLTypes.BigInt, "long"),
+        ("big", SQLTypes.BigInt, "long"),
+        ("r", SQLTypes.Real, "float"),
+        ("x", SQLTypes.Double, "double")
+      );
+      scale <- negativeScales
+    ) assertDeclared(s"SELECT ROUND($operand$scale) AS a FROM t", expected, es)
+    assertDeclared("SELECT ROUND(CAST(2147483647 AS INT), -1) AS a FROM t", SQLTypes.BigInt, "long")
+    assertDeclared("SELECT ROUND(CAST(127 AS TINYINT), -1) AS a FROM t", SQLTypes.BigInt, "long")
+    // a negative scale over no known number type keeps NUMERIC
+    resolved("SELECT ROUND(s, -1) AS a FROM t")._2.reportedType shouldBe SQLTypes.Numeric
   }
 
   it should "keep NUMERIC over an operand of no known number type, and its outputType NUMERIC" in {
@@ -203,6 +228,7 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
   it should "be a long key level over a whole operand, a double one over DOUBLE and REAL" in {
     keyLevel("ROUND(n)") shouldBe Some("long")
     keyLevel("ROUND(big, -1)") shouldBe Some("long")
+    keyLevel("ROUND(n, -1)") shouldBe Some("long")
     keyLevel("ROUND(x)") shouldBe Some("double")
     keyLevel("ROUND(r, 1)") shouldBe Some("double")
   }
@@ -212,6 +238,10 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
     assertDeclared("SELECT MIN(ROUND(x)) AS a FROM t", SQLTypes.Double, "double")
     assertDeclared("SELECT SUM(ROUND(n)) AS a FROM t", SQLTypes.BigInt, "long")
     assertDeclared("SELECT SUM(ROUND(x, 1)) AS a FROM t", SQLTypes.Double, "double")
+    // R-67: a negative scale over an INT / TINYINT is a BIGINT, and so are its MIN / MAX / SUM
+    assertDeclared("SELECT MAX(ROUND(n, -1)) AS a FROM t", SQLTypes.BigInt, "long")
+    assertDeclared("SELECT MIN(ROUND(ti, -1)) AS a FROM t", SQLTypes.BigInt, "long")
+    assertDeclared("SELECT SUM(ROUND(n, -1)) AS a FROM t", SQLTypes.BigInt, "long")
   }
 
   // D8 -- DuckDB's `RoundOperatorPrecision`: the magnitude divided by 10^-s, rounded, multiplied
@@ -230,31 +260,37 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
     } shouldBe Some("Math.pow(10, 5)")
   }
 
-  // A-39 -- a whole operand rounded out of its type's range fails the query; DuckDB v1.5.5's
-  // unchecked cast answers round(127::TINYINT, -1) = -126 and round(2147483647::INTEGER, -1) =
-  // -2147483646 (T0-5), never copied
-  it should "fail a whole operand rounded out of its type's range, in a query only" in {
+  // A-39, R-67 -- a BIGINT rounded out of its range fails the query, where DuckDB v1.5.5 wraps it
+  // (round(9223372036854775807::BIGINT, -1) = -9223372036854775800, run 2026-11-03), never copied.
+  // A narrower integer is a BIGINT at a negative scale, which its rounded value always fits: no
+  // test, nothing refused (ROUND(CAST(2147483647 AS INT), -1) answers 2147483650)
+  it should "fail a BIGINT rounded out of its range, in a query only" in {
+    val big = painlessOf("SELECT ROUND(big, -1) AS a FROM t")
+    big should include("< -9.223372036854775808E18 || ")
+    big should include(">= 9.223372036854775808E18")
+    big should include("new IllegalArgumentException('Overflow in ROUND of integer')")
+    painlessOf("SELECT ROUND(big, -19) AS a FROM t") should include(
+      "new IllegalArgumentException('Overflow in ROUND of integer')"
+    )
     for (
-      (operand, bounds) <- List(
-        "ti"  -> "< -128.0 || ",
-        "sm"  -> "< -32768.0 || ",
-        "n"   -> "< -2147483648.0 || ",
-        "big" -> "< -9.223372036854775808E18 || "
+      sql <- List(
+        "SELECT ROUND(ti, -1) AS a FROM t",
+        "SELECT ROUND(sm, -1) AS a FROM t",
+        "SELECT ROUND(n, -1) AS a FROM t",
+        "SELECT ROUND(n, -5) AS a FROM t",
+        "SELECT ROUND(CAST(2147483647 AS INT), -1) AS a FROM t",
+        "SELECT ROUND(CAST(127 AS TINYINT), -1) AS a FROM t",
+        // a DOUBLE and a REAL have no such range
+        "SELECT ROUND(x, -1) AS a FROM t",
+        "SELECT ROUND(r, -1) AS a FROM t"
       )
-    ) {
-      val sql = s"SELECT ROUND($operand, -1) AS a FROM t"
+    ) withClue(s"[$sql] ") {
       val painless = painlessOf(sql)
-      withClue(s"[$sql] ") {
-        painless should include(bounds)
-        painless should include("new IllegalArgumentException('Overflow in ROUND of integer')")
-      }
+      painless should not include "Overflow"
+      painless should include("Math.round(Math.abs(")
     }
-    painlessOf("SELECT ROUND(big, -1) AS a FROM t") should include(">= 9.223372036854775808E18")
-    // a DOUBLE and a REAL have no such range
-    painlessOf("SELECT ROUND(x, -1) AS a FROM t") should not include "Overflow"
-    painlessOf("SELECT ROUND(r, -1) AS a FROM t") should not include "Overflow"
     // an ingest processor keeps the bytes it had (D8's form, no guard)
-    val (s, _) = resolved("SELECT ROUND(n, -1) AS a FROM t")
+    val (s, _) = resolved("SELECT ROUND(big, -1) AS a FROM t")
     val field = s.update(Some(schema)).scriptFields.filterNot(_.isAggregation).head
     field.painless(
       Some(PainlessContext(context = PainlessContextType.Processor))

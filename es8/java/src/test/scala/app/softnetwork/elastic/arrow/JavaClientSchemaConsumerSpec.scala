@@ -324,8 +324,8 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
           rows.foreach { row =>
             names.zip(s.slots).foreach {
               case (name, Some(slot)) =>
-                // a canonical leg row: its readers leave it unchanged (DATEDIFF a Long, ROUND(n)
-                // an Integer, n an Integer)
+                // a canonical leg row: its readers leave it unchanged (DATEDIFF a Long,
+                // ROUND(n, -1) a Long (R-67), n an Integer)
                 val cell = row.getOrElse(name, null)
                 slot.read(cell) shouldBe cell
               case _ =>

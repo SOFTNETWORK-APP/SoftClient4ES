@@ -307,22 +307,24 @@ package object math {
             else s"Math.signum($x) * ${mathOp.painless(context)}(Math.abs($x) * $p) / $p"
           val value =
             if (scale.exists(_ != 0))
-              arg.reportedType match {
+              reportedType match {
                 case _: SQLReal => s"Double.valueOf((double) (float) ($rounded))"
-                case whole if scale.exists(_ < 0) && SQLTypeUtils.convertsArms(context) =>
-                  wholeRange(whole) match {
-                    // A-39 -- a whole number rounded out of its type's range fails the query, as
-                    // DuckDB's `TryMultiply` / `TryCast` fail it, where v1.5.5's unchecked cast
-                    // wraps (`ROUND(127::TINYINT, -1)` = -126) and the column would read a second
-                    // class. In a query only, the `domain` gate: an ingest processor and a
-                    // transform keep their bytes.
-                    case Some((lo, hi)) =>
-                      val r = s"($rounded)"
-                      s"($r < $lo || $r $hi ? Double.valueOf(Optional.empty().orElseThrow(() -> " +
-                      s"new IllegalArgumentException('Overflow in ROUND of integer')).toString())" +
-                      s" : Double.valueOf($r))"
-                    case None => s"Double.valueOf($rounded)"
-                  }
+                // A-39 -- a BIGINT rounded out of its range fails the query, where DuckDB 1.5.5's
+                // unchecked arithmetic wraps (`round(9223372036854775807::BIGINT, -1)` =
+                // -9223372036854775800) and the column would read a second class. Only a BIGINT
+                // operand can leave the BIGINT a negative scale declares ([[reportedType]]): a
+                // narrower integer's rounded value always fits it, so it is not tested. In a query
+                // only, the `domain` gate: an ingest processor and a transform keep their bytes.
+                case _: SQLBigInt
+                    if scale.exists(_ < 0) && arg.reportedType.isInstanceOf[SQLBigInt] &&
+                      SQLTypeUtils.convertsArms(context) =>
+                  // the bounds of a `long` as a `double`: the lower one inclusive, the upper one
+                  // excluded (`2^63` is no `long`)
+                  val r = s"($rounded)"
+                  s"($r < -9.223372036854775808E18 || $r >= 9.223372036854775808E18 ? " +
+                  "Double.valueOf(Optional.empty().orElseThrow(() -> " +
+                  "new IllegalArgumentException('Overflow in ROUND of integer')).toString())" +
+                  s" : Double.valueOf($r))"
                 case _ => s"Double.valueOf($rounded)"
               }
             else s"Long.valueOf((long) ($rounded))"
@@ -330,28 +332,25 @@ package object math {
         case _ => throw new IllegalArgumentException("Round function requires exactly one argument")
       }
 
-    /** The range of a whole-number type as Painless bounds of a `double`: the lower one inclusive,
-      * the upper one with its own comparison (BIGINT's `2^63` is no `long`, so it is excluded).
-      */
-    private def wholeRange(t: SQLType): Option[(String, String)] = t match {
-      case _: SQLTinyInt  => Some(("-128.0", "> 127.0"))
-      case _: SQLSmallInt => Some(("-32768.0", "> 32767.0"))
-      case _: SQLInt      => Some(("-2147483648.0", "> 2147483647.0"))
-      case _: SQLBigInt   => Some(("-9.223372036854775808E18", ">= 9.223372036854775808E18"))
-      case _              => None
-    }
-
     /** ROUND takes its operand's type, as DuckDB's overloads do (`RoundFun`): an integer type is
-      * itself (`NopFunction`, `RoundIntegerOperator`), a REAL a REAL, a DOUBLE a DOUBLE, at every
-      * scale. An operand of no known number type (no schema, NUMERIC) keeps NUMERIC. A DECIMAL cast
-      * is a DOUBLE in core, so ROUND over it is DOUBLE.
+      * itself (`NopFunction`, `RoundIntegerOperator`), a REAL a REAL, a DOUBLE a DOUBLE. An operand
+      * of no known number type (no schema, NUMERIC) keeps NUMERIC. A DECIMAL cast is a DOUBLE in
+      * core, so ROUND over it is DOUBLE.
       *
-      * 🔴 The type REPORTED, read by `describe`, the readers, set-operation slots, GROUP BY key
-      * levels, aggregates and `CREATE TABLE … AS SELECT`; `outputType` stays NUMERIC, so the
-      * Painless keeps its bytes (a whole scale answers a `Long`, a DOUBLE column reads it as a
-      * `Double`).
+      * 🔴 To tens, hundreds, … (a negative scale) a TINYINT, SMALLINT or INT is a BIGINT: its
+      * rounded value may leave its own type (`ROUND(CAST(2147483647 AS INT), -1)` is 2147483650,
+      * `ROUND(CAST(127 AS TINYINT), -1)` 130) but always fits a BIGINT, so the value is answered,
+      * one class per column, where DuckDB 1.5.5 keeps the operand's type and wraps (-2147483646,
+      * -126). Only the label differs from DuckDB's. The scale is a literal (`Option[Int]`), known
+      * when the statement is parsed.
+      *
+      * The type REPORTED, read by `describe`, the readers, set-operation slots, GROUP BY key
+      * levels, aggregates, `CREATE TABLE … AS SELECT` and the overflow test of [[toPainlessCall]];
+      * `outputType` stays NUMERIC, so the Painless keeps its bytes (a whole scale answers a `Long`,
+      * a DOUBLE column reads it as a `Double`).
       */
     override def reportedType: SQLType = arg.reportedType match {
+      case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt if scale.exists(_ < 0)   => SQLTypes.BigInt
       case whole @ (_: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt) => whole
       case _: SQLReal                                                          => SQLTypes.Real
       case _: SQLDouble                                                        => SQLTypes.Double
