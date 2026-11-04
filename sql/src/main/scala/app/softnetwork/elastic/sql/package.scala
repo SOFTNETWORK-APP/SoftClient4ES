@@ -1912,7 +1912,9 @@ package object sql {
       */
     def readingOf(literal: Token, against: => SQLType): Option[Reading] =
       stringLiteral(literal).flatMap { text =>
-        against match {
+        // SCHEMA-6 (D7): beside an `ARRAY<X>` column a literal is read as an X -- a term or range
+        // query matches any element of the field
+        SQLTypeUtils.operandType(against) match {
           case n: SQLNumeric => numberOf(text, n)
           case t: SQLTemporal if t != SQLTypes.Time && t != SQLTypes.Temporal =>
             temporalOf(text, t)
@@ -1936,12 +1938,18 @@ package object sql {
     def comparedType(reading: Option[Reading], operand: Token): SQLType =
       reading match {
         case Some(r) => r.sqlType
-        case None    => declaredTypeOf(operand)
+        // SCHEMA-6 (D7): an `ARRAY<X>` column is compared as its element X -- Elasticsearch matches
+        // a term or a range against each element, Painless reads one (`doc['f'].value`)
+        case None => SQLTypeUtils.operandType(declaredTypeOf(operand))
       }
 
-    /** The two compared types ([[comparedType]]), when they cannot be compared. */
+    /** The two compared types ([[comparedType]]), when they cannot be compared. Each side is judged
+      * as the element Elasticsearch compares (SCHEMA-6 D7, `SQLTypeUtils.operandType`): an
+      * `ARRAY<INT>` column against a number is an INT against it.
+      */
     def mismatch(left: SQLType, right: SQLType): Option[(SQLType, SQLType)] =
-      if (comparable(left, right)) None else Some((left, right))
+      if (comparable(SQLTypeUtils.operandType(left), SQLTypeUtils.operandType(right))) None
+      else Some((left, right))
 
     /** The Painless a NUMBER or a BOOLEAN reading renders: the literal itself. */
     def scalarPainless(reading: Reading): Option[String] = reading match {

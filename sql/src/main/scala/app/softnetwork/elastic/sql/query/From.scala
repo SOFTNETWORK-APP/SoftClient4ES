@@ -492,6 +492,129 @@ object DerivedTable {
     }
   }
 
+  /** SCHEMA-6 (D10) -- the table a derived table's body projects, each column typed as the
+    * projection item of the body that projects it ([[MultiSearch.fieldType]], the result schema's
+    * and the set operations' rule, #292), built by [[MultiSearch.columnOf]] and named by the body's
+    * output names: a `UNION ALL` body's columns typed over its branches
+    * ([[MultiSearch.columnTypes]], `Left` when the body is refused) under its first branch's names;
+    * a FROM-less body's items.
+    *
+    * `Right(None)` for an OPAQUE body, whose columns stay `ANY` (R-7): a bare `SELECT *` (no
+    * projection to type), a JOIN or several tables. The body is typed as it is: attach its own
+    * sources first ([[attach]]).
+    */
+  private[elastic] def typedSchema(dt: DerivedTable): Either[String, Option[Schema]] = {
+    def single(s: SingleSearch): Option[Seq[(String, MultiSearch.SetOperationType)]] =
+      if (
+        s.from.tables.size != 1 ||
+        s.from.tables.exists(_.joins.exists(_.isInstanceOf[StandardJoin])) ||
+        s.select.fields.exists(bareStar)
+      ) None
+      else
+        projected(s).map(names => names.zip(s.select.fields.map(f => MultiSearch.fieldType(f, s))))
+    val columns: Either[String, Option[Seq[(String, MultiSearch.SetOperationType)]]] =
+      dt.query match {
+        case s: SingleSearch => Right(single(s))
+        case m: MultiSearch =>
+          m.requests.headOption
+            .filterNot(_.select.fields.exists(bareStar))
+            .flatMap(projected) match {
+            case Some(names) =>
+              MultiSearch
+                .columnTypes(m.requests, m.resolvedOperators)
+                .map(typed =>
+                  if (typed.size == names.size) Some(names.zip(typed.map(_.result))) else None
+                )
+            case None => Right(None)
+          }
+        case f: FromlessSelect =>
+          Right(Some(f.columnNames.zip(f.select.fields.map(f => MultiSearch.fieldType(f)))))
+        case _ => Right(None)
+      }
+    columns.map(_.map { typed =>
+      app.softnetwork.elastic.sql.schema.Table(
+        dt.name,
+        typed.map { case (name, t) => MultiSearch.columnOf(name, t) }.toList
+      )
+    })
+  }
+
+  /** SCHEMA-6 (D10) -- `s` with every FROM and JOIN source typed: each derived table's body -- a
+    * CTE reference is one -- attached first, innermost first, then its [[typedSchema]] registered
+    * under its alias (the key `From.tableAliases` gives it), and as `schema` when it is the main
+    * source; every index source with `lookup`'s schema. `Left` when a `UNION ALL` body is refused,
+    * with that refusal. Pure: nothing is executed, routed or refused beyond the typing, and plain
+    * `update` never types a derived table (R-6). WHERE-subquery bodies are not visited (A-24).
+    */
+  private[elastic] def attach(
+    s: SingleSearch,
+    lookup: Seq[String] => Option[Schema]
+  ): Either[String, SingleSearch] = {
+    def attachBody(body: DqlStatement): Either[String, DqlStatement] =
+      body match {
+        case inner: SingleSearch => attach(inner, lookup)
+        case m: MultiSearch =>
+          m.requests
+            .foldLeft[Either[String, Vector[SingleSearch]]](Right(Vector.empty)) {
+              case (Right(done), branch) => attach(branch, lookup).map(done :+ _)
+              case (refused, _)          => refused
+            }
+            .map(branches => m.copy(requests = branches))
+        case other => Right(other)
+      }
+    def attachDerived(dt: DerivedTable): Either[String, (DerivedTable, Option[Schema])] =
+      for {
+        body  <- attachBody(dt.query)
+        typed <- typedSchema(dt.copy(query = body))
+      } yield (dt.copy(query = body), typed)
+    val schemas = scala.collection.mutable.LinkedHashMap.empty[String, Schema]
+    def register(key: String, schema: Option[Schema]): Unit =
+      schema.foreach(t => schemas.put(key, t))
+    def attachJoins(joins: Seq[Join]): Either[String, Vector[Join]] =
+      joins.foldLeft[Either[String, Vector[Join]]](Right(Vector.empty)) {
+        case (Right(done), sj: StandardJoin) =>
+          sj.source match {
+            case dt: DerivedTable =>
+              attachDerived(dt).map { case (attached, typed) =>
+                register(attached.name, typed)
+                done :+ sj.copy(source = attached)
+              }
+            case other =>
+              register(other.name, lookup(Seq(other.name)))
+              Right(done :+ sj)
+          }
+        case (Right(done), other) => Right(done :+ other)
+        case (refused, _)         => refused
+      }
+    val attachedTables =
+      s.from.tables.foldLeft[Either[String, Vector[Table]]](Right(Vector.empty)) {
+        case (Right(done), table) =>
+          val source: Either[String, Table] = table.derived match {
+            case Some(dt) =>
+              attachDerived(dt).map { case (attached, typed) =>
+                register(attached.name, typed)
+                table.copy(derived = Some(attached))
+              }
+            case None =>
+              register(table.name, lookup(Seq(table.name)))
+              Right(table)
+          }
+          for {
+            t     <- source
+            joins <- attachJoins(t.joins)
+          } yield done :+ t.copy(joins = joins)
+        case (refused, _) => refused
+      }
+    attachedTables.map { tables =>
+      val attached = s.copy(from = s.from.copy(tables = tables))
+      val main = schemas.get(attached.from.mainTable.name).orElse(attached.schema)
+      attached.copy(schema = main, schemas = attached.schemas ++ schemas).update()
+    }
+  }
+
+  private def bareStar(f: Field): Boolean =
+    f.identifier.name == "*" && f.identifier.functions.isEmpty
+
   /** A bare `SELECT *` projects an un-enumerable list; anything else projects its items' output
     * names. The `*` test is `identifierName` with no functions — the same spelling
     * `SearchApi.extractOutputFieldNames` uses.

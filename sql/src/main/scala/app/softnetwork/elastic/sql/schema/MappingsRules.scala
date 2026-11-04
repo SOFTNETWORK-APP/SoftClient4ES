@@ -42,9 +42,20 @@ object MappingsRules {
     "eager_global_ordinals"
   )
 
+  /** A column's declared type and its sub-fields' declared order in the table's `_meta`
+    * (`_meta.columns.<c>[.multi_fields.<f>]*.data_type` / `.field_order`): written in place with
+    * the mapping, nothing indexed changes (SCHEMA-6 D4). A declared type whose Elasticsearch type
+    * changes is a column diff of its own (`ColumnTypeChanged`, `FieldAltered`), never this key
+    * alone. Every other `_meta` key keeps its safety.
+    */
+  private val declarationKey =
+    """_meta\.columns\.[^.]+(\.multi_fields\.[^.]+)*\.(data_type|field_order)""".r
+
   def isSafe(key: String): Boolean = {
 
     if (safeOptions.contains(key)) return true
+
+    if (declarationKey.pattern.matcher(key).matches()) return true
 
     if (unsafeOptions.contains(key)) return false
 

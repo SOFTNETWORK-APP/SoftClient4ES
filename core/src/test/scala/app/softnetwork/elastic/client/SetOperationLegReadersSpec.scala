@@ -238,13 +238,14 @@ class SetOperationLegReadersSpec extends AnyFlatSpec with Matchers {
       if got != shown(value)
     } yield s"$item <- $json read $got instead of ${shown(value)}"
     wrong shouldBe empty
-    // a struct's ListMap keeps its order; a TIMESTAMP is in UTC
+    // a struct's ListMap keeps its order -- its column's declared order (SCHEMA-6 D9; by name
+    // before); a TIMESTAMP is in UTC
     legs.head.get
       .apply(12)(received(row(12)))
       .asInstanceOf[ListMap[String, Any]]
       .keys
       .toSeq shouldBe
-    Seq("e", "n", "p", "s")
+    Seq("n", "e", "s", "p")
     legs.head.get
       .apply(8)(received(row(8)))
       .asInstanceOf[ZonedDateTime]

@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql.query
 
 import app.softnetwork.elastic.sql.{ComparisonRule, Identifier}
-import app.softnetwork.elastic.sql.function.aggregate.AggregateFunction
+import app.softnetwork.elastic.sql.function.aggregate.{AggregateFunction, ArrayAgg}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
@@ -221,7 +221,12 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
         val (produced, column) = assertOneType(sql)
         withClue(s"[$sql] ") {
           produced shouldBe expected
-          SQLTypeUtils.elasticType(column.dataType) shouldBe kindOf(expected).es
+          // a list maps to its element's Elasticsearch type (SCHEMA-6 D2)
+          val es = expected match {
+            case SQLTypes.Array(element) => kindOf(element).es
+            case scalar                  => kindOf(scalar).es
+          }
+          SQLTypeUtils.elasticType(column.dataType) shouldBe es
         }
       case Agreed(_, holds) => holds(assertOneType(sql)._1)
       case Refused          => ()
@@ -295,10 +300,10 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
     "SELECT LAST_VALUE(k) OVER (PARTITION BY g ORDER BY n) AS a FROM t" -> Pinned(
       SQLTypes.Keyword
     ),
-    // DuckDB answers VARCHAR[], a list; core reports the element's type (which is also how
-    // Elasticsearch maps an array). Pre-existing.
-    "SELECT ARRAY_AGG(k) OVER (PARTITION BY g) AS a FROM t" -> Agreed(
-      "ARRAY_AGG: DuckDB VARCHAR[], core the element type"
+    // DuckDB answers VARCHAR[], a list, and so does core (SCHEMA-6 D8, A-21): ARRAY<KEYWORD>,
+    // mapped `keyword` as Elasticsearch maps a list
+    "SELECT ARRAY_AGG(k) OVER (PARTITION BY g) AS a FROM t" -> Pinned(
+      SQLTypes.Array(SQLTypes.Keyword)
     ),
     "SELECT ROW_NUMBER() OVER (PARTITION BY g ORDER BY n) AS a FROM t" -> Pinned(SQLTypes.BigInt),
     "SELECT RANK() OVER (PARTITION BY g ORDER BY n) AS a FROM t"       -> Pinned(SQLTypes.BigInt)
@@ -349,6 +354,36 @@ class AggregateReportedTypeSpec extends AnyFlatSpec with Matchers {
       withClue(s"[$aggregate] vs [$chain] ") {
         produced shouldBe chainId.reportedType
         column.dataType shouldBe ctas(chainSearch).dataType
+      }
+    }
+  }
+
+  // SCHEMA-6 D12, the seam with SCHEMA-5: ARRAY_AGG collects what its chain REPORTS (D8), so over
+  // ROUND, DATEDIFF or a date part it is a list of SCHEMA-5's width -- `ARRAY_AGG(ROUND(n, -1))`
+  // over an INT a list of BIGINT, never of NUMERIC. ARRAY_AGG's grammar takes a column
+  // (`array_agg`), so the chain is composed here as the parser composes a window function over an
+  // identifier (`identifierWithWindowFunction`): the seam is `outputTypeOf`, which both read.
+  it should "declare ARRAY_AGG over ROUND, DATEDIFF or a date part a list of its type (D12)" in {
+    for (
+      (chain, element) <- List(
+        "ROUND(n, -1)"    -> SQLTypes.BigInt,
+        "ROUND(i8, -2)"   -> SQLTypes.BigInt,
+        "ROUND(l, -1)"    -> SQLTypes.BigInt,
+        "ROUND(n)"        -> SQLTypes.Int,
+        "ROUND(x, 2)"     -> SQLTypes.Double,
+        "ROUND(r, 1)"     -> SQLTypes.Real,
+        "DATEDIFF(d, de)" -> SQLTypes.BigInt,
+        "YEAR(d)"         -> SQLTypes.BigInt
+      )
+    ) {
+      val (_, chainId) = resolved(s"SELECT $chain AS a FROM t")
+      val collected = chainId.withFunctions(
+        ArrayAgg(chainId, Seq.empty, None) +: chainId.functions
+      )
+      withClue(s"[ARRAY_AGG($chain)] ") {
+        chainId.reportedType shouldBe element
+        AggregateFunction.outputTypeOf(collected) shouldBe Some(SQLTypes.Array(element))
+        collected.reportedType shouldBe SQLTypes.Array(element)
       }
     }
   }

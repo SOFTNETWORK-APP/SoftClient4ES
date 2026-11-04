@@ -308,8 +308,13 @@ package object function {
     /** [[argTypes]] 's counterpart for [[PainlessScript.reportedType]]: each argument's REPORTED
       * type, so a function that derives its own from its arguments can do so without the runtime
       * collapse leaking in from the leaves.
+      *
+      * An argument is read as Painless reads it (SCHEMA-6 D7, `SQLTypeUtils.operandType`): an
+      * `ARRAY<X>` column passed to a scalar function is one X element (`doc['f'].value`), so
+      * `NULLIF(arr, 0)` over an `ARRAY<INT>` reports INT and its value is never wrapped in a list.
       */
-    def reportedArgTypes: List[SQLType] = args.map(_.reportedType)
+    def reportedArgTypes: List[SQLType] =
+      args.map(a => app.softnetwork.elastic.sql.`type`.SQLTypeUtils.operandType(a.reportedType))
 
     def argsSeparator: String = ", "
 

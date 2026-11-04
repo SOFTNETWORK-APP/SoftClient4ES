@@ -102,7 +102,8 @@ private[client] object AggregateReading {
           single.fieldAliases,
           dates,
           HitReading.Default,
-          single.sources.headOption.getOrElse("")
+          single.sources.headOption.getOrElse(""),
+          HitReading.remedyOf(single.schema)
         )
       val keys = new java.util.HashMap[String, KeyReader]()
       single.buckets.foreach { b =>
@@ -110,7 +111,8 @@ private[client] object AggregateReading {
         if (name.nonEmpty && !keys.containsKey(name)) {
           val reader =
             if (instants.contains(name)) InstantKey
-            else keyReader(name, MultiSearch.bucketType(b), dates, readers)
+            // a GROUP BY level's key by its type, a window level's by its partition type (A-28)
+            else keyReader(name, MultiSearch.levelType(single, b), dates, readers)
           if (reader ne null) keys.put(name, reader)
         }
       }
@@ -133,7 +135,7 @@ private[client] object AggregateReading {
             case AggregationType.Count | AggregationType.Sum | AggregationType.Avg |
                 AggregationType.Min | AggregationType.Max | AggregationType.BucketScript =>
               owners.get(name).foreach { field =>
-                val reader = metricReader(MultiSearch.fieldType(field))
+                val reader = metricReader(MultiSearch.fieldType(field, single))
                 if (reader ne null) metrics.put(name, reader)
               }
             case AggregationType.FirstValue | AggregationType.LastValue |
@@ -500,6 +502,11 @@ private[client] object PartitionKeys {
   def of(request: SingleSearch, context: ConversionContext): PartitionKeys = {
     val partitions = request.windowFunctions.flatMap(wf => wf.partitionBy.zip(wf.buckets))
     val names = partitions.map(_._1.aliasOrName).distinct.toArray
+    // SCHEMA-6 (A-28) -- the base side of a selected ARRAY partition column: its value as read
+    val asRead: java.util.HashMap[String, String] = context match {
+      case s: SchemaColumns => s.reading.asReadKeys
+      case _                => null
+    }
     val instants: java.util.HashMap[String, String] = context match {
       case s: SchemaColumns => s.reading.instants
       case _                => null
@@ -507,11 +514,12 @@ private[client] object PartitionKeys {
     // the base side of an instant column reads its doc value's key; the cache side, whose reading
     // holds no instant, reads the name, under which its key reader put the bucket's instant
     val rowKeys: Array[String] =
-      if ((instants eq null) || instants.isEmpty) names
+      if (((instants eq null) || instants.isEmpty) && ((asRead eq null) || asRead.isEmpty)) names
       else
         names.map { name =>
-          val key = instants.get(name)
-          if (key eq null) name else key
+          val key = if (instants eq null) null else instants.get(name)
+          val asReadKey = if ((key ne null) || (asRead eq null)) null else asRead.get(name)
+          if (key ne null) key else if (asReadKey ne null) asReadKey else name
         }
     val keyOf = new Array[Any => Any](names.length)
     if (context.isInstanceOf[SchemaColumns]) {
@@ -520,7 +528,7 @@ private[client] object PartitionKeys {
         val name = names(i)
         if (rowKeys(i) eq name)
           partitions.find(_._1.aliasOrName == name).foreach { case (_, bucket) =>
-            MultiSearch.bucketType(bucket).sqlType match {
+            MultiSearch.partitionType(bucket).sqlType match {
               case SQLTypes.Timestamp | SQLTypes.Time => keyOf(i) = toMillis
               case _                                  =>
             }
@@ -591,7 +599,7 @@ private[client] object PartitionKeys {
       !id.nested && id.functions.isEmpty && name.nonEmpty && name.indexOf('.') < 0 &&
       bucket.name == name
     plain && {
-      val t = MultiSearch.bucketType(bucket)
+      val t = MultiSearch.partitionType(bucket)
       t.sqlType match {
         case SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.Time =>
           DateRoute.of(t.sqlType, t.format, dates).isInstanceOf[DateRoute.AsStored]
@@ -604,6 +612,12 @@ private[client] object PartitionKeys {
     * column's name, and dropped by the final projection.
     */
   private[client] def instantKey(name: String): String = "\u0000instant:" + name
+
+  /** SCHEMA-6 (A-28) -- the base row key a selected `ARRAY` partition column's value is read under
+    * AS READ (0.24.0's reading, the one its window aggregation key has), beside the column's typed
+    * value: led by a NUL, so no column's name, and dropped by the final projection.
+    */
+  private[client] def asReadKey(name: String): String = "\u0000asread:" + name
 
   /** The instant of a base row's `epoch_millis` doc value (a one-element array of its text): the
     * epoch milliseconds' decimal text, the spelling of [[AggregateReading]] 's instant key -- any

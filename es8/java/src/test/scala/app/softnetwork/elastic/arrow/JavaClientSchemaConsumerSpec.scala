@@ -370,4 +370,46 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     }
     counts shouldBe docs.size.toLong
   }
+
+  // SCHEMA-6 (D11, R-6): the relational engine's typing call, as arrow will make it at SCHEMA-10 --
+  // its branches with their schemas attached, then `attachDerived` for the derived ones, then
+  // `columnTree` over them. Arrow's own call today leaves a derived branch unattached: ANY.
+  "The relational engine" should "type a derived branch through attachDerived, unattached ANY (D11)" in {
+    val sql =
+      s"SELECT ts AS k FROM $table UNION ALL SELECT q.c1 FROM (SELECT n AS c1 FROM $table) q"
+    val statement = Parser(sql) match {
+      case Right(m: MultiSearch) => m
+      case other                 => fail(s"[$sql] $other")
+    }
+    // unattached: the derived column is ANY, nothing refused (R-6, as arrow runs today)
+    val unattached = statement.requests.map(_.update())
+    MultiSearch.columnTree(unattached, statement.resolvedOperators).isRight shouldBe true
+    MultiSearch
+      .columnTypes(unattached, statement.resolvedOperators)
+      .map(_.head.branches.last.map(_.sqlType)) shouldBe Right(
+      Some(app.softnetwork.elastic.sql.`type`.SQLTypes.Any)
+    )
+    // attached: the derived column is INT, the TIMESTAMP beside it #420 rule 1's refusal
+    client.attachDerived(statement) match {
+      case ElasticSuccess(attached) =>
+        MultiSearch.columnTree(attached.requests, attached.resolvedOperators) shouldBe Left(
+          "Set operation branches must project compatible types at column 1: branch 1 'k' is " +
+          "TIMESTAMP, branch 2 'c1' is INT"
+        )
+      case other => fail(s"attachDerived: $other")
+    }
+    // a KEYWORD beside it answers, typed VARCHAR (DuckDB 1.5.5)
+    Parser(
+      s"SELECT k FROM $table UNION ALL SELECT q.c1 FROM (SELECT n AS c1 FROM $table) q"
+    ) match {
+      case Right(m: MultiSearch) =>
+        client.attachDerived(m) match {
+          case ElasticSuccess(attached) =>
+            MultiSearch.columnTree(attached.requests, attached.resolvedOperators).isRight shouldBe
+              true
+          case other => fail(s"attachDerived: $other")
+        }
+      case other => fail(s"$other")
+    }
+  }
 }

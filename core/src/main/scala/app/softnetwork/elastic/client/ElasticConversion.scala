@@ -550,6 +550,32 @@ trait ElasticConversion {
       if (found) Some(current) else None
     }
 
+  /** SCHEMA-6 (A-26) -- the values the path `segments` holds in `map` where a list stands on it (a
+    * list of objects): every list met flattened, in order, as Elasticsearch indexes the path; one
+    * value is that value, several a `List`, none `None`. A read with no reader of its own (a
+    * ranking window's sort key), as read.
+    */
+  private[client] def collectedValue(
+    segments: Array[String],
+    map: Map[String, Any]
+  ): Option[Any] = {
+    val out = ListBuffer.empty[Any]
+    def walk(v: Any, i: Int): Unit = v match {
+      case null      => ()
+      case l: Seq[_] => l.foreach(walk(_, i))
+      case m: Map[_, _] if i < segments.length =>
+        m.asInstanceOf[Map[String, Any]].get(segments(i)).foreach(walk(_, i + 1))
+      case other if i == segments.length => out += other
+      case _                             => ()
+    }
+    walk(map, 0)
+    out.toList match {
+      case Nil        => None
+      case one :: Nil => Some(one)
+      case several    => Some(several)
+    }
+  }
+
   /** The value a row carries under a FLAT key, when it holds one (SCHEMA-12, A-3). A flat `null` is
     * no value: Elasticsearch indexes none for it (a document `{"obj.a": null, "obj": {"a": 4}}`
     * holds 4 in doc values, the `fields` API, SUM and COUNT), so the nested spelling is read
@@ -757,7 +783,11 @@ trait ElasticConversion {
       } catch {
         case cell: HitReading.MultiValuedCell =>
           throw new IllegalArgumentException(
-            HitReading.multiValuedMessage(cell, Option(hit.get("_id")).map(_.asText()))
+            HitReading.multiValuedMessage(
+              cell,
+              Option(hit.get("_id")).map(_.asText()),
+              Option(hit.get("_index")).map(_.asText())
+            )
           )
       }
     }
@@ -786,6 +816,9 @@ trait ElasticConversion {
   ): ListMap[String, Any] = {
     val entries = ListMap.newBuilder[String, Any]
     var folds: ListBuffer[(String, String, JsonNode)] = null
+    // SCHEMA-6 (A-26) -- the selected paths of a parent read whole that holds a list of objects
+    var collectedPaths: ListBuffer[(String, Any)] = null
+    val listPaths = reading.listPaths
     val it = node.properties().iterator()
     while (it.hasNext) {
       val e = it.next()
@@ -796,6 +829,22 @@ trait ElasticConversion {
           if ((ignored ne null) && ignored.contains(key)) reading.onIgnored(key) else null
         val value = if (onIgnored ne null) onIgnored(e.getValue) else reader(e.getValue)
         entries += fieldAliases.getOrElse(key, key) -> value
+        // SCHEMA-6 (A-28) -- a selected ARRAY partition column's value as read, under the row key
+        // the window join reads
+        if (!reading.asReadKeys.isEmpty) {
+          val asReadKey = reading.asReadKeys.get(key)
+          if (asReadKey ne null) entries += asReadKey -> jsonNodeToAny(e.getValue, fieldAliases)
+        }
+        if (!listPaths.isEmpty && e.getValue.isArray) {
+          val selected = listPaths.get(key)
+          if (selected ne null) {
+            if (collectedPaths eq null) collectedPaths = ListBuffer.empty
+            selected.foreach { path =>
+              val values = HitReading.collected(e.getValue, path.segments)
+              collectedPaths += path.key -> (if (values eq null) null else path.reader(values))
+            }
+          }
+        }
       } else {
         val parent = reading.foldsUnder(key)
         if (parent ne null) {
@@ -805,7 +854,15 @@ trait ElasticConversion {
           entries += fieldAliases.getOrElse(key, key) -> jsonNodeToAny(e.getValue, fieldAliases)
       }
     }
-    val row = entries.result()
+    val read = entries.result()
+    // a path collected under a list of objects answers under its own key, unless the hit holds a
+    // non-null flat value of it (A-3 precedence, `flatValue`)
+    val row =
+      if (collectedPaths eq null) read
+      else
+        collectedPaths.foldLeft(read) { case (acc, (key, value)) =>
+          if (ElasticConversion.flatValue(acc, key).isDefined) acc else acc + (key -> value)
+        }
     if (folds eq null) row
     else
       folds.foldLeft(row) { case (acc, (parent, key, value)) =>
@@ -2028,7 +2085,21 @@ trait ElasticConversion {
           val processedHits = hits.map { hit =>
             val source =
               if (byField eq null) extractSource(hit, fieldAliases)
-              else readElement(hit, fieldAliases, byField)
+              else
+                try readElement(hit, fieldAliases, byField)
+                catch {
+                  // SCHEMA-6 (D6) -- a several-valued scalar column of a top hit (FIRST_VALUE,
+                  // LAST_VALUE, ARRAY_AGG) fails as a row's does: the top hit's document and index,
+                  // and the ALTER that declares the column a list
+                  case cell: HitReading.MultiValuedCell =>
+                    throw new IllegalArgumentException(
+                      HitReading.multiValuedMessage(
+                        cell,
+                        Option(hit.get("_id")).map(_.asText()),
+                        Option(hit.get("_index")).map(_.asText())
+                      )
+                    )
+                }
             if (hasMultipleValues) {
               if (isRanking) {
                 val metadata = extractHitId(hit)

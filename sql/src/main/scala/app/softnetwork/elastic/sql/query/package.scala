@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLReal, SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLArray, SQLReal, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.operator.{
   AND,
   DIFF,
@@ -34,6 +34,7 @@ import app.softnetwork.elastic.sql.operator.{
 }
 import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.schema.{
+  nestedArrayRefusal,
   sqlConfig,
   validateScriptReferences,
   Column,
@@ -774,6 +775,12 @@ package object query {
       * Strings and `eq` only -- nothing here reads `Identifier.equals`.
       */
     private[sql] def bucketFor(identifier: Identifier): Option[Bucket] =
+      keyedBucketFor(identifier).map(_.bucket)
+
+    /** [[bucketFor]] 's decision with the bucket's kind: a GROUP BY key or a window level (SCHEMA-6
+      * A-27 reads it to type a GROUP BY key item).
+      */
+    private[query] def keyedBucketFor(identifier: Identifier): Option[KeyedBucket] =
       if (keyedBuckets.isEmpty) None
       else {
         val spelling = identifier.identifierName
@@ -790,7 +797,7 @@ package object query {
                   .orElse(identityRoute(leaf))
                   .orElse(today.filter(_.identity.forall(compatible(_, leaf))))
             }
-        chosen.map(_.bucket)
+        chosen
       }
 
     /** Story IDENT-4 -- the identity of a column reference for the bucket lookup: its CORRELATION
@@ -4163,47 +4170,130 @@ package object query {
     private def operandOf(branch: Int, field: Field): Operand =
       Operand(branch, field, declaredOperandType(field), identifierType(field.identifier))
 
+    /** The operand of `field`, an item of the statement `s` (SCHEMA-6 A-27): a GROUP BY key of `s`
+      * is typed by its key's type ([[bucketType]]: X for an `ARRAY<X>` column, Elasticsearch
+      * buckets the elements), declared and value type alike; every other item as [[operandOf]].
+      */
+    private def operandOf(branch: Int, field: Field, s: SingleSearch): Operand =
+      if (isGroupByKey(s, field)) {
+        val key = identifierType(field.identifier, element = true)
+        Operand(branch, field, SQLTypeUtils.operandType(declaredOperandType(field)), key)
+      } else operandOf(branch, field)
+
+    /** Whether `field` is a GROUP BY key of `s` (SCHEMA-6 A-27): the bucket its identifier resolves
+      * to ([[SingleSearch.keyedBucketFor]], the lookup that attaches it) is a GROUP BY level --
+      * never a window's PARTITION BY level, an aggregate or a window item.
+      */
+    private def isGroupByKey(s: SingleSearch, field: Field): Boolean =
+      s.groupBy.isDefined && !field.isAggregation && !field.identifier.hasWindow &&
+      s.keyedBucketFor(field.identifier).exists(_.groupByKey)
+
     /** The type of ONE identifier as a set operation types a projection item of it: its declared
       * type ([[declaredOperandType]]) at every depth, a bare column's date format included
       * ([[positionType]]).
       */
-    private def identifierType(id: Identifier): SetOperationType = {
+    private def identifierType(id: Identifier, element: Boolean = false): SetOperationType = {
       val column = id match {
         case g: GenericIdentifier if g.functions.isEmpty => g.col
         case _                                           => None
       }
-      positionType(declaredOperandType(id), column)
+      val declared = declaredOperandType(id)
+      positionType(if (element) SQLTypeUtils.operandType(declared) else declared, column)
     }
 
     /** SCHEMA-2b (B2) -- the type of the key of the aggregation level `b` (a GROUP BY level, a
       * window's PARTITION BY): the type a projection item of its identifier has ([[fieldType]]), so
       * the key of a selected level and its column are typed by ONE rule (#292).
+      *
+      * SCHEMA-6 (D7): an `ARRAY<X>` column's key is an X -- a terms aggregation buckets each
+      * element -- and a GROUP BY key item is typed by this rule (A-27). A window level reads
+      * [[partitionType]].
       */
-    private[elastic] def bucketType(b: Bucket): SetOperationType = identifierType(b.identifier)
+    private[elastic] def bucketType(b: Bucket): SetOperationType =
+      identifierType(b.identifier, element = true)
+
+    /** SCHEMA-6 (A-28) -- the type of the key of a window's PARTITION BY level `b`, read by every
+      * window-level consumer: `ANY` (read as read, as 0.24.0 read every list) when `b`'s column is
+      * declared `ARRAY` -- Elasticsearch puts a several-valued document in several partitions and
+      * DuckDB in one, so core answers neither --, else [[bucketType]].
+      */
+    private[elastic] def partitionType(b: Bucket): SetOperationType =
+      if (arrayLevel(b)) SetOperationType(SQLTypes.Any) else bucketType(b)
+
+    /** Whether the column of the aggregation level `b` is declared `ARRAY` (SCHEMA-6 A-28). */
+    private[elastic] def arrayLevel(b: Bucket): Boolean =
+      declaredOperandType(b.identifier).isInstanceOf[SQLArray]
+
+    /** The key type of the aggregation level `b` of `s`: a GROUP BY level's [[bucketType]], a
+      * window level's [[partitionType]] (SCHEMA-6 A-28).
+      */
+    private[elastic] def levelType(s: SingleSearch, b: Bucket): SetOperationType =
+      if (s.groupBy.exists(_.buckets.exists(_ eq b))) bucketType(b) else partitionType(b)
 
     /** SCHEMA-2 (D1) -- the type of ONE projection item, as a set operation types its position
       * ([[positionType]]): the result schema of a statement and the typing of its set-operation
-      * positions are this one rule (#292), never two.
+      * positions are this one rule (#292), never two. An item of no statement (a FROM-less one).
       */
     private[elastic] def fieldType(field: Field): SetOperationType =
       operandOf(0, field).valueType
+
+    /** [[fieldType]] of an item of the statement `s`: a GROUP BY key of `s` has its key's type
+      * (SCHEMA-6 A-27).
+      */
+    private[elastic] def fieldType(field: Field, s: SingleSearch): SetOperationType =
+      operandOf(0, field, s).valueType
 
     /** SCHEMA-2 (D1) -- each item a statement DECLARES with its type ([[fieldType]]); `None` for a
       * statement that projects a bare `*`, whose width is its mapping's.
       */
     private[elastic] def projectionTypes(s: SingleSearch): Option[Seq[(Field, SetOperationType)]] =
-      declared(s).map(_ => s.select.fieldsWithComputedAliases.map(f => f -> fieldType(f)))
+      declared(s).map(_ => s.select.fieldsWithComputedAliases.map(f => f -> fieldType(f, s)))
 
     /** SCHEMA-2 (D1) -- a mapped column's type, as [[positionType]] types it: `SELECT *`'s columns.
       */
     private[elastic] def columnType(c: Column): SetOperationType =
       positionType(c.dataType, Some(c))
 
+    /** SCHEMA-6 (D10) -- the column `name` of type `t`: the inverse of [[columnType]]
+      * (`columnType(columnOf(n, t)) == t`), so a derived table's column -- typed by the projection
+      * item of its body ([[fieldType]]) -- types an outer reference to it by the same rule. A
+      * `STRUCT`'s fields and a list of objects' element fields are its sub-fields, a temporal's
+      * date format its `format` option; a temporal of no format (an aggregate's) reads
+      * Elasticsearch's default one, as a mapped date does.
+      */
+    private[elastic] def columnOf(name: String, t: SetOperationType): Column = {
+      def formatted(of: SetOperationType): ListMap[String, Value[_]] =
+        of.format.fold(ListMap.empty[String, Value[_]])(spec =>
+          ListMap("format" -> StringValue(spec))
+        )
+      t.sqlType match {
+        case SQLTypes.GeoPoint => Column(name, SQLTypes.GeoPoint)
+        case SQLTypes.Struct =>
+          Column(
+            name,
+            SQLTypes.Struct,
+            multiFields = t.fields.map(f => columnOf(f.name, f.valueType)).toList
+          )
+        case array: SQLArray =>
+          val element = t.element.getOrElse(SetOperationType(array.elementType))
+          Column(
+            name,
+            array,
+            multiFields = element.fields
+              .filterNot(_ => element.sqlType == SQLTypes.GeoPoint)
+              .map(f => columnOf(f.name, f.valueType))
+              .toList,
+            options = formatted(element)
+          )
+        case scalar => Column(name, scalar, options = formatted(t))
+      }
+    }
+
     /** A declared type as a set operation types it, built once at every depth: a scalar folded
       * ([[unionOperandType]]); a list with its element's type; a `STRUCT` with its fields -- its
-      * column's, read from the schema, BY NAME: the schema read from a mapping holds an object's
-      * fields in no reliable order -- a list of objects' element too; a `GEO_POINT` as `{lat,
-      * lon}`. A `STRUCT` whose column is not known has no fields.
+      * column's, read from the schema, in the column's order ([[fieldsOf]]) -- a list of objects'
+      * element too; a `GEO_POINT` as `{lat, lon}`. A `STRUCT` whose column is not known has no
+      * fields.
       */
     private def positionType(declared: SQLType, column: Option[Column]): SetOperationType =
       declared match {
@@ -4232,8 +4322,11 @@ package object query {
         format = None
       )
 
+    /** A `STRUCT` column's fields in its column's order (SCHEMA-6 D9): the order it DECLARED them
+      * in when it carries `_meta.field_order`, else its mapping's (`IndexField.apply`).
+      */
     private def fieldsOf(column: Option[Column]): Seq[StructField] =
-      column.toSeq.flatMap(_.multiFields).sortBy(_.name).map { c =>
+      column.toSeq.flatMap(_.multiFields).map { c =>
         StructField(c.name, positionType(c.dataType, Some(c)))
       }
 
@@ -4565,7 +4658,7 @@ package object query {
         ) {
           case (Right(columns), pos) =>
             val leaves = requests.indices.map(branch =>
-              byBranch.get(branch).map(f => operandOf(branch, f(pos)))
+              byBranch.get(branch).map(f => operandOf(branch, f(pos), requests(branch)))
             )
             typeOf(tree, leaves) match {
               case Right(typed) =>
@@ -5458,6 +5551,9 @@ package object query {
         // the `schema` lazy val (`Table.update()`) during a parse that would not otherwise have
         // done so. Measured interleaved, 3 rounds: plain DDL 53.5-55.5 us control vs 55.4-56.4 us
         // branch -- overlapping, no signal; only `SCRIPT AS` DDL pays (204.6-208.4 -> 222.3-236.3).
+        // SCHEMA-6 (D2): a list of lists is refused before anything else, naming the column
+        case Right(cols) if cols.exists(nestedArrayRefusal(_).isDefined) =>
+          Left(cols.flatMap(nestedArrayRefusal).head)
         case Right(cols) if cols.exists(hasScript) => validateScriptReferences(schema)
         case Right(_)                              => Right(())
       }
@@ -5616,6 +5712,28 @@ package object query {
 
     lazy val pipeline: IngestPipeline =
       IngestPipeline(s"alter-$table-${Instant.now}", IngestPipelineType.Custom, processors)
+
+    /** SCHEMA-6 (D2): a column, a new type or a sub-field declared a list of lists is refused,
+      * naming the column -- `ADD COLUMN`, `SET DATA TYPE`, `SET FIELD` and `SET FIELDS` alike.
+      */
+    override def validate(): Either[String, Unit] =
+      statements.iterator
+        .flatMap {
+          case AddColumn(column, _)              => nestedArrayRefusal(column)
+          case AlterColumnType(name, newType, _) => nestedArrayRefusal(Column(name, newType))
+          case AlterColumnField(name, field, _) =>
+            nestedArrayRefusal(field).map(refusal => s"$name.$refusal")
+          case AlterColumnFields(name, fields, _) =>
+            fields.iterator
+              .flatMap(nestedArrayRefusal(_))
+              .map(refusal => s"$name.$refusal")
+              .toList
+              .headOption
+          case _ => None
+        }
+        .toList
+        .headOption
+        .toLeft(())
   }
 
   sealed trait AlterTableStatement extends Token {

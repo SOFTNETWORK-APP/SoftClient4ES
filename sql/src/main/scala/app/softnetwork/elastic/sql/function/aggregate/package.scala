@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql.function
 
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.query.{Bucket, BucketPath, Field, Limit, OrderBy, SingleSearch}
 import app.softnetwork.elastic.sql.{Expr, Identifier, Null, TokenRegex, Updateable}
 
@@ -67,6 +67,13 @@ package object aggregate {
       *     DATE))` is a DATE.
       *   - every other aggregate answers its own declared type when it has one (STDDEV and the
       *     percentiles are DOUBLE, the ranking windows BIGINT), else the aggregated chain's.
+      *   - `ARRAY_AGG` collects the values it aggregates: `ARRAY<X>` of the aggregated chain's
+      *     REPORTED type (SCHEMA-6 D8, A-21); a chain whose type is unknown stays unknown (R-7).
+      *
+      * A metric (`MIN`, `MAX`, `SUM`, every statistic) is computed by Elasticsearch over each
+      * ELEMENT of a list field, so over an `ARRAY<X>` column it reads X (SCHEMA-6 D7,
+      * `SQLTypeUtils.operandType`); `FIRST_VALUE`, `LAST_VALUE` and `ARRAY_AGG` return the top
+      * hits' `_source` values, the declared type.
       *
       * `None` when `aggregate` aggregates nothing.
       */
@@ -76,18 +83,27 @@ package object aggregate {
           aggregate
             .withFunctions(aggregate.functions.filterNot(_.isInstanceOf[AggregateFunction]))
             .reportedType
+        def aggregatedElement: SQLType = SQLTypeUtils.operandType(aggregated)
         function match {
           case COUNT | _: CountAgg => SQLTypes.BigInt
           case AVG | _: AvgAgg     => SQLTypes.Double
           case SUM | _: SumAgg =>
-            aggregated match {
+            aggregatedElement match {
               case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt =>
                 SQLTypes.BigInt
               case _ => SQLTypes.Double
             }
-          case MIN | MAX | _: MinAgg | _: MaxAgg | _: FirstValue | _: LastValue => aggregated
+          case MIN | MAX | _: MinAgg | _: MaxAgg => aggregatedElement
+          case _: FirstValue | _: LastValue      => aggregated
+          case _: ArrayAgg =>
+            aggregated match {
+              case unknown if unknown.isUnknown => unknown
+              case element                      => SQLTypes.Array(element)
+            }
           case other =>
-            Some(other.out).filterNot(t => t.isUnknown || t == SQLTypes.Null).getOrElse(aggregated)
+            Some(other.out)
+              .filterNot(t => t.isUnknown || t == SQLTypes.Null)
+              .getOrElse(aggregatedElement)
         }
       }
   }

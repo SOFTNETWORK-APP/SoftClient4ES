@@ -407,9 +407,10 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
     wrong shouldBe empty
     slot(union("obj", "obj")).read(received("""{"n":1,"e":1706697000}""")) shouldBe
     ListMap("e" -> at1030, "n" -> 1)
+    // in the column's declared order (SCHEMA-6 D9; by name before)
     slot(union("obj", "obj")).sqlType.fields.map(f => f.name -> f.valueType) shouldBe Seq(
-      "e" -> SetOperationType(SQLTypes.Timestamp, format = Some("epoch_second")),
-      "n" -> SetOperationType(SQLTypes.Int)
+      "n" -> SetOperationType(SQLTypes.Int),
+      "e" -> SetOperationType(SQLTypes.Timestamp, format = Some("epoch_second"))
     )
     slot(union("ae", "ae")).sqlType.element shouldBe
     Some(SetOperationType(SQLTypes.Timestamp, format = Some("epoch_second")))

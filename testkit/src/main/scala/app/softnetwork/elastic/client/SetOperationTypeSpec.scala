@@ -1129,51 +1129,40 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
     wrong shouldBe empty
   }
 
-  /** A value with SEVERAL values -- a multi-valued keyword -- in a column that converts its values
-    * fails the statement: the column holds one value of its type per row, and such a value has no
-    * one value to convert. The message is in DuckDB 1.5.5's words for the same column (MEASURED,
-    * each shape below). The CONTROL: the same value in a column whose branches have one type, which
-    * converts nothing, answers.
+  /** A value with SEVERAL values -- a multi-valued keyword -- in a column not declared a list fails
+    * the statement on every route, whether its column converts its values or not: since SCHEMA-6
+    * (D6, lead Q1, G1) the branch reads the declared `KEYWORD` before any conversion, and fails in
+    * core's words, naming the document, the index and the ALTER that declares the column a list.
+    * 0.24.0 failed a converting column in DuckDB 1.5.5's words for a list column (`Conversion
+    * Error: Unimplemented type for cast (INTEGER -> VARCHAR[])`, MEASURED) and answered the list as
+    * read in the control, whose branches have one type and convert nothing.
     */
   it should "fail a multi-valued value in a column that converts, on every route" in {
-    def failure(other: String): String =
-      s"Conversion Error: Unimplemented type for cast ($other -> VARCHAR[]) when casting from " +
-      "source column k"
     def limitedIf(limited: Boolean, statement: String): String =
       if (limited) statement.replace(" UNION ALL ", " LIMIT 100 UNION ALL ") + " LIMIT 100"
       else statement
     def union(left: String, right: String, rightTable: String = textTable): String =
       s"SELECT $left AS k FROM $textTable UNION ALL SELECT $right AS k FROM $rightTable"
-    val shapes: Seq[(String, String)] = Seq(
-      union("tags", "n", table) -> failure("INTEGER"),
-      union("tags", "ts")       -> failure("TIMESTAMP"),
-      union("tags", "bin")      -> failure("BLOB"),
-      union("x", "tags")        -> failure("DOUBLE")
+    val several = s"Column tags holds several values in document t1 of index $textTable"
+    val remedy = s"ALTER TABLE $textTable ALTER COLUMN tags SET DATA TYPE ARRAY<KEYWORD>"
+    val shapes: Seq[String] = Seq(
+      union("tags", "n", table),
+      union("tags", "ts"),
+      union("tags", "bin"),
+      union("x", "tags"),
+      // the control: `tags` beside another KEYWORD converts nothing
+      union("tags", "kw")
     )
     val wrong = for {
-      (statement, message) <- shapes
-      (route, limited)     <- routes
+      statement        <- shapes
+      (route, limited) <- routes
       sql = limitedIf(limited, statement)
       error <- rowsOf(sql, route) match {
-        case Left(msg) if msg.contains(message) => None
-        case other => Some(s"[$route] [$sql] answered $other instead of failing with $message")
+        case Left(msg) if msg.contains(several) && msg.endsWith(remedy) => None
+        case other => Some(s"[$route] [$sql] answered $other instead of the multi-valued failure")
       }
     } yield error
-    // the control: `tags` beside another KEYWORD, every row answered, the two values of t1 as the
-    // branch reads them
-    def bothTags(row: ListMap[String, Any]): Boolean = row.getOrElse("k", null) match {
-      case s: Seq[_]            => s.map(e => String.valueOf(e)) == Seq("a", "b")
-      case l: java.util.List[_] => l.size == 2 && l.get(0) == "a" && l.get(1) == "b"
-      case _                    => false
-    }
-    val unconverted = routes.flatMap { case (route, limited) =>
-      val sql = limitedIf(limited, union("tags", "kw"))
-      rowsOf(sql, route) match {
-        case Right(rows) if rows.size == 2 * textDocs.size && rows.exists(bothTags) => None
-        case other => Some(s"[$route] [$sql] answered $other instead of every row, unconverted")
-      }
-    }
-    (wrong ++ unconverted) shouldBe empty
+    wrong shouldBe empty
   }
 
   /** A keyword core re-reads as a temporal when the response is parsed (issue #418) is spelled back
@@ -1724,16 +1713,42 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
   }
 
   /** A date core cannot read without guessing -- a region id, whose offset comes from zone data --
-    * and a value of several values -- an array of arrays -- are answered as stored, at the column
-    * and at an object's field, on every route: no statement core answered fails. SCHEMA-2 (D12): at
-    * the column, such a format makes the column VARCHAR, as DuckDB types a text beside a date
-    * -- the other branch's date in DuckDB's spelling --, beside a DATE too, which failed before.
+    * is answered as stored, at the column and at an object's field, on every route. SCHEMA-2 (D12):
+    * at the column, such a format makes the column VARCHAR, as DuckDB types a text beside a date
+    * -- the other branch's date in DuckDB's spelling --, beside a DATE too, which failed before. A
+    * value of several values -- an array of arrays, which Elasticsearch flattens -- in a column not
+    * declared a list was answered as stored too; since SCHEMA-6 (D6, lead Q1, G1) it fails the
+    * statement on every route, naming the document, the index and the ALTER that declares the
+    * column -- or the object's field -- a list.
     */
   it should "keep a date it cannot read as stored, its column VARCHAR at the top" in {
     def sql(left: String, right: String, limited: Boolean): String =
       Seq(left, right)
         .map(i => s"SELECT $i AS k FROM $zoneTable" + (if (limited) " LIMIT 100" else ""))
         .mkString(" UNION ALL ")
+    val several = for {
+      (left, right, column, remedy) <- Seq(
+        ("v", "ts", "v", "ALTER COLUMN v SET DATA TYPE ARRAY<TIMESTAMP>"),
+        (
+          "fv",
+          "fts",
+          "fv.a",
+          "ALTER COLUMN fv SET FIELD a ARRAY<TIMESTAMP> OPTIONS (format = \"epoch_second\")"
+        )
+      )
+      (route, limited) <- routes
+      statement = sql(left, right, limited)
+      error <- rowsOf(statement, route) match {
+        case Left(e)
+            if e.contains(
+              s"Column $column holds several values in document z1 of index $zoneTable"
+            ) &&
+              e.endsWith(s"ALTER TABLE $zoneTable $remedy") =>
+          None
+        case other =>
+          Some(s"[$route] [$statement] answered $other instead of the multi-valued failure")
+      }
+    } yield error
     val kept = for {
       (left, right, stored, partner) <- Seq(
         ("z", "ts", zoned: Any, "2024-02-01 00:00:00": Any),
@@ -1741,19 +1756,6 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
           "fz",
           "fts",
           ListMap("a" -> zoned): Any,
-          ListMap("a" -> ZonedDateTime.parse("2024-02-01T00:00:00Z")): Any
-        ),
-        // an array of arrays: several values, as stored
-        (
-          "v",
-          "ts",
-          List(List(1706697000, 1706697001)): Any,
-          ZonedDateTime.parse("2024-02-01T00:00:00Z"): Any
-        ),
-        (
-          "fv",
-          "fts",
-          ListMap("a" -> List(List(1706697000, 1706697001))): Any,
           ListMap("a" -> ZonedDateTime.parse("2024-02-01T00:00:00Z")): Any
         )
       )
@@ -1784,7 +1786,7 @@ trait SetOperationTypeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
         case Left(e) => Some(s"[$route] [$statement] failed: $e")
       }
     } yield error
-    (kept ++ besideDate) shouldBe empty
+    (several ++ kept ++ besideDate) shouldBe empty
   }
 
   it should "refuse by name only a date beside a number, before anything runs" in {

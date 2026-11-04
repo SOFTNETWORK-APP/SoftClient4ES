@@ -55,9 +55,11 @@ case class DottedColumnRow(id: String, obj: Option[DottedColumnObj])
   *
   * The documents are written as Elasticsearch stores them (a flat spelling stays flat), one per
   * shape the reader must handle: nested (`dn`), flat (`df`), both spellings (`db`), a flat `null`
-  * beside the nested value (`dz`) and its nested twin (`dn4`), an array of objects (`dl`), a
-  * sibling only (`ds`), missing (`dm`), a deeper path (`dx`) and a mixed spelling (`dmx`). The
-  * index has two shards, so the scroll is sliced on Elasticsearch 8.
+  * beside the nested value (`dz`) and its nested twin (`dn4`), a sibling only (`ds`), missing
+  * (`dm`), a deeper path (`dx`) and a mixed spelling (`dmx`). The index has two shards, so the
+  * scroll is sliced on Elasticsearch 8. An array of objects (`dl`) has its own index
+  * ([[listTable]]): its `obj.a` holds several values, which fails every `obj.a` statement until the
+  * column is declared a list (SCHEMA-6 A-26, lead Q1).
   *
   * PUBLIC API ONLY: the same file runs on a main clone, which is how the "census" (main's answers,
   * the canary) and the "population" (every statement on every route, as canonical rows) are
@@ -76,6 +78,7 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
   protected val copyTable = "dotted_cols_t2"
   protected val scriptedTable = "dotted_cols_t2s"
   protected val changelogTable = "dotted_cl"
+  protected val listTable = "dotted_cols_l"
 
   /** The documents of [[table]], as written (`_id` = `id`). */
   protected val docs: Seq[(String, String)] = Seq(
@@ -85,7 +88,6 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
     "db"  -> """{"id":"db","n":3,"obj.a":3,"obj":{"a":30}}""",
     "dz"  -> """{"id":"dz","n":4,"obj.a":null,"obj":{"a":4}}""",
     "dn4" -> """{"id":"dn4","n":5,"obj":{"a":4}}""",
-    "dl"  -> """{"id":"dl","n":6,"obj":[{"a":5},{"a":50}]}""",
     "ds"  -> """{"id":"ds","n":7,"obj":{"b":6}}""",
     "dm"  -> """{"id":"dm","n":8,"children":[{"name":"c3"}]}""",
     "dx"  -> """{"id":"dx","obj":{"x":{"y":9}}}""",
@@ -93,7 +95,7 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
   )
 
   /** What `obj.a` holds per document, as Elasticsearch reads it (D-z holds 4: a flat null is no
-    * value; D-l is multi-valued, which stays NULL until SCHEMA-6; D-mx is `obj.x.y`).
+    * value; D-mx is `obj.x.y`).
     */
   protected val valueOfA: Map[String, Any] = Map(
     "dn"  -> 1,
@@ -101,11 +103,20 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
     "db"  -> 3,
     "dz"  -> 4,
     "dn4" -> 4,
-    "dl"  -> null,
     "ds"  -> null,
     "dm"  -> null,
     "dx"  -> null,
     "dmx" -> null
+  )
+
+  /** [[listTable]] (SCHEMA-6 A-26): a list of objects in the `object` column `obj` (`dl`), one
+    * object (`dl1`), a list of one (`dl2`) and none (`dl3`).
+    */
+  protected val listDocs: Seq[(String, String)] = Seq(
+    "dl"  -> """{"id":"dl","n":6,"obj":[{"a":5},{"a":50}]}""",
+    "dl1" -> """{"id":"dl1","n":7,"obj":{"a":7}}""",
+    "dl2" -> """{"id":"dl2","n":8,"obj":[{"a":8}]}""",
+    "dl3" -> """{"id":"dl3","n":9}"""
   )
 
   /** [[uniqueTable]]: every document carries one `obj.a` (nested or flat, no array, no flat null).
@@ -155,9 +166,10 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    Seq(table, uniqueTable, copyTable, scriptedTable, changelogTable).foreach(drop)
+    Seq(table, uniqueTable, copyTable, scriptedTable, changelogTable, listTable).foreach(drop)
     load(table, 2, docs)
     load(uniqueTable, 1, uniqueDocs)
+    load(listTable, 1, listDocs)
     runOk(s"CREATE TABLE $copyTable (id KEYWORD, obj STRUCT FIELDS(a INT), PRIMARY KEY (id))")
     Seq(scriptedTable, changelogTable).foreach { t =>
       runOk(
@@ -169,7 +181,7 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
   }
 
   override def afterAll(): Unit = {
-    Seq(table, uniqueTable, copyTable, scriptedTable, changelogTable).foreach(drop)
+    Seq(table, uniqueTable, copyTable, scriptedTable, changelogTable, listTable).foreach(drop)
     super.afterAll()
   }
 
@@ -530,7 +542,7 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
         )
         // SCHEMA-2 (D9): where a non-null flat spelling won, or the parent is an array, it is
         // dropped too -- SCHEMA-12 A-1's recorded leak ends: the projection's columns only
-        Seq("db", "dl").foreach(id => withClue(s"$id: ")(s2(id).keySet shouldBe Set("id", "obj.a")))
+        Seq("db").foreach(id => withClue(s"$id: ")(s2(id).keySet shouldBe Set("id", "obj.a")))
         val s3 = byId(rowsOk(s"SELECT id, obj.x.y FROM $table", route))
         Seq("dx", "dmx").foreach(id =>
           withClue(s"$id: ")(s3(id).keySet shouldBe Set("id", "obj.x.y"))
@@ -604,6 +616,58 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
         DottedColumnRow("dz", Some(DottedColumnObj(Some(4))))
       )
     )
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-6 (A-26, D6): a list of objects in an `object` column
+  // -------------------------------------------------------------------------------------------
+
+  "A list of objects in an object column" should "answer the column, fail its scalar path with its remedy, then read the path's values (A-26)" in {
+    // the STRUCT column answers its list of struct reads, as main did
+    rowRoutes.foreach { route =>
+      withClue(s"[$route] ") {
+        val obj = byId(rowsOk(s"SELECT id, obj FROM $listTable", route))
+        obj("dl")("obj") shouldBe List(ListMap("a" -> 5), ListMap("a" -> 50))
+        obj("dl1")("obj") shouldBe ListMap("a" -> 7)
+      }
+    }
+    // a scalar path under it holds several values (Elasticsearch's `obj.a` = [5, 50]): Q1's
+    // failure, naming the document, the index and the ALTER that declares it a list
+    val failures = rowRoutes.map { route =>
+      rowsOn(s"SELECT id, obj.a FROM $listTable", route) match {
+        case Left(message) => message
+        case Right(rows)   => fail(s"[$route] answered $rows instead of the multi-valued failure")
+      }
+    }
+    failures.foreach { message =>
+      message should include("Column obj.a holds several values in document dl")
+      message should include(s"ALTER TABLE $listTable ALTER COLUMN obj SET FIELD a ARRAY<INT>")
+    }
+    // beside the parent read whole too, never NULL
+    Seq(s"SELECT id, obj, obj.a FROM $listTable", s"SELECT *, obj.a FROM $listTable").foreach {
+      sql =>
+        rowsOn(sql, "P1") match {
+          case Left(message) => message should include("Column obj.a holds several values")
+          case Right(rows)   => fail(s"$sql answered $rows instead of the multi-valued failure")
+        }
+    }
+    // the remedy runs (meta-only) ...
+    val remedy = failures.head.substring(failures.head.indexOf("ALTER TABLE"))
+    runOk(remedy)
+    // ... and the path reads its values on every route, in each spelling
+    rowRoutes.foreach { route =>
+      withClue(s"[$route] ") {
+        val a = byId(rowsOk(s"SELECT id, obj.a FROM $listTable", route))
+        a("dl")("obj.a") shouldBe List(5, 50)
+        a("dl1")("obj.a") shouldBe List(7)
+        a("dl2")("obj.a") shouldBe List(8)
+        a("dl3")("obj.a") shouldBe (null: Any)
+        val both = byId(rowsOk(s"SELECT id, obj, obj.a FROM $listTable", route))
+        both("dl")("obj.a") shouldBe List(5, 50)
+        byId(rowsOk(s"SELECT *, obj.a FROM $listTable", route))("dl")("obj.a") shouldBe
+        List(5, 50)
+      }
+    }
   }
 
   // core rendered `CAST(NULL AS VARCHAR)` as `String.valueOf(null)`: the TEXT "null" on every row,

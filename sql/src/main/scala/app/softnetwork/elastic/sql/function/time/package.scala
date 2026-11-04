@@ -115,11 +115,14 @@ package object time {
       * DATE `COALESCE` it reported DATE: two answers for two DATE operands. Any other operand
       * reports as before, and so does every operand while an ingest processor or a transform
       * renders, whose bytes read this type (`GREATEST` / `LEAST` over it) and do not move
-      * (`SQLTypeUtils.rendersOutsideQuery`).
+      * (`SQLTypeUtils.rendersOutsideQuery`). An `ARRAY<DATE>` operand is one DATE element, the
+      * value Painless reads (SCHEMA-6 D7, `SQLTypeUtils.operandType`), so it reports as a DATE
+      * does.
       */
     def reportedOverDate: Option[SQLType] = this match {
       case f: FunctionWithIdentifier
-          if !SQLTypeUtils.rendersOutsideQuery && f.identifier.reportedType == SQLTypes.Date =>
+          if !SQLTypeUtils.rendersOutsideQuery &&
+            SQLTypeUtils.operandType(f.identifier.reportedType) == SQLTypes.Date =>
         interval.checkType(SQLTypes.Date).toOption
       case _ => None
     }

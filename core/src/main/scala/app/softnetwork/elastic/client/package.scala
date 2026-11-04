@@ -733,8 +733,10 @@ package object client extends SerializationApi {
       */
     def instantRowKeys(context: ConversionContext): Seq[String] =
       context match {
-        case s: SchemaColumns if !s.reading.instants.isEmpty =>
-          s.reading.instants.values().toArray(new Array[String](0)).toSeq
+        case s: SchemaColumns if !s.reading.instants.isEmpty || !s.reading.asReadKeys.isEmpty =>
+          // SCHEMA-6 (A-28) -- the as-read partition keys are internal row keys too
+          s.reading.instants.values().toArray(new Array[String](0)).toSeq ++
+            s.reading.asReadKeys.values().toArray(new Array[String](0)).toSeq
         case _ => Nil
       }
 

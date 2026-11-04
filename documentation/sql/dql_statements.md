@@ -27,6 +27,7 @@ DQL supports:
 - [Qualified and quoted table names](#qualified-and-quoted-table-names)
 - [FROM-less SELECT (connection handshake)](#from-less-select-connection-handshake)
 - [WHERE](#where)
+- [Columns holding several values](#columns-holding-several-values)
 - [ORDER BY](#order-by)
 - [LIMIT / OFFSET](#limit--offset)
 - [Set operators](#set-operators)
@@ -552,6 +553,43 @@ WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default
 
 ---
 
+## Columns holding several values
+
+Elasticsearch has no list type: any field may hold one value or several (`"tags": ["a", "b"]`). A
+column declared `ARRAY<X>` reads each value as a list of `X` values — a single value is a list of
+one —, and `DESCRIBE TABLE` and the result schema type it `ARRAY<X>`.
+
+A column **not** declared a list that holds several values in a document fails the statement
+(*since `0.25.0`*; earlier versions answered the list as read), naming the column, the document,
+its index (the index the document is stored in, also when the statement reads an index pattern or
+an alias) and the statement that declares the column a list:
+
+```sql
+SELECT id, tags FROM logs;
+-- Error: Column tags holds several values in document d1 of index logs, but is declared as one
+-- value: declare it a list with ALTER TABLE logs ALTER COLUMN tags SET DATA TYPE ARRAY<KEYWORD>
+```
+
+That `ALTER` changes only the table's `_meta` and runs in place, with no reindex (see
+[DDL: declaring an existing field a list](ddl_statements.md#declaring-an-existing-field-a-list));
+the statement then answers `List(a, b)`. A sub-field is declared a list with `SET FIELD`, which the
+message spells out with the sub-field's own options:
+`ALTER TABLE logs ALTER COLUMN obj SET FIELD a ARRAY<INT>`. The same failure is raised by a top hit
+of `FIRST_VALUE`, `LAST_VALUE` or `ARRAY_AGG`, naming that hit's document. A `WHERE` subquery's
+inner statement is not affected.
+
+A **list of objects** in a `STRUCT` column (an `object` mapping, `"obj": [{"a": 5}, {"a": 50}]`)
+keeps answering: the column's value is the list of its objects, so a `STRUCT` column may hold a
+list. A path under it (`SELECT obj.a`) holds the values its objects hold, in order — `[5, 50]`, as
+Elasticsearch indexes `obj.a` (it answered NULL before) — and is read like any column: one value
+is that value, several fail as above until the sub-field is declared `ARRAY<X>`, none is NULL.
+
+A column declared `ARRAY<X>` is used as an `X` wherever Elasticsearch works on each element —
+`WHERE arr = 5`, `arr > 5` and `arr IN (…)` match a document holding a matching element, a function
+reads one element, `GROUP BY arr` groups by element and `MIN(arr)` is the smallest element; a
+`PARTITION BY` over it is read as the earlier versions read it. `ARRAY_AGG(x)` answers
+`ARRAY<x's type>`.
+
 ## ORDER BY
 
 `ORDER BY` sorts the result set by one or more expressions.
@@ -936,7 +974,10 @@ A value with several values — a multi-valued field — has no one value of its
 at a position that converts its values it fails the statement, in the words DuckDB uses for the
 same failure: `Conversion Error: Unimplemented type for cast (INTEGER -> VARCHAR[]) when casting
 from source column k` for a multi-valued keyword beside an `INT`. A position whose branches have
-one type converts nothing, and answers such a value as its branch reads it.
+one type converts nothing, and answers such a value as its branch reads it: a list for a column
+declared `ARRAY<X>`, and the failure of
+[a column holding several values](#columns-holding-several-values) for any other (*since
+`0.25.0`*).
 
 ```sql
 -- id is a KEYWORD, n an INT: one VARCHAR column ('r1', ..., '3', ...)
@@ -1967,6 +2008,9 @@ Notes:
 - `PARTITION BY` defines the grouping key.
 - `ORDER BY` inside `OVER` defines the window ordering.
 - `LIMIT` inside `ARRAY_AGG` restricts the collected values.
+- `ARRAY_AGG(x)` is typed `ARRAY<x's type>` (*since `0.25.0`*; it was typed as `x`): `DESCRIBE`,
+  the result schema and a `CREATE TABLE … AS SELECT` column (`_meta` `ARRAY<KEYWORD>`, mapped
+  `keyword`) all read the list. Beside a scalar column in a set operation it is refused.
 - Frame clauses (`ROWS BETWEEN ...`) are not exposed; the engine uses a default frame per function semantics.
 
 ---

@@ -404,6 +404,38 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }
   }
 
+  /** SCHEMA-6 (D11) -- `single` with each derived table and CTE reference typed from its body
+    * (`DerivedTable.attach`), every index source by [[lookupSchema]] (cached: one read per index
+    * per TTL): the typing API of the relational engine, which types the statements core refuses to
+    * run. It executes nothing, routes nothing and guards nothing -- the gateway's closure refusal
+    * and [[resolveWithSchema]] keep their order. A refused `UNION ALL` body fails with its refusal
+    * (400).
+    */
+  private[elastic] def attachDerived(single: SingleSearch): ElasticResult[SingleSearch] =
+    app.softnetwork.elastic.sql.query.DerivedTable.attach(single, derivedLookup) match {
+      case Right(attached) => ElasticSuccess(attached)
+      case Left(refusal) =>
+        ElasticFailure(
+          ElasticError(message = refusal, statusCode = Some(400), operation = Some("search"))
+        )
+    }
+
+  /** [[attachDerived]] of each branch of `multiple`. */
+  private[elastic] def attachDerived(multiple: MultiSearch): ElasticResult[MultiSearch] =
+    multiple.requests
+      .foldLeft[ElasticResult[Vector[SingleSearch]]](ElasticSuccess(Vector.empty)) {
+        case (ElasticSuccess(done), branch) => attachDerived(branch).map(done :+ _)
+        case (failure, _)                   => failure
+      }
+      .map(branches => multiple.copy(requests = branches))
+
+  /** The schema of an index source for [[attachDerived]]: [[lookupSchema]]'s, `None` on a miss. */
+  private def derivedLookup(sources: Seq[String]): Option[Schema] =
+    lookupSchema(sources) match {
+      case Some(Success(ElasticSuccess(schema))) => Some(schema)
+      case _                                     => None
+    }
+
   /** The mapped type of a column PROJECTED BY AN INNER STATEMENT, when it can be known for free
     * (story 22.2).
     *
@@ -2216,7 +2248,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * reads the nested one, as Elasticsearch does.
     */
   private def resolveSortKey(h: Map[String, Any], col: String): Any =
-    flatValue(h, col).orElse(findKeyValue(col, h)).orNull
+    flatValue(h, col)
+      .orElse(findKeyValue(col, h))
+      // SCHEMA-6 (A-26): a path under a list of objects holds the values its elements hold, as
+      // Elasticsearch indexes -- and sorts -- it, never a NULL key
+      .orElse(ElasticConversion.collectedValue(col.split("\\."), h))
+      .orNull
 
   private def extractRankings(
     row: ListMap[String, Any],

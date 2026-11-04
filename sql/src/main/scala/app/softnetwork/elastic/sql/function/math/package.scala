@@ -120,11 +120,12 @@ package object math {
       * argument whose type is not a known number keeps NUMERIC.
       *
       * The type REPORTED, not the one Painless is handed (`out`, still NUMERIC): what a consumer
-      * converts this value to is unchanged.
+      * converts this value to is unchanged. An `ARRAY<X>` argument is one X element, the value
+      * Painless reads (SCHEMA-6 D7, `SQLTypeUtils.operandType`).
       */
     override def reportedType: SQLType = mathOp match {
       case Abs =>
-        arg.reportedType match {
+        SQLTypeUtils.operandType(arg.reportedType) match {
           case n: SQLNumeric => n
           case _             => super.reportedType
         }
@@ -316,7 +317,8 @@ package object math {
                 // narrower integer's rounded value always fits it, so it is not tested. In a query
                 // only, the `domain` gate: an ingest processor and a transform keep their bytes.
                 case _: SQLBigInt
-                    if scale.exists(_ < 0) && arg.reportedType.isInstanceOf[SQLBigInt] &&
+                    if scale.exists(_ < 0) &&
+                      SQLTypeUtils.operandType(arg.reportedType).isInstanceOf[SQLBigInt] &&
                       SQLTypeUtils.convertsArms(context) =>
                   // the bounds of a `long` as a `double`: the lower one inclusive, the upper one
                   // excluded (`2^63` is no `long`)
@@ -348,8 +350,13 @@ package object math {
       * levels, aggregates, `CREATE TABLE … AS SELECT` and the overflow test of [[toPainlessCall]];
       * `outputType` stays NUMERIC, so the Painless keeps its bytes (a whole scale answers a `Long`,
       * a DOUBLE column reads it as a `Double`).
+      *
+      * An `ARRAY<X>` operand is one X element, the value Painless reads (SCHEMA-6 D7,
+      * `SQLTypeUtils.operandType`): `ROUND(arr, -1)` over an `ARRAY<INT>` reports the BIGINT its
+      * INT twin reports, in a query. Outside one (an ingest processor, a transform, the validation
+      * of a computed column) the operand is the whole list and keeps NUMERIC, as on 0.24.0.
       */
-    override def reportedType: SQLType = arg.reportedType match {
+    override def reportedType: SQLType = SQLTypeUtils.operandType(arg.reportedType) match {
       case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt if scale.exists(_ < 0)   => SQLTypes.BigInt
       case whole @ (_: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt) => whole
       case _: SQLReal                                                          => SQLTypes.Real

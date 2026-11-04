@@ -27,6 +27,7 @@ import app.softnetwork.elastic.sql.`type`.{
   SQLTemporal,
   SQLTinyInt,
   SQLType,
+  SQLTypeUtils,
   SQLTypes,
   SQLVarchar
 }
@@ -734,10 +735,13 @@ case class Bucket(
     // away from zero (`ComparisonRule.numberOf`, the one comparison rule): `HAVING k = '1.5'` keeps
     // the group 2, on a field level and on a scripted one alike, so the fold, `keyOf` and the
     // nameless-key gate, which read these lists, read that one value. A whole-number text keeps
-    // its path below.
+    // its path below. An `ARRAY<X>` key is its element X, as the reading of the literal judges it
+    // (SCHEMA-6 D7, A-27: `SQLTypeUtils.operandType`, read by `ComparisonRule.readingOf`).
     case quoted: String
         if !ComparisonRule.spellsWholeNumber(quoted) &&
-          ComparisonRule.wholeNumberType(ComparisonRule.declaredTypeOf(identifier)) =>
+          ComparisonRule.wholeNumberType(
+            SQLTypeUtils.operandType(ComparisonRule.declaredTypeOf(identifier))
+          ) =>
       ComparisonRule.roundedWhole(quoted) match {
         case Some(rounded) => keyFilterTextsAsWritten(java.lang.Long.valueOf(rounded))
         case None          => keyFilterTextsAsWritten(quoted)

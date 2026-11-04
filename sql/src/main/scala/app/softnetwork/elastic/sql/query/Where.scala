@@ -1076,8 +1076,10 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     reading: Option[ComparisonRule.Reading]
   ): Option[String] =
     reading match {
+      // an `ARRAY<X>` column is its element X, as the reading judges it (SCHEMA-6 D7: a term or a
+      // range query matches each element; `ComparisonRule.readingOf` reads `operandType` too)
       case Some(ComparisonRule.NumberReading(painless, false))
-          if ComparisonRule.wholeNumberType(operandDeclaredType) =>
+          if ComparisonRule.wholeNumberType(SQLTypeUtils.operandType(operandDeclaredType)) =>
         ComparisonRule
           .stringLiteral(value)
           .filterNot(ComparisonRule.spellsWholeNumber)

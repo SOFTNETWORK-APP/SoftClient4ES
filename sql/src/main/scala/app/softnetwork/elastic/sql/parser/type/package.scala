@@ -263,7 +263,18 @@ package object `type` {
     lazy val geo_point_type: PackratParser[SQLTypes.GeoPoint.type] =
       "(?i)(geo_point|geopoint)".r ^^ (_ => SQLTypes.GeoPoint)
 
+    /** A DDL list type: `ARRAY<X>` of every type a column may declare, so `ARRAY<GEO_POINT>` parses
+      * where a column is declared (SCHEMA-6 D3) -- the remedy a several-point geo field fails with
+      * names it. Tried FIRST by [[extension_type]]; a list of lists parses and is refused by the
+      * statement's validation, naming the column. `sql_type`'s `array_type` (a CAST target) is
+      * untouched.
+      */
+    lazy val extension_array_type: PackratParser[SQLTypes.Array] =
+      "(?i)array<".r ~> extension_type <~ ">" ^^ { elementType =>
+        SQLTypes.Array(elementType)
+      }
+
     lazy val extension_type: PackratParser[SQLType] =
-      sql_type | geo_point_type
+      extension_array_type | sql_type | geo_point_type
   }
 }
