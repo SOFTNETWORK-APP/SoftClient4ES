@@ -529,30 +529,19 @@ package object cond {
       * compares `n` with the number 3, `NULLIF(COALESCE(d, d2), '2024-01-31')` with a date. `None`
       * for anything else, and for a literal that spells no value of the other's kind.
       *
-      * Computed ONCE per `NULLIF` and memoised (its type, its rendering and the comparison it sits
-      * in all ask it; `ComparisonRule` says why with no lock); attaching the schema copies the
-      * `NULLIF` (`update`), so a resolved statement's reading is read against the resolved types.
+      * Computed ONCE per `NULLIF` and per scope, and memoised (`SQLTypeUtils.PerScope`: its type,
+      * its rendering and the comparison it sits in all ask it; `ComparisonRule` says why with no
+      * lock); attaching the schema copies the `NULLIF` (`update`), so a resolved statement's
+      * reading is read against the resolved types.
       */
-    private[cond] def secondReading: Option[ComparisonRule.Reading] = {
-      var reading = _secondReading
-      if (reading eq null) {
-        reading = ComparisonRule.readingOf(expr2, ComparisonRule.declaredTypeOf(expr1))
-        _secondReading = reading
-      }
-      reading
-    }
+    private[cond] def secondReading: Option[ComparisonRule.Reading] =
+      _secondReading(ComparisonRule.readingOf(expr2, ComparisonRule.declaredTypeOf(expr1)))
 
-    private[cond] def firstReading: Option[ComparisonRule.Reading] = {
-      var reading = _firstReading
-      if (reading eq null) {
-        reading = ComparisonRule.readingOf(expr1, ComparisonRule.declaredTypeOf(expr2))
-        _firstReading = reading
-      }
-      reading
-    }
+    private[cond] def firstReading: Option[ComparisonRule.Reading] =
+      _firstReading(ComparisonRule.readingOf(expr1, ComparisonRule.declaredTypeOf(expr2)))
 
-    private[this] var _secondReading: Option[ComparisonRule.Reading] = null
-    private[this] var _firstReading: Option[ComparisonRule.Reading] = null
+    private[this] val _secondReading = new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
+    private[this] val _firstReading = new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
 
     /** A string literal argument READ as a date or a timestamp is rendered from that reading
       * (`ComparisonRule.temporalPainless`), never through the per-document `String -> temporal`
@@ -1326,24 +1315,20 @@ package object cond {
     }
 
     /** The CASE expression's DECLARED type and what each `WHEN` value is read as beside it
-      * (`ComparisonRule.readingOf`), computed ONCE per CASE and memoised (`ComparisonRule` says why
-      * with no lock): its type rule, the comparison it is rendered as and every `WHEN` arm ask it,
-      * and a reading is a parse. Attaching the schema copies the CASE (`update`), so a resolved
-      * statement's readings are read against the resolved types.
+      * (`ComparisonRule.readingOf`), computed ONCE per CASE and per scope, and memoised
+      * (`SQLTypeUtils.PerScope`; `ComparisonRule` says why with no lock): its type rule, the
+      * comparison it is rendered as and every `WHEN` arm ask it, and a reading is a parse.
+      * Attaching the schema copies the CASE (`update`), so a resolved statement's readings are read
+      * against the resolved types.
       */
-    private[this] def expressionReadings: (SQLType, List[Option[ComparisonRule.Reading]]) = {
-      var readings = _expressionReadings
-      if (readings eq null) {
-        readings = expression match {
-          case Some(e) => readingsBeside(e)
-          case None    => (SQLTypes.Any, conditions.map(_ => None))
-        }
-        _expressionReadings = readings
-      }
-      readings
-    }
+    private[this] def expressionReadings: (SQLType, List[Option[ComparisonRule.Reading]]) =
+      _expressionReadings(expression match {
+        case Some(e) => readingsBeside(e)
+        case None    => (SQLTypes.Any, conditions.map(_ => None))
+      })
 
-    private[this] var _expressionReadings: (SQLType, List[Option[ComparisonRule.Reading]]) = null
+    private[this] val _expressionReadings =
+      new SQLTypeUtils.PerScope[(SQLType, List[Option[ComparisonRule.Reading]])]
 
     private[this] def readingsBeside(
       expr: PainlessScript
@@ -1705,8 +1690,16 @@ package object cond {
       * still unknown (no schema attached) and no fractional argument decides the type: an unknown
       * column may hold fractions, so it is never read as a whole number. The reducer then renders
       * as it always did.
+      *
+      * Computed ONCE per reducer and per scope (`SQLTypeUtils.PerScope`): a declared type may
+      * depend on the scope, so a query and an ingest processor rendering the same node each read
+      * their own.
       */
-    private[cond] lazy val numericType: Option[SQLNumeric] = {
+    private[cond] def numericType: Option[SQLNumeric] = _numericType(numericTypeOfValues)
+
+    private[this] val _numericType = new SQLTypeUtils.PerScope[Option[SQLNumeric]]
+
+    private[this] def numericTypeOfValues: Option[SQLNumeric] = {
       val declared = values.map(ComparisonRule.declaredTypeOf).filterNot(_ == SQLTypes.Null)
       val fractional = declared.filter(t => t.isNumber && !NumericReducer.wholeNumber(t))
       if (declared.isEmpty || declared.exists(t => !t.isNumber && !t.isUnknown)) None

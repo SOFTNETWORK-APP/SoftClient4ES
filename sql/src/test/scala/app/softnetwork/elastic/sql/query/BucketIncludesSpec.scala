@@ -173,11 +173,14 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
       keyed("n", "n = PI") -> none,
       // the SELECT alias: the leaf `k` carries no column, its BUCKET does
       "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 1.5" -> none,
-      // a STRING reaches the filter as the same text, which Elasticsearch reads as a number
-      keyed("n", "n = '1.5'")                                                -> none,
-      keyed("n", "n <> '1.5'")                                               -> every,
-      keyed("n", "n IN ('1.5')")                                             -> none,
-      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = '1.5'"      -> none,
+      // a quoted number is the whole number it rounds to beside the integer key (R-54, DuckDB
+      // 1.5.5: `'1.5'::INTEGER` = 2): the group 2 is kept, its filter left to the key filter,
+      // which sends `2`
+      keyed("n", "n = '1.5'")    -> Some(Some("n = '1.5'")),
+      keyed("n", "n <> '1.5'")   -> Some(Some("n <> '1.5'")),
+      keyed("n", "n IN ('1.5')") -> Some(Some("n IN ('1.5')")),
+      "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = '1.5'" -> Some(Some("k = '1.5'")),
+      // a text that spells no integer reaches the filter as itself, as before
       "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k <> 'NaN'"     -> every,
       "SELECT n AS k, COUNT(*) AS c FROM t GROUP BY k HAVING k = 'Infinity'" -> none,
       // the GROUP BY position
@@ -199,6 +202,26 @@ class BucketIncludesSpec extends AnyFlatSpec with Matchers {
     withClue(s"${wrong.size} of ${cases.size * 2} wrong:\n${wrong.mkString("\n")}\n") {
       wrong shouldBe empty
     }
+  }
+
+  // R-54 -- the ONE writer of a key-filter value sends a quoted number beside a whole-declared key
+  // as the whole number it rounds to, on a field level and on a scripted (DATEDIFF) one, so the
+  // fold above, `keyOf` and the nameless-key gate read that value; a whole-number text and a text
+  // that spells no number are sent as before
+  it should "send a quoted number beside a whole key as the whole number it rounds to" in {
+    def bucketOf(sql: String): Bucket =
+      Parser(sql) match {
+        case Right(s: SingleSearch) =>
+          s.update(Some(keySchema)).groupBy.getOrElse(fail(s"[$sql] no GROUP BY")).buckets.head
+        case other => fail(s"[$sql] expected a SingleSearch, got $other")
+      }
+    val field = bucketOf("SELECT n, COUNT(*) AS c FROM t GROUP BY n")
+    field.keyFilterTexts("1.5") shouldBe Set("2")
+    field.keyFilterTexts("-2.5") shouldBe Set("-3")
+    field.keyFilterTexts("1e3") shouldBe Set("1000")
+    field.keyFilterTexts("2") shouldBe Set("2")
+    field.keyFilterTexts("NaN") shouldBe Set("NaN")
+    field.keyFilterTexts("9223372036854775807.5") shouldBe Set("9223372036854775807.5")
   }
 
   it should "stay refused where the fold does not reach: a key inside a nested relation" in {

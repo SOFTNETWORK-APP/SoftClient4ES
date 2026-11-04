@@ -168,6 +168,11 @@ Ensures :
 - every INSERT column exists in the SELECT output
 - aliases are resolved
 - SELECT is valid
+- a SELECT whose items are all computed (`SELECT n + 1 AS k FROM t`) projects every PRIMARY KEY
+  column and the PARTITION BY column of the target (*since `0.25.0`*): such a SELECT reads no other
+  column of the source documents, so a key it does not project would be written empty. It is
+  refused by name, before any document is written; add the key columns to the SELECT. A SELECT
+  with a plain column keeps its behaviour.
 
 Otherwise, a 400 error is returned.
 
@@ -179,7 +184,9 @@ Determines:
 
 ### **5. Build Document Source**
 - For VALUES: convert to JSON array
-- For SELECT: scroll the query and convert rows to JSON
+- For SELECT: scroll the query and convert rows to JSON; a document holds the SELECT's columns only
+  (*since `0.25.0`*: a SELECT of computed columns only also copied every field of the source
+  document)
 
 ### **6. Bulk Insert**
 Uses the Bulk API with:

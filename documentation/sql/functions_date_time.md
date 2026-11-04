@@ -385,7 +385,13 @@ TIMESTAMPDIFF(unit, date1, date2)   -- MySQL
   - Default, when the dates come first: `DAY`
 
 **Output:**
-- `BIGINT`
+- `BIGINT`, every spelling, as DuckDB's `date_diff` (*since `0.25.0`*: it was declared `NUMERIC`, so
+  a value came back as an `Integer` or a `Double`, a `GROUP BY` key as a `Double` (`3.0`), `MIN` /
+  `MAX` could not be mapped by `CREATE TABLE … AS SELECT`, and `SUM` was a `DOUBLE`). A `GROUP BY`
+  key is a `Long`, `MIN` / `MAX` and `SUM` are `BIGINT`, a `CREATE TABLE … AS SELECT` maps them
+  `long`, and `d + DATEDIFF(a, b)` over a `DATE` `d` is a `DATE` (whole days) in a query. An ingest
+  processor (`SCRIPT AS`) and a materialized view keep the script they had: the same day, written as
+  a `TIMESTAMP`.
 
 **Direction, by layout:** every one of these databases computes *end − start*; the layout decides where the end sits.
 - The dates first: `date1 - date2`. `DATEDIFF('2025-01-10', '2025-01-01')` is `9`, as in MySQL; `DATE_DIFF('2010-07-07', '2008-12-25', DAY)` is `559`, as in BigQuery.
@@ -756,7 +762,15 @@ DATE_TRUNC(date_or_datetime_expr, unit)
 - `unit` - One of: `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `HOUR`, `MINUTE`, `SECOND`
 
 **Output:**
-- `DATE` or `DATETIME` (same type as input)
+- `TIMESTAMP` over every operand that is a date -- a `DATE`, `DATETIME` or `TIMESTAMP` column,
+  `CURRENT_DATE`, `CURRENT_TIMESTAMP` / `NOW()`, a cast, `DATE_PARSE`, `LAST_DAY`, a `DATE_ADD` --
+  at every unit, as DuckDB's `date_trunc` (*since `0.25.0`*). Its values are UTC instants (a
+  midnight for `DAY` and above). Before, it was a temporal of unknown kind over `CURRENT_DATE`,
+  `CURRENT_TIMESTAMP` and `NOW()` (a `UNION ALL` with a `DATE` mixed `LocalDate` and
+  `ZonedDateTime` values) and a `DATE` over a cast to `DATE`, `DATE_PARSE` or `LAST_DAY` (now a
+  `TIMESTAMP`: a `COALESCE` with a `DATE` is a `TIMESTAMP`, `DATE_TRUNC(…) - d` counts fractional
+  days, `DATE_TRUNC(…) + 1` is a `TIMESTAMP`). Over a mapped date column it already was a
+  `TIMESTAMP`. An ingest processor (`SCRIPT AS`) and a materialized view keep the type they had.
 
 **Week:**
 - `WEEK` truncates to the **Monday** that starts the ISO-8601 week, at 00:00 UTC, in every clause: a `GROUP BY DATE_TRUNC(…, WEEK)` buckets on that same Monday.
@@ -822,9 +836,10 @@ EXTRACT(unit FROM date_expr)
 - Over a `DATE`, the time-of-day parts (`HOUR`, `MINUTE`, `SECOND`, the sub-second parts,
   `OFFSET_SECONDS`) read its midnight UTC and answer `0`.
 
-A date part compared with a quoted number must be compared with a whole number, as any whole-number
-expression is: `YEAR(d) = '2024'` is accepted, `YEAR(d) = '2024.5'` and `YEAR(d) = '2024.0'` are
-refused (*"'BIGINT' is not compatible with 'VARCHAR'"*).
+A date part compared with a quoted number reads it as DuckDB casts it to the date part's `BIGINT`:
+the whole number it rounds to, half away from zero (*since `0.25.0`*: a fraction was refused):
+`YEAR(d) = '2024'` and `YEAR(d) = '2024.4'` both compare with `2024`, `YEAR(d) = '2024.5'` with
+`2025`. A text that spells no number is refused (*"'BIGINT' is not compatible with 'VARCHAR'"*).
 
 **Examples:**
 ```sql

@@ -1009,31 +1009,47 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * comparison (`update`), so the reading a resolved statement holds is read against the resolved
     * types.
     */
-  protected def literalReading: Option[ComparisonRule.Reading] = {
-    var reading = _literalReading
-    if (reading eq null) {
-      reading = maybeValue.flatMap(readingFor)
-      _literalReading = reading
-    }
-    reading
-  }
+  protected def literalReading: Option[ComparisonRule.Reading] =
+    _literalReading(maybeValue.flatMap(readingFor))
 
-  private[this] var _literalReading: Option[ComparisonRule.Reading] = null
+  private[this] val _literalReading = new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
+
+  /** What a STRING literal on the LEFT is read as, beside the right-hand side -- the one comparison
+    * rule's reading (`ComparisonRule.readingOf`) against the type the right-hand side is DECLARED
+    * with, the reading the type rule judges ([[mismatchWith]]): `'1.5' < COALESCE(n, 0)` compares
+    * the whole number 2 with a number, `'2024-01-01' < d` a date with a date, `'true' = b` a
+    * boolean with a boolean, exactly as their mirrors `COALESCE(n, 0) > '1.5'`, `d > '2024-01-01'`
+    * and `b = 'true'` do. The rendering reads it too ([[leftOperand]], [[operandRenderedType]]), so
+    * what is judged is what runs: the literal used to render as its TEXT (`"3" == param1`), which
+    * Painless compares with a number as never equal -- `WHERE '3' = n` answered no row and `<>`
+    * every row (measured on Elasticsearch 8.18.3), `'2' < n` failed the shard.
+    *
+    * A comparison of one operand and one value only (`GenericExpression`, `Comparison`): an IN or a
+    * BETWEEN with a literal on its left keeps its rendering. No reading -- a literal that spells no
+    * value of the other's type, an operand of unknown type -- keeps the literal's bytes. Computed
+    * ONCE per comparison and memoised like [[literalReading]].
+    */
+  protected def leftLiteralReading: Option[ComparisonRule.Reading] =
+    _leftLiteralReading(this match {
+      case _: GenericExpression | _: Comparison
+          if ComparisonRule.stringLiteral(identifier).isDefined =>
+        maybeValue.flatMap(value =>
+          ComparisonRule.readingOf(identifier, ComparisonRule.declaredTypeOf(value))
+        )
+      case _ => None
+    })
+
+  private[this] val _leftLiteralReading =
+    new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
 
   /** The type the left operand is DECLARED with (`ComparisonRule.declaredTypeOf`), which every
     * literal of this comparison is read against and the type rule judges: computed ONCE, and
     * memoised like [[literalReading]].
     */
-  protected def operandDeclaredType: SQLType = {
-    var declared = _operandDeclaredType
-    if (declared eq null) {
-      declared = ComparisonRule.declaredTypeOf(identifier)
-      _operandDeclaredType = declared
-    }
-    declared
-  }
+  protected def operandDeclaredType: SQLType =
+    _operandDeclaredType(ComparisonRule.declaredTypeOf(identifier))
 
-  private[this] var _operandDeclaredType: SQLType = null
+  private[this] val _operandDeclaredType = new SQLTypeUtils.PerScope[SQLType]
 
   /** What `value` -- the right-hand side, a `BETWEEN` bound, an `IN` element -- is read as against
     * this comparison's left operand ([[literalReading]]).
@@ -1047,6 +1063,34 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         else None
       }
     }
+
+  /** What a BARE column's query sends for the string literal `value`, read as `reading`, when the
+    * one comparison rule ROUNDED it (R-54): beside a whole-declared column, the whole number a
+    * fractional or exponent text rounds to (`'1.5'` -> `2`, `'1.0'` -> `1`, `'1e3'` -> `1000`), so
+    * Elasticsearch compares what the type rule and every scripted rendering compare. `None` -- the
+    * literal's own text, its bytes kept -- for a whole-number text, a text that reads as no number,
+    * a column of another or of no known type (no schema).
+    */
+  protected def queryTextOf(
+    value: Token,
+    reading: Option[ComparisonRule.Reading]
+  ): Option[String] =
+    reading match {
+      case Some(ComparisonRule.NumberReading(painless, false))
+          if ComparisonRule.wholeNumberType(operandDeclaredType) =>
+        ComparisonRule
+          .stringLiteral(value)
+          .filterNot(ComparisonRule.spellsWholeNumber)
+          .map(_ => painless.stripSuffix("L"))
+      case _ => None
+    }
+
+  /** What a bare column's query sends for the right-hand side `value` ([[queryTextOf]] over
+    * [[literalReading]]): both bridges' comparison arms read it; LIKE / RLIKE keep the text.
+    */
+  private[sql] def queryText(value: Token): Option[String] =
+    if (maybeValue.exists(_ eq value)) queryTextOf(value, literalReading)
+    else queryTextOf(value, readingFor(value))
 
   /** The JAVA type the RIGHT-hand side renders — what `Identifier.renderedType` answers for the
     * left operand, asked on the right (issue #384).
@@ -1091,7 +1135,11 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * The condition is the injection's own, stated once so the two cannot drift.
     */
   protected def operandRenderedType: SQLType =
-    if (narrowsToValueType) valueType else identifier.renderedType
+    leftLiteralReading match {
+      // a literal on the left renders what it is read as ([[leftLiteralReading]], A-42)
+      case Some(reading) => reading.sqlType
+      case None          => if (narrowsToValueType) valueType else identifier.renderedType
+    }
 
   /** Will [[leftOperand]] narrow the operand to the right-hand side's DATE/TIME type? The same
     * predicate the injection uses — `originalType == Any` says this identifier NAMES a column, the
@@ -1353,21 +1401,27 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     // identifier form does first are done here instead: the `Any` method injection (for the TARGET
     // type as well as the value's — `coerce` keyed on the first, this method on the second, and both
     // ran before) and, in a PROCESSOR context, the temporal parse it returns in place of a coercion.
-    val chain: String = {
-      context match {
-        // The same temporal guard as the injection above, and for the same measured reason: a
-        // `.toLocalDate()` on a KEYWORD column's doc-value is a `String` receiver and fails the shard.
-        case Some(ctx)
-            if identifier.originalType == SQLTypes.Any && !ctx.isProcessor &&
-              mayBeTemporal(identifier) && !valueReadsDocumentField =>
-          targetedType match {
-            case SQLTypes.Date => identifier.addPainlessMethod(".toLocalDate()")
-            case SQLTypes.Time => identifier.addPainlessMethod(".toLocalTime()")
-            case _             =>
-          }
-        case _ =>
-      }
-      identifier.painless(context)
+    val chain: String = leftLiteralReading match {
+      // A-42 -- a string literal on the left renders what the rule reads it as, by the very
+      // rendering a right-hand literal gets ([[readingPainless]]): `2L`, the date's conversion,
+      // `true`
+      case reading @ Some(_) => readingPainless(reading, identifier, context)
+      case None =>
+        context match {
+          // The same temporal guard as the injection above, and for the same measured reason: a
+          // `.toLocalDate()` on a KEYWORD column's doc-value is a `String` receiver and fails the
+          // shard.
+          case Some(ctx)
+              if identifier.originalType == SQLTypes.Any && !ctx.isProcessor &&
+                mayBeTemporal(identifier) && !valueReadsDocumentField =>
+            targetedType match {
+              case SQLTypes.Date => identifier.addPainlessMethod(".toLocalDate()")
+              case SQLTypes.Time => identifier.addPainlessMethod(".toLocalTime()")
+              case _             =>
+            }
+          case _ =>
+        }
+        identifier.painless(context)
     }
     val coerced =
       context match {
@@ -2086,12 +2140,13 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     reading: Option[ComparisonRule.Reading]
   ): Option[(SQLType, SQLType)] = {
     // the left operand is itself a string literal only in `'2024-01-01' < d`: then it is read
-    // beside `value`, as `value` is beside it
+    // beside `value`, as `value` is beside it -- the reading the rendering reads too
+    // ([[leftLiteralReading]], A-42); an IN element or a BETWEEN bound is read beside the operand
     val left =
       if (ComparisonRule.stringLiteral(identifier).isEmpty) operandDeclaredType
       else
-        ComparisonRule
-          .readingOf(identifier, ComparisonRule.declaredTypeOf(value))
+        (if (maybeValue.exists(_ eq value)) leftLiteralReading
+         else ComparisonRule.readingOf(identifier, ComparisonRule.declaredTypeOf(value)))
           .map(_.sqlType)
           .getOrElse(operandDeclaredType)
     ComparisonRule.mismatch(left, ComparisonRule.comparedType(reading, value))
@@ -2432,33 +2487,32 @@ case class InExpr[R, +T <: Value[R]](
     * `literalReading`): the type rule, the type questions, both renderings and the group filter all
     * ask it.
     */
-  private def readings: Seq[Option[ComparisonRule.Reading]] = {
-    var computed = _readings
-    if (computed eq null) {
-      computed = values.values.map(readingFor)
-      _readings = computed
-    }
-    computed
-  }
+  private def readings: Seq[Option[ComparisonRule.Reading]] =
+    _readings(values.values.map(readingFor))
 
-  private[this] var _readings: Seq[Option[ComparisonRule.Reading]] = null
+  private[this] val _readings = new SQLTypeUtils.PerScope[Seq[Option[ComparisonRule.Reading]]]
+
+  /** The values a bare column's `terms` query sends: each element's own value, or the whole number
+    * the one comparison rule rounded a quoted one to beside a whole-declared column (`queryTextOf`,
+    * R-54).
+    */
+  private[sql] def queryValues: Seq[Any] =
+    values.values.zip(readings).map { case (element, reading) =>
+      queryTextOf(element, reading).getOrElse(element.value)
+    }
 
   /** What every element is READ as (`readingFor`), when each one is a string literal the operand
     * reads -- the list is then the numbers, the dates, the timestamps or the booleans they spell.
     */
-  private def elementReadings: Option[Seq[ComparisonRule.Reading]] = {
-    var computed = _elementReadings
-    if (computed eq null) {
-      computed =
-        if (values.values.isEmpty) None
-        else if (readings.forall(_.isDefined)) Some(readings.flatten)
-        else None
-      _elementReadings = computed
-    }
-    computed
-  }
+  private def elementReadings: Option[Seq[ComparisonRule.Reading]] =
+    _elementReadings(
+      if (values.values.isEmpty) None
+      else if (readings.forall(_.isDefined)) Some(readings.flatten)
+      else None
+    )
 
-  private[this] var _elementReadings: Option[Seq[ComparisonRule.Reading]] = null
+  private[this] val _elementReadings =
+    new SQLTypeUtils.PerScope[Option[Seq[ComparisonRule.Reading]]]
 
   /** The type the list is compared IN when its elements are read ([[elementReadings]]), as the
     * right-hand side of a single comparison is; the list's own type otherwise, as it always was.
@@ -2962,23 +3016,23 @@ case class BetweenExpr(
     * `literalReading`): the type rule, the type questions, both renderings and the group filter all
     * ask it.
     */
-  private def boundReadings: (Option[ComparisonRule.Reading], Option[ComparisonRule.Reading]) = {
-    var computed = _boundReadings
-    if (computed eq null) {
-      computed = (readingFor(fromTo.from), readingFor(fromTo.to))
-      _boundReadings = computed
-    }
-    computed
-  }
+  private def boundReadings: (Option[ComparisonRule.Reading], Option[ComparisonRule.Reading]) =
+    _boundReadings((readingFor(fromTo.from), readingFor(fromTo.to)))
 
-  private[this] var _boundReadings
-    : (Option[ComparisonRule.Reading], Option[ComparisonRule.Reading]) =
-    null
+  private[this] val _boundReadings =
+    new SQLTypeUtils.PerScope[(Option[ComparisonRule.Reading], Option[ComparisonRule.Reading])]
 
   private def boundReading(bound: Token): Option[ComparisonRule.Reading] =
     if (bound eq fromTo.from) boundReadings._1
     else if (bound eq fromTo.to) boundReadings._2
     else readingFor(bound)
+
+  /** What a bare column's `range` query sends for `bound`: the whole number the one comparison rule
+    * rounded a quoted bound to beside a whole-declared column (`queryTextOf`, R-54), else `None` --
+    * its own text.
+    */
+  private[sql] def boundQueryText(bound: Token): Option[String] =
+    queryTextOf(bound, boundReading(bound))
 
   /** The SQL type of a bound as it is compared: its reading, or its own type -- the question
     * `valueType` answers for the right-hand side of a single comparison.

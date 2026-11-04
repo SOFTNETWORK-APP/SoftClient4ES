@@ -426,6 +426,43 @@ object SQLTypeUtils {
       outsideQuery.withValue(true)(body)
     else body
 
+  /** A value a node computes ONCE PER SCOPE: one slot for a query, one for a script rendered
+    * outside it ([[rendersOutsideQuery]], an ingest processor or a transform).
+    *
+    * 🔴 Every per-node memo that reads a DECLARED type keeps its answer here (#292). A type may
+    * depend on the scope (`DATE_TRUNC` over a date reports TIMESTAMP in a query only, a conditional
+    * answers its legacy type outside one), and a memo with one slot let the first scope to ask
+    * decide for both on a shared node: a query rendered first moved the ingest processor's bytes
+    * (`DATE_TRUNC(CAST(ts AS DATE), DAY) - d` in fractional days), a processor rendered first moved
+    * the query's type (BIGINT where a fresh query reports DOUBLE). With one slot per scope each
+    * scope reads what it reads on a fresh node, whatever order they render in.
+    *
+    * No lock, as the memos it replaces: the value is pure and immutable, so a race can only compute
+    * it twice. `null` is "not computed yet", so `T` is never null itself (an `Option`, a type, a
+    * tuple).
+    */
+  final class PerScope[T <: AnyRef] {
+    private[this] var inQuery: T = _
+    private[this] var outside: T = _
+
+    def apply(compute: => T): T =
+      if (outsideQuery.value) {
+        var value = outside
+        if (value eq null) {
+          value = compute
+          outside = value
+        }
+        value
+      } else {
+        var value = inQuery
+        if (value eq null) {
+          value = compute
+          inQuery = value
+        }
+        value
+      }
+  }
+
   /** The type an INGEST PROCESSOR (or a transform) writes for `expr`: its `out`, read in the scope
     * that script renders in ([[renderingIn]]), the type it rendered before a conditional answered
     * its reported type in a query.

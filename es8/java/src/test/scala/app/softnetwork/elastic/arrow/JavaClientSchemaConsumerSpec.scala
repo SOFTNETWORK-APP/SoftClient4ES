@@ -282,4 +282,92 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     }
     counts.map(_("nb").asInstanceOf[Number].longValue()).sum shouldBe docs.size.toLong
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-5 (D14) -- the consumers' forms over a computed-only projection and the new widths
+  // ---------------------------------------------------------------------------------------------
+
+  "Arrow" should "read a computed-only projection as its columns only, by the schema's names" in {
+    Seq("", " LIMIT 10").foreach { limit =>
+      val sql = s"SELECT 2 AS k, n + 1 AS v FROM $table$limit"
+      withClue(s"[$sql] ") {
+        val result = run(sql)
+        val (rows, schema) = rowsAndSchema(result)
+        extractRows(result).map(_.toMap) shouldBe rows.map(_.toMap)
+        schema.getOrElse(fail("no schema")).names shouldBe Seq("k", "v")
+        rows.size shouldBe docs.size
+        rows.foreach(_.keySet shouldBe Set("k", "v"))
+      }
+    }
+  }
+
+  it should "read a DATEDIFF / ROUND leg through its leg readers unchanged (D5, D7)" in {
+    val sql =
+      s"SELECT n AS k FROM $table UNION SELECT DATEDIFF(ts, c_des) AS k FROM $table " +
+      s"UNION SELECT ROUND(n, -1) AS k FROM $table"
+    val multiple = Parser(sql) match {
+      case Right(m: MultiSearch) =>
+        m.copy(requests = m.requests.map(r => r.update(Some(client.loadSchema(table).get))))
+      case other => fail(s"$other")
+    }
+    val legs = SetOperationValues
+      .legSchemas(multiple.requests, multiple.resolvedOperators, Some("8.18.3"))
+      .fold(refusal => fail(refusal), identity)
+    multiple.requests.zip(legs).foreach { case (leg, schema) =>
+      withClue(s"[${leg.sql}] ") {
+        // a slot exists for every leg: an INT beside a BIGINT is a BIGINT, never NUMERIC
+        schema.map(_.slots.forall(_.isDefined)) shouldBe Some(true)
+        val rows = extractRows(run(leg.sql))
+        rows should not be empty
+        val names = leg.select.fieldsWithComputedAliases.map(_.outputName)
+        schema.foreach { s =>
+          rows.foreach { row =>
+            names.zip(s.slots).foreach {
+              case (name, Some(slot)) =>
+                // a canonical leg row: its readers leave it unchanged (DATEDIFF a Long,
+                // ROUND(n, -1) a Long (R-67), n an Integer)
+                val cell = row.getOrElse(name, null)
+                slot.read(cell) shouldBe cell
+              case _ =>
+            }
+          }
+        }
+      }
+    }
+  }
+
+  "The JDBC driver" should "read a computed-only row by its match, a DATEDIFF a Long" in {
+    Seq("", " LIMIT 10").foreach { limit =>
+      val rows =
+        run(
+          s"SELECT DATEDIFF(ts, c_des) AS dd, ROUND(n) AS r FROM $table WHERE id = 'c1'$limit"
+        ) match {
+          case QueryRows(rows, _, _)        => rows
+          case QueryStructured(response, _) => response.results
+          case QueryStream(stream, _, _) =>
+            Await.result(stream.map(_._1).runWith(Sink.seq), 60.seconds)
+          case other => fail(s"$other")
+        }
+      rows.map(_.keySet) shouldBe Seq(Set("dd", "r"))
+      rows.head("dd") shouldBe java.lang.Long.valueOf(0L)
+      rows.head("r") shouldBe Integer.valueOf(1)
+      ValueCoercion.coerceToString(rows.head("dd")) shouldBe "0"
+    }
+  }
+
+  "The extensions" should "fold a computed-only count as they do" in {
+    val counts = run(s"SELECT n + 0 AS m FROM $table") match {
+      case QueryRows(rows, _, _) => rows.size.toLong
+      case QueryStream(stream, _, _) =>
+        Await.result(
+          stream.runWith(
+            Sink.fold[Long, (ListMap[String, Any], ScrollMetrics)](0L) { case (n, _) => n + 1 }
+          ),
+          60.seconds
+        )
+      case QueryStructured(response, _) => response.results.size.toLong
+      case other                        => fail(s"$other")
+    }
+    counts shouldBe docs.size.toLong
+  }
 }

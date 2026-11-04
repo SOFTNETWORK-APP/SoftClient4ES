@@ -1529,12 +1529,35 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             // Vérifier que toutes les colonnes de l'INSERT sont présentes dans le SELECT
             val missing = effectiveInsertCols.filterNot(selectCols.contains)
 
+            // A-38 -- a COMPUTED-ONLY SELECT fetches no `_source` (`SingleSearch.sourceless`, the
+            // predicate both bridges' source filter reads), so its rows hold only its columns: a
+            // target key it does not project would be read from nowhere (`_id` "", every row on
+            // one document, no partition suffix). Refused by name before any write; a SELECT with
+            // a plain column keeps its outcome.
+            lazy val missingKeys: Seq[String] =
+              if (!single.sourceless) Nil
+              else
+                (idx.primaryKey ++ idx.partitionBy.map(_.column)).distinct
+                  .filterNot(effectiveInsertCols.contains)
+
             if (missing.nonEmpty)
               Left(
                 ElasticError(
                   message =
                     s"INSERT columns [${effectiveInsertCols.mkString(",")}] must all be present in SELECT output columns [${selectCols
                       .mkString(",")}]. Missing: ${missing.mkString(",")}",
+                  operation = Some("insertByQuery"),
+                  index = Some(index),
+                  statusCode = Some(400)
+                )
+              ).toTry
+            else if (missingKeys.nonEmpty)
+              Left(
+                ElasticError(
+                  message =
+                    s"INSERT INTO $index ... SELECT computes every column it writes, so it must project the target's key column(s) " +
+                    s"[${missingKeys.mkString(",")}] (PRIMARY KEY / PARTITION BY): a computed-only SELECT reads no other column " +
+                    "of the source documents. Add them to the SELECT.",
                   operation = Some("insertByQuery"),
                   index = Some(index),
                   statusCode = Some(400)

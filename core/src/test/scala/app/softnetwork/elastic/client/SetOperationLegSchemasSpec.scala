@@ -614,12 +614,17 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "have no slot at NUMERIC or TEMPORAL, the other legs keeping theirs" in {
-    // ROUND and DATEDIFF report NUMERIC; a date part reports BIGINT (the next row)
-    Seq("ROUND(x, 2)", "DATEDIFF(ts, d)").foreach { computed =>
-      val legs = slots(union(computed, "x"))
-      legs.head shouldBe Some(Seq(None))
-      legs(1).flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
-    }
+    // ROUND over an operand of no known number type reports NUMERIC (SCHEMA-5 D10's residual)
+    val residual = slots(union("ROUND(meta, 2)", "x"))
+    residual.head shouldBe Some(Seq(None))
+    residual(1).flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
+    // SCHEMA-5 (D5, D7) -- ROUND reports its operand's type and DATEDIFF a BIGINT, as DuckDB 1.5.5
+    // types them (`round(DOUBLE, 2)` DOUBLE, `date_diff` BIGINT): each leg has its slot
+    val rounded = slots(union("ROUND(x, 2)", "x"))
+    rounded.head.flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
+    val diff = union("DATEDIFF(ts, d)", "x")
+    slots(diff).head.flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.BigInt))
+    shown(slot(diff).read(received("30"))) shouldBe ((30L, classOf[java.lang.Long]))
     // a constructed TEMPORAL leg (no SQL form yields one)
     val temporal = SetOperationColumn(
       SetOperationType(SQLTypes.Temporal),

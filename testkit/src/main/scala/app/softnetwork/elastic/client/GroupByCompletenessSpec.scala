@@ -2703,8 +2703,13 @@ trait GroupByCompletenessSpec extends AnyFlatSpecLike with ElasticDockerTestKit 
         none
       ),
       (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = 1.5", "l", none),
-      // a STRING reaches the filter as the same text, and Elasticsearch parses it as a number
-      (s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = '1.5'", "l", none)
+      // a QUOTED number is the whole number it rounds to beside the integer key, as DuckDB 1.5.5
+      // casts the string (R-54: `'1.5'::BIGINT` = 2): the group 2, as `l = 2` keeps it
+      (
+        s"SELECT lval AS l, COUNT(*) AS c FROM $keyIndex GROUP BY l HAVING l = '1.5'",
+        "l",
+        expectedCounts("l", _ == "2")
+      )
     )
     val wrong = rows.flatMap { case (sql, column, expected) =>
       val actual = countsBy(sql, column)

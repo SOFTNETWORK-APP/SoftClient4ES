@@ -412,12 +412,31 @@ package object sql {
       }
     }
 
-    private[this] var _painlessMethods: collection.mutable.Seq[String] =
-      collection.mutable.Seq.empty
+    /** The methods the coercions of a rendering appended to this parameter: one list per scope, a
+      * query's and that of a script rendered outside one (an ingest processor, a transform,
+      * `SQLTypeUtils.rendersOutsideQuery`), as every per-node memo of a declared type is kept
+      * (`SQLTypeUtils.PerScope`).
+      *
+      * 🔴 A coercion reads the operand's declared type, which may depend on the scope: `DATE_TRUNC`
+      * over a date is a TIMESTAMP in a query and a DATE in a processor. With one list, the
+      * processor's `.toLocalDate()` stayed on a node a query rendered next, and the query compared
+      * that `LocalDate` with a timestamp literal (`DATE_TRUNC(CAST(ts AS DATE), DAY) =
+      * '2024-01-01T10:00:00Z'` inside a CASE). Each scope now reads only what it appended, so a
+      * node renders in each scope as a fresh node does, whichever renders first.
+      */
+    private[this] var _painlessMethods: Vector[String] = Vector.empty
+    private[this] var _outsidePainlessMethods: Vector[String] = Vector.empty
+
+    private[this] def scopedMethods: Vector[String] =
+      if (SQLTypeUtils.rendersOutsideQuery) _outsidePainlessMethods else _painlessMethods
+
+    private[this] def scopedMethods_=(methods: Vector[String]): Unit =
+      if (SQLTypeUtils.rendersOutsideQuery) _outsidePainlessMethods = methods
+      else _painlessMethods = methods
 
     def addPainlessMethod(method: String): PainlessParam = {
-      if (!_painlessMethods.contains(method))
-        _painlessMethods = _painlessMethods :+ method // FIXME we should apply functions only once
+      if (!scopedMethods.contains(method))
+        scopedMethods = scopedMethods :+ method // FIXME we should apply functions only once
       this
     }
 
@@ -428,12 +447,12 @@ package object sql {
       * insertion order is the wrong order -- the FIRST method is the one that decides the receiver.
       */
     def prependPainlessMethod(method: String): PainlessParam = {
-      if (!_painlessMethods.contains(method))
-        _painlessMethods = method +: _painlessMethods
+      if (!scopedMethods.contains(method))
+        scopedMethods = method +: scopedMethods
       this
     }
 
-    def painlessMethods: Seq[String] = _painlessMethods.toSeq
+    def painlessMethods: Seq[String] = scopedMethods
 
     /** Whether the methods appended so far leave this parameter a `java.time.LocalDate`.
       *
@@ -450,7 +469,7 @@ package object sql {
     def rendersLocalTime: Boolean = rendersLocal(".toLocalTime()", ".toLocalDate()")
 
     private[this] def rendersLocal(narrowing: String, other: String): Boolean =
-      _painlessMethods.foldLeft(false) { (narrowed, m) =>
+      scopedMethods.foldLeft(false) { (narrowed, m) =>
         if (m.endsWith(narrowing)) true
         else if (m.contains(".atZone(") || m.contains(".atStartOfDay(") || m.endsWith(other)) false
         else narrowed
@@ -959,19 +978,24 @@ package object sql {
           s"${param.param}${param.painlessMethods.mkString("")}"
       }
 
+    // In this context's scope (`SQLTypeUtils.renderingIn`): a parameter's methods are those the
+    // body's rendering appended in that scope (`PainlessParam.painlessMethods`), and the
+    // declarations are often rendered once the body's rendering has returned.
     override def toString: String =
-      _declarations
-        .flatMap {
-          case Left(param) =>
-            get(param) match {
-              case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
-              case None    => None // should not happen
-            }
-          // The local's declaration is already rendered (see `bindLocalWith`): a `TRY_CAST` needs
-          // two statements, not one `def`.
-          case Right((_, declaration)) => Some(declaration)
-        }
-        .mkString("")
+      SQLTypeUtils.renderingIn(Some(this)) {
+        _declarations
+          .flatMap {
+            case Left(param) =>
+              get(param) match {
+                case Some(v) => Some(s"def $v = ${paramValue(param)}; ")
+                case None    => None // should not happen
+              }
+            // The local's declaration is already rendered (see `bindLocalWith`): a `TRY_CAST`
+            // needs two statements, not one `def`.
+            case Right((_, declaration)) => Some(declaration)
+          }
+          .mkString("")
+      }
   }
 
   trait PainlessParams extends PainlessScript {
@@ -1634,12 +1658,13 @@ package object sql {
     *     what the user wrote, never the runtime collapse of every temporal to TIMESTAMP that
     *     `renderedTypeOf` answers. A DATE and a TIMESTAMP are comparable
     *     (`SQLTypeUtils.comparableTemporals`): the DATE is the instant its UTC day starts at.
-    *   - An untyped string LITERAL is read by what it is compared with, as PostgreSQL reads one
-    *     ([[ComparisonRule.readingOf]]): beside a number, the number it spells when that number is
-    *     a value of the other's type -- beside a whole-number type, a whole number only; beside a
-    *     temporal, the date or the timestamp it spells -- beside a DATE, a date-time literal is the
-    *     date it names, as PostgreSQL's date input reads it; beside a BOOLEAN, the boolean it
-    *     spells. Any other literal stays text, and the comparison is judged as such.
+    *   - An untyped string LITERAL is read by what it is compared with
+    *     ([[ComparisonRule.readingOf]]): beside a number, the number it spells, cast to the other's
+    *     type as DuckDB casts it -- beside a whole-number type, the whole number it rounds to, half
+    *     away from zero (R-54); beside a temporal, the date or the timestamp it spells -- beside a
+    *     DATE, a date-time literal is the date it names, as PostgreSQL's date input reads it;
+    *     beside a BOOLEAN, the boolean it spells. Any other literal stays text, and the comparison
+    *     is judged as such.
     *
     * A reading costs a parse, so each site computes a literal's reading ONCE per node, never per
     * type question or per rendering: memoised in a field of the node, with no lock -- a reading is
@@ -1729,25 +1754,67 @@ package object sql {
         case _ => None
       }
 
-    /** The number a text spells beside an operand of the numeric type `against`, if it is a value
-      * of that type, as PostgreSQL's input for the type reads it (the lead's ruling of 2026-10-05):
-      *   - beside a whole-number type (TINYINT, SMALLINT, INT, BIGINT), a whole number BIGINT can
-      *     hold -- `'1.5'`, `'1.0'` and `'1e3'` are no integer (PostgreSQL: `invalid input syntax
-      *     for type integer`), and a whole number past BIGINT's range is a value of no integer type
-      *     (`out of range`);
+    /** The number a text spells beside an operand of the numeric type `against`, as DuckDB 1.5.5
+      * casts the text to that type (the lead's ruling R-54 of 2026-11-02, which supersedes the
+      * PostgreSQL integer input of 2026-10-05 for the whole types):
+      *   - beside a whole-number type (TINYINT, SMALLINT, INT, BIGINT), the whole number the text
+      *     ROUNDS to, half away from zero ([[roundedWhole]]: `'1.5'` is 2, `'-2.5'` is -3, `'1e3'`
+      *     is 1000, `'1.0'` is 1), when BIGINT holds it -- past BIGINT's range after rounding it is
+      *     a value of no integer type, and stays text as before. DuckDB's own refusals are not
+      *     copied: its binder error on `+` / `*` and its exact-type range (`'127.5'` beside a
+      *     TINYINT is 128, judged as `'128'` is);
       *   - beside DOUBLE, REAL or NUMERIC, any number.
       *
-      * A literal that is no value of the type stays text, and the comparison or the arithmetic that
-      * reads it is refused as text against that type -- as PostgreSQL refuses `n = '1.5'` and `n +
-      * '1.5'` over an integer `n`.
+      * A literal that is no number stays text, and the comparison or the arithmetic that reads it
+      * is refused as text against that type. ONE function (#292): every holder of a reading --
+      * comparisons, IN, BETWEEN, NULLIF, CASE, group filters, arithmetic -- and the three sites
+      * that re-read the literal's text (a bare column's query, a HAVING key filter, the key-filter
+      * fold) read this one value.
       */
     def numberOf(text: String, against: SQLNumeric): Option[NumberReading] =
       numberOf(text) match {
-        case Some(number) if number.fractional && wholeNumberType(against) => None
-        case reading                                                       => reading
+        case Some(number) if number.fractional && wholeNumberType(against) =>
+          roundedWhole(text).map(r => NumberReading(s"${r}L", fractional = false))
+        case reading => reading
       }
 
-    private def wholeNumberType(t: SQLType): Boolean = t match {
+    private val LongMaxPlusHalf = new java.math.BigDecimal("9223372036854775807.5")
+    private val LongMinMinusHalf = new java.math.BigDecimal("-9223372036854775808.5")
+    private val Half = new java.math.BigDecimal("0.5")
+
+    /** The whole number a decimal text (exponent included, trimmed) rounds to, half away from zero
+      * -- `java.math.RoundingMode.HALF_UP`, DuckDB's cast of a string to an integer type -- when
+      * BIGINT holds it; `None` for a text that spells no decimal number or rounds past BIGINT.
+      *
+      * Bounded whatever the exponent: the range is compared BEFORE any rescale, and a magnitude
+      * under 1 is compared with one half, so `'1e-999999999'` and `'1e999999999'` cost a comparison
+      * of exponents, never a division by a power of ten. A magnitude of 1 or more holds at least as
+      * many digits as its scale, so the rescale costs what the text's own length does.
+      */
+    def roundedWhole(text: String): Option[Long] = {
+      val trimmed = text.trim
+      trimmed match {
+        case DecimalNumber() =>
+          Try(new java.math.BigDecimal(trimmed)).toOption.flatMap { x =>
+            if (x.compareTo(LongMaxPlusHalf) >= 0 || x.compareTo(LongMinMinusHalf) <= 0) None
+            else if (x.abs.compareTo(java.math.BigDecimal.ONE) < 0)
+              Some(if (x.abs.compareTo(Half) >= 0) x.signum.toLong else 0L)
+            else Some(x.setScale(0, java.math.RoundingMode.HALF_UP).longValueExact)
+          }
+        case _ => None
+      }
+    }
+
+    /** Does `text` spell a whole number (`[+-]?\d+`, trimmed)? Such a text reads as itself beside a
+      * whole type: a query keeps its bytes.
+      */
+    def spellsWholeNumber(text: String): Boolean = text.trim match {
+      case WholeNumber() => true
+      case _             => false
+    }
+
+    /** Is `t` a whole-number type (TINYINT, SMALLINT, INT, BIGINT)? */
+    def wholeNumberType(t: SQLType): Boolean = t match {
       case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => true
       case _                                                         => false
     }

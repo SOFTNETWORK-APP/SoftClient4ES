@@ -49,6 +49,7 @@ import app.softnetwork.elastic.sql.function.{
 import app.softnetwork.elastic.sql.{
   quoteIdentifier,
   renderedTypeOf,
+  ComparisonRule,
   Expr,
   GenericIdentifier,
   Identifier,
@@ -728,7 +729,23 @@ case class Bucket(
     *
     * Called once per literal while the request is built.
     */
-  def keyFilterTexts(value: Any): Set[String] =
+  def keyFilterTexts(value: Any): Set[String] = value match {
+    // R-54 -- a quoted number beside a whole-DECLARED key is the whole number it rounds to, half
+    // away from zero (`ComparisonRule.numberOf`, the one comparison rule): `HAVING k = '1.5'` keeps
+    // the group 2, on a field level and on a scripted one alike, so the fold, `keyOf` and the
+    // nameless-key gate, which read these lists, read that one value. A whole-number text keeps
+    // its path below.
+    case quoted: String
+        if !ComparisonRule.spellsWholeNumber(quoted) &&
+          ComparisonRule.wholeNumberType(ComparisonRule.declaredTypeOf(identifier)) =>
+      ComparisonRule.roundedWhole(quoted) match {
+        case Some(rounded) => keyFilterTextsAsWritten(java.lang.Long.valueOf(rounded))
+        case None          => keyFilterTextsAsWritten(quoted)
+      }
+    case _ => keyFilterTextsAsWritten(value)
+  }
+
+  private def keyFilterTextsAsWritten(value: Any): Set[String] =
     if (!isScriptedKey || (keyTypesKnown && !isExactKeyKind)) Set(value.toString)
     else
       value match {

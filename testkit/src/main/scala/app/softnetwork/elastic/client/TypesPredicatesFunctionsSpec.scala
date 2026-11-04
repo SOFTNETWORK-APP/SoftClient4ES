@@ -416,17 +416,22 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
   "ROUND of a REAL to decimal places" should "round in float, as DuckDB does" in {
     // DuckDB: p1, p3 (the float 0.1 rounds to the float 0.1)
     idsOf(s"SELECT id FROM $index WHERE ROUND(r, 1) < 0.30000001192092896") shouldBe Set("p1", "p3")
-    // DuckDB: the FLOAT values, read as doubles
-    valuesById(s"SELECT id, ROUND(r, 1) AS v FROM $index").map { case (id, v) =>
-      id -> decimal(v)
-    } shouldBe Map(
-      "p1" -> Some(BigDecimal(0.1f.toDouble)),
-      "p2" -> Some(BigDecimal("0.5")),
-      "p3" -> Some(BigDecimal(0.1f.toDouble)),
-      "p4" -> None,
-      "p5" -> Some(BigDecimal("0.5")),
-      "p6" -> None,
-      "p7" -> Some(BigDecimal(0.3f.toDouble))
+    // DuckDB: the FLOAT values. ROUND takes its operand's type: the column is a REAL, every value
+    // a `Float` (`==` also accepts the same float widened to a `Double`, so the class is asserted
+    // apart)
+    val values = rowsOf(s"SELECT id, ROUND(r, 1) AS v FROM $index")
+      .map(r => scalar(r.getOrElse("id", null)) -> r.getOrElse("v", null))
+      .toMap
+    info(s"[SELECT id, ROUND(r, 1) AS v FROM $index] $values")
+    values.values.filter(_ != null).map(_.getClass).toSet shouldBe Set(classOf[java.lang.Float])
+    values shouldBe Map(
+      "p1" -> 0.1f,
+      "p2" -> 0.5f,
+      "p3" -> 0.1f,
+      "p4" -> null,
+      "p5" -> 0.5f,
+      "p6" -> null,
+      "p7" -> 0.3f
     )
     // the control: a DOUBLE operand rounds in double (DuckDB: p1, p3, p7)
     idsOf(

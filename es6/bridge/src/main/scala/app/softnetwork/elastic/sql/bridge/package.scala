@@ -604,7 +604,10 @@ package object bridge {
     }
 
     if (!request.deleteByQuery && !request.updateByQuery) {
-      _search = _search sourceFiltering (fields, excludes)
+      // a computed-only row statement reads no `_source` key (#418): its rows hold its columns only
+      _search =
+        if (request.sourceless) _search fetchSource false
+        else _search sourceFiltering (fields, excludes)
     }
 
     _search = if (allAggregations.nonEmpty) {
@@ -925,6 +928,11 @@ package object bridge {
           case _ => matchAllQuery()
         }
       case l: StringValue =>
+        // R-54 -- a quoted number beside a whole-declared column is the whole number it rounds to,
+        // half away from zero: the one comparison rule's reading (`queryText`), so Elasticsearch
+        // compares what the type rule and every scripted rendering compare. A whole-number text,
+        // and LIKE / RLIKE, keep the literal's own text.
+        lazy val text: String = queryText(l).getOrElse(l.value)
         operator match {
           case LIKE =>
             maybeNot match {
@@ -943,44 +951,44 @@ package object bridge {
           case GE =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lt l.value
+                rangeQuery(identifier.name) lt text
               case _ =>
-                rangeQuery(identifier.name) gte l.value
+                rangeQuery(identifier.name) gte text
             }
           case GT =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) lte l.value
+                rangeQuery(identifier.name) lte text
               case _ =>
-                rangeQuery(identifier.name) gt l.value
+                rangeQuery(identifier.name) gt text
             }
           case LE =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gt l.value
+                rangeQuery(identifier.name) gt text
               case _ =>
-                rangeQuery(identifier.name) lte l.value
+                rangeQuery(identifier.name) lte text
             }
           case LT =>
             maybeNot match {
               case Some(_) =>
-                rangeQuery(identifier.name) gte l.value
+                rangeQuery(identifier.name) gte text
               case _ =>
-                rangeQuery(identifier.name) lt l.value
+                rangeQuery(identifier.name) lt text
             }
           case EQ =>
             maybeNot match {
               case Some(_) =>
-                negationOf(identifier.name, termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, text))
               case _ =>
-                termQuery(identifier.name, l.value)
+                termQuery(identifier.name, text)
             }
           case NE | DIFF =>
             maybeNot match {
               case Some(_) =>
-                termQuery(identifier.name, l.value)
+                termQuery(identifier.name, text)
               case _ =>
-                negationOf(identifier.name, termQuery(identifier.name, l.value))
+                negationOf(identifier.name, termQuery(identifier.name, text))
             }
           case _ => matchAllQuery()
         }
@@ -1082,7 +1090,8 @@ package object bridge {
   ): Query = {
     if (requiresScript(in.identifier)) return scriptQueryOf(in)
     import in._
-    val _values: Seq[Any] = values.innerValues
+    // R-54 -- each quoted number beside a whole-declared column as the whole number it rounds to
+    val _values: Seq[Any] = queryValues
     val t =
       _values.headOption match {
         case Some(_: Double) =>
@@ -1146,9 +1155,10 @@ package object bridge {
           rangeQuery(identifier.name) gte fromTo.from.value.asInstanceOf[Long] lte fromTo.to.value
             .asInstanceOf[Long]
         case _: SQLVarchar =>
-          rangeQuery(identifier.name) gte String.valueOf(fromTo.from.value) lte String.valueOf(
-            fromTo.to.value
-          )
+          // R-54 -- a quoted bound beside a whole-declared column as the whole number it rounds to
+          rangeQuery(identifier.name) gte boundQueryText(fromTo.from)
+            .getOrElse(String.valueOf(fromTo.from.value)) lte boundQueryText(fromTo.to)
+            .getOrElse(String.valueOf(fromTo.to.value))
         case _: SQLTemporal =>
           fromTo match {
             case ft: IdentifierFromTo =>

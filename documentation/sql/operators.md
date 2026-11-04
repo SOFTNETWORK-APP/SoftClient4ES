@@ -552,13 +552,16 @@ SELECT order_date * 2 FROM orders;
   `CASE` condition — a literal beside a number is the number it spells, beside a `DATE` the date
   it spells (the date of a date-time literal), beside a `TIMESTAMP` the instant it spells
   (`'2024-01-31'` is its midnight), and beside a `BOOLEAN` the boolean it spells. Beside a
-  whole-number type (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`) only a whole number is read: `'1.5'`
-  and `'1.0'` are no integer, so `COALESCE(qty, 0) = '1.5'` or `qty + '1.0'` over an integer `qty`
-  is refused by name, as PostgreSQL refuses it (`invalid input syntax for type integer`); beside
-  `DOUBLE`, `REAL` or `DECIMAL`, any number is read. (A `WHERE` comparison with a bare integer
-  column, `WHERE qty = '1.5'`, is the exception: it runs as a query on the column's mapping, and
-  Elasticsearch reads the literal.) A `DATE` and a `TIMESTAMP` compare, the `DATE` being the
-  instant its day starts at. Any other literal is text, and comparing it with a number or a date
+  whole-number type (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, a `DATEDIFF`, an integer `ROUND`, a
+  date part) a number is read as DuckDB casts the string to that type: the whole number it rounds
+  to, half away from zero — `'1.5'` is `2`, `'-2.5'` is `-3`, `'1.0'` is `1`, `'1e3'` is `1000`
+  (*since `0.25.0`*: a fraction was refused by name, and a bare column in a `WHERE` or a `HAVING`
+  key filter compared the fraction, so `qty = '1.5'` kept no row). It holds at every site: a bare
+  column's query sends the rounded number, `qty + '1.5'` is `qty + 2`, `HAVING k = '1.5'` keeps
+  the group `2`, and a literal on the left reads as on the right (`'1.5' < qty` is `qty > 2`).
+  A number that rounds past `BIGINT` is no integer and is refused by name, as before. Beside
+  `DOUBLE`, `REAL` or `DECIMAL`, any number is read as it is. A `DATE` and a `TIMESTAMP` compare,
+  the `DATE` being the instant its day starts at. Any other literal is text, and comparing it with a number or a date
   is refused by name. A number written as a string beside a date or a timestamp in `+` or `-`
   (`order_date + '30'`) is not read as PostgreSQL reads it: elasticsql counts it as that number of
   days, whatever its fraction, which PostgreSQL does not (see "The engines this follows" above).
