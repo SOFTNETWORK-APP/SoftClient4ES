@@ -126,6 +126,30 @@ The SQL Gateway supports the following type system:
 | `STRUCT`            | `object` with nested properties      |
 | `ARRAY<STRUCT>`     | `nested`                             |
 | `GEO_POINT`         | `geo_point`                          |
+| `VARBINARY`         | `binary`                             |
+| `ARRAY<X>`          | the mapping of `X` (Elasticsearch has no list type: every field holds one value or several) |
+
+`ARRAY<X>` is accepted for every type `X` above — `ARRAY<INT>`, `ARRAY<KEYWORD>`, `ARRAY<DATE>`,
+`ARRAY<VARBINARY>` (`binary`), `ARRAY<GEO_POINT>` (`geo_point`), `ARRAY<STRUCT>` (`nested`) — and
+reads back as `ARRAY<X>`: `DESCRIBE TABLE`, `SHOW CREATE TABLE`, the result schema and the type
+checks all see the list, and each value of the column is a list of `X` values (a single value is
+a list of one) (*since `0.25.0`*; the type read `ANY` before, and `CHAR` now reads back as `CHAR`).
+A column declared `ARRAY<X>` is used as an `X` where Elasticsearch works on each element: a
+comparison (`WHERE tags = 'a'` matches a document holding `a` among its values), a function, a
+`GROUP BY` key (its groups are the elements), a metric (`MIN(arr)` is the smallest element).
+A computed column is the exception: its `SCRIPT AS` expression runs at ingest on the whole list,
+not on one element, so a numeric or temporal function of an `ARRAY<X>` column there
+(`c INT SCRIPT AS (arr + 1)`, `SCRIPT AS (YEAR(ad))`) is refused by `CREATE TABLE` and by
+`ALTER TABLE`, naming the column. So are a `NULLIF` that compares the list with a value
+(`NULLIF(arr, arr)`, `NULLIF(n, arr)`, `NULLIF(tags, 'a')`) and date arithmetic on it
+(`ad - d`): an `ALTER TABLE` of a table holding an `ARRAY<X>` column judges its computed columns
+exactly as `CREATE TABLE` does (*since `0.25.0`*; such an `ALTER TABLE` used to re-map the list
+column to an `object` field).
+
+A **list of lists** (`ARRAY<ARRAY<INT>>`) is refused by every statement that declares a type —
+`CREATE TABLE`, `ADD COLUMN`, `SET DATA TYPE`, `SET FIELD`, and a `CREATE TABLE … AS SELECT` whose
+column would be one (`ARRAY_AGG` of a list column) —, naming the column: Elasticsearch flattens a
+nested array into one list of values.
 
 A length, precision or scale may be written on any type SQL parameterises — `c VARCHAR(255)`,
 `c CHAR(1)`, `c DECIMAL(10,2)`, `c BIGINT(20)` — and is **accepted and ignored**, exactly as in a
@@ -230,6 +254,12 @@ CREATE TABLE store (
 	- `OPTIONS`
 	- `SCRIPT AS` — optionally `STORED` (except inside ARRAY\<STRUCT>)
 - Multi-level nesting is supported.
+- Sub-fields keep the order they are **declared** in: `DESCRIBE TABLE`, `SHOW CREATE TABLE` and
+  the result schema list `obj STRUCT FIELDS (y INT, b KEYWORD)` as `y, b` (*since `0.25.0`*).
+  Elasticsearch returns a mapping's properties sorted by name, so the declared order is recorded
+  in the table's `_meta` (`field_order`); a table that has none — created by an earlier version,
+  or by a raw mapping — keeps its mapping's order, and `ALTER COLUMN … SET FIELD` rewrites a
+  sub-field in place.
 
 ---
 
@@ -714,6 +744,23 @@ Type changes fall into two categories:
 
 This is the only case where an `ALTER TABLE` operation can be rejected for safety reasons.  
 All other ALTER operations (adding/dropping columns, renaming, modifying options, modifying nested fields, etc.) are allowed.
+
+#### Declaring an existing field a list
+
+`ARRAY<X>` maps to the same Elasticsearch field as `X`, so declaring an existing field a list of
+its own type changes only the table's `_meta`: it is applied **in place**, with no reindex
+(*since `0.25.0`*):
+
+```sql
+ALTER TABLE logs ALTER COLUMN tags SET DATA TYPE ARRAY<KEYWORD>;
+-- a sub-field: SET FIELD rewrites the whole sub-field, so it is written as declared, typed ARRAY<X>
+ALTER TABLE logs ALTER COLUMN obj SET FIELD a ARRAY<INT>;
+```
+
+This is the statement a query names when a column holds several values but is declared as one
+(see [DQL: columns holding several values](dql_statements.md#columns-holding-several-values)).
+Changing the element type of a list column (`ARRAY<INT>` → `ARRAY<BIGINT>` or `ARRAY<KEYWORD>`),
+or declaring a list of another Elasticsearch type (`KEYWORD` → `ARRAY<INT>`), stays `Impossible`.
 
 ---
 

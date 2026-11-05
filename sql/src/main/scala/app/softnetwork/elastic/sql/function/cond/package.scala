@@ -201,7 +201,8 @@ package object cond {
     else {
       val typed = arms
         .filterNot(a => ComparisonRule.stringLiteral(a).isDefined)
-        .map(_.reportedType)
+        // an `ARRAY<X>` arm is one X element (SCHEMA-6 D7)
+        .map(a => SQLTypeUtils.operandType(a.reportedType))
         .filterNot(t => t == SQLTypes.Null || t.isUnknown)
         .filter(family(_) >= 0)
       typed.headOption.flatMap { first =>

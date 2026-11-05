@@ -106,12 +106,15 @@ class ResultSchemaSpec extends AnyFlatSpec with Matchers {
       ) shouldBe Seq(SQLTypes.Varchar)
   }
 
-  it should "give a STRUCT its fields by name, a point {lat, lon}, a list its element (A-13)" in {
+  // SCHEMA-6 (D9) supersedes A-13's by-name order: a STRUCT's fields in its column's order -- the
+  // mapping's here, which has no `_meta.field_order` (Elasticsearch returns `properties` sorted, this
+  // hand-written mapping lists `z` first)
+  it should "give a STRUCT its fields in its column's order, a point {lat, lon}, a list its element (D9)" in {
     val obj = schemaOf("SELECT obj, g, items FROM s2_t").columns
     obj.head.sqlType shouldBe SQLTypes.Struct
     obj.head.fields.map(f => f.name -> f.sqlType) shouldBe Seq(
-      "a" -> SQLTypes.Int,
-      "z" -> SQLTypes.Varchar
+      "z" -> SQLTypes.Varchar,
+      "a" -> SQLTypes.Int
     )
     obj(1).sqlType shouldBe SQLTypes.GeoPoint
     obj(1).fields.map(f => f.name -> f.sqlType) shouldBe Seq(

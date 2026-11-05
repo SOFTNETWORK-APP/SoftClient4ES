@@ -17,7 +17,7 @@
 package app.softnetwork.elastic.sql.schema
 
 import app.softnetwork.elastic.sql.Value
-import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypeUtils}
+import app.softnetwork.elastic.sql.`type`.{SQLArray, SQLType, SQLTypeUtils}
 import app.softnetwork.elastic.sql.query._
 
 sealed trait DiffSafety
@@ -45,8 +45,14 @@ case class ColumnRemoved(name: String) extends ColumnDiff {
 case class ColumnTypeChanged(name: String, from: SQLType, to: SQLType) extends ColumnDiff {
   override def stmt: AlterTableStatement = AlterColumnType(name, to)
 
+  /** SCHEMA-6 (D5): a change of an array column's element type -- or between a list and a scalar of
+    * another Elasticsearch type -- stays `Impossible`, as on 0.24.0, where every array column read
+    * `ANY` and `canConvert(ANY, _)` was false. Declaring an existing field a list of its own type
+    * is no `ColumnTypeChanged` at all (`Column.diff` compares Elasticsearch types).
+    */
   override def safety: DiffSafety =
-    if (SQLTypeUtils.canConvert(from, to))
+    if (from.isInstanceOf[SQLArray] || to.isInstanceOf[SQLArray]) Impossible
+    else if (SQLTypeUtils.canConvert(from, to))
       UnsafeReindex
     else
       Impossible

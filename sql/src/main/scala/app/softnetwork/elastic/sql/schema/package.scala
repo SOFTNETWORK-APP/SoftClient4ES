@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.sql
 
-import app.softnetwork.elastic.sql.`type`.{SQLLiteral, SQLType, SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.`type`.{SQLArray, SQLLiteral, SQLType, SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.config.ElasticSqlConfig
 import app.softnetwork.elastic.sql.function.{
   Function => SQLFunction,
@@ -58,6 +58,42 @@ package object schema {
     LoggerFactory.getLogger("app.softnetwork.elastic.sql.schema")
 
   lazy val sqlConfig: ElasticSqlConfig = ElasticSqlConfig()
+
+  /** `fields` with `field` in place of the sub-field of its name, which keeps its POSITION
+    * (SCHEMA-6 D9: the declared order is persisted, so `SET FIELD` -- the remedy a several-valued
+    * sub-field fails with -- must not move the field it rewrites); a new name is appended.
+    */
+  private[schema] def replacedSubField(fields: List[Column], field: Column): List[Column] =
+    if (fields.exists(_.name == field.name))
+      fields.map(f => if (f.name == field.name) field else f)
+    else fields :+ field
+
+  /** The refusal of a column -- or of one of its sub-fields, at any depth -- declared a list of
+    * lists (SCHEMA-6 D2): Elasticsearch flattens a nested array into one list of values, so an
+    * `ARRAY<ARRAY<X>>` cannot hold what it declares. ONE check, read by every DDL statement that
+    * declares a type and by `Table.mergeWithSearch` (CTAS). `None` when the column is accepted.
+    */
+  private[elastic] def nestedArrayRefusal(column: Column): Option[String] = {
+    def nestedArray(t: SQLType): Boolean = t match {
+      case SQLTypes.Array(inner) =>
+        inner match {
+          case _: SQLArray => true
+          case other       => nestedArray(other)
+        }
+      case _ => false
+    }
+    def walk(c: Column, path: String): Option[String] =
+      if (nestedArray(c.dataType))
+        Some(
+          s"$path: ${c.dataType.typeId} is not supported: Elasticsearch flattens nested arrays; " +
+          "declare ARRAY<X>"
+        )
+      else
+        c.multiFields.iterator.map(f => walk(f, s"$path.${f.name}")).collectFirst {
+          case Some(refusal) => refusal
+        }
+    walk(column, column.name)
+  }
 
   // ========================================================================
   // PIPELINE COMPONENTS
@@ -955,8 +991,18 @@ package object schema {
     * collapses every temporal declaration to `Timestamp`, and the declaration is exactly what the
     * ingest emission needs -- a DATE column parses as a `LocalDate`, a TIMESTAMP as a
     * `ZonedDateTime`, and getting that wrong is the defect this rejects.
+    *
+    * 🔴 Runs in the scope of the script it judges (`SQLTypeUtils.validatingComputedColumns`): the
+    * processor reads `ctx.<c>`, the whole value, so an `ARRAY<X>` operand is its declared type here
+    * as in the processor's render, never D7's element (SCHEMA-6, lead R-66). Judged as the element,
+    * `CAST(arr AS BIGINT)` was refused ("declared ARRAY<INT> and not INT") on CREATE and on every
+    * later ALTER of a table holding it, while 0.24.0 accepted it.
     */
-  private[elastic] def validateScriptReferences(schema: Schema): Either[String, Unit] = {
+  private[elastic] def validateScriptReferences(schema: Schema): Either[String, Unit] =
+    SQLTypeUtils.validatingComputedColumns(scriptReferenceErrors(schema))
+
+  /** [[validateScriptReferences]]'s rules, in the scope it sets. */
+  private def scriptReferenceErrors(schema: Schema): Either[String, Unit] = {
     // 🔴 A REGULAR table only. Every other table type projects columns from somewhere else, so its
     // own column list is not the population a reference is checked against: a materialized view's
     // computed column legitimately reads a column of its SOURCE (`effective_date` from
@@ -2058,6 +2104,12 @@ package object schema {
                                           field.name -> ObjectValue(field._meta)
                                         ): _*
                                       )
+                                    ),
+                                    // SCHEMA-6 (D9): the sub-fields in their DECLARED order --
+                                    // Elasticsearch returns `properties` sorted and a `_meta`
+                                    // object in no order, so only a list keeps it
+                                    "field_order" -> StringValues(
+                                      multiFields.map(field => StringValue(field.name))
                                     )
                                   )
                                 else ListMap.empty[String, Value[_]]) ++ (if (lineage.nonEmpty) {
@@ -2092,7 +2144,7 @@ package object schema {
     def updateStruct(): Column = {
       struct
         .map { st =>
-          val updated = st.copy(multiFields = st.multiFields.filterNot(_.name == this.name) :+ this)
+          val updated = st.copy(multiFields = replacedSubField(st.multiFields, this))
           updated.updateStruct()
         }
         .getOrElse(this)
@@ -2998,8 +3050,7 @@ package object schema {
                     // returning `table` made SET|ADD FIELD a no-op that still reported success.
                     val updated = c
                       .copy(
-                        multiFields =
-                          c.multiFields.filterNot(_.name == field.name) :+ field.update(Some(c)),
+                        multiFields = replacedSubField(c.multiFields, field.update(Some(c))),
                         script = None
                       )
                       .updateStruct()

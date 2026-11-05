@@ -133,10 +133,11 @@ package object schema {
         case _ => None
       }
 
-      val fields =
+      // in MAPPING order (SCHEMA-6 D9): a `Set` of the entries, mapped, lost it to a hash order
+      val mapped =
         Option(node.get("fields")) // multi-fields
           .orElse(Option(node.get("properties"))) // object/nested fields
-          .map(_.properties().asScala.map { entry =>
+          .map(_.properties().asScala.toList.map { entry =>
             val name = entry.getKey
             val value = entry.getValue
             val _meta = fields_meta.flatMap {
@@ -148,8 +149,20 @@ package object schema {
               case _ => None
             }
             apply(name, value, _meta)
-          }.toList)
+          })
           .getOrElse(Nil)
+
+      // SCHEMA-6 (D9): the sub-fields in the order the column DECLARED them (`_meta.field_order`),
+      // a name it does not list after them in mapping order, a listed name the mapping lacks
+      // ignored; without the list, the mapping's order (Elasticsearch's sorted `properties`)
+      val fields = _meta.flatMap(_.value.get("field_order")) match {
+        case Some(order: StringValues) if mapped.nonEmpty =>
+          val declared = order.values.map(_.value)
+          val byName = mapped.map(f => f.name -> f).toMap
+          declared.distinct.flatMap(byName.get).toList ++
+          mapped.filterNot(f => declared.contains(f.name))
+        case _ => mapped
+      }
 
       val options =
         extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))

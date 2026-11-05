@@ -58,6 +58,14 @@ object SQLTypes {
 
   case object VarBinary extends SQLVarBinary { val typeId = "VARBINARY" }
 
+  /** The type a TYPE NAME reads as: a declared `_meta` `data_type`, an Elasticsearch mapping type,
+    * a DDL type. THE read direction (SCHEMA-6 D13): `SQLTypeUtils.elasticType` is the write
+    * direction, and `IndexField.undeclaredType` the only seam before it.
+    *
+    * `ARRAY<X>` reads `ARRAY` of X's reading (D1), so a column declared `ARRAY<KEYWORD>` reads back
+    * as one; an element read as `ANY`, or itself a list (a 0.24.0 `ARRAY<ARRAY<…>>` declaration --
+    * Elasticsearch has no list of lists), reads `ANY` (R-7), as every unknown name does.
+    */
   def apply(typeName: String): SQLType = typeName.toLowerCase match {
     case "null"                     => Null
     case "boolean"                  => Boolean
@@ -78,7 +86,13 @@ object SQLTypes {
     case "nested" | "array<struct>" => Array(Struct)
     case "geo_point"                => GeoPoint
     case "binary" | "varbinary"     => VarBinary
-    case _                          => Any
+    case "char"                     => Char
+    case array if array.startsWith("array<") && array.endsWith(">") =>
+      apply(array.substring(6, array.length - 1)) match {
+        case Any | _: SQLArray => Any
+        case element           => Array(element)
+      }
+    case _ => Any
   }
 
   /** The Elasticsearch-mapping direction. A field's DECLARED type is preserved verbatim: when we

@@ -80,7 +80,11 @@ private[client] final class HitReading(
   val keep: Set[String],
   private[client] val star: Boolean,
   private[client] val flatReaders: String => JsonNode => Any,
-  private[client] val instants: java.util.HashMap[String, String]
+  private[client] val instants: java.util.HashMap[String, String],
+  private[client] val listPaths: java.util.HashMap[String, Array[HitReading.ListPath]] =
+    new java.util.HashMap[String, Array[HitReading.ListPath]](),
+  private[client] val asReadKeys: java.util.HashMap[String, String] =
+    new java.util.HashMap[String, String]()
 ) {
 
   /** Whether a hit's `_ignored` must be read (D8): the plan reads some `_source` key as a date. */
@@ -103,8 +107,39 @@ private[client] final class HitReading(
 
 private[client] object HitReading {
 
-  /** SCHEMA-6 flips it to [[MultiValued.Fail]], in the same core release (D7). */
-  private[client] val Default: MultiValued = MultiValued.AsRead
+  /** SCHEMA-6 (D6, lead Q1): several values in a column not declared `ARRAY<X>` fail the statement,
+    * naming the `ALTER` that declares it a list -- the remedy ships in the same release.
+    */
+  private[client] val Default: MultiValued = MultiValued.Fail
+
+  /** SCHEMA-6 (A-26) -- a selected dotted column under a parent the plan reads WHOLE (`SELECT obj,
+    * obj.a`, `SELECT *, obj.a`): where the parent's `_source` value is a list of objects, the row
+    * key `key` holds the values the path `segments` collects there ([[Readers.collected]]), read by
+    * `reader`, the path's own reader -- as the parent read for its paths only answers them.
+    */
+  private[client] final class ListPath(
+    val key: String,
+    val segments: Array[String],
+    val reader: JsonNode => Any
+  )
+
+  /** SCHEMA-6 (A-26) -- the values the sub-path `segments` holds under `node` (a list of objects),
+    * in order, every list met on the way -- an element's own list included -- flattened, as
+    * Elasticsearch indexes a path under a list of objects; `null` when it holds none.
+    */
+  private[client] def collected(node: JsonNode, segments: Array[String]): JsonNode = {
+    val out = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode()
+    def walk(n: JsonNode, i: Int): Unit =
+      if (n != null && !n.isNull) {
+        if (n.isArray) {
+          val it = n.elements()
+          while (it.hasNext) walk(it.next(), i)
+        } else if (i == segments.length) out.add(n)
+        else if (n.isObject) walk(n.get(segments(i)), i + 1)
+      }
+    walk(node, 0)
+    if (out.size() == 0) null else out
+  }
 
   /** A bare `*` item. */
   private[client] def isStar(field: Field): Boolean =
@@ -114,15 +149,67 @@ private[client] object HitReading {
   private[client] def isComputed(field: Field): Boolean =
     field.identifier.functions.nonEmpty || field.isScriptField
 
-  /** Thrown by a scalar reader under [[MultiValued.Fail]]; the hit loop names the document. */
-  private[client] final class MultiValuedCell(val column: String, val table: String)
-      extends RuntimeException(column, null, false, false)
+  /** Thrown by a scalar reader under [[MultiValued.Fail]]; the hit loop names the document and its
+    * index. `alter` is the `ALTER COLUMN …` clause that declares the column a list ([[remedyOf]]),
+    * empty for a name no schema column has (a computed item); `table` the statement's source, the
+    * index named when the hit names none.
+    */
+  private[client] final class MultiValuedCell(
+    val column: String,
+    val alter: String,
+    val table: String
+  ) extends RuntimeException(column, null, false, false)
 
-  /** The message a several-element cell fails with under [[MultiValued.Fail]] (D7). */
-  private[client] def multiValuedMessage(cell: MultiValuedCell, id: Option[String]): String =
-    s"Column ${cell.column} holds several values${id.fold("")(i => s" in document $i")}, but is " +
-    s"declared as one value: declare it a list with ALTER TABLE ${cell.table} ALTER COLUMN " +
-    s"${cell.column} TYPE ARRAY<...>"
+  /** The message a several-element cell fails with under [[MultiValued.Fail]] (SCHEMA-6 D6): the
+    * column, the document `_id` and the index the hit came from (`_index`, else the statement's
+    * source), and the `ALTER TABLE` statement -- one that parses and runs -- declaring it a list.
+    */
+  private[client] def multiValuedMessage(
+    cell: MultiValuedCell,
+    id: Option[String],
+    index: Option[String]
+  ): String = {
+    val in = index.filter(_.nonEmpty).getOrElse(cell.table)
+    val where =
+      id.fold("")(i => s" in document $i") + (if (in.nonEmpty) s" of index $in" else "")
+    val remedy =
+      if (cell.alter.isEmpty || in.isEmpty) ""
+      else
+        s": declare it a list with ALTER TABLE ${app.softnetwork.elastic.sql.renderColumnName(in)} " +
+        cell.alter
+    s"Column ${cell.column} holds several values$where, but is declared as one value$remedy"
+  }
+
+  /** The `ALTER COLUMN …` clause declaring the column at `path` of `schema` a list of its own type
+    * (SCHEMA-6 D6), read on the error path only: `ALTER COLUMN c SET DATA TYPE ARRAY<X>` for a
+    * column, X its declared type; for a sub-field `p.f`, `ALTER COLUMN p SET FIELD <f>`, `<f>` the
+    * sub-field as its schema declares it -- options, DEFAULT, COMMENT, NOT NULL and multi-fields
+    * kept, `SET FIELD` replacing the whole sub-field -- with the type `ARRAY<X>`. `None` for a name
+    * the schema does not have.
+    */
+  private[client] def remedyOf(
+    schema: Option[app.softnetwork.elastic.sql.schema.Table]
+  ): String => Option[String] =
+    path =>
+      schema.flatMap(_.find(path)).map { c =>
+        val list = c.dataType match {
+          case declared: app.softnetwork.elastic.sql.`type`.SQLArray => declared
+          case declared                                              => SQLTypes.Array(declared)
+        }
+        val dot = path.lastIndexOf('.')
+        if (dot < 0)
+          s"ALTER COLUMN ${app.softnetwork.elastic.sql.renderColumnName(path)} SET DATA TYPE " +
+          list.typeId
+        else {
+          val parent = path
+            .substring(0, dot)
+            .split("\\.")
+            .map(app.softnetwork.elastic.sql.renderColumnName)
+            .mkString(".")
+          val field = c.copy(dataType = list, struct = None).update()
+          s"ALTER COLUMN $parent SET FIELD ${field.sql.replaceAll("\\n\\t*", " ")}"
+        }
+      }
 
   /** A plan that reads nothing and projects STRICTLY, keeping `keep` (D9): the final projection of
     * a window-enriched statement (SCHEMA-2b, B7 d), whose rows were read by their base query's
@@ -169,7 +256,7 @@ private[client] object HitReading {
       val known = itemTypes.get(f)
       if (known ne null) known
       else {
-        val t = MultiSearch.fieldType(f)
+        val t = MultiSearch.fieldType(f, single)
         itemTypes.put(f, t)
         t
       }
@@ -187,7 +274,7 @@ private[client] object HitReading {
     val schema = ResultSchemas.of(single, dates, typeOf, columnTypeOf)
     val table = single.sources.headOption.getOrElse("")
     val aliases = single.fieldAliases
-    val readers = new Readers(aliases, dates, multiValued, table)
+    val readers = new Readers(aliases, dates, multiValued, table, remedyOf(single.schema))
     val fields = single.select.fieldsWithComputedAliases
     val star = fields.exists(isStar)
     val source = new java.util.HashMap[String, JsonNode => Any]()
@@ -254,12 +341,27 @@ private[client] object HitReading {
       }
     }
     // a dotted column's parent not read whole: its selected paths by their types, every other key
-    // as read
+    // as read; a parent read whole: its selected paths collected where it holds a list of objects
+    // (SCHEMA-6 A-26)
+    val listPaths = new java.util.HashMap[String, Array[ListPath]]()
     paths.foreach { case (parent, under) =>
       if (!source.containsKey(parent)) source.put(parent, readers.paths(parent, under.toList))
+      else
+        listPaths.put(
+          parent,
+          under.map { case (p, t) =>
+            val path = s"$parent.$p"
+            new ListPath(
+              aliases.getOrElse(path, path),
+              p.split("\\."),
+              readers.column(path, t, Set.empty)._1
+            )
+          }.toArray
+        )
     }
     // SCHEMA-2b (B7 a) -- each plain PARTITION BY column of the window statement: read by the type
     // its key is read with (`MultiSearch.bucketType`), a DATE / TIME one exactly (A-23), and kept
+    val asReadKeys = new java.util.HashMap[String, String]()
     val carriedKeys: Seq[String] =
       if (single.schema.isEmpty) Nil
       else
@@ -268,9 +370,14 @@ private[client] object HitReading {
           val name = id.name
           if (id.nested || id.functions.nonEmpty || name.isEmpty || name.indexOf('.') >= 0) None
           else {
-            val t = MultiSearch.bucketType(b)
+            val t = MultiSearch.partitionType(b)
             t.sqlType match {
               case SQLTypes.Date | SQLTypes.Time => source.put(name, readers.exact(name, t))
+              // SCHEMA-6 (A-28) -- an `ARRAY` partition column is read as read, as 0.24.0 read it;
+              // selected, it keeps its own reader and its partition value is read as read under
+              // its own row key, the one the join reads (`PartitionKeys.of`)
+              case _ if MultiSearch.arrayLevel(b) && source.containsKey(name) =>
+                asReadKeys.put(name, PartitionKeys.asReadKey(name))
               case _ => if (!source.containsKey(name)) put(name, t, keepUnder(name))
             }
             Some(name)
@@ -306,7 +413,8 @@ private[client] object HitReading {
     // normalizer -- an UNNEST its WHERE filters per element included (`UnnestScope.rowExplosion`)
     val keep: Set[String] = Set(ElasticConversion.DocumentIdField) ++
       single.nestedHitsMappings.keySet ++ UnnestScope.rowExplosion(single).keySet ++ carriedKeys ++
-      instantKeys.values().toArray(new Array[String](0))
+      instantKeys.values().toArray(new Array[String](0)) ++
+      asReadKeys.values().toArray(new Array[String](0))
     // a flat dotted key folded under `*` (rare): its reader built once per path, on first use
     val flatCache = new java.util.concurrent.ConcurrentHashMap[String, JsonNode => Any]()
     val flatReaders: String => JsonNode => Any = path => {
@@ -331,7 +439,9 @@ private[client] object HitReading {
       keep,
       star && schema.isDefined && fields.forall(isStar),
       flatReaders,
-      instantKeys
+      instantKeys,
+      listPaths,
+      asReadKeys
     )
   }
 
@@ -342,8 +452,13 @@ private[client] object HitReading {
     aliases: ListMap[String, String],
     dates: SetOperationValues.DateReading,
     multiValued: MultiValued,
-    table: String
+    table: String,
+    remedy: String => Option[String] = _ => None
   ) {
+
+    /** The failure of a several-element cell of `name` (SCHEMA-6 D6). */
+    private def several(name: String): MultiValuedCell =
+      new MultiValuedCell(name, remedy(name).getOrElse(""), table)
 
     /** Today's reading, the plan's answer for a key it does not type (ANY, NUMERIC, TEMPORAL) and
       * for a value a typed reader cannot read (D6, `Unreadable.KeepAsStored`).
@@ -383,9 +498,13 @@ private[client] object HitReading {
       t.sqlType match {
         case SQLTypes.Array(_) =>
           (list(name, t.element.getOrElse(SetOperationType(SQLTypes.Any))), None)
-        case SQLTypes.Struct if t.fields.nonEmpty => (scalar(name, struct(name, t, keepKeys)), None)
-        case SQLTypes.GeoPoint                    => (geo(name), None)
-        case _ if !typed(t)                       => (asRead, None)
+        // SCHEMA-6 (A-26): a list of objects in an `object` column answers a `List` of its struct
+        // reads whatever `MultiValued` says -- `ARRAY<STRUCT>` is `nested`, and no in-place ALTER
+        // turns an object into one, so failing it would ship a refusal with no remedy
+        case SQLTypes.Struct if t.fields.nonEmpty =>
+          (scalar(name, struct(name, t, keepKeys), MultiValued.AsRead), None)
+        case SQLTypes.GeoPoint => (geo(name), None)
+        case _ if !typed(t)    => (asRead, None)
         case scalarType =>
           val (one, ignoredOne) = scalarOne(name, scalarType, t.format)
           (
@@ -469,6 +588,11 @@ private[client] object HitReading {
       nested.foreach { case (k, sub) =>
         if (!leaves.containsKey(k)) leaves.put(k, paths(s"$name.$k", sub.toList))
       }
+      // SCHEMA-6 (A-26): the selected children, in selection order, read under a list of objects
+      val children: Array[(String, Array[String], JsonNode => Any)] =
+        (under.map(_._1).filter(_.indexOf('.') < 0) ++ nested.keys).distinct
+          .map(k => (k, Array(k), leaves.get(k)))
+          .toArray
       node =>
         if (node.isObject) {
           val entries = ListMap.newBuilder[String, Any]
@@ -481,6 +605,20 @@ private[client] object HitReading {
             )
           }
           entries.result()
+        } else if (node.isArray && children.nonEmpty) {
+          // a list of objects: each selected path holds the values its elements hold, collected in
+          // order -- as Elasticsearch indexes `obj.a` = [5, 50] for `obj: [{a: 5}, {a: 50}]` --,
+          // read by the path's reader: one value is it, several fail a scalar path (Q1, its
+          // `SET FIELD` remedy) or are an `ARRAY` path's list, none is NULL
+          val entries = ListMap.newBuilder[String, Any]
+          var i = 0
+          while (i < children.length) {
+            val (k, segments, reader) = children(i)
+            val values = collected(node, segments)
+            entries += aliases.getOrElse(k, k) -> (if (values eq null) null else reader(values))
+            i += 1
+          }
+          entries.result()
         } else asRead(node)
     }
 
@@ -490,9 +628,21 @@ private[client] object HitReading {
       * with.
       */
     def scalar(name: String, one: JsonNode => Any): JsonNode => Any =
-      node => scalarValue(name, one, node)
+      node => scalarValue(name, one, node, multiValued)
+
+    /** [[scalar]] under the given [[MultiValued]] rather than the statement's. */
+    def scalar(name: String, one: JsonNode => Any, mode: MultiValued): JsonNode => Any =
+      node => scalarValue(name, one, node, mode)
 
     private def scalarValue(name: String, one: JsonNode => Any, node: JsonNode): Any =
+      scalarValue(name, one, node, multiValued)
+
+    private def scalarValue(
+      name: String,
+      one: JsonNode => Any,
+      node: JsonNode,
+      mode: MultiValued
+    ): Any =
       if (node == null || node.isNull) null
       else if (node.isArray) {
         val size = node.size()
@@ -500,19 +650,19 @@ private[client] object HitReading {
         else if (size == 1) {
           val only = node.get(0)
           if (only != null && only.isArray) {
-            if (only.size() == 1) scalarValue(name, one, only)
-            else if (only.size() > 1 && multiValued == MultiValued.Fail)
-              throw new MultiValuedCell(name, table)
+            if (only.size() == 1) scalarValue(name, one, only, mode)
+            else if (only.size() > 1 && mode == MultiValued.Fail)
+              throw several(name)
             else asRead(node)
           } else element(one)(only)
         } else
-          multiValued match {
+          mode match {
             case MultiValued.AsRead =>
               val values = ListBuffer.empty[Any]
               val it = node.elements()
               while (it.hasNext) values += element(one)(it.next())
               values.toList
-            case MultiValued.Fail => throw new MultiValuedCell(name, table)
+            case MultiValued.Fail => throw several(name)
           }
       } else one(node)
 
@@ -529,9 +679,11 @@ private[client] object HitReading {
         case _ if !typed(element) => asRead
         case scalarType           => scalarOne(name, scalarType, element.format)._1
       }
+      val points = element.sqlType == SQLTypes.GeoPoint
       node =>
         if (node == null || node.isNull) null
-        else if (node.isArray) {
+        // SCHEMA-6: `[lon, lat]` in an `ARRAY<GEO_POINT>` is ONE point, a list of one (R-34)
+        else if (node.isArray && !(points && coordinates(node))) {
           val values = ListBuffer.empty[Any]
           val it = node.elements()
           while (it.hasNext) {
@@ -591,7 +743,7 @@ private[client] object HitReading {
                   }
                   values.toList
                 } catch { case _: IllegalArgumentException => asRead(node) }
-              case MultiValued.Fail => throw new MultiValuedCell(name, table)
+              case MultiValued.Fail => throw several(name)
             }
         } else one(node)
     }

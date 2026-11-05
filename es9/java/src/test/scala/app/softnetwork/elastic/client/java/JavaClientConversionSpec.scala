@@ -33,10 +33,11 @@ import _root_.java.util.{Collections, List => JList}
 
 /** Pins the envelope contract of the single-parse hits path (softclient4es-arrow#160).
   *
-  * The row parser (`ElasticConversion.parseSimpleHits`) reads exactly `_id`, `_source`,
+  * The row parser (`ElasticConversion.parseSimpleHits`) reads exactly `_id`, `_index`, `_source`,
   * `inner_hits` and `fields` per hit — `hitsToResponseNode` must provide those and may omit
-  * everything else. A hit carrying `inner_hits` or `fields` must fall back to a full-fidelity node,
-  * and `convertToTree` must produce the same tree `convertToJson` round-trips to.
+  * everything else (`_index` names the hit's index in a several-valued cell's failure, SCHEMA-6). A
+  * hit carrying `inner_hits` or `fields` must fall back to a full-fidelity node, and
+  * `convertToTree` must produce the same tree `convertToJson` round-trips to.
   */
 class JavaClientConversionSpec extends AnyWordSpec with Matchers {
 
@@ -87,7 +88,8 @@ class JavaClientConversionSpec extends AnyWordSpec with Matchers {
       val hitNode = hits.get(0)
       hitNode.path("_id").asText() shouldBe "1"
       hitNode.get("_source") should be theSameInstanceAs src
-      hitNode.has("_index") shouldBe false
+      // the hit's own index, never the statement's pattern (SCHEMA-6 D6)
+      hitNode.path("_index").asText() shouldBe "idx"
     }
 
     "omit _id when the hit has none" in {

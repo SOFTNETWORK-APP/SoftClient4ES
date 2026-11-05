@@ -1116,8 +1116,23 @@ class TableExecutor(
                     return Left(error)
                   }
                   // we update the schema based on the DQL select clause
-                  fromSchema
-                    .mergeWithSearch(single)
+                  val merged = fromSchema.mergeWithSearch(single)
+                  // SCHEMA-6 (D2) -- a column the SELECT declares a list of lists (`ARRAY_AGG` of a
+                  // list column) is refused by name, before the target is created or replaced
+                  merged.columns.iterator
+                    .flatMap(app.softnetwork.elastic.sql.schema.nestedArrayRefusal(_))
+                    .toList
+                    .headOption
+                    .foreach { reason =>
+                      val error = ElasticError(
+                        message = reason,
+                        statusCode = Some(400),
+                        operation = Some("schema")
+                      )
+                      logger.error(s"❌ ${error.message}")
+                      return Left(error)
+                    }
+                  merged
                     .copy(
                       name = indexName, // set index name
                       settings = fromSchema.settings // remove settings that cannot be copied

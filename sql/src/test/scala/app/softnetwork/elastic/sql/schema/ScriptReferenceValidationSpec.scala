@@ -104,6 +104,201 @@ class ScriptReferenceValidationSpec
     }
   }
 
+  /** SCHEMA-6 (A-30) -- an `ARRAY<X>` column handed to a NUMERIC or TEMPORAL function input is
+    * refused by its DECLARED type, as 0.24.0 refused it on CREATE. An ingest processor reads
+    * `ctx.<c>`, the whole `_source` value -- the list -- and not one element, so the element view
+    * Painless has in a query cannot be honoured there: measured on ES 8.18.3, `c INT SCRIPT AS (arr
+    * + 1)` stored NULL for `[5, 9]` and for `[5]`, and `YEAR(ad)` NULL for every document, the
+    * processor's failure swallowed by `ignore_failure`.
+    */
+  "a NUMERIC or TEMPORAL function over an ARRAY<X> column" should "be refused on CREATE, naming the column" in {
+    forAll(
+      Table(
+        ("ddl", "column", "declared"),
+        ("CREATE TABLE t (arr ARRAY<INT>, c INT SCRIPT AS (arr + 1))", "arr", "ARRAY<INT>"),
+        ("CREATE TABLE t (ad ARRAY<DATE>, cy INT SCRIPT AS (YEAR(ad)))", "ad", "ARRAY<DATE>")
+      )
+    ) { (ddl, column, declared) =>
+      withClue(s"[$ddl] ") {
+        val msg = rejectionOf(ddl)
+        msg should include(s"'$column'")
+        msg should include(declared)
+      }
+    }
+  }
+
+  it should "be accepted over the scalar twin" in {
+    parse("CREATE TABLE t (n INT, c INT SCRIPT AS (n + 1))") shouldBe a[Right[_, _]]
+    parse("CREATE TABLE t (d DATE, cy INT SCRIPT AS (YEAR(d)))") shouldBe a[Right[_, _]]
+  }
+
+  /** The ALTER half: `GatewayApi` merges the ALTER into the table it LOADS from Elasticsearch, then
+    * re-validates the whole table. 0.24.0 read the `_meta` type `ARRAY<INT>` as ANY there and
+    * accepted the column; it is now read back `ARRAY<INT>` and refused like the CREATE.
+    */
+  it should "be refused by validateScriptReferences on a table loaded from Elasticsearch and merged with ADD COLUMN" in {
+    loadedArrayTable.find("arr").map(_.dataType) shouldBe Some(
+      app.softnetwork.elastic.sql.`type`.SQLTypes
+        .Array(app.softnetwork.elastic.sql.`type`.SQLTypes.Int)
+    )
+    forAll(
+      Table(
+        ("alter", "column", "declared"),
+        ("ALTER TABLE t ADD COLUMN c INT SCRIPT AS (arr + 1)", "arr", "ARRAY<INT>"),
+        ("ALTER TABLE t ADD COLUMN cy INT SCRIPT AS (YEAR(ad))", "ad", "ARRAY<DATE>")
+      )
+    ) { (alter, column, declared) =>
+      withClue(s"[$alter] ") {
+        validateScriptReferences(mergedWith(alter)) match {
+          case Left(msg) =>
+            msg should include(s"'$column'")
+            msg should include(declared)
+          case Right(_) => fail("ACCEPTED, expected a refusal")
+        }
+      }
+    }
+    validateScriptReferences(
+      mergedWith("ALTER TABLE t ADD COLUMN c INT SCRIPT AS (n + 1)")
+    ) shouldBe
+    Right(())
+    validateScriptReferences(
+      mergedWith("ALTER TABLE t ADD COLUMN cy INT SCRIPT AS (YEAR(d))")
+    ) shouldBe
+    Right(())
+  }
+
+  /** The table `GatewayApi` LOADS from Elasticsearch before it merges an ALTER: `_meta` declares
+    * the `ARRAY<X>` columns.
+    */
+  private lazy val loadedArrayTable: Schema = {
+    val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+    app.softnetwork.elastic.schema
+      .Index(
+        name = "t",
+        mappings = mapper.readTree(
+          """{"mappings": {
+            |  "_meta": {"columns": {
+            |    "arr": {"data_type": "ARRAY<INT>"},
+            |    "arrk": {"data_type": "ARRAY<KEYWORD>"},
+            |    "ad": {"data_type": "ARRAY<DATE>"},
+            |    "n": {"data_type": "INT"},
+            |    "d": {"data_type": "DATE"}
+            |  }},
+            |  "properties": {
+            |    "id": {"type": "keyword"},
+            |    "arr": {"type": "integer"},
+            |    "arrk": {"type": "keyword"},
+            |    "ad": {"type": "date"},
+            |    "n": {"type": "integer"},
+            |    "d": {"type": "date"}
+            |  }
+            |}}""".stripMargin
+        ),
+        settings = mapper.readTree("""{"settings": {}}""")
+      )
+      .schema
+  }
+
+  /** [[loadedArrayTable]] merged with each ALTER in turn, as `GatewayApi` merges one. */
+  private def mergedWith(alters: String*): Schema =
+    alters.foldLeft(loadedArrayTable) { (table, alter) =>
+      Parser(alter) match {
+        case Right(at: app.softnetwork.elastic.sql.query.AlterTable) => table.merge(at.statements)
+        case other => fail(s"[$alter] is not an ALTER TABLE: $other")
+      }
+    }
+
+  /** The ingest source of the computed column `column` of `table`. */
+  private def processorSource(table: Schema, column: String): String =
+    table.defaultPipeline.processors
+      .collectFirst { case p: ScriptProcessor if p.column == column => p.source }
+      .getOrElse(fail(s"no script processor for '$column'"))
+
+  /** SCHEMA-6 (lead R-66) -- a computed column over an `ARRAY<X>` column keeps 0.24.0's verdict and
+    * bytes: its processor reads `ctx.<c>`, the whole list, so D7's element view is off while the
+    * script renders and while it is validated. The sources pinned are 0.24.0's (and 5d0c46b2's) for
+    * the same CREATE, RENDERED by the processor census on both trees. Read as the element, the
+    * first two had moved to an element cast (`Integer.parseInt(param1)`, `(long) param2`) that
+    * fails on `["7"]` / `[5]` and stores NULL under `ignore_failure`, and the last three were
+    * refused ("declared ARRAY<INT> and not INT").
+    */
+  private val wholeValueScripts = Table(
+    ("script", "source"),
+    (
+      "c INT SCRIPT AS (CAST(arrk AS INT))",
+      "def param1 = ctx.arrk; ctx.c = param1"
+    ),
+    (
+      "c INT SCRIPT AS (CASE WHEN n > 0 THEN arr ELSE 0 END)",
+      "def param1 = ctx.n; def param2 = ctx.arr; def param3 = param1 == null ? false : (param1 > 0); ctx.c = param3 ? param2 : 0"
+    ),
+    (
+      "c BIGINT SCRIPT AS (CAST(arr AS BIGINT))",
+      "def param1 = ctx.arr; ctx.c = param1"
+    ),
+    (
+      "c VARCHAR SCRIPT AS (CAST(arr AS VARCHAR))",
+      "def param1 = ctx.arr; ctx.c = (param1 != null ? String.valueOf(param1) : null)"
+    ),
+    (
+      "c TIMESTAMP SCRIPT AS (CAST(ad AS TIMESTAMP))",
+      "def param1 = ctx.ad; ctx.c = param1"
+    )
+  )
+
+  "a computed column over an ARRAY<X> column" should "keep 0.24.0's verdict and processor on CREATE" in {
+    forAll(wholeValueScripts) { (script, source) =>
+      val ddl =
+        s"CREATE TABLE t (n INT, d DATE, arr ARRAY<INT>, arrk ARRAY<KEYWORD>, ad ARRAY<DATE>, $script)"
+      withClue(s"[$ddl] ") {
+        parse(ddl) match {
+          case Right(ct) => processorSource(ct.schema, "c") shouldBe source
+          case Left(msg) => fail(s"REFUSED: $msg")
+        }
+      }
+    }
+  }
+
+  it should "keep 0.24.0's verdict and processor on an ALTER of a table loaded from Elasticsearch" in {
+    forAll(wholeValueScripts) { (script, source) =>
+      withClue(s"[ADD COLUMN $script] ") {
+        val merged = mergedWith(s"ALTER TABLE t ADD COLUMN $script")
+        validateScriptReferences(merged) shouldBe Right(())
+        processorSource(merged, "c") shouldBe source
+      }
+    }
+  }
+
+  it should "leave every later ALTER of a table that holds it accepted" in {
+    forAll(wholeValueScripts) { (script, _) =>
+      withClue(s"[holding $script, then ADD COLUMN z INT] ") {
+        validateScriptReferences(
+          mergedWith(s"ALTER TABLE t ADD COLUMN $script", "ALTER TABLE t ADD COLUMN z INT")
+        ) shouldBe Right(())
+      }
+    }
+  }
+
+  /** The NULLIF type rule judges the declared types too, as on 0.24.0: an `ARRAY<INT>` beside a
+    * number is refused, where the element view had accepted it and its processor compared the list
+    * with `0` and wrote the list into an INT column.
+    */
+  it should "keep 0.24.0's NULLIF refusal" in {
+    val msg = rejectionOf("CREATE TABLE t (arr ARRAY<INT>, c INT SCRIPT AS (NULLIF(arr, 0)))")
+    msg should include("NULLIF(arr, 0) compares ARRAY<INT> with BIGINT")
+  }
+
+  /** The element view is off only while such a script renders or is validated: a query over the
+    * same column still reads the element (D7), so the scope is restored after the validation.
+    */
+  it should "leave the element view of a query untouched" in {
+    import app.softnetwork.elastic.sql.`type`.{SQLTypeUtils, SQLTypes}
+    val arrayOfInt = SQLTypes.Array(SQLTypes.Int)
+    SQLTypeUtils.validatingComputedColumns(SQLTypeUtils.operandType(arrayOfInt)) shouldBe arrayOfInt
+    SQLTypeUtils.operandType(arrayOfInt) shouldBe SQLTypes.Int
+    SQLTypeUtils.runtimeType(arrayOfInt) shouldBe SQLTypes.Int
+  }
+
   /** 🔴 The half that matters more than the rejections. Over-rejecting valid DDL would be worse
     * than the defect, and several of these are non-obvious.
     */

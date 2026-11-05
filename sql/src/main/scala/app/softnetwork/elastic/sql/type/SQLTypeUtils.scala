@@ -77,7 +77,7 @@ object SQLTypeUtils {
     case BigInt | Array(BigInt)     => "long"
     case Double | Array(Double)     => "double"
     case Real | Array(Real)         => "float"
-    case Numeric                    => "scaled_float"
+    case Numeric | Array(Numeric)   => "scaled_float"
     // `Char` joins `Varchar`, not `Keyword`: `text` is what the DDL documentation already promises
     // for a character column. Without this arm `Char` fell to `case _ => "object"`, so
     // `CREATE TABLE t (c CHAR)` silently created an OBJECT-typed Elasticsearch field. That was
@@ -98,8 +98,36 @@ object SQLTypeUtils {
     case GeoPoint | Array(GeoPoint) => "geo_point"
     case Array(Struct)              => "nested"
     case Struct                     => "object"
-    case VarBinary                  => "binary"
-    case _                          => "object"
+    // Elasticsearch indexes a list of base64 values into a `binary` field as it indexes one
+    // (SCHEMA-6 D2): an `ARRAY<VARBINARY>` is a `binary` field, not the `object` it fell to
+    case VarBinary | Array(VarBinary) => "binary"
+    case _                            => "object"
+  }
+
+  /** The type Elasticsearch works with PER ELEMENT for a column declared `t` (SCHEMA-6 D7): X for
+    * an `ARRAY<X>` of a scalar X -- a term or range query matches any element, a metric aggregates
+    * the elements, a terms aggregation buckets them, Painless reads one (`doc['f'].value`) -- else
+    * `t` itself. A list of objects or of lists is no scalar, and keeps its type.
+    *
+    * Read where a value is used ONE element at a time (comparisons, function arguments, Painless,
+    * metric aggregations, GROUP BY keys); never where a column is DECLARED (the schema, DESCRIBE,
+    * CTAS, a set-operation position, the top hits FIRST / LAST / ARRAY_AGG return).
+    *
+    * 🔴 Never while a script that reads the WHOLE value is rendered or validated
+    * ([[readsWholeValues]]): an ingest processor or a transform reads `ctx.<c>`, the list itself,
+    * not one element, so there an `ARRAY<X>` column is its declared type and the script keeps
+    * 0.24.0's bytes and verdict. Read as the element there, `CAST(arrk AS INT)` parsed the list as
+    * one number and a CASE arm cast it to `long`: the processor failed on `["7"]` and `[5]`, and
+    * `ignore_failure` stored NULL.
+    */
+  def operandType(t: SQLType): SQLType = t match {
+    case Array(element) if isScalarElement(element) && !readsWholeValues => element
+    case other                                                           => other
+  }
+
+  private def isScalarElement(t: SQLType): Boolean = t match {
+    case _: SQLArray | Struct => false
+    case _                    => true
   }
 
   /** The Elasticsearch types a field sort may name as its `unmapped_type`: each one sorts without
@@ -142,8 +170,11 @@ object SQLTypeUtils {
     * Tableau emit constantly).
     *
     * Everything else is returned unchanged: a KEYWORD is a `String` at runtime too, an INT is an
-    * int. ARRAY types are deliberately NOT collapsed — `elasticType(Array(Date))` is also `"date"`,
-    * but the runtime value is a list, so the temporal arms must not fire on it.
+    * int. An `ARRAY<X>` of a scalar X is ONE element at runtime (SCHEMA-6 D7): `doc['f'].value`
+    * reads one value of the field, an X -- a `ZonedDateTime` for an `ARRAY<DATE>` -- so it is X's
+    * runtime type ([[operandType]]); a list of objects keeps its type. An ingest processor or a
+    * transform reads `ctx.<c>`, the whole list, and keeps the declared `ARRAY<X>` there
+    * ([[readsWholeValues]]).
     *
     * `date_nanos` needs no arm: `SQLTypes.apply` maps it to `Any` (BIDC-4's deliberate exclusion),
     * and `Any` is not temporal, so it falls to the identity case here.
@@ -159,7 +190,9 @@ object SQLTypeUtils {
     case SQLTypes.Date | SQLTypes.Time | SQLTypes.DateTime | SQLTypes.Timestamp |
         SQLTypes.Temporal =>
       SQLTypes.Timestamp
-    case other => other
+    // SCHEMA-6 (D7): `doc['f'].value` over an `ARRAY<X>` field is ONE element, an X
+    case array @ Array(_) if operandType(array) ne array => runtimeType(operandType(array))
+    case other                                           => other
   }
 
   def matches(out: SQLType, in: SQLType): Boolean =
@@ -304,8 +337,12 @@ object SQLTypeUtils {
     *
     * The reported type only: a node with an unknown arm renders as it did, and the other readers of
     * [[leastCommonSuperType]] (a comparison's operands, BETWEEN's bounds, arithmetic) keep theirs.
+    *
+    * Each arm is read as Painless reads it ([[operandType]], SCHEMA-6 D7): an `ARRAY<X>` column is
+    * one X element, so `COALESCE(arr, 0)` over an `ARRAY<INT>` is an INT, never a list.
     */
-  def armsReportedType(types: List[SQLType]): SQLType = {
+  def armsReportedType(arms: List[SQLType]): SQLType = {
+    val types = arms.map(operandType)
     val distinct = types.distinct
     val unknownBesideDate =
       distinct.contains(SQLTypes.Date) &&
@@ -463,6 +500,31 @@ object SQLTypeUtils {
       }
   }
 
+  /** Is the validation of a computed column (`SCRIPT AS`) running on this thread? Set by
+    * [[validatingComputedColumns]].
+    */
+  private[this] val computedColumnValidation = new scala.util.DynamicVariable[Boolean](false)
+
+  /** Does the script being rendered or validated on this thread read a document's WHOLE value
+    * (`ctx.<c>`), and not one element of it (`doc['f'].value`)? An ingest processor or a transform
+    * while it renders ([[rendersOutsideQuery]]), and a computed column while it is validated
+    * ([[validatingComputedColumns]]): its verdict is about the processor it installs.
+    *
+    * 🔴 SCHEMA-6 (lead R-66): ONE scope for D7's element view ([[operandType]]), which is off in
+    * it. Every reader of the element view goes through `operandType`, so the processor's bytes and
+    * the validation's verdict are 0.24.0's for an `ARRAY<X>` column, and A-30's refusal of a
+    * NUMERIC or TEMPORAL input over it (`acceptableOperand`, the declared type) stays.
+    */
+  def readsWholeValues: Boolean = outsideQuery.value || computedColumnValidation.value
+
+  /** Runs `body`, the validation of computed columns, in the scope of [[readsWholeValues]]. Only
+    * D7's element view reads that scope: the rest of the validation reads the types it read before
+    * (a conditional answers its query type, [[rendersOutsideQuery]] stays false).
+    */
+  def validatingComputedColumns[T](body: => T): T =
+    if (computedColumnValidation.value) body
+    else computedColumnValidation.withValue(true)(body)
+
   /** The type an INGEST PROCESSOR (or a transform) writes for `expr`: its `out`, read in the scope
     * that script renders in ([[renderingIn]]), the type it rendered before a conditional answered
     * its reported type in a query.
@@ -490,7 +552,8 @@ object SQLTypeUtils {
     * NULL arm has no type and is left out.
     */
   def armsType(arms: List[PainlessScript], reported: SQLType): Option[SQLType] = {
-    val known = arms.map(_.reportedType).filterNot(_ == SQLTypes.Null)
+    // an `ARRAY<X>` arm renders one X element (SCHEMA-6 D7, [[operandType]])
+    val known = arms.map(a => operandType(a.reportedType)).filterNot(_ == SQLTypes.Null)
     def all(family: SQLType => Boolean): Boolean = known.forall(family)
     def dateCarrying(t: SQLType): Boolean =
       t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp ||

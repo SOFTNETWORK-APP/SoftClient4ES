@@ -95,6 +95,12 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
   private def row(sql: String, source: String, extra: String = ""): ListMap[String, Any] =
     rows(sql, s"""{"_id": "a1", "_source": $source$extra}""").head
 
+  /** [[row]] under [[MultiValued.AsRead]]: a several-valued cell read as its list. SCHEMA-6 (D6)
+    * made [[MultiValued.Fail]] the default, so the cells pinning the list reading name the mode.
+    */
+  private def rowAsRead(sql: String, source: String, extra: String = ""): ListMap[String, Any] =
+    rows(sql, s"""{"_id": "a1", "_source": $source$extra}""", multiValued = MultiValued.AsRead).head
+
   private def utc(y: Int, mo: Int, d: Int, h: Int = 0, mi: Int = 0): ZonedDateTime =
     ZonedDateTime.of(y, mo, d, h, mi, 0, 0, ZoneOffset.UTC)
 
@@ -166,9 +172,11 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     row("SELECT c_des FROM s2_t", """{"c_des": [[1706697000]]}""")("c_des") shouldBe
     LocalDate.of(2024, 1, 31)
     // several values in an array of one: as stored, its nesting kept (D6), never a failure
-    row("SELECT c_des FROM s2_t", """{"c_des": [[1706697000, 1706697001]]}""")("c_des") shouldBe
+    rowAsRead("SELECT c_des FROM s2_t", """{"c_des": [[1706697000, 1706697001]]}""")(
+      "c_des"
+    ) shouldBe
     List(List(1706697000, 1706697001))
-    row("SELECT obj FROM s2_t", """{"obj": {"a": [[1, 2]], "d": [["2024-01-31"]]}}""")(
+    rowAsRead("SELECT obj FROM s2_t", """{"obj": {"a": [[1, 2]], "d": [["2024-01-31"]]}}""")(
       "obj"
     ) shouldBe ListMap("a" -> List(List(1, 2)), "d" -> utc(2024, 1, 31))
     // ...a statement failing several values fails it too (D7)
@@ -194,18 +202,20 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "read several values per MultiValued (multi)" in {
-    row("SELECT n FROM s2_t", """{"n": [1, "2"]}""")("n") shouldBe List(1, 2)
+    rows(
+      "SELECT n FROM s2_t",
+      """{"_id": "a1", "_source": {"n": [1, "2"]}}""",
+      multiValued = MultiValued.AsRead
+    ).head("n") shouldBe List(1, 2)
+    // SCHEMA-6 (D6, lead Q1): the default fails, naming the ALTER that parses and declares the list
+    HitReading.Default shouldBe MultiValued.Fail
     val failure = intercept[Exception] {
-      rows(
-        "SELECT n FROM s2_t",
-        """{"_id": "doc7", "_source": {"n": [1, 2]}}""",
-        multiValued = MultiValued.Fail
-      )
+      rows("SELECT n FROM s2_t", """{"_id": "doc7", "_source": {"n": [1, 2]}}""")
     }
     val message = Option(failure.getCause).fold(failure.getMessage)(_.getMessage)
     message should include("Column n")
     message should include("doc7")
-    message should include("ALTER TABLE s2_t ALTER COLUMN n TYPE ARRAY")
+    message should include("ALTER TABLE s2_t ALTER COLUMN n SET DATA TYPE ARRAY<INT>")
   }
 
   it should "answer a date Elasticsearch ignored NULL, a keyword it ignored as stored (ignored)" in {
@@ -220,7 +230,11 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     row("SELECT dm FROM s2_t", """{"dm": "not-a-date"}""")("dm") shouldBe "not-a-date"
     // Elasticsearch's verdict is per VALUE: in an array, the values it indexed keep theirs and only
     // the ones it refused are NULL
-    row("SELECT dm FROM s2_t", """{"dm": ["2024-01-01", "bad"]}""", """, "_ignored": ["dm"]""")(
+    rowAsRead(
+      "SELECT dm FROM s2_t",
+      """{"dm": ["2024-01-01", "bad"]}""",
+      """, "_ignored": ["dm"]"""
+    )(
       "dm"
     ) shouldBe List(utc(2024, 1, 1), null)
     row("SELECT dm FROM s2_t", """{"dm": ["bad"]}""", """, "_ignored": ["dm"]""")("dm") shouldBe
@@ -278,7 +292,7 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     row("SELECT g FROM s2_t", """{"g": "not a point"}""")("g") shouldBe "not a point"
     row("SELECT c_c1 FROM s2_t", """{"c_c1": "31-01-2024"}""")("c_c1") shouldBe "31-01-2024"
     // several points, read one by one (D7's AsRead)
-    row("SELECT g FROM s2_t", """{"g": ["1.5,2.5", "3.5,4.5"]}""")("g") shouldBe List(
+    rowAsRead("SELECT g FROM s2_t", """{"g": ["1.5,2.5", "3.5,4.5"]}""")("g") shouldBe List(
       ListMap("lat" -> 1.5, "lon" -> 2.5),
       ListMap("lat" -> 3.5, "lon" -> 4.5)
     )

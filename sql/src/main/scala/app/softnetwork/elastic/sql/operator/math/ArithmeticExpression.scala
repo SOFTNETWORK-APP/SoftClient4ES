@@ -1123,8 +1123,11 @@ object ArithmeticExpression {
     * itself (`schema.IndexField`), so it keeps its time here as everywhere else, and every chain
     * over it follows: `MAX(ts)`, `COALESCE(ts, ts2)`, `CASE … THEN ts …`.
     */
+  /** An operand's declared type as arithmetic reads it: an `ARRAY<X>` column is one X element, the
+    * value Painless reads (SCHEMA-6 D7, `SQLTypeUtils.operandType`).
+    */
   private def declaredType(operand: PainlessScript): SQLType =
-    ComparisonRule.declaredTypeOf(operand)
+    SQLTypeUtils.operandType(ComparisonRule.declaredTypeOf(operand))
 
   /** `NULL`, bare or cast: its VALUE is NULL in every venue. */
   private[sql] def nullLiteral(operand: PainlessScript): Boolean = operand match {
