@@ -656,6 +656,8 @@ class MappingApiSpec
         val result = mappingApi.updateMapping("my-index", updatedMapping)
 
         // Then
+        // a failure copying to the temporary index never touches the original: no copy back
+        reindexCallCount shouldBe 1
         result.isFailure shouldBe true
 
         verify(mockLogger).info(contains("✅ Backed up original mapping"))
@@ -808,6 +810,8 @@ class MappingApiSpec
         val result = mappingApi.updateMapping("my-index", updatedMapping)
 
         // Then
+        // a failure copying to the temporary index never touches the original: no copy back
+        reindexCallCount shouldBe 1
         result.isFailure shouldBe true
         verify(mockLogger).info(contains("Attempting rollback"))
         verify(mockLogger).info(contains("✅ Rollback completed successfully"))
@@ -999,6 +1003,8 @@ class MappingApiSpec
         val result = mappingApi.updateMapping("my-index", updatedMapping)
 
         // Then
+        // a failure copying to the temporary index never touches the original: no copy back
+        reindexCallCount shouldBe 1
         result.isFailure shouldBe true
 
         captureAndVerifyLog(mockLogger, "error", "❌ Migration failed")
@@ -1461,6 +1467,8 @@ class MappingApiSpec
         mappingApi.updateMapping("my-index", updatedMapping)
 
         // Then
+        // a failure copying to the temporary index never touches the original: no copy back
+        reindexCallCount shouldBe 1
         captureAndVerifyLog(mockLogger, "error", "❌ Migration failed")
         captureAndVerifyLog(
           mockLogger,
@@ -1774,6 +1782,8 @@ class MappingApiSpec
         val result = mappingApi.updateMapping("my-index", updatedMapping)
 
         // Then
+        // a failure copying to the temporary index never touches the original: no copy back
+        reindexCallCount shouldBe 1
         result.isFailure shouldBe true
         verify(mockLogger).error(contains("❌ Migration failed"))
         verify(mockLogger).info(contains("Attempting rollback"))

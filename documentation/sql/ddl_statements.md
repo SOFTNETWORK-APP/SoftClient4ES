@@ -735,7 +735,8 @@ Type changes fall into two categories:
 
 - **Convertible types** (`SQLTypeUtils.canConvert(from, to) = true`)  
 	The change is allowed but requires a full **reindex** of the underlying data.  
-	The Gateway automatically performs the reindex operation and swaps aliases when complete.  
+	The Gateway automatically performs the reindex operation through a temporary index. The aliases of the table are not carried over: re-add them after the statement.  
+	If the reindex fails, the statement fails with the cause and says where the documents are: `Index '<table>' is unchanged.` (the failure came before the table's index was deleted), `Index '<table>' was restored with its documents.` (it came after; the index is re-created with its definition, aliases included), or `Index '<table>' could not be restored: …; its documents are kept in index '<table>_tmp_…'.` (the restore failed too; copy them back once the cause is fixed). The rollback never deletes the last copy of the documents. A reindex copies the documents as they are when it starts: pause the writes to the table while it runs.  
 	These changes are classified as `UnsafeReindex`.
 
 - **Incompatible types** (`SQLTypeUtils.canConvert(from, to) = false`)  

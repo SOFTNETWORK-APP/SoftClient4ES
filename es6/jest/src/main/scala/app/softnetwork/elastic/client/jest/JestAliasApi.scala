@@ -19,6 +19,7 @@ package app.softnetwork.elastic.client.jest
 import app.softnetwork.elastic.client.AliasApi
 import app.softnetwork.elastic.client.result.ElasticResult
 import app.softnetwork.elastic.sql.schema.TableAlias
+import com.fasterxml.jackson.databind.JsonNode
 import io.searchbox.client.JestResult
 import io.searchbox.indices.aliases.{AddAliasMapping, GetAliases, ModifyAliases, RemoveAliasMapping}
 
@@ -42,8 +43,11 @@ trait JestAliasApi extends AliasApi with JestClientHelpers {
       retryable = false // Aliases operations can not be retried
     ) {
       val builder = new AddAliasMapping.Builder(alias.table, alias.alias)
-      if (alias.filter.nonEmpty)
-        builder.setFilter(alias.filter.asJava.asInstanceOf[java.util.Map[String, AnyRef]])
+      // the filter as Java collections, from its JSON node: Gson does not read the Scala maps a
+      // filter read back from an index holds below its first key
+      Option(alias.node.get("filter")).filter(_.isObject).foreach { filter =>
+        builder.setFilter(javaOf(filter).asInstanceOf[java.util.Map[String, AnyRef]])
+      }
       alias.routing.foreach(builder.addRouting)
       alias.indexRouting.foreach(builder.addIndexRouting)
       alias.searchRouting.foreach(builder.addSearchRouting)
@@ -51,6 +55,21 @@ trait JestAliasApi extends AliasApi with JestClientHelpers {
         builder.build()
       ).build()
     }
+
+  /** A JSON node as the Java collections and values Gson serialises. */
+  private def javaOf(node: JsonNode): AnyRef =
+    if (node.isObject) {
+      val map = new java.util.LinkedHashMap[String, AnyRef]()
+      node.properties().asScala.foreach(entry => map.put(entry.getKey, javaOf(entry.getValue)))
+      map
+    } else if (node.isArray) {
+      val list = new java.util.ArrayList[AnyRef]()
+      node.elements().asScala.foreach(element => list.add(javaOf(element)))
+      list
+    } else if (node.isTextual) node.asText()
+    else if (node.isBoolean) java.lang.Boolean.valueOf(node.asBoolean())
+    else if (node.isNumber) node.numberValue()
+    else null
 
   /** Remove an alias from an index.
     * @see

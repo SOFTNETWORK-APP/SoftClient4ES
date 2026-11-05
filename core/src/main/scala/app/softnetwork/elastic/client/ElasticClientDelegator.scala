@@ -722,30 +722,28 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   ): ElasticResult[Map[String, IndexMappings]] =
     delegate.allMappings(indices)
 
-  /** Migrate an existing index to a new mapping.
-    *
-    * Process:
-    *   1. Create temporary index with new mapping 2. Reindex data from original to temporary 3.
-    *      Delete original index 4. Recreate original index with new mapping 5. Reindex data from
-    *      temporary to original 6. Delete temporary index
+  /** Migrate an existing index to a new mapping, and roll back a failure.
+    * @see
+    *   [[MappingApi.migrateIndex]]
     */
-  override private[client] def performMigration(
+  override private[client] def migrateIndex(
     index: String,
     tempIndex: String,
     mapping: String,
     settings: String,
-    aliases: Seq[TableAlias]
+    aliases: Seq[TableAlias],
+    original: IndexBackup
   ): ElasticResult[Boolean] =
-    delegate.performMigration(index, tempIndex, mapping, settings, aliases)
+    delegate.migrateIndex(index, tempIndex, mapping, settings, aliases, original)
 
   override private[client] def rollbackMigration(
     index: String,
     tempIndex: String,
-    originalMapping: String,
-    originalSettings: String,
-    originalAliases: Seq[TableAlias]
-  ): ElasticResult[Boolean] =
-    delegate.rollbackMigration(index, tempIndex, originalMapping, originalSettings, originalAliases)
+    original: IndexBackup,
+    failedAt: MigrationStep,
+    tempAliases: Seq[TableAlias]
+  ): RollbackOutcome =
+    delegate.rollbackMigration(index, tempIndex, original, failedAt, tempAliases)
 
   override private[client] def executeSetMapping(
     index: String,
