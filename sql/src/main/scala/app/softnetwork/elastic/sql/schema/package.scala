@@ -2564,6 +2564,42 @@ package object schema {
     }
   }
 
+  /** The index settings Elasticsearch generates itself and refuses in a create request: an index
+    * read back carries them, a copy of it must not.
+    *
+    * 🔴 The ONE list (#292): the ALTER TABLE reindex, CREATE TABLE … AS SELECT and the restore of a
+    * failed migration all read it, through one of the two faces of [[copyableSettings]].
+    */
+  val generatedIndexSettings: Set[String] =
+    Set("uuid", "creation_date", "provided_name", "version")
+
+  /** The settings of a table, without [[generatedIndexSettings]]: the face the [[Table]] paths read
+    * (ALTER TABLE and CREATE TABLE … AS SELECT).
+    */
+  def copyableSettings(settings: ListMap[String, Value[_]]): ListMap[String, Value[_]] =
+    settings -- generatedIndexSettings
+
+  /** Index settings as JSON, without [[generatedIndexSettings]]: the face the restore of a failed
+    * migration reads, whose input is either a table's `{"index": {…}}` or the raw `index` object
+    * `GET <index>/_settings` answers.
+    *
+    * The keys are removed from the object under `index` when there is one, else from the root;
+    * every other key and value is left as it was, nested ones included, so settings this module
+    * does not model are never round-tripped through [[Value]]. A document that is not a JSON object
+    * is returned unchanged.
+    */
+  def copyableSettings(json: String): String =
+    mapper.readTree(json) match {
+      case root: ObjectNode =>
+        val target = root.get("index") match {
+          case index: ObjectNode => index
+          case _                 => root
+        }
+        generatedIndexSettings.foreach(key => target.remove(key))
+        mapper.writeValueAsString(root)
+      case _ => json
+    }
+
   /** The type of a table, as recorded in the index mapping's `_meta.type`.
     *
     * Two names, deliberately, because they answer two different questions and only one of them is

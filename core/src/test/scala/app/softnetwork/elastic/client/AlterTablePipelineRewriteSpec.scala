@@ -177,12 +177,13 @@ class AlterTablePipelineRewriteSpec
       restored += defaultPipelineOf(settings)
       ElasticResult.success(true)
     }
-    override private[client] def performMigration(
+    override private[client] def migrateIndex(
       index: String,
       tempIndex: String,
       mapping: String,
       settings: String,
-      aliases: Seq[TableAlias]
+      aliases: Seq[TableAlias],
+      original: IndexBackup
     ): ElasticResult[Boolean] = {
       migrated += defaultPipelineOf(settings)
       ElasticResult.success(true)

@@ -328,14 +328,17 @@ def updateMapping(
 
 **Migration Process:**
 When mapping update requires reindexing:
-1. Backup original mapping and settings
+1. Backup original mapping, settings and aliases
 2. Create temporary index with new mapping
 3. Reindex data to temporary index
 4. Delete original index
 5. Recreate original index with new mapping
 6. Reindex data back from temporary
-7. Delete temporary index
-8. **On failure:** Automatic rollback to original state
+7. Open the index
+8. Delete temporary index
+9. **On failure:** Automatic rollback, which never deletes the last copy of the documents (see [rollbackMigration](#rollbackmigration))
+
+The aliases of the index are not carried over by a successful migration: re-add them afterwards.
 
 **Examples:**
 
@@ -439,9 +442,10 @@ client.updateMapping("critical-index", newMapping) match {
   case ElasticSuccess(false) =>
     println("⚠️ No update needed")
   case ElasticFailure(error) =>
+    // the cause, then where the documents are:
+    // "... Index 'critical-index' is unchanged." / "... was restored with its documents."
+    // / "... could not be restored: ...; its documents are kept in index 'critical-index_tmp_…'."
     println(s"❌ Migration failed: ${error.message}")
-    println("✅ Automatic rollback completed")
-    // Original index restored with original mapping
 }
 ```
 
@@ -469,12 +473,7 @@ private def createIndexWithMapping(
 
 ### migrateMappingWithRollback
 
-Performs mapping migration with automatic rollback on failure.
-
-**Process:**
-1. Backup original mapping and settings
-2. Perform migration
-3. On failure: Rollback to original state
+Backs up the original mapping, settings and aliases, then runs the migration through `migrateIndex`.
 
 ```scala
 private def migrateMappingWithRollback(
@@ -486,9 +485,9 @@ private def migrateMappingWithRollback(
 
 ---
 
-### performMigration
+### migrateIndex
 
-Executes the actual migration process using a temporary index.
+The one entry point of a reindex migration: `updateMapping` and an `ALTER TABLE` that needs a reindex both run it. It runs the steps, rolls back a failure, and builds the error.
 
 **Process:**
 1. Create temporary index with new mapping
@@ -496,42 +495,61 @@ Executes the actual migration process using a temporary index.
 3. Delete original index
 4. Recreate original with new mapping
 5. Reindex data back from temporary
-6. Delete temporary index
+6. Open the index
+7. Delete temporary index
+
+A step that throws is a failure of that step. A failed deletion of the temporary index (step 7) is not a failure: the index already holds every document under the new mapping, so the migration succeeds and a warning names the temporary index, to delete once the index is checked.
 
 ```scala
-private def performMigration(
+private[client] def migrateIndex(
   index: String,
   tempIndex: String,
   mapping: String,
-  settings: String
+  settings: String,
+  aliases: Seq[TableAlias],
+  original: IndexBackup
 ): ElasticResult[Boolean]
 ```
 
 **Temporary Index Naming:**
-- Format: `{index}_tmp_{uuid}`
+- Format: `{index}_tmp_{uuid}` (`updateMapping`), `{index}_tmp_{timestamp}` (`ALTER TABLE`)
 - Example: `products_tmp_a1b2c3d4`
 
 ---
 
 ### rollbackMigration
 
-Restores index to original state after failed migration.
+Rolls back a failed migration from the step that failed. It never deletes the last copy of the documents.
 
-**Process:**
-1. Check if temporary index exists
-2. Delete current (potentially corrupted) index
-3. Recreate with original settings and mapping
-4. Reindex from temporary if it exists
-5. Cleanup temporary index
+**Rules:**
+- **The original was never deleted** (steps 1 and 2): the temporary index is removed if it exists; the original index is not touched.
+- **The deletion of the original failed** (step 3): a deletion that answered an error may still take effect, so one existence check decides. Still there: nothing is deleted, and the temporary index is kept and named. Gone: the index is restored. Unknown: nothing is deleted.
+- **The original was deleted** (steps 4 to 6): the index is restored, if the temporary index exists. The restore deletes the index left by the failed step, re-creates it with the original mapping and settings (without the settings Elasticsearch generates: `uuid`, `creation_date`, `provided_name`, `version`) and with its ingest pipelines (`default_pipeline`, `final_pipeline`) set to `_none`, copies the documents back through no pipeline, attaches the original pipelines back (close, update the settings, open; an index with no pipeline is only opened), re-adds each original alias (filters included), and deletes the temporary index last. The documents come back as the copy to the temporary index (step 2) left them: no pipeline runs on them a second time.
+- Any rollback step that fails stops the rollback. After a failed deletion of one copy, the other copy is never deleted.
+- A temporary index kept while the index holds every document loses the aliases it was created with, so no alias reads both copies.
+
+**What the error says:** the cause, then one sentence saying where the documents are:
+
+| State | Message ends with | Status |
+|-------|-------------------|--------|
+| Unchanged | `Index '<index>' is unchanged.` | the cause's |
+| Restored | `Index '<index>' was restored with its documents.` | the cause's |
+| Kept | `Index '<index>' could not be restored: <reason>; its documents are kept in index '<tmp>'.` | 500 |
+| No temporary copy | `Index '<index>' was left as it is: no temporary index '<tmp>' exists.` | 500 |
+
+Unchanged and Restored get `; the temporary index '<tmp>' was kept: <reason>.` when the temporary index could not be removed. When the documents are kept in the temporary index, copy them back with a reindex (`client.reindex(tmp, index)`) once the cause is fixed.
 
 ```scala
-private def rollbackMigration(
+private[client] def rollbackMigration(
   index: String,
   tempIndex: String,
-  originalMapping: String,
-  originalSettings: String
-): ElasticResult[Boolean]
+  original: IndexBackup,
+  failedAt: MigrationStep,
+  tempAliases: Seq[TableAlias] = Nil
+): RollbackOutcome
 ```
+
+A migration copies the documents as they are when step 2 runs: pause the writes to the index while it migrates.
 
 ---
 
@@ -755,9 +773,8 @@ client.getMapping("non-existent") match {
 ```scala
 client.updateMapping("my-index", incompatibleMapping) match {
   case ElasticFailure(error) =>
+    // e.g. "Reindex failed for index 'my-index_tmp_1a2b3c4d'. Index 'my-index' is unchanged."
     println(s"Migration failed: ${error.message}")
-    println("Original mapping and data restored")
-    // Index is back to original state
 }
 ```
 

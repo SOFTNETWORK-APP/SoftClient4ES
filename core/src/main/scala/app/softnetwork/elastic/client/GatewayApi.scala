@@ -86,6 +86,7 @@ import app.softnetwork.elastic.sql.query.{
   WatcherStatement
 }
 import app.softnetwork.elastic.sql.schema.{
+  copyableSettings,
   validateScriptReferences,
   Impossible,
   IngestPipeline,
@@ -956,13 +957,8 @@ class TableExecutor(
                 indexName,
                 schema,
                 updatedTable.copy(
-                  settings = schema.settings // remove settings that cannot be copied
-                    - "uuid"
-                    - "creation_date"
-                    - "provided_name"
-                    - "version"
-//                    - "default_pipeline"
-//                    - "final_pipeline"
+                  settings =
+                    copyableSettings(schema.settings) // remove settings that cannot be copied
                 ),
                 diff,
                 defaultPipelineRewrite,
@@ -1135,11 +1131,9 @@ class TableExecutor(
                   merged
                     .copy(
                       name = indexName, // set index name
-                      settings = fromSchema.settings // remove settings that cannot be copied
-                        - "uuid"
-                        - "creation_date"
-                        - "provided_name"
-                        - "version"
+                      settings = copyableSettings(
+                        fromSchema.settings
+                      ) // remove settings that cannot be copied
                         - "default_pipeline"
                         - "final_pipeline"
                     )
@@ -1665,44 +1659,26 @@ class TableExecutor(
       case None => // do Nothing
     }
 
-    // migrate index with updated schema
+    // migrate index with updated schema; a failure is rolled back by `migrateIndex`, whose error
+    // says where the documents are
     val migrate: () => Either[ElasticError, Boolean] =
       () =>
         {
-          api.performMigration(
+          api.migrateIndex(
             index = indexName,
             tempIndex = tmpIndex,
             mapping = updatingSchema.indexMappings,
             settings = updatingSchema.indexSettings,
-            aliases = updatingSchema.indexAliases
+            aliases = updatingSchema.indexAliases,
+            original = IndexBackup(
+              mapping = oldSchema.indexMappings,
+              settings = oldSchema.indexSettings,
+              aliases = oldSchema.indexAliases
+            )
           ) match {
             case ElasticFailure(err) =>
               logger.error(s"❌ Failed to perform migration for index $indexName: ${err.message}")
-              api.rollbackMigration(
-                index = indexName,
-                tempIndex = tmpIndex,
-                originalMapping = oldSchema.indexMappings,
-                originalSettings = oldSchema.indexSettings,
-                originalAliases = oldSchema.indexAliases
-              ) match {
-                case ElasticSuccess(_) =>
-                  logger.info(
-                    s"✅ Rollback of migration for index $indexName completed successfully."
-                  )
-                  ElasticFailure(err.copy(operation = Some("schema")))
-                case ElasticFailure(rollbackErr) =>
-                  logger.error(
-                    s"❌ Failed to rollback migration for index $indexName: ${rollbackErr.message}"
-                  )
-                  ElasticFailure(
-                    ElasticError(
-                      message =
-                        s"Migration failed: ${err.message}. Rollback failed: ${rollbackErr.message}",
-                      statusCode = Some(500),
-                      operation = Some("schema")
-                    )
-                  )
-              }
+              ElasticFailure(err.copy(operation = Some("schema")))
 
             case success @ ElasticSuccess(_) =>
               logger.info(
@@ -1790,8 +1766,8 @@ class TableExecutor(
     }
   }
 
-  /** The pipeline setting that runs no pipeline. */
-  private val NoPipeline = "_none"
+  /** The pipeline setting that runs no pipeline (the restore of a failed migration sets it too). */
+  private val NoPipeline = IndexMigration.NoPipeline
 
   /** The pipeline the reindex runs through, and the step that creates it.
     *
