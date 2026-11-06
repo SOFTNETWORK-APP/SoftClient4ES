@@ -22,6 +22,8 @@ import app.softnetwork.elastic.client.ElasticClientApi
 
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.concurrent.duration._
+import scala.sys.ShutdownHookThread
+import scala.util.Try
 import scala.util.control.NonFatal
 
 class MonitoredElasticClient(
@@ -36,13 +38,19 @@ class MonitoredElasticClient(
 
   private val isShutdown = new AtomicBoolean(false)
 
-  // Shutdown hook pour sécurité
-  sys.addShutdownHook {
+  // Shutdown hook pour sécurité. Its handle is kept so that shutdown() removes it: a client the
+  // factory closes and re-creates must not leave one hook per instance behind until JVM exit.
+  private[this] val shutdownHookThread: ShutdownHookThread = sys.addShutdownHook {
     if (!isShutdown.get()) {
       logger.warn("JVM shutdown detected, forcing client shutdown")
       shutdown()
     }
   }
+
+  @volatile private[this] var shutdownHookRemoved: Boolean = false
+
+  /** Whether `shutdown()` removed this client's JVM shutdown hook. */
+  private[monitoring] def isShutdownHookRemoved: Boolean = shutdownHookRemoved
 
   private val cancellable: Cancellable = system.scheduler.scheduleAtFixedRate(
     FiniteDuration(monitoringConfig.interval.toSeconds, SECONDS),
@@ -106,6 +114,8 @@ class MonitoredElasticClient(
   def shutdown(): Unit = {
     if (!isShutdown.getAndSet(true)) {
       logger.info("Shutting down MonitoredElasticClient")
+      // Removing a hook while the JVM is shutting down (this very call, from the hook) throws.
+      shutdownHookRemoved = Try(shutdownHookThread.remove()).getOrElse(false)
       try {
         logMetrics()
         cancellable.cancel()

@@ -23,18 +23,23 @@ import com.typesafe.config.{Config, ConfigFactory}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.ServiceLoader
-import java.util.concurrent.ConcurrentHashMap
 import scala.jdk.CollectionConverters._
 import scala.sys.ShutdownHookThread
-import scala.util.control.NonFatal
 
 /** Factory for creating Elasticsearch clients with optional metrics and monitoring.
   *
   * This factory uses the Service Provider Interface (SPI) pattern to load Elasticsearch client
-  * implementations and provides caching to avoid creating multiple instances for the same
-  * configuration.
+  * implementations, and caches the clients it builds:
   *
-  * Thread-safe implementation using ConcurrentHashMap.
+  *   - Two callers share a cached client only when their effective `elastic.*` configurations are
+  *     equal (credentials, timeouts, scroll and schema-cache settings, every `elastic.*` value): a
+  *     caller never runs with another caller's identity.
+  *   - Call `close()` once per `create...()`: it releases this caller's share and never closes a
+  *     client, or stops a monitor, that another caller still holds.
+  *   - A client nobody holds stays cached for 10 minutes, so a caller that comes back reuses it;
+  *     after that it is closed at the next client creation, or by [[shutdown]].
+  *
+  * Thread-safe.
   */
 object ElasticClientFactory {
 
@@ -48,10 +53,9 @@ object ElasticClientFactory {
   private[this] val factories: ServiceLoader[ElasticClientSpi] =
     ServiceLoader.load(classOf[ElasticClientSpi], classOf[ElasticClientSpi].getClassLoader)
 
-  // Use String key (URL) instead of Config for reliable caching
-  private[this] val clientsByUrl = new ConcurrentHashMap[String, ElasticClientApi]()
-  private[this] val metricsClientsByUrl = new ConcurrentHashMap[String, MetricsElasticClient]()
-  private[this] val monitoredClientsByUrl = new ConcurrentHashMap[String, MonitoredElasticClient]()
+  // The clients are cached by their effective `elastic.*` configuration (ClientKey), never by URL
+  // alone: a URL key handed a second user the first user's client, credentials included.
+  private[this] val cache = new ElasticClientCache((config: Config) => buildClient(config))
 
   // Shutdown hook to close all clients. Named so that a test which defines a fresh copy of this
   // object (ElasticClientFactoryIsolationSpec, #258) can remove the hook that copy registered.
@@ -60,38 +64,30 @@ object ElasticClientFactory {
     shutdown()
   }
 
-  /** Gets or creates a base Elasticsearch client for the given configuration.
+  /** Builds a new client through the first provider. A `ServiceLoader` is not safe for concurrent
+    * iteration, and clients for different configurations may now be built at the same time.
     *
     * @param config
     *   Typesafe configuration
     * @return
-    *   Base Elasticsearch client
+    *   a new base Elasticsearch client
     */
-  private[this] def getOrCreateBaseClient(config: Config): ElasticClientApi = {
-    val elasticConfig = ElasticConfig(config)
-    val url = elasticConfig.credentials.url
-
-    clientsByUrl.computeIfAbsent(
-      url,
-      _ => {
-        logger.info(s"Creating new Elasticsearch client for URL: $url")
-        factories
-          .iterator()
-          .asScala
-          .map(_.client(config))
-          .toSeq
-          .headOption
-          .getOrElse(
-            // The leading substring is pinned by the jdbc/arrow isolation specs - append, never replace.
-            throw new IllegalStateException(
-              "No ElasticClientSpi implementation found through " +
-              s"${classOf[ElasticClientSpi].getClassLoader}: the client jar must be on the same " +
-              "classpath as softclient4es-core - providers are resolved against the classloader that " +
-              "loaded softclient4es-core, never the thread context classloader"
-            )
-          )
-      }
-    )
+  private[this] def buildClient(config: Config): ElasticClientApi = factories.synchronized {
+    factories
+      .iterator()
+      .asScala
+      .map(_.client(config))
+      .toSeq
+      .headOption
+      .getOrElse(
+        // The leading substring is pinned by the jdbc/arrow isolation specs - append, never replace.
+        throw new IllegalStateException(
+          "No ElasticClientSpi implementation found through " +
+          s"${classOf[ElasticClientSpi].getClassLoader}: the client jar must be on the same " +
+          "classpath as softclient4es-core - providers are resolved against the classloader that " +
+          "loaded softclient4es-core, never the thread context classloader"
+        )
+      )
   }
 
   //format:off
@@ -102,6 +98,9 @@ object ElasticClientFactory {
     *   - If metrics.enabled = true and monitoring.enabled = false: Client with metrics
     *   - If metrics.enabled = true and monitoring.enabled = true: Client with metrics and
     *     monitoring
+    *
+    * Callers with an equal effective `elastic.*` configuration get the same cached instance; call
+    * `close()` once when done with it.
     *
     * @param config
     *   Typesafe configuration
@@ -129,25 +128,14 @@ object ElasticClientFactory {
     * }}}
     */
   //format:on
-  def create(config: Config = ConfigFactory.load()): ElasticClientApi = {
-    val elasticConfig = ElasticConfig(config)
-
-    if (elasticConfig.metrics.enabled) {
-      val monitoringConfig = elasticConfig.metrics.monitoring
-      if (monitoringConfig.enabled) {
-        createWithMonitoring(config)
-      } else {
-        createWithMetrics(config)
-      }
-    } else {
-      getOrCreateBaseClient(config)
-    }
-  }
+  def create(config: Config = ConfigFactory.load()): ElasticClientApi =
+    cache.create(config, ElasticConfig(config))
 
   //format:off
   /** Creates a client with explicitly enabled metrics, regardless of configuration.
     *
-    * Uses caching: multiple calls with the same URL return the same instance.
+    * Uses caching: calls with an equal effective `elastic.*` configuration return the same
+    * instance; call `close()` once per call.
     *
     * @param config
     *   Typesafe configuration
@@ -175,26 +163,15 @@ object ElasticClientFactory {
     * }}}
     */
   //format:on
-  def createWithMetrics(config: Config = ConfigFactory.load()): MetricsElasticClient = {
-    val elasticConfig = ElasticConfig(config)
-    val url = elasticConfig.credentials.url
-
-    metricsClientsByUrl.computeIfAbsent(
-      url,
-      _ => {
-        logger.info(s"Creating new MetricsElasticClient for URL: $url")
-        val baseClient = getOrCreateBaseClient(config)
-        val metricsCollector = new MetricsCollector()
-        new MetricsElasticClient(baseClient, metricsCollector)
-      }
-    )
-  }
+  def createWithMetrics(config: Config = ConfigFactory.load()): MetricsElasticClient =
+    cache.metrics(config, ElasticConfig(config))
 
   //format:off
   /** Creates a client with a custom metrics collector.
     *
-    * Useful for sharing a collector between multiple clients or for testing. Does NOT use caching -
-    * always creates a new client instance.
+    * Useful for sharing a collector between multiple clients or for testing. Always creates a new
+    * client instance, over the cached base client of the configuration; its `close()` releases that
+    * share.
     *
     * @param config
     *   Typesafe configuration
@@ -225,17 +202,16 @@ object ElasticClientFactory {
   def createWithCustomMetrics(
     config: Config = ConfigFactory.load(),
     metricsCollector: MetricsCollector
-  ): MetricsElasticClient = {
-    logger.info("Creating new MetricsElasticClient with custom collector")
-    val baseClient = getOrCreateBaseClient(config)
-    new MetricsElasticClient(baseClient, metricsCollector)
-  }
+  ): MetricsElasticClient =
+    cache.customMetrics(config, ElasticConfig(config), metricsCollector)
 
   //format:off
   /** Creates a client with automatic monitoring and alerting.
     *
     * Monitoring generates periodic reports and triggers alerts when configured thresholds are
-    * exceeded. Uses caching: multiple calls with the same URL return the same instance.
+    * exceeded. Uses caching: calls with an equal effective `elastic.*` configuration return the
+    * same instance; call `close()` once per call (`shutdown()` would stop the monitoring of every
+    * caller sharing it).
     *
     * @param config
     *   Typesafe configuration
@@ -262,30 +238,18 @@ object ElasticClientFactory {
     * // If failure rate > threshold, automatic alert:
     * // ⚠️  HIGH FAILURE RATE: 15.0%
     *
-    * // Stop monitoring gracefully
-    * client.shutdown()
+    * // Done with it: releases this caller's share
+    * client.close()
     * }}}
     */
   //format:on
-  def createWithMonitoring(config: Config = ConfigFactory.load()): MonitoredElasticClient = {
-    val elasticConfig = ElasticConfig(config)
-    val url = elasticConfig.credentials.url
-
-    monitoredClientsByUrl.computeIfAbsent(
-      url,
-      _ => {
-        logger.info(s"Creating new MonitoredElasticClient for URL: $url")
-        val baseClient = getOrCreateBaseClient(config)
-        val metricsCollector = new MetricsCollector()
-        val monitoringConfig = elasticConfig.metrics.monitoring
-        new MonitoredElasticClient(baseClient, metricsCollector, monitoringConfig)
-      }
-    )
-  }
+  def createWithMonitoring(config: Config = ConfigFactory.load()): MonitoredElasticClient =
+    cache.monitored(config, ElasticConfig(config))
 
   /** Creates a monitored client with a custom metrics collector.
     *
-    * Does NOT use caching - always creates a new client instance.
+    * Always creates a new client instance, over the cached base client of the configuration; its
+    * `close()` stops its monitoring and releases that share.
     *
     * @param config
     *   Typesafe configuration
@@ -297,13 +261,8 @@ object ElasticClientFactory {
   def createMonitoredWithCustomMetrics(
     config: Config = ConfigFactory.load(),
     metricsCollector: MetricsCollector
-  ): MonitoredElasticClient = {
-    logger.info("Creating new MonitoredElasticClient with custom collector")
-    val elasticConfig = ElasticConfig(config)
-    val baseClient = getOrCreateBaseClient(config)
-    val monitoringConfig = elasticConfig.metrics.monitoring
-    new MonitoredElasticClient(baseClient, metricsCollector, monitoringConfig)
-  }
+  ): MonitoredElasticClient =
+    cache.customMonitored(config, ElasticConfig(config), metricsCollector)
 
   /** Shuts down all cached clients.
     *
@@ -312,45 +271,18 @@ object ElasticClientFactory {
     */
   def shutdown(): Unit = {
     logger.info("Shutting down all Elasticsearch clients")
-
-    // Shutdown monitored clients first (they have schedulers)
-    monitoredClientsByUrl.values().asScala.foreach { client =>
-      try {
-        client.shutdown()
-      } catch {
-        case NonFatal(ex) =>
-          logger.error(s"Error shutting down monitored client: ${ex.getMessage}", ex)
-      }
-    }
-
-    // Clear caches
-    monitoredClientsByUrl.clear()
-    metricsClientsByUrl.clear()
-
-    // Shutdown base clients
-    clientsByUrl.values().asScala.foreach { client =>
-      try {
-        client.close()
-      } catch {
-        case NonFatal(ex) =>
-          logger.error(s"Error shutting down base client: ${ex.getMessage}", ex)
-      }
-    }
-
-    clientsByUrl.clear()
-
+    cache.shutdown()
     logger.info("All Elasticsearch clients shut down")
   }
 
   /** Clears all caches without shutting down clients.
     *
-    * Useful for testing. Use with caution in production.
+    * For tests. Clients handed out before stay usable but are no longer managed: their `close()` is
+    * a no-op and `shutdown()` does not close them.
     */
   def clearCache(): Unit = {
     logger.warn("Clearing Elasticsearch client cache")
-    clientsByUrl.clear()
-    metricsClientsByUrl.clear()
-    monitoredClientsByUrl.clear()
+    cache.clear()
   }
 
   /** Gets statistics about cached clients.
@@ -358,11 +290,5 @@ object ElasticClientFactory {
     * @return
     *   Map with cache statistics
     */
-  def getCacheStats: Map[String, Int] = {
-    Map(
-      "baseClients"      -> clientsByUrl.size(),
-      "metricsClients"   -> metricsClientsByUrl.size(),
-      "monitoredClients" -> monitoredClientsByUrl.size()
-    )
-  }
+  def getCacheStats: Map[String, Int] = cache.stats
 }

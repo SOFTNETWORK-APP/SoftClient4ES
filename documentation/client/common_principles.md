@@ -255,6 +255,19 @@ Max Duration: 223ms
 
 ### Lifecycle Management
 
+#### Sharing and Closing
+
+The factory shares a cached client only between callers whose effective `elastic.*` configuration is equal: same credentials (user, password, API key, bearer token), same timeouts, same scroll and schema-cache settings. Two users on one URL therefore get two clients, each authenticated as itself. Call `close()` once per `create...()`: it releases your share and never closes a client, or stops a monitor, that another caller still holds. A client nobody holds stays cached for 10 minutes, so a caller that comes back reuses it; after that it is closed at the next client creation, or by `ElasticClientFactory.shutdown()`.
+
+```scala
+val client = ElasticClientFactory.create(config)
+try {
+  // ...
+} finally client.close() // releases this caller's share
+```
+
+Metrics, monitoring reports and schema caches belong to each client, hence to each identity. `createWithCustomMetrics` and `createMonitoredWithCustomMetrics` build a new wrapper on every call, over the cached client of the configuration; their `close()` releases that share (and, for the monitored one, stops its own monitoring).
+
 #### Automatic Shutdown Hook
 
 ```scala
@@ -273,7 +286,8 @@ ElasticClientFactory.shutdown()
 // Clear cache without shutdown (testing)
 ElasticClientFactory.clearCache()
 
-// Cache statistics
+// Cache statistics: the clients currently cached (one per distinct configuration), whether or
+// not a caller still holds them
 val stats = ElasticClientFactory.getCacheStats
 // Map("baseClients" -> 2, "metricsClients" -> 1, "monitoredClients" -> 1)
 ```
