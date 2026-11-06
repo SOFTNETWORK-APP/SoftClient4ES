@@ -323,6 +323,12 @@ class MetricsElasticClient(
       delegate.loadPatternSchema(pattern)
     }
 
+  // SCHEMA-7 (D7): the delegate's query schema lookup, the mapping or `_field_caps`
+  override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] =
+    measureResult("loadSchema", Some(source.indices.mkString(","))) {
+      delegate.loadQuerySchema(source)
+    }
+
   override def invalidateSchema(index: String): Unit = delegate.invalidateSchema(index)
   override def invalidateAllSchemas(): Unit = delegate.invalidateAllSchemas()
 

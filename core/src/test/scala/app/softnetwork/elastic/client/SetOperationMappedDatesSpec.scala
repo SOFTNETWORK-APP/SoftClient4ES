@@ -51,6 +51,9 @@ class SetOperationMappedDatesSpec extends AnyFlatSpec with Matchers {
       Column("n", SQLTypes.Int),
       Column("s", SQLTypes.Keyword),
       Column("c_z", SQLTypes.Timestamp, options = format("yyyy-MM-dd VV")),
+      // SCHEMA-7 (D3): a `date_nanos` field, read to the nanosecond; an ISO `date` field beside it
+      Column("dn", SQLTypes.Timestamp, options = ListMap("type" -> StringValue("date_nanos"))),
+      Column("c_iso", SQLTypes.Timestamp, options = format("strict_date_optional_time")),
       Column(
         "obj",
         SQLTypes.Struct,
@@ -263,6 +266,36 @@ class SetOperationMappedDatesSpec extends AnyFlatSpec with Matchers {
     // `n` converts (an INT beside a BIGINT): the object is DuckDB's; `a` agrees and is read
     answered(union("obj", "objl"), 0, """{"a":1706697000,"n":1}""") shouldBe
     ListMap("a" -> utc("2024-01-31T10:30:00Z"), "n" -> java.lang.Long.valueOf(1L), "z" -> null)
+  }
+
+  /** SCHEMA-7 (D3): a `date_nanos` field's dates are read to the nanosecond in every leg, as its
+    * hit reader reads them alone (`HitReading.nanosPaths`) -- the value that reader gives (a UTC
+    * `ZonedDateTime` holding its nanoseconds) passed as it is, any other spelling read to the
+    * nanosecond; a `date` field's to the millisecond Elasticsearch indexes it at.
+    */
+  "An agreeing date_nanos column" should "keep the nanoseconds its legs read (D3)" in {
+    val nanos = utc("2024-01-31T10:30:00.123456789Z")
+    val sql = union("dn", "dn")
+    Seq(0, 1).foreach { leg =>
+      withClue(s"leg $leg: ") {
+        // the hit reader's form
+        plan(sql)(leg).map(_(0)(nanos)) shouldBe Some(nanos)
+        // the response parser's: an ISO text, an offset, epoch milliseconds with a fraction
+        shown(answered(sql, leg, "\"2024-01-31T10:30:00.123456789Z\"")) shouldBe shown(nanos)
+        shown(answered(sql, leg, "\"2024-01-31T12:30:00.123456789+02:00\"")) shouldBe
+        shown(nanos)
+        shown(answered(sql, leg, "\"1706697000123.456789\"")) shouldBe shown(nanos)
+      }
+    }
+    // the counterfactual: an ISO `date` field indexes the millisecond
+    shown(answered(union("c_iso", "c_iso"), 0, "\"2024-01-31T10:30:00.123456789Z\"")) shouldBe
+    shown(utc("2024-01-31T10:30:00.123Z"))
+    // a leg's reader (the relational engine's contract) reads it as the hit reader does
+    SetOperationValues.legReaders(resolved(sql).requests, Nil, Some("8.18.3")) match {
+      case Right(Seq(Some(first), Some(_))) =>
+        shown(first(0)(received("\"2024-01-31T10:30:00.123456789Z\""))) shouldBe shown(nanos)
+      case other => fail(s"legReaders: $other")
+    }
   }
 
   it should "ask the Elasticsearch version once, and only for a column it reads" in {

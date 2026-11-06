@@ -84,7 +84,11 @@ class ArrayTypeMappingSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "read an unknown element, or a list of lists, as ANY (R-7)" in {
-    SQLTypes("ARRAY<IP>") shouldBe SQLTypes.Any
+    // a mapping type core does not read (SCHEMA-7 lists it among those that stay ANY)
+    SQLTypes("ARRAY<WILDCARD>") shouldBe SQLTypes.Any
+    // SCHEMA-7 (D1): `ip` reads KEYWORD, so a list of them is a list of KEYWORD -- the element's
+    // reading, as for every other X
+    SQLTypes("ARRAY<IP>") shouldBe SQLTypes.Array(SQLTypes.Keyword)
     SQLTypes("ARRAY<ANY>") shouldBe SQLTypes.Any
     // a 0.24.0 `_meta` could hold one: Elasticsearch has no list of lists
     SQLTypes("ARRAY<ARRAY<INT>>") shouldBe SQLTypes.Any

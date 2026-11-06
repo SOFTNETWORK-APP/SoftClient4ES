@@ -861,7 +861,7 @@ trait GroupedAggregateSemanticsSpec
     rowsOf(sql).map(r => BigDecimal(String.valueOf(cell(r, "k"))) -> number(cell(r, "c"))).toMap
 
   "a conditional key over a scaled_float, an ip or a geo_point beside an integer" should
-  "answer its values, and fail no shard" in {
+  "answer its values, refuse the ip by type, and fail no shard" in {
     client.createIndex(untyped, mappings = None, aliases = Nil).get shouldBe true
     client
       .setMapping(
@@ -915,16 +915,16 @@ trait GroupedAggregateSemanticsSpec
       Some(0.1)   -> Some(2.0),
       Some(2.0)   -> Some(1.0)
     )
-    // DuckDB refuses both ("Cannot mix values of type VARCHAR and INTEGER_LITERAL in COALESCE
-    // operator"); they answered here before, a value per group, and failed every shard as a
-    // whole-number level ("Unsupported script value [10.0.0.1]")
-    rowsOf(
-      s"SELECT COALESCE(ip, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(ip, 2)"
-    ).map(r => String.valueOf(cell(r, "k")) -> number(cell(r, "c"))).toMap shouldBe Map(
-      "10.0.0.1" -> Some(2.0),
-      "8.8.8.8"  -> Some(1.0),
-      "2"        -> Some(2.0)
-    )
+    // DuckDB refuses it ("Cannot mix values of type VARCHAR and INTEGER_LITERAL in COALESCE
+    // operator"). It failed every shard as a whole-number level ("Unsupported script value
+    // [10.0.0.1]"), then answered a value per group while the ip was untyped; SCHEMA-7 (D1, R-83)
+    // types an ip a KEYWORD, so the conditional's rule refuses it by type, as over any keyword
+    val sql = s"SELECT COALESCE(ip, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(ip, 2)"
+    Await.result(client.run(sql), 60.seconds) match {
+      case ElasticFailure(error) =>
+        error.message should include("Cannot mix values of type KEYWORD")
+      case other => fail(s"[$sql] answered $other instead of the refusal by type")
+    }
     rowsOf(
       s"SELECT COALESCE(g, 2) AS k, COUNT(*) AS c FROM $untyped GROUP BY COALESCE(g, 2)"
     ).flatMap(r => number(cell(r, "c"))).sum shouldBe 5.0

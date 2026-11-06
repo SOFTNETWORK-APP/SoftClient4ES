@@ -176,8 +176,9 @@ object SQLTypeUtils {
     * transform reads `ctx.<c>`, the whole list, and keeps the declared `ARRAY<X>` there
     * ([[readsWholeValues]]).
     *
-    * `date_nanos` needs no arm: `SQLTypes.apply` maps it to `Any` (BIDC-4's deliberate exclusion),
-    * and `Any` is not temporal, so it falls to the identity case here.
+    * `date_nanos` needs no arm: `SQLTypes.apply` maps it to `Timestamp` (SCHEMA-7 D1, ending
+    * BIDC-4's exclusion), and `doc['f'].value` over it is a `ZonedDateTime` too, its nanoseconds
+    * kept.
     *
     * Applied at exactly ONE site — `GenericIdentifier.baseType` — because every consumer of
     * `baseType` is Painless emission or `coerce`; the DDL, `_meta` and diff paths read

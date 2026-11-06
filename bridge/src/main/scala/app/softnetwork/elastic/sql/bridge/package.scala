@@ -619,6 +619,9 @@ package object bridge {
       _search =
         if (request.sourceless) _search fetchSource false
         else _search sourceFiltering (fields, excludes)
+      // SCHEMA-7 (D5): a column whose value is not in `_source` (`constant_keyword`) is read from
+      // its doc value, asked here for every page, leg and window base that renders through here
+      if (request.indexedColumns.nonEmpty) _search = _search docValues request.indexedColumns
     }
 
     _search = if (allAggregations.nonEmpty) {

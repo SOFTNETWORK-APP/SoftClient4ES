@@ -653,9 +653,9 @@ the column it aggregates, whatever the other rows answer.
   RLIKE 'b.*'`: the engine matches a regular expression against the whole key, as Elasticsearch
   does, where DuckDB matches part of it, and which reading such a combination should follow is not
   settled. An `RLIKE` alone, or combined by `AND` with an aggregate, is answered as a whole-key match.
-- **A `float` key compared with a value no float holds is refused**; a `half_float` key is not
-  checked, and a comparison with such a value may keep no group. See
-  [Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
+- **A `float` or `half_float` key compared with a value no float holds is refused** (a
+  `half_float` key since `0.25.0`: it was not checked, and such a comparison could keep no group).
+  See [Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
 - **A root aggregate beside an `UNNEST` key is not answered per group.** `COUNT(*)`, `COUNT(t.id)`
   or a `SUM` of a root field beside a `GROUP BY` key of an `UNNEST` element (`… JOIN UNNEST(t.items)
   AS i GROUP BY i.sku`) answers one count over the index, or NULL, instead of one per group. An
@@ -667,10 +667,52 @@ the column it aggregates, whatever the other rows answer.
 
 - **A `CASE` / `COALESCE` whose arguments have no common type is refused**, with DuckDB's reason. See
   [The type of a conditional](functions_conditional.md#the-type-of-a-conditional).
-- **`date_nanos` columns have no SQL type** in the schema, so a conditional cannot convert them: a
-  `CASE` or `COALESCE` that returns a `date_nanos` column beside a date can answer a timestamp in
-  some rows and a date in others, `NULLIF(dn, x)` over a `date_nanos` column never matches, and a
-  `date_nanos` argument beside a `TIME` makes a `TIME`. `LAST_DAY` over one answers a `DATE`.
+- **A `date_nanos` column is a TIMESTAMP read to the nanosecond** (*since `0.25.0`*: it had no SQL
+  type), and `dn + 1` / `dn - 1` move it by days keeping its nanoseconds, but an aggregate (`MIN`,
+  `MAX`), a `GREATEST` / `LEAST` and a window partition over it compute in milliseconds, as
+  Elasticsearch's doc values and aggregations do, and so does a number of days added to a
+  function's result over it (`DATE_TRUNC(dn, MONTH) + 1`), to a per-group value or in an ingest
+  script.
+- **An `unsigned_long` value above 2^63-1 is answered as stored**, a `java.math.BigInteger` in a
+  `BIGINT` column (core has no unsigned type); every smaller value is a `Long`.
+- **A `flattened` field, an `alias`, a `wildcard`, a `match_only_text`, a `version` or a `geo_shape`
+  field has no SQL type** (`ANY`): its values are answered as read.
+- **A `constant_keyword` value is read from its doc value** where a row reads the column; a
+  `FIRST_VALUE` / `LAST_VALUE` over one reads `_source`, and answers NULL.
+- **Arithmetic over an `ip` or a `constant_keyword` field is refused by type** (*since `0.25.0`*), as
+  over any `KEYWORD`: `ip + 1` used to answer the text `'10.0.0.11'`. Cast it first.
+- **A column of a mapping type core now types is compared and combined by that type** (*since
+  `0.25.0`*), as a column declared with it: `u = k` (`unsigned_long` against `keyword`), `ip > n`,
+  `sf > d`, `dn * 2` and `dn / 2` are refused, where they used to answer a text comparison or fail in
+  Elasticsearch; so is a `CASE`, `COALESCE`, `NULLIF`, `GREATEST` or `LEAST` whose arms have no common
+  type (`COALESCE(ip, 2)`, `COALESCE(sf, k)`, `GREATEST(dn, n)`), and the same over a field the
+  indices of a pattern map as `keyword` and `long` (a VARCHAR). Cast one side first
+  (`CAST(u AS VARCHAR) = k`).
+- **A `type` written in a column's options is that field's mapping type** (`c VARCHAR OPTIONS (type
+  = 'keyword')`): beside another mapping type in an index pattern, a native one included, the column
+  has no type (*since `0.25.0`*: `w KEYWORD OPTIONS (type = 'wildcard')` in one index beside a
+  `keyword` `w` in another read KEYWORD), as a field of a type core reads but never writes.
+- **`ORDER BY` a column with a type core reads but never writes fails over an index list or pattern
+  where an index lacks the column**: Elasticsearch answers "No mapping found for [`<column>`] in
+  order to sort on". *Since `0.25.0`* this also holds where it answered before: a column declared
+  with a `type` that reads as its declared SQL type (`DOUBLE OPTIONS (type = 'scaled_float')`,
+  `TIMESTAMP OPTIONS (type = 'date_nanos')`, `REAL OPTIONS (type = 'half_float')`, `KEYWORD OPTIONS
+  (type = 'ip')` or `(type = 'constant_keyword')`), and a column a pattern leaves with no type
+  because one index declares it with a `type` and another does not. A column whose `type` does not
+  read as its declared type (`KEYWORD` mapped `wildcard`, `INT` mapped `long`) sorts as before.
+- **A field the indices of a pattern map as `keyword` and `text`** is typed as the index whose name
+  sorts first maps it (`KEYWORD` or `TEXT`); a field they map as two other types takes the type a
+  `UNION ALL` gives them, or none -- see [Index patterns](../client/gateway.md#index-patterns).
+- **A user who may not read the mapping is typed from `_field_caps`**, which holds no `_meta` and no
+  date format: a declared `DATE` reads TIMESTAMP, an `ARRAY<X>` declaration X (a several-valued cell
+  answers its `List`, so a column can hold two classes), custom-format dates and epochs are answered
+  as stored, temporal literals are forwarded verbatim, a `constant_keyword` column reads NULL in a
+  projection and under `*` (and `ORDER BY` it answers over a list where one index lacks it, where a
+  privileged user's statement fails), and a runtime field adds a NULL column to `*`. Such a user's un-`LIMIT`ed
+  statements page by the client's Elasticsearch major (search_after on the ES 7 client, even over a
+  7.17 cluster), unsliced where `_settings` is refused; a privilege granted later is seen once the
+  schema-cache TTL expires, and the cluster's version once the client restarts. See
+  [A user who may not read the mapping](../client/gateway.md#a-user-who-may-not-read-the-mapping).
 - **A date cast to text prints its instant**: `CAST(d AS VARCHAR)` over a `DATE` column answers
   `'2024-01-03T00:00Z'`, where DuckDB answers `'2024-01-03'`. Format it with `DATE_FORMAT(d,
   '%Y-%m-%d')`.

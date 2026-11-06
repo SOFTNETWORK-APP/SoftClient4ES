@@ -1108,6 +1108,41 @@ package object query {
       !select.fields.exists(_.identifier.nested) && nestedHitsMappings.isEmpty &&
       UnnestScope.rowExplosion(this).isEmpty
 
+    /** SCHEMA-7 (D5) -- the columns this ROW statement reads from their DOC VALUE rather than from
+      * `_source`: the selected (or `*`'s) top-level columns mapped `constant_keyword`, whose value
+      * is in the mapping and never in a document -- minus any name a computed item outputs, which
+      * the hit's `fields` already answers under it (the `instantColumns` precedent).
+      *
+      * 🔴 ONE predicate (#292): both bridges ask these as `docvalue_fields` beside the source
+      * filter, and `HitReading.of` reads them from the hit's `fields`, never from `_source`. Empty
+      * without a schema, for an aggregation, a window or a sourceless statement (no plain column),
+      * and on Elasticsearch 6.8 (no `constant_keyword`).
+      */
+    lazy val indexedColumns: Seq[String] =
+      schema match {
+        case Some(table) if fields.nonEmpty =>
+          // the table's `constant_keyword` columns first, in one pass: an index usually has none,
+          // and then nothing else is computed (D12 (a): a statement reading no such column pays one
+          // pass over the columns, never a lookup per selected name)
+          val constants =
+            table.columns.collect {
+              case c if c.mappingType == "constant_keyword" => c.name
+            }.toSet
+          if (constants.isEmpty) Nil
+          else {
+            val selected =
+              if (fields.contains("*")) table.columns.map(_.name)
+              else fields.filter(_.indexOf('.') < 0)
+            val computed =
+              select.fieldsWithComputedAliases
+                .filter(f => f.identifier.functions.nonEmpty || f.isScriptField)
+                .map(_.outputName)
+                .toSet
+            selected.distinct.filter(name => constants.contains(name) && !computed.contains(name))
+          }
+        case _ => Nil
+      }
+
     /** The row-invariant SELECT items and their values, keyed by OUTPUT column name (FOLD-IN 1).
       *
       * An aggregation response has no hits, so `script_fields` -- which is how a constant is
@@ -4513,6 +4548,45 @@ package object query {
             )
           case (none, _) => none
         }
+      }
+
+    /** SCHEMA-7 (D6) -- the type the set-operation lattice ([[typeNode]], ONE node of every member,
+      * the #420 rules) gives values of the types `members` together, for the merge of an index
+      * pattern's fields (`schema.mergedSchema`): the index of the member that decides it and the
+      * type -- the node's RESULT, a VARCHAR DuckDB gives no type to included --; `None` when the
+      * lattice refuses them. No second lattice: the merge and the set operations read this one.
+      */
+    private[elastic] def latticeType(
+      members: Seq[SetOperationType]
+    ): Option[(Int, SetOperationType)] =
+      if (members.isEmpty) None
+      else
+        typeNode(
+          members.zipWithIndex.map { case (t, i) =>
+            Operand(i, Field(Identifier(s"member$i")), t.sqlType, t)
+          },
+          Nil
+        ).toOption.map(node => (node.operand.branch, node.operand.valueType))
+
+    /** SCHEMA-7 (D6) -- whether the plain hit reader reads every value of a field of type `member`
+      * as a value of type `merged`: the conversions it performs, no other -- any scalar but a
+      * `VARBINARY` to a VARCHAR (its text), a number to a number at least as wide (never a BOOLEAN:
+      * kept as stored under a number), a DATE to a TIMESTAMP, a type to itself; a date only under
+      * the SAME format, the one the merged field is read by.
+      */
+    private[elastic] def readsInto(member: SetOperationType, merged: SetOperationType): Boolean =
+      (member.sqlType, merged.sqlType) match {
+        case (SQLTypes.VarBinary, SQLTypes.Varchar) => false
+        case (m, SQLTypes.Varchar)                  => !nested(m) && m != SQLTypes.Any
+        case (m, t) if m.isTemporal || t.isTemporal =>
+          (m == t || (m == SQLTypes.Date && t == SQLTypes.Timestamp)) &&
+            member.format == merged.format
+        case (m, t) if m == t => member.fields == merged.fields && member.element == merged.element
+        case (m, t) =>
+          (numberRank.get(m), numberRank.get(t)) match {
+            case (Some(a), Some(b)) => m != SQLTypes.Boolean && a <= b
+            case _                  => false
+          }
       }
 
     /** The refusal of column `position`, naming the two operands a node refuses there: at the

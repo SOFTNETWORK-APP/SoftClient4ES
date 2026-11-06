@@ -178,6 +178,7 @@ private[elastic] object SetOperationValues {
         // projection of another width -- an opaque `SELECT *` -- has no position to read at
         if (search.select.fieldsWithComputedAliases.size != columns.size) None
         else {
+          val nanos = nanosOf(search)
           val readers: Array[Any => Any] = columns.indices.map { position =>
             legReader(
               columns(position),
@@ -185,7 +186,8 @@ private[elastic] object SetOperationValues {
               names(position),
               fieldOf(search, position),
               dates,
-              unreadable
+              unreadable,
+              nanos
             )
           }.toArray
           if (readers.forall(_ == null)) None else Some(readers)
@@ -262,10 +264,19 @@ private[elastic] object SetOperationValues {
           search.select.fieldsWithComputedAliases.size != columns.size ||
           columns.forall(_.branches.lift(leg).flatten.isEmpty)
         ) None
-        else
+        else {
+          val nanos = nanosOf(search)
           Some(LegSchema(columns.indices.map { position =>
-            legSlot(columns(position), leg, names(position), fieldOf(search, position), dates)
+            legSlot(
+              columns(position),
+              leg,
+              names(position),
+              fieldOf(search, position),
+              dates,
+              nanos
+            )
           }))
+        }
       }
     }
 
@@ -279,7 +290,8 @@ private[elastic] object SetOperationValues {
     index: Int,
     name: String,
     field: String,
-    dates: DateReading
+    dates: DateReading,
+    nanos: Set[String] = Set.empty
   ): Option[LegSlot] =
     column.branches
       .lift(index)
@@ -289,7 +301,8 @@ private[elastic] object SetOperationValues {
         // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before any
         // date is routed (routing asks the version): routing makes a date `VARCHAR`, never `NULL`,
         // and leaves the column's type alone, so [[legReader]] answers the same over the routed one
-        Option(legReader(column, index, name, field, dates, Unreadable.Fail)).flatMap { declared =>
+        val reader = legReader(column, index, name, field, dates, Unreadable.Fail, nanos)
+        Option(reader).flatMap { declared =>
           val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
           // routing changed nothing (every readable date): the routed column IS the declared one,
           // so its reader is the one just built -- built once, not twice per slot
@@ -302,7 +315,8 @@ private[elastic] object SetOperationValues {
                 name,
                 field,
                 dates,
-                Unreadable.Fail
+                Unreadable.Fail,
+                nanos
               )
             ).map(LegSlot(slotType, _, asStored))
         }
@@ -493,6 +507,13 @@ private[elastic] object SetOperationValues {
     Option(item.identifier.name).filter(_.nonEmpty).getOrElse(item.outputName)
   }
 
+  /** SCHEMA-7 (D3) -- the paths of `leg`'s `date_nanos` fields, whose dates are read to the
+    * nanosecond Elasticsearch indexes them at: THE rule its hit reader reads them by
+    * (`HitReading.nanosPaths`), so a set operation answers the value its leg reads alone.
+    */
+  private def nanosOf(leg: SingleSearch): Set[String] =
+    leg.schema.fold(Set.empty[String])(t => HitReading.nanosPaths(t.columns))
+
   private def legConverters(
     leg: SingleSearch,
     index: Int,
@@ -504,6 +525,7 @@ private[elastic] object SetOperationValues {
     // projection of another width -- an opaque `SELECT *` -- has no position to convert at
     if (leg.select.fieldsWithComputedAliases.size != columns.size) None
     else {
+      val nanos = nanosOf(leg)
       val functions: Array[Any => Any] = columns.zipWithIndex.map { case (column, position) =>
         // a NULL literal's branch too: its value is Elasticsearch's `[null]`, read as NULL
         if (column.branches.lift(index).flatten.isEmpty) null
@@ -514,7 +536,8 @@ private[elastic] object SetOperationValues {
             index,
             names(position),
             fieldOf(leg, position),
-            dates
+            dates,
+            nanos = nanos
           )
         else if (readsMappedDates(column))
           mappedDates(
@@ -523,7 +546,8 @@ private[elastic] object SetOperationValues {
             index,
             names(position),
             fieldOf(leg, position),
-            dates
+            dates,
+            nanos
           ).orNull
         else null
       }.toArray
@@ -551,7 +575,8 @@ private[elastic] object SetOperationValues {
     index: Int,
     name: String,
     field: String,
-    dates: DateReading
+    dates: DateReading,
+    nanos: Set[String] = Set.empty
   ): Option[Any => Any] =
     branches.lift(index).flatten.flatMap { own =>
       val path = if (field.isEmpty) name else field
@@ -565,7 +590,8 @@ private[elastic] object SetOperationValues {
                 index,
                 name,
                 s"$path.${f.name}",
-                dates
+                dates,
+                nanos
               ).map(f.name -> _)
             }
           }
@@ -577,7 +603,8 @@ private[elastic] object SetOperationValues {
             index,
             name,
             path,
-            dates
+            dates,
+            nanos
           ).map(listPatch)
         case _
             if own.format.isDefined && target.sqlType.isTemporal && branches
@@ -592,7 +619,8 @@ private[elastic] object SetOperationValues {
                 path,
                 dates,
                 Reading.Declared(Unreadable.KeepAsStored),
-                agrees = Some(true)
+                agrees = Some(true),
+                nanos = nanos
               )
             )
           )
@@ -679,7 +707,8 @@ private[elastic] object SetOperationValues {
     name: String,
     field: String,
     dates: DateReading,
-    unreadable: Unreadable
+    unreadable: Unreadable,
+    nanos: Set[String]
   ): Any => Any =
     column.branches.lift(index).flatten match {
       case Some(branch) if branch.sqlType != SQLTypes.Null && column.resultType != SQLTypes.Any =>
@@ -693,7 +722,8 @@ private[elastic] object SetOperationValues {
           Reading.Declared(unreadable),
           // the column's branches agree as core's `UNION ALL` reads them: a `SELECT *` branch
           // beside them converts nothing
-          agrees = Some(!column.converts)
+          agrees = Some(!column.converts),
+          nanos = nanos
         )
       case _ => null
     }
@@ -731,7 +761,8 @@ private[elastic] object SetOperationValues {
     field: String = "",
     dates: DateReading = DateReading.unknown,
     reading: Reading = Reading.Converted,
-    agrees: Option[Boolean] = None
+    agrees: Option[Boolean] = None,
+    nanos: Set[String] = Set.empty
   ): Any => Any = {
     val branch = branches.lift(index).flatten
     val read = reading != Reading.Converted
@@ -742,9 +773,9 @@ private[elastic] object SetOperationValues {
       // a STRUCT whose fields are not known: its values as read
       case SQLTypes.Struct if as.fields.isEmpty || target.fields.isEmpty => identity
       case SQLTypes.Struct =>
-        structConverter(target, branches, index, name, field, dates, reading)
+        structConverter(target, branches, index, name, field, dates, reading, nanos)
       case SQLTypes.Array(_) =>
-        listConverter(target, branches, index, name, field, dates, reading)
+        listConverter(target, branches, index, name, field, dates, reading, nanos)
       case scalar =>
         val source = branch.fold[SQLType](SQLTypes.Null)(_.sqlType)
         // a date core cannot read is answered as stored where the reader is told so and the
@@ -758,15 +789,17 @@ private[elastic] object SetOperationValues {
         // declared where the branches agree too: a leg typed by its branch's scalar type cannot
         // carry a list, which core's own `UNION ALL` answers as read there (the lead's ruling of
         // 2026-10-08)
+        val path = if (field.isEmpty) name else field
         val convert = converter(
           source,
           scalar,
           nonScalarFailure(target.sqlType, branches.map(_.map(_.sqlType)), index, source, name),
           branch.flatMap(_.format),
-          if (field.isEmpty) name else field,
+          path,
           name,
           dates,
-          keepUnreadable = keep
+          keepUnreadable = keep,
+          nanos = nanos.contains(path)
         )
         val canonical =
           if (read && scalar == SQLTypes.Timestamp) convert.andThen(utc) else convert
@@ -805,13 +838,14 @@ private[elastic] object SetOperationValues {
     name: String,
     field: String,
     dates: DateReading,
-    reading: Reading
+    reading: Reading,
+    nanos: Set[String]
   ): Any => Any =
     if (
       reading != Reading.Converted || target.sqlType == SQLTypes.GeoPoint ||
       SetOperationColumn.converts(target, branches.flatten)
-    ) positionConverter(target, branches, index, name, field, dates, reading)
-    else mappedDates(target, branches, index, name, field, dates).getOrElse(identity)
+    ) positionConverter(target, branches, index, name, field, dates, reading, nanos = nanos)
+    else mappedDates(target, branches, index, name, field, dates, nanos).getOrElse(identity)
 
   /** The failure of a converting position that a NON-SCALAR value -- a multi-valued field, an
     * object -- reaches: the position holds ONE value of its type per row, and such a value has no
@@ -889,7 +923,8 @@ private[elastic] object SetOperationValues {
     name: String,
     field: String = "",
     dates: DateReading = DateReading.unknown,
-    reading: Reading = Reading.Converted
+    reading: Reading = Reading.Converted,
+    nanos: Set[String] = Set.empty
   ): Any => Any = {
     val source = branches.lift(index).flatten
     val sourceFields = source.fold[Seq[StructField]](Nil)(_.fields)
@@ -906,7 +941,8 @@ private[elastic] object SetOperationValues {
         name,
         s"$path.${f.name}",
         dates,
-        reading
+        reading,
+        nanos
       )
     val plan: Seq[(String, Option[(String, Any => Any)])] =
       if (reading != Reading.Converted)
@@ -943,7 +979,8 @@ private[elastic] object SetOperationValues {
     name: String,
     field: String = "",
     dates: DateReading = DateReading.unknown,
-    reading: Reading = Reading.Converted
+    reading: Reading = Reading.Converted,
+    nanos: Set[String] = Set.empty
   ): Any => Any =
     if (branches.lift(index).flatten.forall(_.sqlType == SQLTypes.Null)) _ => null
     else {
@@ -954,7 +991,8 @@ private[elastic] object SetOperationValues {
         name,
         if (field.isEmpty) name else field,
         dates,
-        reading
+        reading,
+        nanos
       )
       val list: Any => Any = {
         case null                 => null
@@ -1133,7 +1171,8 @@ private[elastic] object SetOperationValues {
   /** [[converter]] for a branch that reads a date FIELD, whose mapping `format` -- its own, or
     * Elasticsearch's default -- reads its values as the major `dates` names reads them
     * ([[readAs]]); `field` is its path and `column` the column it reaches, which a failure names.
-    * With `keepUnreadable`, a date the format does not read is [[Unread]] instead of a failure.
+    * With `keepUnreadable`, a date the format does not read is [[Unread]] instead of a failure;
+    * with `nanos`, a `date_nanos` field, its dates are read to the nanosecond (SCHEMA-7 D3).
     */
   private[client] def converter(
     source: SQLType,
@@ -1143,7 +1182,8 @@ private[elastic] object SetOperationValues {
     field: String,
     column: String,
     dates: DateReading,
-    keepUnreadable: Boolean = false
+    keepUnreadable: Boolean = false,
+    nanos: Boolean = false
   ): Any => Any = {
     val convert: Any => Any = target match {
       case SQLTypes.Varchar   => text(source)
@@ -1157,7 +1197,7 @@ private[elastic] object SetOperationValues {
       case SQLTypes.VarBinary => bytes(source)
       case _                  => identity
     }
-    readAs(source, format, field, column, dates, keepUnreadable) match {
+    readAs(source, format, field, column, dates, keepUnreadable, nanos) match {
       case None       => scalarOf(convert, nonScalar)
       case Some(read) => scalarOf(read.andThen(convert), nonScalar)
     }
@@ -1176,9 +1216,10 @@ private[elastic] object SetOperationValues {
     field: String,
     column: String,
     dates: DateReading,
-    nonScalar: String
+    nonScalar: String,
+    nanos: Boolean = false
   ): Any => Any =
-    readAs(source, format, field, column, dates, keepUnreadable = false) match {
+    readAs(source, format, field, column, dates, keepUnreadable = false, nanos) match {
       case Some(read) => scalarOf(read, nonScalar)
       case None       => scalarOf(identity, nonScalar)
     }
@@ -1213,11 +1254,12 @@ private[elastic] object SetOperationValues {
     field: String,
     column: String,
     dates: DateReading,
-    keepUnreadable: Boolean
+    keepUnreadable: Boolean,
+    nanos: Boolean
   ): Option[Any => Any] =
     source match {
       case SQLTypes.Date | SQLTypes.Timestamp | SQLTypes.Time if format.isDefined =>
-        Some(dateByFormat(source, format.get, field, column, dates, keepUnreadable))
+        Some(dateByFormat(source, format.get, field, column, dates, keepUnreadable, nanos))
       case SQLTypes.TinyInt | SQLTypes.SmallInt | SQLTypes.Int | SQLTypes.BigInt => Some(integral)
       case SQLTypes.Double                                                       => Some(double)
       case SQLTypes.Real                                                         => Some(real)
@@ -1241,7 +1283,8 @@ private[elastic] object SetOperationValues {
     field: String,
     column: String,
     dates: DateReading,
-    keepUnreadable: Boolean
+    keepUnreadable: Boolean,
+    nanos: Boolean
   ): Any => Any = {
     val typeName = source match {
       case SQLTypes.Date => "DATE"
@@ -1278,18 +1321,20 @@ private[elastic] object SetOperationValues {
         // it, or fails (R-11 / R-15). And only under a format the hit reader reads by
         // (`DateRoute.Typed`: core reads every value of it for sure): under any other it reads
         // the text as stored, so a value in that form is the response parser's. One class test
-        // per value.
+        // per value. SCHEMA-7 (D3): a `date_nanos` field (`nanos`) keeps the nanosecond -- its
+        // reader's form holds it, and a value is re-read to it.
         val canonical: Any => Any =
           if (format.unread.isDefined) ((_: Any) => null)
           else
             source match {
               case SQLTypes.Date => { case d: LocalDate => d; case _ => null }
               case SQLTypes.Time => {
-                case t: LocalTime if t.getNano % 1000000 == 0 => t
-                case _                                        => null
+                case t: LocalTime if nanos || t.getNano % 1000000 == 0 => t
+                case _                                                 => null
               }
               case _ => {
-                case z: ZonedDateTime if z.getZone == ZoneOffset.UTC && z.getNano % 1000000 == 0 =>
+                case z: ZonedDateTime
+                    if z.getZone == ZoneOffset.UTC && (nanos || z.getNano % 1000000 == 0) =>
                   z
                 case _ => null
               }
@@ -1298,7 +1343,7 @@ private[elastic] object SetOperationValues {
           val passed = if (value == null) null else canonical(value)
           if (passed != null) passed
           else
-            format.readValue(value) match {
+            format.readValue(value, nanos) match {
               case MappedDateFormat.Read(instant) => result(instant)
               case MappedDateFormat.Rejected =>
                 failure(

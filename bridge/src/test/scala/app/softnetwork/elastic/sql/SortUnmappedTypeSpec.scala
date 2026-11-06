@@ -141,16 +141,31 @@ class SortUnmappedTypeSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "keep its bytes when the indices of a pattern disagree on the column's type" in {
+    // a member of a type core reads but never writes (`ip`) beside a keyword: no lattice type, the
+    // column left untyped (SCHEMA-7 D6)
     val (disagreeing, conflicts) = mergedSchema(
+      "p_*",
+      Seq(
+        "p_a" -> schemaOf("p_a", """{"name": {"type": "keyword"}}"""),
+        "p_b" -> schemaOf("p_b", """{"name": {"type": "ip"}}""")
+      )
+    )
+    conflicts should not be empty
+    sorts("SELECT name FROM p_* ORDER BY name LIMIT 100", Some(disagreeing)) shouldBe Seq(
+      "name" -> None
+    )
+    // a keyword beside a text is the lattice's VARCHAR, the column of the keyword member that
+    // decides it (SCHEMA-7 D6, A-66): sorted as a keyword, as over that index alone
+    val (lattice, none) = mergedSchema(
       "p_*",
       Seq(
         "p_a" -> schemaOf("p_a", """{"name": {"type": "keyword"}}"""),
         "p_b" -> schemaOf("p_b", """{"name": {"type": "text"}}""")
       )
     )
-    conflicts should not be empty
-    sorts("SELECT name FROM p_* ORDER BY name LIMIT 100", Some(disagreeing)) shouldBe Seq(
-      "name" -> None
+    none shouldBe empty
+    sorts("SELECT name FROM p_* ORDER BY name LIMIT 100", Some(lattice)) shouldBe Seq(
+      "name" -> Some("keyword")
     )
   }
 

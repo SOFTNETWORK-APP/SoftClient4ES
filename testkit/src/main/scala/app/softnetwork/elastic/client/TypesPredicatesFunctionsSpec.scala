@@ -243,10 +243,11 @@ trait TypesPredicatesFunctionsSpec extends AnyFlatSpecLike with ElasticDockerTes
 
   // -- types: a conditional beside an arm of a still-unknown type -----------------------------------
 
-  /** `dn` is a `date_nanos` column, typed `Any`: beside a DATE arm the node holds its timestamps,
-    * and DuckDB types `COALESCE(<TIMESTAMP_NS>, <DATE>)` a `TIMESTAMP_NS`. Core reported DATE, so
-    * arrow and JDBC, which read core's type, dropped the time of day. On 6.8 `dn` is a plain `date`
-    * (a TIMESTAMP), which reports TIMESTAMP already. The rows keep the doc value's instant.
+  /** `dn` is a `date_nanos` column (typed `Any` until SCHEMA-7, a TIMESTAMP since): beside a DATE
+    * arm the node holds its timestamps, and DuckDB types `COALESCE(<TIMESTAMP_NS>, <DATE>)` a
+    * `TIMESTAMP_NS`. Core reported DATE, so arrow and JDBC, which read core's type, dropped the
+    * time of day. On 6.8 `dn` is a plain `date` (a TIMESTAMP), which reports TIMESTAMP already. The
+    * rows keep the doc value's instant.
     */
   "a CASE or COALESCE with a date_nanos arm beside a DATE arm" should "report a TIMESTAMP and answer its instants" in {
     Seq(

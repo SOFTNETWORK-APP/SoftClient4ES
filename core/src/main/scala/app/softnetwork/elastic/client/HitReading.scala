@@ -112,6 +112,39 @@ private[client] object HitReading {
     */
   private[client] val Default: MultiValued = MultiValued.Fail
 
+  /** SCHEMA-7 (A-41) -- what a several-element cell of a scalar column answers in `single`: as read
+    * (a `List` of its elements, each read by the column's type) when its schema was typed from
+    * `_field_caps` -- no `_meta`, so a column declared `ARRAY<X>` reads X, and [[Default]] 's
+    * failure would have no remedy that reaches this user (R-55) --, else [[Default]]. Read at every
+    * argument [[Default]] was given.
+    */
+  private[client] def multiValuedFor(single: SingleSearch): MultiValued =
+    if (
+      single.schema.exists(
+        _.tableType == app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
+      )
+    )
+      MultiValued.AsRead
+    else Default
+
+  /** SCHEMA-7 (D3) -- whether a field's dates are read to the nanosecond, as Elasticsearch indexes
+    * them: `Column.dateNanos`, the one `date_nanos` predicate (A-72, #292), which the date format
+    * and a day shift read too. Every reader of a date field reads it: the hit reader
+    * ([[nanosPaths]]), the set operations' (`SetOperationValues`), an UNNEST element's conversion
+    * (`ElementConversions`).
+    */
+  private[client] def readsNanos(column: Column): Boolean = column.dateNanos
+
+  /** SCHEMA-7 (D3) -- the paths of `columns` (at every depth) whose values are read to the
+    * nanosecond ([[readsNanos]]).
+    */
+  private[client] def nanosPaths(columns: Seq[Column], prefix: String = ""): Set[String] =
+    columns.flatMap { c =>
+      val path = s"$prefix${c.name}"
+      (if (readsNanos(c)) Set(path) else Set.empty[String]) ++
+      nanosPaths(c.multiFields, s"$path.")
+    }.toSet
+
   /** SCHEMA-6 (A-26) -- a selected dotted column under a parent the plan reads WHOLE (`SELECT obj,
     * obj.a`, `SELECT *, obj.a`): where the parent's `_source` value is a list of objects, the row
     * key `key` holds the values the path `segments` collects there ([[Readers.collected]]), read by
@@ -274,9 +307,18 @@ private[client] object HitReading {
     val schema = ResultSchemas.of(single, dates, typeOf, columnTypeOf)
     val table = single.sources.headOption.getOrElse("")
     val aliases = single.fieldAliases
-    val readers = new Readers(aliases, dates, multiValued, table, remedyOf(single.schema))
+    val readers = new Readers(
+      aliases,
+      dates,
+      multiValued,
+      table,
+      remedyOf(single.schema),
+      single.schema.fold(Set.empty[String])(t => nanosPaths(t.columns))
+    )
     val fields = single.select.fieldsWithComputedAliases
     val star = fields.exists(isStar)
+    // SCHEMA-7 (D5): the columns read from their doc value, never from `_source`
+    val indexed = single.indexedColumns.toSet
     val source = new java.util.HashMap[String, JsonNode => Any]()
     val scripted = new java.util.HashMap[String, JsonNode => Any]()
     val ignoredDates = new java.util.HashMap[String, JsonNode => Any]()
@@ -304,9 +346,14 @@ private[client] object HitReading {
     single.schema.foreach { table =>
       if (star)
         table.columns.foreach { c =>
-          if (!source.containsKey(c.name))
+          if (!source.containsKey(c.name) && !indexed.contains(c.name))
             put(c.name, columnTypeOf(c), keepUnder(c.name))
         }
+      // SCHEMA-7 (D5): a column read from its doc value, in the hit's `fields`, by its type
+      table.columns.foreach { c =>
+        if (indexed.contains(c.name) && !scripted.containsKey(c.name))
+          scripted.put(c.name, readers.column(c.name, columnTypeOf(c), Set.empty)._1)
+      }
     }
     // explicit columns: a bare column (or a dotted column's parent and its flat spelling) by its
     // type; a computed column's `fields` entry by output name
@@ -328,7 +375,7 @@ private[client] object HitReading {
         val t = typeOf(f)
         val dot = name.indexOf('.')
         if (dot < 0) {
-          if (!source.containsKey(name)) put(name, t, keepUnder(name))
+          if (!source.containsKey(name) && !indexed.contains(name)) put(name, t, keepUnder(name))
         } else {
           val parent = name.substring(0, dot)
           paths.getOrElseUpdate(parent, ListBuffer.empty) += (name.substring(dot + 1) -> t)
@@ -453,7 +500,8 @@ private[client] object HitReading {
     dates: SetOperationValues.DateReading,
     multiValued: MultiValued,
     table: String,
-    remedy: String => Option[String] = _ => None
+    remedy: String => Option[String] = _ => None,
+    nanos: Set[String] = Set.empty
   ) {
 
     /** The failure of a several-element cell of `name` (SCHEMA-6 D6). */
@@ -867,7 +915,7 @@ private[client] object HitReading {
                 case DateRoute.AsStored(_) =>
                   (node => if (node.isValueNode) node.asText() else asRead(node), None)
                 case DateRoute.Typed =>
-                  val read = byFormat(kind, spec)
+                  val read = byFormat(kind, spec, nanos.contains(name))
                   (
                     node => {
                       val value = read(node)
@@ -889,12 +937,15 @@ private[client] object HitReading {
       */
     private def byFormat(
       kind: app.softnetwork.elastic.sql.`type`.SQLType,
-      spec: String
+      spec: String,
+      nanos: Boolean
     ): JsonNode => Any = {
       // the statement's one format of `spec`, the one its route was decided on (`Typed`: the major
       // is known)
       val format = dates.format(spec).get
-      val fast = spec == app.softnetwork.elastic.sql.query.TemporalLiterals.DefaultDateFormat
+      // Elasticsearch's default format and the ISO one a `_field_caps` date is read by (SCHEMA-7
+      // A-40) take the ISO fast path, which reads up to milliseconds and hands any other shape on
+      val fast = DefaultDates.fastFormats.contains(spec)
       val result: Instant => Any = kind match {
         case SQLTypes.Date => _.atZone(ZoneOffset.UTC).toLocalDate
         case SQLTypes.Time => _.atZone(ZoneOffset.UTC).toLocalTime
@@ -909,9 +960,10 @@ private[client] object HitReading {
         val z = if (fast && node.isTextual) DefaultDates.read(node.asText()) else null
         if (z ne null) fastResult(z)
         else {
+          // SCHEMA-7 (D3): a `date_nanos` field's value to the nanosecond
           val outcome =
-            if (node.isTextual) format.read(node.asText())
-            else if (node.isNumber) format.readValue(node.numberValue())
+            if (node.isTextual) format.read(node.asText(), nanos)
+            else if (node.isNumber) format.readValue(node.numberValue(), nanos)
             else MappedDateFormat.Rejected
           outcome match {
             case MappedDateFormat.Read(instant) => result(instant)
@@ -1136,6 +1188,14 @@ private[client] object HitReading {
     * equal over the corpus).
     */
   private[client] object DefaultDates {
+
+    /** The formats whose ISO text this fast path reads as their own reader does: Elasticsearch's
+      * default and the ISO format a `_field_caps` date is read by (SCHEMA-7 A-40).
+      */
+    val fastFormats: Set[String] = Set(
+      app.softnetwork.elastic.sql.query.TemporalLiterals.DefaultDateFormat,
+      app.softnetwork.elastic.sql.query.TemporalLiterals.FieldCapsDateFormat
+    )
 
     private def digit(c: Char): Int = if (c >= '0' && c <= '9') c - '0' else -1
 

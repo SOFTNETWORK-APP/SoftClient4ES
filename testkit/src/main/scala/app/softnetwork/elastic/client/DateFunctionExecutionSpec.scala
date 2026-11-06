@@ -1409,7 +1409,7 @@ trait DateFunctionExecutionSpec extends AnyFlatSpecLike with ElasticDockerTestKi
     )
   }
 
-  /** `date_nanos` types `Any`: LAST_DAY makes its receiver a DATE from its runtime class. Over an
+  /** `date_nanos` typed `Any` until SCHEMA-7, a TIMESTAMP since: LAST_DAY answers a DATE. Over an
     * index, a pattern and as a GROUP BY key. On 6.8 `dn` is a plain `date`, and answers the same.
     * n2 has no `dn`: DuckDB 1.5.5 answers NULL for it (`last_day(NULL::TIMESTAMP_NS)`).
     *

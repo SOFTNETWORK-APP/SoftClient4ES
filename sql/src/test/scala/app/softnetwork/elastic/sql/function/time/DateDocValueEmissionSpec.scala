@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.function.time
 
+import app.softnetwork.elastic.sql.StringValue
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{CreateTable, SingleSearch}
 import app.softnetwork.elastic.sql.schema.{Column, Table}
@@ -13,6 +14,7 @@ import java.time.temporal.{ChronoField, IsoFields, TemporalField}
 import java.time.format.DateTimeFormatter
 import java.time.temporal.{ChronoUnit, TemporalAdjusters}
 import java.time.{Instant, LocalDate, LocalDateTime, LocalTime, ZoneId, ZonedDateTime}
+import scala.collection.immutable.ListMap
 import scala.reflect.runtime.{universe => ru}
 
 /** Issue #368 -- `LAST_DAY` and `EPOCHDAY` called a method that does not exist for the type a
@@ -65,7 +67,10 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
       Column("d", SQLTypes.Date),
       Column("ts", SQLTypes.Timestamp),
       Column("n", SQLTypes.Int),
-      Column("dn", SQLTypes.Any)
+      // a column whose type is not known (a mapping type core reads as ANY, `flattened` among them)
+      Column("un", SQLTypes.Any),
+      // SCHEMA-7 (D1): a `date_nanos` field is a TIMESTAMP that keeps its own mapping type
+      Column("dn", SQLTypes.Timestamp, options = ListMap("type" -> StringValue("date_nanos")))
     )
   )
 
@@ -123,17 +128,17 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     resolved.renderedType shouldBe SQLTypes.Date
   }
 
-  it should "make a date_nanos operand, whose type is unknown, a DATE from its runtime class" in {
-    // `date_nanos` types `Any` (BIDC-4): the arm conversion leaves its receiver as it renders, and
-    // the adjuster kept its class and time of day. LAST_DAY reads the class once per row instead
+  it should "make an operand whose type is unknown a DATE from its runtime class" in {
+    // a column typed `Any`: the arm conversion leaves its receiver as it renders, and the adjuster
+    // kept its class and time of day. LAST_DAY reads the class once per row instead
     val dateOf =
       "(param1 instanceof LocalDate ? param1 : param1 instanceof LocalDateTime ? " +
       "param1.toLocalDate() : param1.toInstant().atZone(ZoneId.of('Z')).toLocalDate())"
-    scriptOf("SELECT LAST_DAY(dn) FROM t") shouldBe
-    "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    scriptOf("SELECT LAST_DAY(un) FROM t") shouldBe
+    "def param1 = (doc['un'].size() == 0 ? null : doc['un'].value); " +
     s"(param1 == null) ? null : $dateOf.with(TemporalAdjusters.lastDayOfMonth())"
     // a nameless operand of unknown type is bound once and read by the dispatch
-    scriptOf("SELECT LAST_DAY(CASE WHEN n > 1 THEN dn ELSE dn END) FROM t") should endWith(
+    scriptOf("SELECT LAST_DAY(CASE WHEN n > 1 THEN un ELSE un END) FROM t") should endWith(
       "def param4 = (param3 ? param2 : param2); (param4 == null) ? null : " +
       "(param4 instanceof LocalDate ? param4 : param4 instanceof LocalDateTime ? " +
       "param4.toLocalDate() : param4.toInstant().atZone(ZoneId.of('Z')).toLocalDate())" +
@@ -453,10 +458,63 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  /** SCHEMA-7 (D1, ending BIDC-4's exclusion): a `date_nanos` field is a TIMESTAMP, whose doc value
+    * is a `ZonedDateTime` as a `date` field's is (its nanoseconds kept): every date function
+    * renders over it exactly as over a TIMESTAMP column -- no class read per row.
+    */
+  "a date_nanos column" should "render as a TIMESTAMP column" in {
+    Seq(
+      "SELECT LAST_DAY(%s) FROM t",
+      "SELECT LAST_DAY(CASE WHEN n > 1 THEN %s ELSE %s END) FROM t",
+      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE %s END FROM t",
+      "SELECT CAST(%s AS DATE) FROM t",
+      "SELECT DATE_TRUNC(%s, MONTH) FROM t"
+    ).foreach { shape =>
+      val nanos = shape.replace("%s", "dn")
+      withClue(s"[$nanos] ") {
+        scriptOf(nanos) shouldBe scriptOf(shape.replace("%s", "ts")).replace("'ts'", "'dn'")
+        scriptOf(nanos) should not include "instanceof"
+      }
+    }
+  }
+
+  /** SCHEMA-7 (A-72): a `date_nanos` column moved by a number of days (`dn + 1`, the vendor rule: n
+    * days) is moved as the instant it is, so it keeps its nanoseconds; through epoch milliseconds,
+    * as a `date` is moved, it lost them (`…T10:30:00.123456789Z` + 1 answered `…T10:30:00.123Z`,
+    * measured on Elasticsearch 8.18.3). A native TIMESTAMP or DATE keeps its bytes.
+    */
+  "a date_nanos column moved by days" should "keep its nanoseconds, a native date its bytes (A-72)" in {
+    val nanos =
+      "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); (param1 == null) ? null : "
+    scriptOf("SELECT dn + 1 FROM t") shouldBe
+    nanos + "(def)(param1.toInstant().plusMillis(1 * 86400000L).atZone(ZoneId.of('Z')))"
+    scriptOf("SELECT dn - 1 FROM t") shouldBe
+    nanos + "(def)(param1.toInstant().minusMillis(1 * 86400000L).atZone(ZoneId.of('Z')))"
+    scriptOf("SELECT 1 + dn FROM t") shouldBe scriptOf("SELECT dn + 1 FROM t")
+    // a fractional number of days keeps its fraction, as a time of day
+    scriptOf("SELECT dn + 1.5 FROM t") shouldBe
+    nanos + "(def)(param1.toInstant().plusMillis(Math.round(1.5 * 86400000.0)).atZone(ZoneId.of('Z')))"
+    // a shift of a shift: the inner one is the instant it moved, never its milliseconds
+    val twice = scriptOf("SELECT dn + 1 + 1 FROM t")
+    "plusMillis\\(1 \\* 86400000L\\)".r.findAllIn(twice).size shouldBe 2
+    twice should not include "EpochMilli"
+    // a native TIMESTAMP and a native DATE keep the bytes they had
+    scriptOf("SELECT ts + 1 FROM t") shouldBe
+    "def param1 = (doc['ts'].size() == 0 ? null : doc['ts'].value); (param1 == null) ? null : " +
+    "(def)(Instant.ofEpochMilli(((long) (param1.toInstant().toEpochMilli() + 1 * 86400000L)))" +
+    ".atZone(ZoneId.of('Z')))"
+    scriptOf("SELECT d + 1 FROM t") shouldBe
+    "def param1 = (doc['d'].size() == 0 ? null : doc['d'].value); (param1 == null) ? null : " +
+    "(def)(Instant.ofEpochMilli(((long) (Math.floor(param1.toInstant().toEpochMilli() / " +
+    "86400000.0) * 86400000.0 + 1 * 86400000L))).atZone(ZoneId.of('Z')))"
+    // ...and so does a shift of a function's result over a date_nanos column (a documented residual)
+    scriptOf("SELECT DATE_TRUNC(dn, MONTH) + 1 FROM t") should include("EpochMilli")
+  }
+
   /** A CASE converts each result FROM what it renders TO the type the CASE reports. These pins are
     * bytes a CASE rendered before that fix too: a flat CASE over two casts (both already
-    * `LocalDate`s, nothing to convert), a CASE beside an unmapped-type column (an arm whose type is
-    * unknown keeps its conversion: no `doc['dn'].value.toLocalDate()`), and a CASE nested in a THEN
+    * `LocalDate`s, nothing to convert), a CASE beside an unknown-type column (an arm whose type is
+    * unknown keeps its conversion: no `doc['un'].value.toLocalDate()`), and a CASE nested in a THEN
     * -- each answers right. A CASE beside a DATE literal or a bare timestamp column now answers one
     * class too: `ConditionalArmClassSpec`.
     */
@@ -473,11 +531,11 @@ class DateDocValueEmissionSpec extends AnyFlatSpec with Matchers {
     "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param5"
 
     // an unmapped-type ELSE: its doc value is NOT narrowed
-    scriptOf("SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE dn END FROM t") shouldBe
+    scriptOf("SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE un END FROM t") shouldBe
     "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
     "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
     "def param3 = param1 == null ? false : (param1 > 0); " +
-    "def param4 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    "def param4 = (doc['un'].size() == 0 ? null : doc['un'].value); " +
     "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param4"
 
     // a CASE nested in a THEN

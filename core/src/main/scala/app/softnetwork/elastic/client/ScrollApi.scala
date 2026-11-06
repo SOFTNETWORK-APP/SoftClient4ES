@@ -535,9 +535,12 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         logger.info("preferSearchAfter is disabled, using classic scroll")
         UseScroll
       } else {
-        // Detect version and choose implementation
-        version match {
-          case result.ElasticSuccess(v) =>
+        // Detect version and choose implementation. SCHEMA-7 (A-63, R-85): THE once-per-client
+        // version (`dateDialectVersion`, #292) -- the cluster's, else, for a user whose role is
+        // denied `GET /`, the major this client module is built for -- never `version`, which a
+        // `read` user cannot get: 6, 7 page by search_after, 8, 9 by PIT
+        dateDialectVersion match {
+          case Some(v) =>
             if (ElasticsearchVersion.supportsPit(v)) {
               logger.info(s"ES version $v supports PIT, using pitSearchAfterSource")
               UsePIT
@@ -545,8 +548,11 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
               logger.info(s"ES version $v does not support PIT, using classic search_after")
               UseSearchAfter
             }
-          case result.ElasticFailure(err) =>
-            throw new RuntimeException(s"Failed to get ES version: $err")
+          case None =>
+            throw new RuntimeException(
+              "Failed to get ES version: the cluster's version could not be read and this client " +
+              "is built for no Elasticsearch major"
+            )
         }
       }
     }
@@ -687,8 +693,9 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       1
     } else {
       val targets = elasticQuery.indices.mkString(",")
-      version match {
-        case ElasticSuccess(v) if ElasticsearchVersion.supportsPitSlicing(v) =>
+      // SCHEMA-7 (A-63): the version the strategy was decided on (`dateDialectVersion`)
+      dateDialectVersion match {
+        case Some(v) if ElasticsearchVersion.supportsPitSlicing(v) =>
           val (lookup, cached) = cachedPrimaryShardCount(elasticQuery.indices)
           lookup match {
             case ElasticSuccess(shards) =>
@@ -720,14 +727,12 @@ trait ScrollApi extends ElasticClientHelpers with SchemaCacheTtlApi {
               )
               1
           }
-        case ElasticSuccess(v) =>
+        case Some(v) =>
           logger.debug(s"ES version $v has PIT but no PIT slicing (7.15+); paging sequentially")
           1
-        case ElasticFailure(err) =>
-          // unreachable in practice (UsePIT implies a cached, successful version) — degrade, never throw
-          logger.warn(
-            s"Could not read the Elasticsearch version (${err.message}); paging sequentially"
-          )
+        case None =>
+          // unreachable in practice (UsePIT implies a known version) — degrade, never throw
+          logger.warn("Could not read the Elasticsearch version; paging sequentially")
           1
       }
     }

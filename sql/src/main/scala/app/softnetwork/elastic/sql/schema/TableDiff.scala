@@ -42,20 +42,42 @@ case class ColumnRemoved(name: String) extends ColumnDiff {
 }
 // case class ColumnRenamed(oldName: String, newName: String) extends ColumnDiff
 
-case class ColumnTypeChanged(name: String, from: SQLType, to: SQLType) extends ColumnDiff {
+/** @param fromMappingType
+  *   SCHEMA-7 (A-61) -- the column's Elasticsearch type before the change (`Column.mappingType`);
+  *   empty when not known
+  * @param toMappingType
+  *   its Elasticsearch type after the change; empty when not known
+  */
+case class ColumnTypeChanged(name: String, from: SQLType, to: SQLType)(
+  val fromMappingType: String = "",
+  val toMappingType: String = ""
+) extends ColumnDiff {
   override def stmt: AlterTableStatement = AlterColumnType(name, to)
 
   /** SCHEMA-6 (D5): a change of an array column's element type -- or between a list and a scalar of
     * another Elasticsearch type -- stays `Impossible`, as on 0.24.0, where every array column read
     * `ANY` and `canConvert(ANY, _)` was false. Declaring an existing field a list of its own type
     * is no `ColumnTypeChanged` at all (`Column.diff` compares Elasticsearch types).
+    *
+    * SCHEMA-7 (A-62): a `constant_keyword` column keeps its type -- its value is in the mapping,
+    * not in `_source`, so a reindex would read NULL on every row ([[reason]]).
     */
   override def safety: DiffSafety =
-    if (from.isInstanceOf[SQLArray] || to.isInstanceOf[SQLArray]) Impossible
+    if (reason.isDefined) Impossible
+    else if (from.isInstanceOf[SQLArray] || to.isInstanceOf[SQLArray]) Impossible
     else if (SQLTypeUtils.canConvert(from, to))
       UnsafeReindex
     else
       Impossible
+
+  /** Why the change cannot be made at all, when it is not a matter of the two SQL types. */
+  def reason: Option[String] =
+    if (fromMappingType == "constant_keyword" && toMappingType != fromMappingType)
+      Some(
+        s"column $name is a constant_keyword field: its value is held by the mapping, not by the " +
+        "documents, so copying them into another type would leave it NULL on every row"
+      )
+    else None
 }
 
 case class ColumnDefaultSet(name: String, value: Value[_]) extends ColumnDiff {

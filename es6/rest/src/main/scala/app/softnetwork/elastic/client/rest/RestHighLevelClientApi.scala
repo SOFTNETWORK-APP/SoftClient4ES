@@ -285,6 +285,18 @@ trait RestHighLevelClientIndicesApi extends IndicesApi with RestHighLevelClientH
     })
   }
 
+  /** SCHEMA-7 (D7) -- `GET <source>/_field_caps?fields=*`, its body as Elasticsearch answered it;
+    * an error status (403 for a user who may not read it) is the failure's `statusCode`.
+    */
+  override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] =
+    executeRestLowLevelAction[Option[String]](
+      operation = "fieldCaps",
+      index = Some(source),
+      retryable = true
+    )(
+      request = new Request("GET", s"/$source/_field_caps?fields=*")
+    )(resp => Some(scala.io.Source.fromInputStream(resp.getEntity.getContent).mkString))
+
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     executeRestBooleanAction[DeleteIndexRequest, AcknowledgedResponse](
       operation = "deleteIndex",

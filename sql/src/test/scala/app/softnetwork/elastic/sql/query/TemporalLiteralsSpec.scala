@@ -455,7 +455,7 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     where should include("b.event_ts >= '2026-06-04T00:00:00'")
   }
 
-  it should "resolve columns from a real Elasticsearch mapping, excluding date_nanos by construction" in {
+  it should "resolve columns from a real Elasticsearch mapping, date_nanos by its own default format" in {
     val json =
       """{"events":{"aliases":{},"mappings":{"properties":{
         |  "id":{"type":"keyword"},
@@ -477,16 +477,23 @@ class TemporalLiteralsSpec extends AnyFlatSpec with Matchers {
     table.find("fmt_ts").flatMap(_.options.get("format")) shouldBe Some(
       StringValue("yyyy-MM-dd HH:mm:ss")
     )
-    // `date_nanos` is not a SQL type the mapping resolves to: it comes out as ANY, so it is never
-    // a candidate. Pinned on purpose (AC 4: excluded, not covered).
-    table.find("ts_nanos").map(_.dataType) shouldBe Some(SQLTypes.Any)
+    // SCHEMA-7 (D1, D3; BIDC-4's exclusion ends): `date_nanos` is a TIMESTAMP, read -- by the hit
+    // reader and by this normaliser alike (`FieldFormat.of`) -- by Elasticsearch's default
+    // `date_nanos` format, which takes an ISO optional time as the `date` default does
+    table.find("ts_nanos").map(_.dataType) shouldBe Some(SQLTypes.Timestamp)
+    table.find("ts_nanos").map(_.mappingType) shouldBe Some("date_nanos")
+    table.find("ts_nanos").map(FieldFormat.of(_).spec) shouldBe
+    Some(TemporalLiterals.DefaultDateNanosFormat)
     table.find("items.ts").map(_.dataType) shouldBe Some(SQLTypes.Timestamp)
 
     whereSql(
       resolved("SELECT id FROM events WHERE event_ts >= '2026-06-04 00:00:00'", table)
     ) shouldBe
     "WHERE event_ts >= '2026-06-04T00:00:00'"
-    untouched("SELECT id FROM events WHERE ts_nanos >= '2026-06-04 00:00:00'", table)
+    whereSql(
+      resolved("SELECT id FROM events WHERE ts_nanos >= '2026-06-04 00:00:00'", table)
+    ) shouldBe
+    "WHERE ts_nanos >= '2026-06-04T00:00:00'"
     untouched("SELECT id FROM events WHERE fmt_ts >= '2026-06-04 00:00:00'", table)
     untouched("SELECT id FROM events WHERE label = '2026-06-04 00:00:00'", table)
   }

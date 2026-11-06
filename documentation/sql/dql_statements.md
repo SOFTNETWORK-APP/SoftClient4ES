@@ -539,8 +539,11 @@ WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default
   Elasticsearch decides; under `date_optional_time` or a custom format nothing is ever rejected.
 - The same resolution applies to the `WHERE` clause of `UPDATE` and `DELETE`.
 - `keyword`/`text` columns, `LIKE`/`RLIKE` patterns, function-wrapped columns (`YEAR(event_ts)`),
-  `date_nanos` columns, columns qualified with a `JOIN` alias (the FROM table's own columns are
-  resolved) and `HAVING` conditions are never touched.
+  columns qualified with a `JOIN` alias (the FROM table's own columns are resolved) and `HAVING`
+  conditions are never touched. A `date_nanos` column is resolved against its own format, the
+  `date_nanos` default (`strict_date_optional_time_nanos||epoch_millis`) unless it sets one (*since
+  `0.25.0`*: it was never touched). For a user typed from `_field_caps`, who knows no format, every
+  literal is forwarded verbatim.
 - The resolution needs the index mapping, loaded through the schema cache (one lookup per index per
   TTL — `elastic.schema-cache.ttl`, 5 minutes by default, and an index may set its own with
   `ALTER TABLE … SET SCHEMA CACHE TTL`). An
@@ -1538,8 +1541,10 @@ ORDER BY COUNT(*) DESC;
   a `BOOLEAN` key read back as text, and so could a date key, depending on the function and the
   column's format). A conditional
   key (`COALESCE(n, 2)`, `GREATEST`, `LEAST`, a `CASE`) is grouped as a number only when every one
-  of its arguments is that kind of number: over a `scaled_float`, `ip` or `geo_point` column, or a
-  column no mapping types, it keeps text keys, so no two values are merged. A key over a field the
+  of its arguments is that kind of number: over a `geo_point` column, or a column no mapping types,
+  it keeps text keys, so no two values are merged; a `scaled_float` column is a `DOUBLE` (*since
+  `0.25.0`*: it kept text keys), so `COALESCE(num, 2)` over one groups its numbers, and an `ip`
+  column is a `KEYWORD`, so `COALESCE(ip, 2)` is refused by type, as over any keyword. A key over a field the
   index does not map reads that field as `NULL`, and its rows form no group (a `GROUP BY` level forms
   no `NULL` group). A bare column's key reads back as its column's type: a `BOOLEAN` key as `true`
   or `false`, a `BIGINT` key as a `Long`, an `INT` key as an `Integer`, a `TIMESTAMP` key as its
@@ -1680,12 +1685,14 @@ SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
   pattern or several indices, the mapping of every index they match, merged into the wider type
   (`integer` in one index and `long` in another is a `BIGINT`, `float` and `double` a `DOUBLE`, a
   whole-number type and `float` a `REAL`). It cannot apply where no mapping is known — a pattern
-  that matches no index, a mapping that cannot be read, or a key the matched indices map with
-  types that have no common type (`long` in one, `keyword` in another). There, Elasticsearch
-  rounds the number down and answers without an error (on Elasticsearch 6.8, a comparison with a
-  single value used to fail instead).
+  that matches no index, or a key the matched indices map with types a `UNION ALL` gives no common
+  type (a `long` in one, a `date` in another; a `long` beside a `keyword` is a `VARCHAR` since
+  `0.25.0`). There, Elasticsearch rounds the number down and answers without an error (on
+  Elasticsearch 6.8, a comparison with a single value used to fail instead). A user who may not
+  read the mapping is typed from `_field_caps` (*since `0.25.0`*), so the rule applies to it too.
 - ⚠️ **A `float` key compared with a value no `float` holds exactly is refused**
-  (`GROUP BY r HAVING r = 0.1`, `r` mapped `float`): Elasticsearch prints the key as the float
+  (`GROUP BY r HAVING r = 0.1`, `r` mapped `float`, or `half_float` since `0.25.0`): Elasticsearch
+  prints the key as the float
   widened to a double (`0.10000000149011612`) and reads the value as the double `0.1`, so no group
   would match, where SQL casts `0.1` to the key's `FLOAT` and keeps the group. The refusal names
   the widened value; filter in `WHERE` instead, where Elasticsearch reads the value as a float, or

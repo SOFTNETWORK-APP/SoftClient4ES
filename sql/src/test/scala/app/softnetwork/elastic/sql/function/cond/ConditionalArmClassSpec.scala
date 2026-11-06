@@ -1,5 +1,6 @@
 package app.softnetwork.elastic.sql.function.cond
 
+import app.softnetwork.elastic.sql.StringValue
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.SingleSearch
 import app.softnetwork.elastic.sql.schema.{Column, Table}
@@ -7,6 +8,8 @@ import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.{PainlessContext, PainlessContextType}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import scala.collection.immutable.ListMap
 
 /** A `CASE`, a `COALESCE`, a `NULLIF`, a `GREATEST` / `LEAST` over dates and `LAST_DAY`'s receiver
   * answer ONE class: the type the node REPORTS -- DuckDB's common type of what its arms report,
@@ -22,7 +25,7 @@ import org.scalatest.matchers.should.Matchers
   * (`….toInstant().atZone(ZoneId.of('Z')).toLocalDate()`), which Elasticsearch 6.8 needs.
   *
   * Arms with no common type (a DATE beside a DOUBLE: DuckDB refuses it), an arm whose type is still
-  * unknown (no schema, a `date_nanos` column) and an ingest processor render as they did: the
+  * unknown (no schema, a column typed `Any`) and an ingest processor render as they did: the
   * processor's source is persisted, and `ALTER` must not see it change.
   */
 class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
@@ -35,9 +38,14 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
       Column("d", SQLTypes.Date),
       Column("d2", SQLTypes.Date),
       Column("ts", SQLTypes.Timestamp),
+      // a second TIMESTAMP, for a shape whose `date_nanos` arm sits beside `ts` itself
+      Column("ts2", SQLTypes.Timestamp),
       Column("n", SQLTypes.Int),
       Column("x", SQLTypes.Double),
-      Column("dn", SQLTypes.Any)
+      // a column whose type is not known (a mapping type core reads as ANY, `flattened` among them)
+      Column("un", SQLTypes.Any),
+      // SCHEMA-7 (D1): a `date_nanos` field is a TIMESTAMP that keeps its own mapping type
+      Column("dn", SQLTypes.Timestamp, options = ListMap("type" -> StringValue("date_nanos")))
     )
   )
 
@@ -238,29 +246,54 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
   }
 
   "an arm whose type is unknown" should "keep its conversion" in {
-    // a `date_nanos` column types `Any` (BIDC-4): guessing its class would drop its time
-    scriptOf("SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE dn END FROM t") shouldBe
+    // a column typed `Any`: guessing its class would drop its time
+    scriptOf("SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE un END FROM t") shouldBe
     "def param1 = (doc['n'].size() == 0 ? null : doc['n'].value); " +
     "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
     "def param3 = param1 == null ? false : (param1 > 0); " +
-    "def param4 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    "def param4 = (doc['un'].size() == 0 ? null : doc['un'].value); " +
     "param3 ? (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null) : param4"
   }
 
-  /** An arm of a still-unknown type (a `date_nanos` column) beside a DATE arm: its rows are the doc
-    * value, a timestamp with its time of day, so the node REPORTS a TIMESTAMP, as DuckDB 1.5.5
-    * types a DATE beside a `TIMESTAMP_NS` (`COALESCE`, `CASE` and `GREATEST` alike). It reported
-    * DATE, and a reader of the type dropped the time. A NULL arm is no type: a DATE beside it stays
-    * a DATE. The rendering does not move.
+  /** SCHEMA-7 (D1, ending BIDC-4's `Any`): a `date_nanos` column is a TIMESTAMP, its doc value a
+    * `ZonedDateTime` (nanoseconds kept), so every conditional types and renders it exactly as a
+    * TIMESTAMP column -- a DATE arm beside it is converted to the start of its UTC day.
+    */
+  "a date_nanos arm" should "type and render as a TIMESTAMP arm" in {
+    Seq(
+      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE %s END FROM t",
+      "SELECT CASE WHEN n > 0 THEN %s ELSE CAST(d AS DATE) END FROM t",
+      "SELECT COALESCE(%s, CAST(d AS DATE)) FROM t",
+      "SELECT COALESCE(CAST(d AS DATE), %s) FROM t",
+      "SELECT GREATEST(%s, CAST(d AS DATE)) FROM t",
+      "SELECT LEAST(d, %s) FROM t",
+      // beside another TIMESTAMP column: `COALESCE(ts, ts)` would read its one column once
+      "SELECT COALESCE(%s, ts2) FROM t"
+    ).foreach { shape =>
+      val nanos = shape.replace("%s", "dn")
+      val timestamp = shape.replace("%s", "ts")
+      withClue(s"[$nanos] ") {
+        typeOf(nanos) shouldBe typeOf(timestamp)
+        typeOf(nanos)._1 shouldBe SQLTypes.Timestamp
+        scriptOf(nanos) shouldBe scriptOf(timestamp).replace("'ts'", "'dn'")
+      }
+    }
+  }
+
+  /** An arm of a still-unknown type beside a DATE arm: its rows are the doc value -- a timestamp
+    * with its time of day, as a `date_nanos` column's was before SCHEMA-7 typed it --, so the node
+    * REPORTS a TIMESTAMP, as DuckDB 1.5.5 types a DATE beside a `TIMESTAMP_NS` (`COALESCE`, `CASE`
+    * and `GREATEST` alike). It reported DATE, and a reader of the type dropped the time. A NULL arm
+    * is no type: a DATE beside it stays a DATE. The rendering does not move.
     */
   "an arm whose type is unknown beside a DATE" should "report a TIMESTAMP, as DuckDB types it" in {
     Seq(
-      "SELECT COALESCE(dn, CAST(d AS DATE)) FROM t",
-      "SELECT COALESCE(CAST(d AS DATE), dn) FROM t",
-      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE dn END FROM t",
-      "SELECT CASE WHEN n > 0 THEN dn ELSE CAST(d AS DATE) END FROM t",
-      "SELECT CASE WHEN n > 0 THEN DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) ELSE dn END FROM t",
-      "SELECT GREATEST(dn, CAST(d AS DATE)) FROM t"
+      "SELECT COALESCE(un, CAST(d AS DATE)) FROM t",
+      "SELECT COALESCE(CAST(d AS DATE), un) FROM t",
+      "SELECT CASE WHEN n > 0 THEN CAST(d AS DATE) ELSE un END FROM t",
+      "SELECT CASE WHEN n > 0 THEN un ELSE CAST(d AS DATE) END FROM t",
+      "SELECT CASE WHEN n > 0 THEN DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) ELSE un END FROM t",
+      "SELECT GREATEST(un, CAST(d AS DATE)) FROM t"
     ).foreach { sql =>
       withClue(sql)(field(sql).identifier.reportedType shouldBe SQLTypes.Timestamp)
     }
@@ -268,13 +301,13 @@ class ConditionalArmClassSpec extends AnyFlatSpec with Matchers {
     Seq(
       "SELECT COALESCE(NULL, CAST(d AS DATE)) FROM t" -> SQLTypes.Date,
       "SELECT COALESCE(CAST(d AS DATE), d2) FROM t"   -> SQLTypes.Date,
-      "SELECT COALESCE(dn, ts) FROM t"                -> SQLTypes.Timestamp
+      "SELECT COALESCE(un, ts) FROM t"                -> SQLTypes.Timestamp
     ).foreach { case (sql, expected) =>
       withClue(sql)(field(sql).identifier.reportedType shouldBe expected)
     }
     // the rendering is the one an unknown arm always had
-    scriptOf("SELECT COALESCE(dn, CAST(d AS DATE)) FROM t") shouldBe
-    "def param1 = (doc['dn'].size() == 0 ? null : doc['dn'].value); " +
+    scriptOf("SELECT COALESCE(un, CAST(d AS DATE)) FROM t") shouldBe
+    "def param1 = (doc['un'].size() == 0 ? null : doc['un'].value); " +
     "def param2 = (doc['d'].size() == 0 ? null : doc['d'].value); " +
     "def param3 = (param2 != null ? param2.toInstant().atZone(ZoneId.of('Z')).toLocalDate() : null); " +
     "(param1 != null ? param1 : param3)"

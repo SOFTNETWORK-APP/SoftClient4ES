@@ -337,6 +337,10 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override private[client] def loadPatternSchema(pattern: String): ElasticResult[Schema] =
     delegate.loadPatternSchema(pattern)
 
+  // SCHEMA-7 (D7): the delegate's, like `loadSchema` -- this wrapper's own cache is empty
+  override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] =
+    delegate.loadQuerySchema(source)
+
   /** The delegate's, like `loadSchema`: the schema cache and the remembered 404 misses this write
     * refreshes are the ones every statement through this wrapper reads (`search` and `run` go to
     * the delegate), never the wrapper's own, which nothing reads.
@@ -359,6 +363,9 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
 
   override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
     delegate.executeGetIndex(index)
+
+  override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] =
+    delegate.executeFieldCaps(source)
 
   override private[client] def executeCloseIndex(index: String): ElasticResult[Boolean] =
     delegate.executeCloseIndex(index)

@@ -56,10 +56,13 @@ trait VersionApi extends ElasticClientHelpers {
     */
   private[client] def buildElasticMajor: Option[Int] = None
 
-  /** The Elasticsearch version a statement reads dates as (`SetOperationValues`): the cluster's
-    * ([[version]]), else -- a user whose role is denied `GET /` -- the major the client module is
-    * built for ([[buildElasticMajor]]), else `None`. Asked ONCE per client, and kept: a privilege
-    * granted later is seen after the client restarts.
+  /** THE Elasticsearch version a QUERY is read and paged by (#292): the dates a statement reads
+    * (`SetOperationValues`) and, since SCHEMA-7 (A-63), the scroll strategy and its PIT slicing
+    * (`ScrollApi.determineScrollStrategy`, `ScrollApi.resolveSlices`). The cluster's ([[version]]),
+    * else -- a user whose role is denied `GET /` -- the major the client module is built for
+    * ([[buildElasticMajor]], a bare `"8"`), else `None`. Asked ONCE per client, and kept after ANY
+    * first failure: a privilege granted later, or a cluster reachable again, is seen after the
+    * client restarts. DDL, DML and the admin APIs read [[version]].
     */
   private[elastic] lazy val dateDialectVersion: Option[String] =
     version.toOption.orElse(buildElasticMajor.map(_.toString))

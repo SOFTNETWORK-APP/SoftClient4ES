@@ -871,48 +871,33 @@ package object schema {
       .filter(path => projection.find(path).isEmpty)
       .distinct
 
-  /** DuckDB 1.5.5's order of the number types, the narrowest first: the type it gives a column two
-    * of them make (`UNION ALL BY NAME`, MEASURED pair by pair) is the later one.
-    */
-  private val numberWidths: Map[SQLType, Int] = Map(
-    SQLTypes.TinyInt  -> 1,
-    SQLTypes.SmallInt -> 2,
-    SQLTypes.Int      -> 3,
-    SQLTypes.BigInt   -> 4,
-    SQLTypes.Real     -> 5,
-    SQLTypes.Double   -> 6
-  )
-
-  /** Of two columns mapped with two NUMBER types, the one with the wider type ([[numberWidths]]);
-    * `None` for any other pair.
-    */
-  private def widerNumber(a: Column, b: Column): Option[Column] =
-    (numberWidths.get(a.dataType), numberWidths.get(b.dataType)) match {
-      case (Some(x), Some(y)) => Some(if (x >= y) a else b)
-      case _                  => None
-    }
-
   /** The schema an index PATTERN or a comma list (`FROM logs-*`) answers with, so it is typed as
     * the single index is: the union of its indices' columns, merged FIELD BY FIELD (the lead's
-    * ruling of 2026-10-05).
+    * ruling of 2026-10-05) -- whether the schemas were read from the mappings or from `_field_caps`
+    * (SCHEMA-7 D7).
     *
     *   - A field every index that maps it maps the SAME way -- the same type (a field no index
     *     declared is typed at the declaration seam, `schema.IndexField`: an undeclared `date` is a
     *     TIMESTAMP, like a declared one), the same date `format` (the one mapping option a
-    *     statement's meaning depends on: a temporal literal is read against it) -- keeps that type,
-    *     whatever the indices disagree on elsewhere. A field one index maps and another does not is
-    *     the one index's.
-    *   - A field two indices map with two NUMBER types takes the wider one, as DuckDB 1.5.5 types
-    *     such a column (`UNION ALL BY NAME`, MEASURED): `TINYINT` < `SMALLINT` < `INTEGER` <
-    *     `BIGINT` < `REAL` < `DOUBLE` -- an `integer` and a `long` are a `BIGINT`, a `float` and a
-    *     `double` a `DOUBLE`, a whole-number type and a `float` a `REAL`. Every value of either
-    *     index is a value of that type, so the rules that read a type (an integer key's filter, a
-    *     date's arithmetic) apply as over one index.
-    *   - Any other field two indices map DIFFERENTLY gets no type (`SQLTypes.Any`): a type cannot
-    *     be chosen between them, so nothing is refused on it and Elasticsearch answers for it, as
-    *     it does with no schema at all (the ruling's rule 4). It stays IN the schema: the name
-    *     exists, and a subquery's scope must know it does.
+    *     statement's meaning depends on: a temporal literal is read against it), the same
+    *     Elasticsearch type (`Column.mappingType`) -- keeps that type, whatever the indices
+    *     disagree on elsewhere. A field one index maps and another does not is the one index's.
+    *   - A field the indices map DIFFERENTLY takes the type the set operations give their branches
+    *     (SCHEMA-7 D6: `MultiSearch.latticeType`, DuckDB's types, the #420 lattice -- a `keyword`
+    *     and a `long` are a VARCHAR, an `integer` and a `long` a BIGINT, a DATE and a TIMESTAMP of
+    *     one format a TIMESTAMP), as the index that decides it maps it -- when every index's value
+    *     is read as a value of that type (`MultiSearch.readsInto`) and no index maps it with a type
+    *     elasticsql does not write (`Column.foreignMapping`: a merged column has ONE Elasticsearch
+    *     type, and an `ip` beside a `keyword` is neither).
+    *   - Any other field two indices map differently gets no type (`SQLTypes.Any`): the lattice
+    *     refuses them, gives them no type, or nests them; a BOOLEAN beside a number (kept as stored
+    *     under the number), two date formats, a foreign type beside another. Nothing is refused on
+    *     it and Elasticsearch answers for it, as it does with no schema at all (the ruling's rule
+    *     4). It stays IN the schema: the name exists, and a subquery's scope must know it does.
     *   - Sub-fields (multi-fields, object properties) merge by the same rule, under their parent.
+    *
+    * The members are read in index-name order and every index's column is typed at once, so the
+    * answer does not depend on the order Elasticsearch lists the indices in.
     *
     * 🔴 Found by review, MEASURED on Elasticsearch 8.18.3: `SELECT g, MAX(d) - MIN(d) FROM zwild_*
     * GROUP BY g` answered 2592000000 (milliseconds) where the single index answered 30 (days) --
@@ -921,8 +906,8 @@ package object schema {
     * field, which left every other field of such a pattern in that state.
     *
     * @return
-    *   the merged schema, and every field the indices disagree on, by path, with the types they
-    *   give it
+    *   the merged schema, and every field it leaves with no type, by path, with the types the
+    *   indices give it
     */
   private[elastic] def mergedSchema(
     name: String,
@@ -930,49 +915,61 @@ package object schema {
   ): (Schema, Seq[String]) = {
     def format(c: Column): Option[Value[_]] = c.options.get("format")
     def sameMapping(a: Column, b: Column): Boolean =
-      a.dataType == b.dataType && format(a) == format(b)
+      a.dataType == b.dataType && format(a) == format(b) && a.mappingType == b.mappingType
     val conflicts = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
-    // every type a path is mapped with, so a disagreement lists the members' own types even after
-    // two of them were widened into one
-    val mappedTypes = scala.collection.mutable.LinkedHashMap.empty[String, Set[String]]
-    def merge(into: List[Column], columns: List[Column], parent: String): List[Column] = {
-      val merged = scala.collection.mutable.LinkedHashMap(into.map(c => c.name -> c): _*)
-      columns.foreach { column =>
-        val path = s"$parent${column.name}"
-        merged.get(column.name) match {
-          case None =>
-            mappedTypes.put(path, Set(column.dataType.typeId))
-            merged.put(column.name, column)
-          case Some(first) =>
-            mappedTypes.put(
-              path,
-              mappedTypes.getOrElse(path, Set(first.dataType.typeId)) + column.dataType.typeId
+    // the column the indices that disagree on a field give it, as the deciding index maps it; `None`
+    // for a field left with no type
+    def latticeColumn(columns: Seq[Column]): Option[Column] =
+      if (columns.exists(_.foreignMapping)) None
+      else {
+        val types = columns.map(MultiSearch.columnType)
+        MultiSearch.latticeType(types).flatMap { case (deciding, result) =>
+          val own = types(deciding)
+          val scalar = result.sqlType match {
+            case SQLTypes.Any | SQLTypes.Null | SQLTypes.Struct | SQLTypes.GeoPoint => false
+            case _: SQLArray                                                        => false
+            case _                                                                  => true
+          }
+          if (
+            scalar && own.sqlType == result.sqlType && types.forall(MultiSearch.readsInto(_, own))
+          ) {
+            val column = columns(deciding)
+            Some(
+              if (result.sqlType.isTemporal) column
+              else column.copy(options = column.options - "format")
             )
-            val multiFields = merge(first.multiFields, column.multiFields, s"$path.")
-            if (sameMapping(first, column))
-              merged.put(column.name, first.copy(multiFields = multiFields))
-            else
-              widerNumber(first, column) match {
-                case Some(wider) => merged.put(column.name, wider.copy(multiFields = multiFields))
-                case None =>
-                  conflicts.put(path, mappedTypes(path))
-                  merged.put(
-                    column.name,
-                    first.copy(
-                      dataType = SQLTypes.Any,
-                      options = first.options - "format",
-                      multiFields = multiFields
-                    )
-                  )
-              }
+          } else None
         }
       }
-      merged.values.toList
+    def merge(perMember: Seq[List[Column]], parent: String): List[Column] = {
+      // each member's columns by name, built once: a lookup per field and member is linear in the
+      // pattern's width (a `find` per field and member was quadratic: 2 s for 200 indices of 2,000
+      // fields, on every schema load of the pattern). The first of a name wins, as `find` did
+      val byName = perMember.map(_.reverseIterator.map(c => c.name -> c).toMap)
+      perMember.flatten
+        .map(_.name)
+        .distinct
+        .map { column =>
+          val path = s"$parent$column"
+          val mapped = byName.flatMap(_.get(column))
+          val first = mapped.head
+          val multiFields = merge(mapped.map(_.multiFields), s"$path.")
+          if (mapped.tail.forall(sameMapping(first, _))) first.copy(multiFields = multiFields)
+          else
+            latticeColumn(mapped) match {
+              case Some(decided) => decided.copy(multiFields = multiFields)
+              case None =>
+                conflicts.put(path, mapped.map(_.dataType.typeId).toSet)
+                first.copy(
+                  dataType = SQLTypes.Any,
+                  options = first.options - "format" - "type",
+                  multiFields = multiFields
+                )
+            }
+        }
+        .toList
     }
-    val columns =
-      members.foldLeft(List.empty[Column]) { case (acc, (_, schema)) =>
-        merge(acc, schema.columns, "")
-      }
+    val columns = merge(members.sortBy(_._1).map(_._2.columns), "")
     val disagreements = conflicts.toSeq.map { case (path, types) =>
       s"'$path' (${types.filterNot(_ == SQLTypes.Any.typeId).toSeq.sorted.mkString(", ")})"
     }
@@ -2238,9 +2235,39 @@ package object schema {
         )
       }.toSeq ++ multiFields.flatMap(_.processors)
 
+    /** SCHEMA-7 (D2, A-60) -- THE Elasticsearch type of this column, for every consumer that turns
+      * it into an Elasticsearch-side decision (#292): the mapping it is written with ([[node]]),
+      * the `unmapped_type` of a sort over it, whether it is a proven key kind, its date format, its
+      * doc-value reading, a type change of [[diff]].
+      *
+      * The column's `type` option when it has one, else the type elasticsql writes for its SQL type
+      * (A-73). The option is the mapping's own `type`, kept by `IndexField.apply` when it is not
+      * the one elasticsql writes (`ip`, `scaled_float`, `date_nanos`, ...), or the one a `CREATE
+      * TABLE` / `ADD COLUMN` wrote (`c VARCHAR OPTIONS (type = 'keyword')`), which is written as it
+      * was before the types were read. `ALTER ... SET DATA TYPE` -- the one change of a column's
+      * type that keeps its options -- drops it for another type (`AlterColumnType`).
+      */
+    lazy val mappingType: String =
+      options.get("type").map(_.value) match {
+        case Some(kept: String) => kept
+        case _                  => SQLTypeUtils.elasticType(dataType)
+      }
+
+    /** SCHEMA-7 (A-72) -- whether this column is a `date_nanos` field: THE predicate (#292) of the
+      * date format it is read with (`TemporalLiterals.FieldFormat.of`) and of a day shift over it,
+      * which keeps its nanoseconds (`ArithmeticExpression`).
+      */
+    lazy val dateNanos: Boolean = mappingType == "date_nanos"
+
+    /** Whether [[mappingType]] is a type elasticsql does not write for [[dataType]] (SCHEMA-7 D2):
+      * such a field's values are read by its SQL type, but Elasticsearch parses, sorts and filters
+      * it its own way.
+      */
+    lazy val foreignMapping: Boolean = mappingType != SQLTypeUtils.elasticType(dataType)
+
     def node: ObjectNode = {
       val root = mapper.createObjectNode()
-      val esType = SQLTypeUtils.elasticType(dataType)
+      val esType = mappingType
       root.put("type", esType)
       dataType match {
         // `Char` joins them because story 21.5 gave it the same `elasticType` ("text"), and
@@ -2268,7 +2295,9 @@ package object schema {
         }
         root.set(name, fieldsNode)
       }
-      updateNode(root, options)
+      // the kept `type` is [[mappingType]]'s to write: applied last, a stale one would undo a type
+      // change (SCHEMA-7 D2)
+      updateNode(root, options - "type")
       root
     }
 
@@ -2276,15 +2305,20 @@ package object schema {
       val actual = this
       val diffs = scala.collection.mutable.ListBuffer[ColumnDiff]()
 
-      // 1. Type
-      if (SQLTypeUtils.elasticType(actual.dataType) != SQLTypeUtils.elasticType(desired.dataType)) {
+      // 1. Type: the Elasticsearch types (SCHEMA-7 A-61), `mappingType` -- a field elasticsql did
+      // not create keeps its own type, and a change of it is a type change
+      if (actual.mappingType != desired.mappingType) {
         parent match {
           case Some(p) =>
             diffs += FieldAltered(
               p.path,
               desired
             )
-          case None => diffs += ColumnTypeChanged(path, actual.dataType, desired.dataType)
+          case None =>
+            diffs += ColumnTypeChanged(path, actual.dataType, desired.dataType)(
+              actual.mappingType,
+              desired.mappingType
+            )
         }
       }
 
@@ -2400,8 +2434,9 @@ package object schema {
         }
       }
 
-      // 6. Options
-      val optionDiffs = ObjectValue(actual.options).diff(ObjectValue(desired.options))
+      // 6. Options -- but the kept `type`, which step 1 compares as `mappingType` (SCHEMA-7 D2)
+      val optionDiffs =
+        ObjectValue(actual.options - "type").diff(ObjectValue(desired.options - "type"))
       parent match {
         case Some(p) =>
           if (optionDiffs.nonEmpty) {
@@ -2685,6 +2720,16 @@ package object schema {
       override def sqlName: String = "MATERIALIZED VIEW"
     }
 
+    /** SCHEMA-7 (D7) -- a table typed from `_field_caps`, for a user who may search an index but
+      * not read its mapping: its columns and their Elasticsearch types only, no `_meta` (no
+      * declared DATE, no ARRAY, no comment, no default), no date format, no settings. It types a
+      * QUERY and never a DDL statement: `loadSchema` reads such an entry as a miss. Never stored.
+      */
+    case object FieldCapabilities extends TableType {
+      override def name: String = "field_caps"
+      override def sqlName: String = "TABLE"
+    }
+
     /** Parses the STORED name (`_meta.type`), never the display `sqlName`. Widening it to accept
       * `"TABLE"` would make two spellings of the same type storable and is not what any caller
       * needs: every caller reads a mapping this engine wrote.
@@ -2697,6 +2742,7 @@ package object schema {
         case "enrichment"        => Enrichment
         case "view"              => View
         case "materialized_view" => MaterializedView
+        case "field_caps"        => FieldCapabilities
         case other               => throw new Exception(s"Unknown table type: $other")
       }
   }
@@ -2903,8 +2949,27 @@ package object schema {
               else if (table.cols.contains(columnName))
                 table.copy(
                   columns = table.columns.map { col =>
-                    if (col.name == columnName) col.copy(dataType = newType)
-                    else col
+                    if (col.name == columnName) {
+                      val retyped = col.copy(dataType = newType)
+                      // SCHEMA-7 (A-73): the one place a column changes type while keeping its
+                      // options, so the one place its `type` option goes stale. It stays when the
+                      // new type -- or its element -- is still the old element type or the type the
+                      // option reads as (`ARRAY<X>` of its own type, A-60's remedy; a retype to
+                      // itself), and is dropped for any other, which the field is reindexed into
+                      // (A-61) or refused (A-62)
+                      def element(t: SQLType): SQLType = t match {
+                        case list: SQLArray => list.elementType
+                        case scalar         => scalar
+                      }
+                      val keeps = col.options.get("type").map(_.value).exists {
+                        case kept: String =>
+                          element(newType) == element(col.dataType) ||
+                            element(newType) == SQLTypes(kept)
+                        case _ => false
+                      }
+                      if (keeps || !col.options.contains("type")) retyped
+                      else retyped.copy(options = col.options - "type")
+                    } else col
                   }
                 )
               else throw ColumnNotFound(columnName, table.name)

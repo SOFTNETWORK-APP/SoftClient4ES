@@ -174,6 +174,11 @@ case class FieldSort(
       isScriptSort || functions.nonEmpty || field.fieldAlias.exists(_ != field.name) ||
       field.nested || field.nestedElement.isDefined
     ) None
+    // SCHEMA-7 (D2): a field mapped with a type elasticsql does not write for its SQL type
+    // (`half_float`, `unsigned_long`, `date_nanos`, `ip`, ...) sorts by a type the SQL one does not
+    // name: no key, as before it was typed; a `_meta` type over a written one keeps the declared
+    // type's key, as before (A-75)
+    else if (Bucket.sortsByForeignType(field)) None
     else SQLTypeUtils.sortUnmappedType(field.declaredType)
 
   def isBucketScript: Boolean = functions.nonEmpty && !isAggregation && hasAggregation

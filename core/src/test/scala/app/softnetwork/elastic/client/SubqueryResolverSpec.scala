@@ -637,7 +637,8 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
     * merged mapping of the indices it matches, through the ONE lookup the attach reads (#292) --
     * where it used to be read for a single concrete index only: over a pattern the bare-name rule
     * passed vacuously, and a correlated reference ran as an uncorrelated one. A field the indices
-    * disagree on stays a column of the pattern (untyped), so it is never mistaken for an outer one.
+    * disagree on stays a column of the pattern (typed by the set-operation lattice since SCHEMA-7,
+    * else untyped), so it is never mistaken for an outer one.
     */
   it should "scope a subquery over an index pattern by the pattern's merged mapping" in {
     val client = seededClient()
@@ -673,7 +674,9 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
         )
       )
     )
-    disagreements shouldBe Seq("'tier' (INT, KEYWORD)")
+    // SCHEMA-7 (D6, A-66): an INT beside a KEYWORD is a VARCHAR on the set-operation lattice, as
+    // the keyword index maps it -- no disagreement left
+    disagreements shouldBe empty
     // the cache key a pattern's schema is read under is the pattern itself
     client.updateSchema("orders_*", merged)
 
@@ -689,12 +692,12 @@ class SubqueryResolverSpec extends AnyFlatSpec with Matchers {
       "'level' is not a column of 'orders_*'"
     )
 
-    // the field the indices disagree on is still the pattern's own column, untyped
+    // the field the indices disagree on is the pattern's own column, typed by the lattice
     val own = single(
       "SELECT id FROM members m WHERE id IN (SELECT cid FROM orders_* o WHERE tier = 'gold')"
     )
     val ownInner = own.whereSubqueries.head.inner.getOrElse(fail("no body"))
-    client.innerColumnType(ownInner, "tier") shouldBe Some(SQLTypes.Any)
+    client.innerColumnType(ownInner, "tier") shouldBe Some(SQLTypes.Keyword)
     client.scopeCorrelation(own, ownInner) shouldBe None
   }
 

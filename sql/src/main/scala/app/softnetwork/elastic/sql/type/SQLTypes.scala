@@ -87,6 +87,14 @@ object SQLTypes {
     case "geo_point"                => GeoPoint
     case "binary" | "varbinary"     => VarBinary
     case "char"                     => Char
+    // SCHEMA-7 (D1): mapping types elasticsql reads but never writes, each by the SQL type of its
+    // values; the field keeps its own Elasticsearch type beside it (`Column.mappingType`)
+    case "scaled_float"            => Double
+    case "half_float"              => Real
+    case "unsigned_long"           => BigInt
+    case "date_nanos"              => Timestamp
+    case "ip" | "constant_keyword" => Keyword
+    case "flattened"               => Any
     case array if array.startsWith("array<") && array.endsWith(">") =>
       apply(array.substring(6, array.length - 1)) match {
         case Any | _: SQLArray => Any

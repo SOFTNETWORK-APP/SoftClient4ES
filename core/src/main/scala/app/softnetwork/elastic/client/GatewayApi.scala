@@ -88,6 +88,7 @@ import app.softnetwork.elastic.sql.query.{
 import app.softnetwork.elastic.sql.schema.{
   copyableSettings,
   validateScriptReferences,
+  ColumnTypeChanged,
   Impossible,
   IngestPipeline,
   IngestPipelineType,
@@ -975,8 +976,11 @@ class TableExecutor(
             // IMPOSSIBLE
             // ------------------------------------------------------------
             case Impossible =>
+              // SCHEMA-7 (A-62): a change refused for a reason other than its two SQL types says why
+              val reasons = diff.columns.collect { case c: ColumnTypeChanged => c.reason }.flatten
               val error = ElasticError(
-                message = s"ALTER TABLE cannot be applied to index $indexName: $diff",
+                message = s"ALTER TABLE cannot be applied to index $indexName: " +
+                  (if (reasons.nonEmpty) reasons.mkString("; ") + s" ($diff)" else s"$diff"),
                 statusCode = Some(400),
                 operation = Some("schema")
               )
