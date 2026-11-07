@@ -82,17 +82,25 @@ private[client] final case class MappedDateFormat(
   private val namesOnly: Boolean = alternatives.forall(_.isName)
 
   /** The instant `text` denotes, by the first alternative that parses it. */
-  def read(text: String): Outcome = {
+  def read(text: String): Outcome = read(text, nanos = false)
+
+  /** [[read]], to the millisecond a `date` field indexes, or -- `nanos`, a `date_nanos` field
+    * (SCHEMA-7 D3) -- to the nanosecond.
+    */
+  def read(text: String, nanos: Boolean): Outcome = {
     val it = alternatives.iterator
     var outcome: Outcome = Rejected
     var done = false
     while (!done && it.hasNext)
-      it.next().parse(text) match {
+      (if (nanos) it.next().parseExact(text) else it.next().parse(text)) match {
         case NotParsed => ()
         case Parsed(instant) =>
-          outcome = Try(Instant.ofEpochMilli(instant.toEpochMilli)).toOption.fold[Outcome](
-            Rejected
-          )(Read)
+          outcome =
+            if (nanos) Read(instant)
+            else
+              Try(Instant.ofEpochMilli(instant.toEpochMilli)).toOption.fold[Outcome](
+                Rejected
+              )(Read)
           done = true
         case Invalid => done = true
         case Unmeasured(reason) =>
@@ -108,23 +116,49 @@ private[client] final case class MappedDateFormat(
     * format reads when every alternative is a name core reads (they read every spelling as the same
     * instant), else all of them, which must agree.
     */
-  def readValue(value: Any): Outcome =
+  def readValue(value: Any): Outcome = readValue(value, nanos = false)
+
+  /** [[readValue]] to the nanosecond for a `date_nanos` field (`nanos`, SCHEMA-7 D3): a text or a
+    * whole number as written; a fractional JSON number, whose double no longer holds the digits a
+    * nanosecond needs, is undecidable -- kept as stored; a value the response parser already read
+    * as an ISO date or time by its spellings, as [[readValue]] reads it, to the nanosecond.
+    */
+  def readValue(value: Any, nanos: Boolean): Outcome =
+    if (!nanos) readValue0(value)
+    else
+      value match {
+        case s: String               => read(s, nanos = true)
+        case b: java.math.BigDecimal => read(b.toPlainString, nanos = true)
+        case _: java.lang.Double | _: java.lang.Float =>
+          val d = value.asInstanceOf[java.lang.Number].doubleValue()
+          if (d == Math.rint(d) && Math.abs(d) < 9.0e15)
+            read(java.lang.Long.toString(d.toLong), nanos = true)
+          else
+            Undecidable(
+              "a fractional JSON number: the response gives it as a double, whose digits do " +
+              "not hold its nanoseconds"
+            )
+        case n: java.lang.Number => read(n.toString, nanos = true)
+        case other               => readValue0(other, nanos = true)
+      }
+
+  private def readValue0(value: Any, nanos: Boolean = false): Outcome =
     value match {
-      case s: String               => read(s)
-      case b: java.math.BigDecimal => read(b.toPlainString)
+      case s: String               => read(s, nanos)
+      case b: java.math.BigDecimal => read(b.toPlainString, nanos)
       case d: java.lang.Double     => byDigits(d.doubleValue(), Math.ulp(d.doubleValue()))
       case f: java.lang.Float      => byDigits(f.doubleValue(), Math.ulp(f.floatValue()).toDouble)
-      case n: java.lang.Number     => read(n.toString)
+      case n: java.lang.Number     => read(n.toString, nanos)
       // a text with a region (`2024-07-31T10:30:00+05:00[Europe/Paris]`), which the response
       // parser read with the zone data of the JVM core runs on -- its written local time and
       // offset no longer known (Elasticsearch 8 reads the local time in the region, MEASURED)
       case z: ZonedDateTime if !z.getZone.isInstanceOf[ZoneOffset] =>
         Undecidable(zoneNotRead(z.getZone.getId))
       case _: LocalDate | _: LocalDateTime | _: ZonedDateTime | _: OffsetDateTime | _: LocalTime =>
-        if (namesOnly && !value.isInstanceOf[LocalTime]) firstRead(value)
-        else bySpellings(value)
-      case i: Instant => Read(millis(i))
-      case other      => read(other.toString)
+        if (namesOnly && !value.isInstanceOf[LocalTime]) firstRead(value, nanos)
+        else bySpellings(value, nanos)
+      case i: Instant => Read(if (nanos) i else millis(i))
+      case other      => read(other.toString, nanos)
     }
 
   /** A fractional JSON number, which the response parser read as a `double`: Elasticsearch read the
@@ -167,7 +201,7 @@ private[client] final case class MappedDateFormat(
     * the format reads -- the one `java.time` prints, almost always -- gives its instant. None read:
     * no alternative reads the value, which Elasticsearch could not have indexed.
     */
-  private def firstRead(value: Any): Outcome = {
+  private def firstRead(value: Any, nanos: Boolean): Outcome = {
     // PER ROW on the extraction path: whether the format reads a value depends only on its SHAPE
     // (the digits of its year, whether it has a time, seconds, a fraction of how many digits, an
     // offset), so the spellings are read once per shape, and every other value of that shape is its
@@ -175,13 +209,14 @@ private[client] final case class MappedDateFormat(
     val key = shapeOf(value)
     readsShape.get(key) match {
       case java.lang.Boolean.TRUE =>
-        Try(millis(instantOf(value))).toOption.fold[Outcome](Rejected)(Read)
+        Try(if (nanos) instantOf(value) else millis(instantOf(value))).toOption
+          .fold[Outcome](Rejected)(Read)
       case java.lang.Boolean.FALSE => Rejected
       case _ =>
         val it = spellings(value)
         var outcome: Outcome = Rejected
         while (outcome == Rejected && it.hasNext)
-          outcome = read(it.next()) match {
+          outcome = read(it.next(), nanos) match {
             case r: Read => r
             case _       => Rejected
           }
@@ -198,7 +233,7 @@ private[client] final case class MappedDateFormat(
     * the response parser dropped (`2024-01-31+02:00` is read as the date alone) is undecidable
     * where an alternative reads such an offset.
     */
-  private def bySpellings(value: Any): Outcome = {
+  private def bySpellings(value: Any, nanos: Boolean): Outcome = {
     val texts = spellings(value).toList
     val lostOffset = value match {
       case d: LocalDate =>
@@ -213,7 +248,7 @@ private[client] final case class MappedDateFormat(
         "format reads"
       )
     else {
-      val outcomes = texts.map(read)
+      val outcomes = texts.map(read(_, nanos))
       outcomes.collectFirst { case u: Undecidable => u } match {
         case Some(undecidable) => undecidable
         case None =>
@@ -313,6 +348,11 @@ private[client] object MappedDateFormat {
   trait Alternative {
     def parse(text: String): Parse
 
+    /** SCHEMA-7 (D3) -- [[parse]], the instant to the nanosecond the text holds rather than the
+      * millisecond a `date` field indexes it at: what a `date_nanos` field indexes.
+      */
+    def parseExact(text: String): Parse = parse(text)
+
     /** A name core reads, as opposed to a custom pattern or an unknown name. */
     def isName: Boolean = true
 
@@ -344,6 +384,27 @@ private[client] object MappedDateFormat {
       case _ if unitMillis == 1L => Regex.compile("-?\\d++(?:\\.\\d{1,6}+)?")
       case _                     => Regex.compile("-?\\d++(?:\\.\\d{1,9}+)?")
     }
+
+    /** A positive fraction kept to the nanosecond (SCHEMA-7 D3: `1706697000123.456789` in an
+      * `epoch_millis` `date_nanos` field); any other text as [[parse]] reads it.
+      */
+    override def parseExact(text: String): Parse =
+      if (
+        dialect == Dialect.Joda || !shape.matcher(text).matches() || text.charAt(0) == '-' ||
+        text.indexOf('.') < 0
+      ) parse(text)
+      else
+        Try {
+          val nanos = new java.math.BigDecimal(text)
+            .multiply(java.math.BigDecimal.valueOf(unitMillis))
+            .movePointRight(6)
+            .setScale(0, java.math.RoundingMode.FLOOR)
+            .longValueExact()
+          Instant.ofEpochSecond(
+            java.lang.Math.floorDiv(nanos, 1000000000L),
+            java.lang.Math.floorMod(nanos, 1000000000L)
+          )
+        }.fold(_ => Invalid, Parsed)
 
     def parse(text: String): Parse =
       if (!shape.matcher(text).matches()) NotParsed

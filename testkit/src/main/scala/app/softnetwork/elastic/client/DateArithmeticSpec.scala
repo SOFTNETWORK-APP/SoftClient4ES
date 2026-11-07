@@ -3204,9 +3204,16 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
     bulk(refreshedA, List("""{"id":"a1","d":"2024-01-31"}"""))
     // the pattern's merged schema is read, and cached: `d` is a DATE
     typed(dTimesTwo, refusal) shouldBe true
-    // CREATE: a second index maps `d` as a KEYWORD -- the indices disagree, `d` has no type
+    // CREATE: a second index maps `d` as a KEYWORD -- the indices disagree, and `d` is a VARCHAR
+    // on the set-operation lattice, as the keyword index maps it (SCHEMA-7 D6, R-84): the KEYWORD
+    // rules refuse it by name
     run(s"CREATE TABLE $refreshedB (id KEYWORD, d KEYWORD, PRIMARY KEY (id))")
     typed(dTimesTwo, refusal) shouldBe false
+    typed(
+      dTimesTwo,
+      "Type mismatch: output 'KEYWORD' is not compatible with input 'BIGINT'"
+    ) shouldBe
+    true
     // DROP: `d` is a DATE again
     run(s"DROP TABLE $refreshedB")
     typed(dTimesTwo, refusal) shouldBe true
@@ -3259,7 +3266,7 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
   }
 
   "an index pattern whose indices disagree on a field" should
-  "type every field they agree on, and refuse nothing on that one: Elasticsearch answers" in {
+  "type every field they agree on, and that one by the lattice: a keyword beside a date is a KEYWORD" in {
     run(s"CREATE TABLE $disagreeA ($columns, PRIMARY KEY (id))")
     run(s"CREATE TABLE $disagreeB (id KEYWORD, g KEYWORD, d KEYWORD, PRIMARY KEY (id))")
     bulk(disagreeA, rows.map(json).toList)
@@ -3288,25 +3295,33 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         })
       }
     )
-    // the field they disagree on has no type: nothing is refused on it, Elasticsearch answers
-    // (MEASURED, reported)
-    Seq(
-      s"SELECT g, MAX(d) - MIN(d) AS x FROM $from GROUP BY g",
-      s"SELECT id, d + 1 AS x FROM $from",
-      s"SELECT id, d * 2 AS x FROM $from"
-    ).foreach { sql =>
-      val answer = Try(Await.result(client.run(sql), 60.seconds)).toEither match {
-        case Right(ElasticFailure(error)) =>
-          // never core's type refusal: with no type nothing is refused on types
-          error.message should not include "cannot be applied to"
-          error.message should not include "Type mismatch"
-          s"FAILURE ${error.statusCode.getOrElse("-")} ${error.message.take(200)}"
-        case Right(ElasticSuccess(_)) =>
-          s"SUCCESS ${gatewayRows(sql).map(_.take(3)).fold(identity, _.toString).take(300)}"
-        case Left(t) => s"THROW ${t.getMessage.take(200)}"
+    // SCHEMA-7 (D6, R-84, A-66): the field they disagree on (DATE and KEYWORD) is a VARCHAR on the
+    // set-operation lattice, as the keyword index maps it -- arithmetic on it is refused by name, by
+    // the KEYWORD rules, as over the single keyword index (main: a Painless class_cast or an empty
+    // answer from Elasticsearch)
+    Seq(s"SELECT id, d + 1 AS x FROM $from", s"SELECT id, d * 2 AS x FROM $from").foreach { sql =>
+      withClue(s"[$sql] ") {
+        Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+          case Right(ElasticFailure(error)) =>
+            error.message shouldBe
+              "Type mismatch: output 'KEYWORD' is not compatible with input 'BIGINT'"
+          case other => fail(s"answered $other instead of the refusal by name")
+        }
       }
-      info(s"[$sql] -> $answer")
     }
+    // ... and a difference of two aggregates of it is no row arithmetic: core refuses nothing,
+    // Elasticsearch answers (MEASURED, reported)
+    val sql = s"SELECT g, MAX(d) - MIN(d) AS x FROM $from GROUP BY g"
+    val answer = Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+      case Right(ElasticFailure(error)) =>
+        error.message should not include "cannot be applied to"
+        error.message should not include "Type mismatch"
+        s"FAILURE ${error.statusCode.getOrElse("-")} ${error.message.take(200)}"
+      case Right(ElasticSuccess(_)) =>
+        s"SUCCESS ${gatewayRows(sql).map(_.take(3)).fold(identity, _.toString).take(300)}"
+      case Left(t) => s"THROW ${t.getMessage.take(200)}"
+    }
+    info(s"[$sql] -> $answer")
   }
 
   "a combination the type rules refuse" should "be refused by name once the column types are known, before anything runs" in {

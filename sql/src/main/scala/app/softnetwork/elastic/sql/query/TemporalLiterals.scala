@@ -84,6 +84,18 @@ object TemporalLiterals {
   /** Elasticsearch's default `date` mapping format. */
   val DefaultDateFormat: String = "strict_date_optional_time||epoch_millis"
 
+  /** Elasticsearch's default `date_nanos` mapping format (SCHEMA-7 D3). */
+  val DefaultDateNanosFormat: String = "strict_date_optional_time_nanos||epoch_millis"
+
+  /** SCHEMA-7 (A-40) -- the `format` a date field typed from `_field_caps` is read by: ISO text
+    * only. `_field_caps` gives no format, so only the one spelling every default format reads is
+    * read as an instant; any other value (a custom format's text, an epoch) is kept as stored.
+    */
+  val FieldCapsDateFormat: String = "strict_date_optional_time"
+
+  /** [[FieldCapsDateFormat]] for a `date_nanos` field. */
+  val FieldCapsDateNanosFormat: String = "strict_date_optional_time_nanos"
+
   /** Longest literal echoed back in a rejection message; longer ones are cut head + tail. */
   val MaxLiteralExcerpt: Int = 120
 
@@ -185,13 +197,19 @@ object TemporalLiterals {
 
   object FieldFormat {
 
-    /** The column's explicit `format` option, else Elasticsearch's default. */
-    def of(column: Column): FieldFormat =
+    /** The column's explicit `format` option, else Elasticsearch's default for its type: a
+      * `date_nanos` field's (SCHEMA-7 D3, [[DefaultDateNanosFormat]]), any other date's
+      * ([[DefaultDateFormat]]). THE format function (#292): the hit reader and the literal
+      * normaliser both read it.
+      */
+    def of(column: Column): FieldFormat = {
+      val default = if (column.dateNanos) DefaultDateNanosFormat else DefaultDateFormat
       column.options.get("format") match {
         case Some(value) =>
-          FieldFormat(Option(value.value).map(_.toString).getOrElse(DefaultDateFormat))
-        case None => FieldFormat(DefaultDateFormat)
+          FieldFormat(Option(value.value).map(_.toString).getOrElse(default))
+        case None => FieldFormat(default)
       }
+    }
   }
 
   /** `now`-anchored or `||`-suffixed date math is resolved by Elasticsearch itself. */
@@ -318,8 +336,8 @@ object TemporalLiterals {
 
   /** `DATE` / `DATETIME` / `TIMESTAMP` / `TEMPORAL` -- every `date` mapping resolves to one of
     * these. `TIME` is excluded: Elasticsearch has no time-only mapping and a bare time is not an
-    * ISO optional-time literal. `date_nanos` resolves to `ANY` on the AST and is therefore never a
-    * candidate (excluded by construction -- see the unit test that pins it).
+    * ISO optional-time literal. A `date_nanos` field is a TIMESTAMP (SCHEMA-7 D1) read by its own
+    * default format ([[FieldFormat.of]]).
     */
   private[elastic] def isTemporalColumn(dataType: SQLType): Boolean = dataType match {
     case _: SQLTime     => false
@@ -365,6 +383,12 @@ object TemporalLiterals {
     */
   def apply(search: SingleSearch, schema: Schema): Either[String, SingleSearch] =
     search.where.flatMap(_.criteria) match {
+      // SCHEMA-7 (D8): a schema typed from `_field_caps` knows no date format, and a literal read
+      // against one it does not know could be refused where the statement was forwarded: forwarded
+      // verbatim, as with no schema
+      case Some(_)
+          if schema.tableType == app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities =>
+        Right(search)
       case Some(criteria) =>
         // `joinSourceKeys`, NOT `joinAliases.values.map(_._1)`: the comparison below is against
         // `Identifier.table`, which is a `tableAliases` KEY (story 21.2 AD-6'). Minus the main

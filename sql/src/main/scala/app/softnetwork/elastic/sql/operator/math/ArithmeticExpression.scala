@@ -846,6 +846,8 @@ case class ArithmeticExpression(
 
     // Per group there is no document: every operand is a number already, and so is the result.
     val perGroup = context.isEmpty
+    // An ingest processor reads the raw value of the document, never a field's doc value
+    val processor = context.exists(_.isProcessor)
 
     // the UTC day of a temporal operand, and the instant it denotes -- a DATE its day's start --
     // in epoch milliseconds: the conversion GREATEST / LEAST over dates shares
@@ -875,9 +877,18 @@ case class ArithmeticExpression(
         s"((${instant(left, l)} - ${instant(right, r)}) / $FractionalDayMillis)"
       case DaysShift(temporalLeft, _, fractional) =>
         val ((temporal, t), n) = if (temporalLeft) ((left, l), r) else ((right, r), l)
-        val moved =
-          s"(${instant(temporal, t)} ${operator.painless(context)} ${days(n, fractional)})"
-        if (perGroup) moved else s"Instant.ofEpochMilli(${integral(moved)}).atZone(ZoneId.of('Z'))"
+        if (!perGroup && !processor && ArithmeticExpression.dateNanosValue(temporal)) {
+          // SCHEMA-7 (A-72): a `date_nanos` value is moved as the instant it is, so it keeps its
+          // nanoseconds -- through epoch milliseconds it lost them. `<days>` is the same term, a
+          // whole or a rounded fractional number of milliseconds (`dn + 1.5` keeps its half day)
+          val shift = if (operator == SUBTRACT) "minusMillis" else "plusMillis"
+          s"$t.toInstant().$shift(${days(n, fractional)}).atZone(ZoneId.of('Z'))"
+        } else {
+          val moved =
+            s"(${instant(temporal, t)} ${operator.painless(context)} ${days(n, fractional)})"
+          if (perGroup) moved
+          else s"Instant.ofEpochMilli(${integral(moved)}).atZone(ZoneId.of('Z'))"
+        }
     }
 
     // (a literal instant is a primitive constant: never NULL, and `<long> == null` does not compile)
@@ -1278,6 +1289,25 @@ object ArithmeticExpression {
         }
     }
   }
+
+  /** SCHEMA-7 (A-72) -- a temporal operand that is a `date_nanos` column, bare or moved by days
+    * (`dn + 1 + 1`): a day shift over it, per document, moves the instant it is and keeps its
+    * nanoseconds. Read by the ONE `Column` predicate (`Column.dateNanos`, #292), which also gives
+    * the column its date format. Anything else -- a function's result over it, a native date --
+    * keeps the epoch-millisecond conversion.
+    */
+  private[sql] def dateNanosValue(operand: PainlessScript): Boolean =
+    operand match {
+      case column: GenericIdentifier if column.name.trim.nonEmpty && column.functions.isEmpty =>
+        column.col.exists(_.dateNanos)
+      case nested: ArithmeticExpression =>
+        nested.dateArithmetic match {
+          case Some(DaysShift(temporalLeft, _, _)) =>
+            dateNanosValue(if (temporalLeft) nested.left else nested.right)
+          case _ => false
+        }
+      case _ => false
+    }
 
   /** The UTC day a temporal operand falls in, in days since the epoch. `Math.floor` is the one
     * floor Painless allows -- `Math.floorDiv` is on no major's allow-list -- and it is exact here:

@@ -290,6 +290,19 @@ trait JavaClientIndicesApi extends IndicesApi with JavaClientHelpers {
     })
   }
 
+  /** SCHEMA-7 (D7) -- `GET <source>/_field_caps?fields=*`, the typed answer as JSON (as
+    * `executeGetIndex` answers); an error status (403 for a user who may not read it) is the
+    * failure's `statusCode`.
+    */
+  override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] =
+    executeJavaAction(
+      operation = "fieldCaps",
+      index = Some(source),
+      retryable = true
+    )(
+      apply().fieldCaps(new FieldCapsRequest.Builder().index(source).fields("*").build())
+    )(response => Some(convertToJson(response)))
+
   override private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean] =
     executeJavaBooleanAction(
       operation = "deleteIndex",

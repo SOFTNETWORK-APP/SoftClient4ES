@@ -19,7 +19,7 @@ package app.softnetwork.elastic.schema
 import app.softnetwork.elastic.sql.SQLKeywords
 import app.softnetwork.elastic.sql.`type`.{SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.CreateTable
+import app.softnetwork.elastic.sql.query.{CreateTable, SingleSearch}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -28,9 +28,14 @@ import org.scalatest.matchers.should.Matchers
   * The key must name the type the column is MAPPED as, else an index that does not map the column
   * sorts its documents under a different type than the indices that do, and Elasticsearch refuses
   * the search. So the oracle is a round trip: a field whose Elasticsearch mapping type is `m`, read
-  * as the engine reads an undeclared field (`IndexField.undeclaredType`, then `SQLTypes`), gets
-  * `Some(m)` exactly when `m` is a type that sorts without a parameter of its own, and `None` for
-  * every other type.
+  * as the engine reads an undeclared field (`Index`, then `IndexField`) and sorted by a statement
+  * over it (`FieldSort.unmappedType`), gets `Some(m)` exactly when `m` is a type that sorts without
+  * a parameter of its own, and `None` for every other type.
+  *
+  * SCHEMA-7 (D2): `half_float`, `scaled_float`, `unsigned_long`, `date_nanos`, `ip` and
+  * `constant_keyword` are typed now (REAL, DOUBLE, BIGINT, TIMESTAMP, KEYWORD), but their column
+  * keeps its own mapping type (`Column.mappingType`), so the sort still carries no key: the key is
+  * decided by the column, never by its SQL type alone.
   */
 class SortUnmappedTypeSpec extends AnyFlatSpec with Matchers {
 
@@ -93,10 +98,23 @@ class SortUnmappedTypeSpec extends AnyFlatSpec with Matchers {
     "wildcard"
   )
 
+  /** The key a field sort over `f` carries when an index maps `f` as `m`: read as the engine reads
+    * a mapping, sorted by a statement resolved against it.
+    */
+  private def keyOf(m: String): Option[String] = {
+    val table =
+      Index("t", s"""{"mappings":{"properties":{"f":{"type":"$m"}}},"settings":{}}""").schema
+    Parser("SELECT f FROM t ORDER BY f") match {
+      case Right(ss: SingleSearch) =>
+        ss.update(Some(table)).orderBy.flatMap(_.sorts.headOption).flatMap(_.unmappedType)
+      case other => fail(s"$other")
+    }
+  }
+
   "a field read off its Elasticsearch mapping type" should "sort under that same type, or carry no key" in {
     esMappingTypes.foreach { m =>
       withClue(s"mapping type '$m': ") {
-        val key = SQLTypeUtils.sortUnmappedType(SQLTypes(IndexField.undeclaredType(m)))
+        val key = keyOf(m)
         if (sortable.contains(m)) key shouldBe Some(m)
         else key shouldBe None
       }
@@ -119,7 +137,7 @@ class SortUnmappedTypeSpec extends AnyFlatSpec with Matchers {
       "binary"
     ).foreach { m =>
       withClue(m) {
-        SQLTypeUtils.sortUnmappedType(SQLTypes(IndexField.undeclaredType(m))) shouldBe None
+        keyOf(m) shouldBe None
       }
     }
   }

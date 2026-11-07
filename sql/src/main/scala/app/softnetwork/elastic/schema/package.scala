@@ -24,7 +24,7 @@ import app.softnetwork.elastic.sql.{
   StringValues,
   Value
 }
-import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.`type`.{SQLTypeUtils, SQLTypes}
 import app.softnetwork.elastic.sql.schema.{
   Column,
   DateIndexNameProcessor,
@@ -106,10 +106,8 @@ package object schema {
             }
           case _ => None
         }
-      val tpe =
-        declaredType.getOrElse(
-          undeclaredType(Option(node.get("type")).map(_.asText()).getOrElse("object"))
-        )
+      val mappedType = Option(node.get("type")).map(_.asText()).getOrElse("object")
+      val tpe = declaredType.getOrElse(undeclaredType(mappedType))
 
       val nullValue =
         Option(node.get("null_value"))
@@ -164,8 +162,18 @@ package object schema {
         case _ => mapped
       }
 
+      // SCHEMA-7 (D2): the mapping's `type` is kept, as an option, exactly when it is not the one
+      // elasticsql writes for the field's SQL type -- a type elasticsql never writes (`ip`,
+      // `scaled_float`, `date_nanos`, `flattened`, `geo_shape`, ...); no field elasticsql created
+      // carries it, but one a DDL `type` option wrote (A-73: a `VARCHAR` mapped `keyword` reads back
+      // `keyword`). `Column.mappingType` reads it back: the field's Elasticsearch type for every
+      // consumer that turns it into an Elasticsearch-side decision, so an ALTER re-sends the field
+      // as it is mapped instead of the `object` its SQL type would give it
       val options =
-        extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties"))
+        extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties")) ++
+        Some(mappedType)
+          .filter(_ != SQLTypeUtils.elasticType(SQLTypes(tpe)))
+          .map(kept => "type" -> StringValue(kept))
 
       val comment = _meta.flatMap {
         case m: ObjectValue =>

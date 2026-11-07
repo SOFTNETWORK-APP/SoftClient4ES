@@ -193,4 +193,163 @@ class PatternLoadSchemaSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     withClue(s"$result: ") { refusedAsSelfRead(result) shouldBe false }
     client.deleted shouldBe List("logs_1")
   }
+
+  // ------------------------------------------------------------------------------------------
+  // SCHEMA-7 (D7) -- the `_field_caps` fallback of a QUERY's schema
+  // ------------------------------------------------------------------------------------------
+
+  /** `GET s7_t/_field_caps?fields=*` as Elasticsearch 8.18.3 answered a `read`-only user (trimmed).
+    */
+  private val capsTable =
+    """{"indices":["s7_t"],"fields":{"_id":{"_id":{"type":"_id","metadata_field":true}},""" +
+    """"id":{"keyword":{"type":"keyword","metadata_field":false}},""" +
+    """"ip":{"ip":{"type":"ip","metadata_field":false}},""" +
+    """"d":{"date":{"type":"date","metadata_field":false}}}}"""
+
+  /** `GET s7_p*` with `_field_caps`: `k` a keyword in `s7_p1`, a long in `s7_p2`. */
+  private val capsPattern =
+    """{"indices":["s7_p1","s7_p2"],"fields":{"k":{""" +
+    """"keyword":{"type":"keyword","metadata_field":false,"indices":["s7_p1"]},""" +
+    """"long":{"type":"long","metadata_field":false,"indices":["s7_p2"]}}}}"""
+
+  private val capsNone = """{"indices":[],"fields":{}}"""
+
+  private def forbidden(index: String): ElasticResult[Option[String]] =
+    ElasticFailure(
+      ElasticError(
+        message = s"action [indices:admin/get] is unauthorized for user [ro] on indices [$index]",
+        statusCode = Some(403),
+        index = Some(index)
+      )
+    )
+
+  /** A user holding only the index `read` privilege: `GET <index | pattern>` answers 403,
+    * `_field_caps` 200. Counts both.
+    */
+  private class ReadOnlyClient extends NopeClientApi {
+    override protected def logger: Logger = LoggerFactory.getLogger(getClass)
+    val gets = new java.util.concurrent.atomic.AtomicInteger(0)
+    val caps = new java.util.concurrent.atomic.AtomicInteger(0)
+
+    override private[client] def executeVersion(): ElasticResult[String] =
+      ElasticResult.success("8.18.3")
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+      gets.incrementAndGet()
+      forbidden(index)
+    }
+
+    override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] = {
+      caps.incrementAndGet()
+      source match {
+        case "s7_t"  => ElasticResult.success(Some(capsTable))
+        case "s7_p*" => ElasticResult.success(Some(capsPattern))
+        case _       => ElasticResult.success(Some(capsNone))
+      }
+    }
+  }
+
+  /** [[PatternClient]], counting the `_field_caps` requests it is asked. */
+  private class CountingPatternClient extends PatternClient {
+    val caps = new java.util.concurrent.atomic.AtomicInteger(0)
+    override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] = {
+      caps.incrementAndGet()
+      ElasticResult.success(Some(capsNone))
+    }
+  }
+
+  private def statement(sql: String): app.softnetwork.elastic.sql.query.SingleSearch =
+    app.softnetwork.elastic.sql.parser.Parser(sql) match {
+      case Right(ss: app.softnetwork.elastic.sql.query.SingleSearch) => ss
+      case other                                                     => fail(s"[$sql] $other")
+    }
+
+  "a read-only user's query schema" should "be typed from _field_caps once per TTL, then cost nothing" in {
+    Seq("s7_t" -> "id", "s7_p*" -> "k").foreach { case (source, column) =>
+      withClue(s"$source: ") {
+        val client = new ReadOnlyClient
+        client.loadQuerySchema(source) match {
+          case ElasticSuccess(schema) =>
+            schema.tableType shouldBe app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
+            schema.find(column).map(_.dataType) shouldBe Some(
+              app.softnetwork.elastic.sql.`type`.SQLTypes.Keyword
+            )
+          case ElasticFailure(error) => fail(s"refused: ${error.message}")
+        }
+        (client.gets.get(), client.caps.get()) shouldBe ((1, 1))
+        // every later statement: zero round trips, through the seam every query consumer reads
+        client.loadQuerySchema(source) shouldBe a[ElasticSuccess[_]]
+        client.resolveWithSchema(statement(s"SELECT $column FROM $source")) shouldBe
+        a[ElasticSuccess[_]]
+        client.resolveWithSchema(statement(s"SELECT $column FROM $source")) shouldBe
+        a[ElasticSuccess[_]]
+        (client.gets.get(), client.caps.get()) shouldBe ((1, 1))
+        client.schemaCacheSize shouldBe 1
+      }
+    }
+  }
+
+  it should "type its fields as the privileged client would: the ip keeps its mapping type, a pattern merges" in {
+    val client = new ReadOnlyClient
+    val table = client.loadQuerySchema("s7_t").toOption.getOrElse(fail("no schema"))
+    table.find("ip").map(_.mappingType) shouldBe Some("ip")
+    table.find("d").flatMap(_.options.get("format")).map(_.value) shouldBe Some(
+      app.softnetwork.elastic.sql.query.TemporalLiterals.FieldCapsDateFormat
+    )
+    table.find("_id") shouldBe None
+  }
+
+  it should "remember a pattern that matches no index as the 404 main answered" in {
+    val client = new ReadOnlyClient
+    client.loadQuerySchema("none_*") match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(404)
+      case other                 => fail(s"expected a 404, got $other")
+    }
+    client.schemaCacheSize shouldBe 0
+    // through the seam: the miss is remembered for its TTL, no request is sent again
+    client.resolveWithSchema(statement("SELECT id FROM none_*"))
+    val (gets, caps) = (client.gets.get(), client.caps.get())
+    client.resolveWithSchema(statement("SELECT id FROM none_*"))
+    (client.gets.get(), client.caps.get()) shouldBe ((gets, caps))
+  }
+
+  it should "keep DDL on the mapping: loadSchema still fails 403, and leaves the entry" in {
+    val client = new ReadOnlyClient
+    client.loadQuerySchema("s7_t") shouldBe a[ElasticSuccess[_]]
+    client.loadSchema("s7_t") match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(403)
+      case ElasticSuccess(schema) =>
+        fail(s"DDL answered the _field_caps schema (${schema.tableType})")
+    }
+    client.loadPatternSchema("s7_t,s7_p*") match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(403)
+      case other                 => fail(s"expected the 403, got $other")
+    }
+    (client.gets.get(), client.caps.get()) shouldBe ((3, 1))
+    // the query entry is still there
+    client.loadQuerySchema("s7_t") shouldBe a[ElasticSuccess[_]]
+    (client.gets.get(), client.caps.get()) shouldBe ((3, 1))
+    // and invalidation drops it, as it drops a mapping's
+    client.invalidateSchema("s7_t")
+    client.loadQuerySchema("s7_t") shouldBe a[ElasticSuccess[_]]
+    (client.gets.get(), client.caps.get()) shouldBe ((4, 2))
+  }
+
+  "a privileged user's query schema" should "cost what it cost on main: one GET, no _field_caps" in {
+    val client = new CountingPatternClient
+    client.loadQuerySchema("logs-*") match {
+      case ElasticSuccess(schema) =>
+        schema.columns.map(_.name).sorted shouldBe List("event_ts", "id", "level")
+        schema.tableType shouldBe app.softnetwork.elastic.sql.schema.TableType.Regular
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    client.loadQuerySchema("logs-*") shouldBe a[ElasticSuccess[_]]
+    client.loadQuerySchema("other") shouldBe a[ElasticSuccess[_]]
+    client.gets shouldBe List("logs-*", "other")
+    client.caps.get() shouldBe 0
+    // a pattern that matches no index: one `_field_caps` per TTL before its 404 is remembered
+    client.resolveWithSchema(statement("SELECT id FROM none_*"))
+    client.resolveWithSchema(statement("SELECT id FROM none_*"))
+    client.caps.get() shouldBe 1
+  }
 }

@@ -596,6 +596,143 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
       StandardCharsets.US_ASCII
     ) shouldBe "hello"
   }
+
+  // ------------------------------------------------------------------------------------------
+  // SCHEMA-7 (D3, D4, D5, A-40, A-41) -- the mapping types core reads but never writes
+  // ------------------------------------------------------------------------------------------
+
+  /** `s7_t` as `GET s7_t` maps it (no `_meta`). */
+  private val s7: Schema = Index(
+    "s7_t",
+    """{"s7_t": {"aliases": {}, "mappings": {"properties": {
+      | "id": {"type": "keyword"},
+      | "sf": {"type": "scaled_float", "scaling_factor": 100},
+      | "hf": {"type": "half_float"},
+      | "u": {"type": "unsigned_long"},
+      | "dn": {"type": "date_nanos"},
+      | "ip": {"type": "ip"},
+      | "ck": {"type": "constant_keyword", "value": "C"}
+      | }}, "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
+  ).schema
+
+  /** `s7_t` as a `read`-only user is typed (`_field_caps`: no `_meta`, no format). */
+  private val s7Caps: Schema = {
+    val document = app.softnetwork.elastic.schema.FieldCaps
+      .members(
+        "s7_t",
+        new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+          """{"indices": ["s7_t"], "fields": {
+            | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
+            | "d": {"date": {"type": "date", "metadata_field": false}},
+            | "dn": {"date_nanos": {"type": "date_nanos", "metadata_field": false}},
+            | "ck": {"keyword": {"type": "keyword", "metadata_field": false}},
+            | "tags": {"keyword": {"type": "keyword", "metadata_field": false}}
+            |}}""".stripMargin
+        )
+      )
+      .head
+      ._2
+    Index("s7_t", document).schema.copy(
+      tableType = app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
+    )
+  }
+
+  private def on(table: Schema, sql: String): SingleSearch = Parser(sql) match {
+    case Right(s: SingleSearch) => s.update(Some(table))
+    case other                  => fail(s"[$sql] expected a SingleSearch, got $other")
+  }
+
+  /** The rows `sql` over `table` answers for `hits`, read as the client reads them (the
+    * several-valued cell mode `HitReading.multiValuedFor` gives the statement).
+    */
+  private def rowsOn(table: Schema, sql: String, hits: String): Seq[ListMap[String, Any]] = {
+    val single = on(table, sql)
+    implicit val context: ConversionContext =
+      contextOf(single, multiValued = HitReading.multiValuedFor(single))
+    val response = s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [$hits]}}"""
+    ElasticConversion
+      .parseResponse(response, single.fieldAliases, ListMap.empty, outputs(single))
+      .get
+  }
+
+  "A hit of a scaled_float, half_float, unsigned_long or ip field" should
+  "answer it by its declared type, from _source (R2)" in {
+    val r = rowsOn(
+      s7,
+      "SELECT sf, hf, u, ip FROM s7_t",
+      """{"_id": "a1", "_source": {"sf": 1.5, "hf": 0.1, "u": 7, "ip": "10.0.0.1"}}"""
+    ).head
+    r("sf") shouldBe java.lang.Double.valueOf(1.5)
+    r("hf") shouldBe java.lang.Float.valueOf(0.1f)
+    r("u") shouldBe java.lang.Long.valueOf(7L)
+    r("ip") shouldBe "10.0.0.1"
+    // D4 / A-12: an unsigned_long above 2^63-1 is kept as stored, never wrapped
+    rowsOn(
+      s7,
+      "SELECT u FROM s7_t",
+      """{"_id": "a1", "_source": {"u": 18446744073709551615}}"""
+    ).head("u") shouldBe new java.math.BigInteger("18446744073709551615")
+  }
+
+  "A constant_keyword field" should "be asked as a doc value and read from the hit's fields (D5)" in {
+    on(s7, "SELECT id, ck FROM s7_t").indexedColumns shouldBe Seq("ck")
+    on(s7, "SELECT * FROM s7_t").indexedColumns shouldBe Seq("ck")
+    // a computed item that outputs the name reads its own script field; no other column is asked
+    on(s7, "SELECT id, UPPER(id) AS ck FROM s7_t").indexedColumns shouldBe empty
+    on(s7, "SELECT id, ip FROM s7_t").indexedColumns shouldBe empty
+    // an aggregation reads no row
+    on(s7, "SELECT ck, COUNT(*) AS c FROM s7_t GROUP BY ck").indexedColumns shouldBe empty
+    // `_field_caps` reports it as a keyword: read from `_source`, as main (A-67)
+    on(s7Caps, "SELECT id, ck FROM s7_t").indexedColumns shouldBe empty
+
+    val hit = """{"_id": "a1", "_source": {"id": "1"}, "fields": {"ck": ["C"]}}"""
+    rowsOn(s7, "SELECT id, ck FROM s7_t", hit).head shouldBe ListMap("id" -> "1", "ck" -> "C")
+    rowsOn(s7, "SELECT * FROM s7_t", hit).head.get("ck") shouldBe Some("C")
+  }
+
+  "A date_nanos field" should "be read to the nanosecond, by its own default format (D3)" in {
+    def dn(value: String): Any =
+      rowsOn(s7, "SELECT dn FROM s7_t", s"""{"_id": "a1", "_source": {"dn": $value}}""").head("dn")
+    dn("\"2024-01-31T10:30:00.123456789Z\"") shouldBe
+    ZonedDateTime.of(2024, 1, 31, 10, 30, 0, 123456789, ZoneOffset.UTC)
+    dn("\"2024-01-31T10:30:00Z\"") shouldBe utc(2024, 1, 31, 10, 30)
+    // `epoch_millis`, its fraction kept to the nanosecond
+    dn("1706697000123") shouldBe
+    ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(1706697000123L), ZoneOffset.UTC)
+    dn("\"1706697000123.456789\"") shouldBe
+    ZonedDateTime.ofInstant(
+      java.time.Instant.ofEpochSecond(1706697000L, 123456789L),
+      ZoneOffset.UTC
+    )
+  }
+
+  "HitReading.multiValuedFor" should "read a several-valued cell as its list for a _field_caps schema only (A-41)" in {
+    HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t")) shouldBe MultiValued.AsRead
+    HitReading.multiValuedFor(on(s7, "SELECT ip FROM s7_t")) shouldBe HitReading.Default
+    rowsOn(
+      s7Caps,
+      "SELECT tags FROM s7_t",
+      """{"_id": "a1", "_source": {"tags": ["a", "b"]}}"""
+    ).head("tags") shouldBe List("a", "b")
+  }
+
+  "A date typed from _field_caps" should "read ISO text as an instant, any other value as stored (A-40)" in {
+    def d(value: String): Any =
+      rowsOn(s7Caps, "SELECT d FROM s7_t", s"""{"_id": "a1", "_source": {"d": $value}}""").head("d")
+    d("\"2024-01-31T10:30:00Z\"") shouldBe utc(2024, 1, 31, 10, 30)
+    d("\"2024-01-31\"") shouldBe utc(2024, 1, 31)
+    // a custom format's text (Q6) and an epoch: the field's own format is not known
+    d("\"2024/01/31\"") shouldBe "2024/01/31"
+    val epoch = d("1706697000123")
+    epoch should not be a[ZonedDateTime]
+    epoch.toString shouldBe "1706697000123"
+    // a date_nanos field typed from `_field_caps` keeps its nanoseconds
+    rowsOn(
+      s7Caps,
+      "SELECT dn FROM s7_t",
+      """{"_id": "a1", "_source": {"dn": "2024-01-31T10:30:00.123456789Z"}}"""
+    ).head("dn") shouldBe ZonedDateTime.of(2024, 1, 31, 10, 30, 0, 123456789, ZoneOffset.UTC)
+  }
 }
 
 /** The protected projector, for the identity check. */

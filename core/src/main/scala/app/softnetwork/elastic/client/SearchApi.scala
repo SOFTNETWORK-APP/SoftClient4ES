@@ -387,19 +387,20 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
   /** THE schema lookup for a statement's sources, for every consumer -- the attach
     * ([[resolveWithSchema]]) and the scope of a subquery ([[resolvedSchema]]) alike (#292): ONE
-    * concrete index reads its own mapping ([[IndicesApi.loadSchema]]); an index PATTERN, a comma
-    * list or several sources read the mapping of every index they match, merged field by field
-    * ([[IndicesApi.loadPatternSchema]]), under the key the miss is remembered by -- the sources
-    * joined with commas.
+    * concrete index reads its own mapping; an index PATTERN, a comma list or several sources read
+    * the mapping of every index they match, merged field by field, under the key the miss is
+    * remembered by -- the sources joined with commas; a user who may not read a mapping is typed
+    * from `_field_caps` ([[IndicesApi.loadQuerySchema]], SCHEMA-7 D7).
     *
     * `None` when no lookup is made: a client that is not an [[IndicesApi]], or a remembered miss.
     */
   private def lookupSchema(sources: Seq[String]): Option[Try[ElasticResult[Schema]]] = {
     val source = sources.mkString(",")
     this match {
+      // SCHEMA-7 (D7): ONE seam for both origins -- the mapping, or `_field_caps` where the mapping
+      // is refused (`IndicesApi.loadQuerySchema`)
       case indices: IndicesApi if !schemaMissed(source) =>
-        val pattern = sources.size > 1 || source.contains("*") || source.contains(",")
-        Some(Try(if (pattern) indices.loadPatternSchema(source) else indices.loadSchema(source)))
+        Some(Try(indices.loadQuerySchema(source)))
       case _ => None
     }
   }

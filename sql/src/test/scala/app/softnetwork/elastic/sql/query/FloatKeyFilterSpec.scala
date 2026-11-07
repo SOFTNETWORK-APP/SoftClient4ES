@@ -16,11 +16,14 @@
 
 package app.softnetwork.elastic.sql.query
 
+import app.softnetwork.elastic.sql.StringValue
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.schema.{Column, Table => SchemaTable}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+
+import scala.collection.immutable.ListMap
 
 /** A HAVING key filter on a `float` (REAL) grouping key, compared with a number a float does not
   * hold exactly, is refused by name: Elasticsearch compares the key as its float widened to a
@@ -34,7 +37,9 @@ class FloatKeyFilterSpec extends AnyFlatSpec with Matchers {
     columns = List(
       Column("r", SQLTypes.Real),
       Column("x", SQLTypes.Double),
-      Column("hf", SQLTypes.Any)
+      // SCHEMA-7 (D1): `half_float` is a REAL, `scaled_float` a DOUBLE, each keeping its mapping type
+      Column("hf", SQLTypes.Real, options = ListMap("type" -> StringValue("half_float"))),
+      Column("sf", SQLTypes.Double, options = ListMap("type" -> StringValue("scaled_float")))
     )
   )
 
@@ -56,7 +61,9 @@ class FloatKeyFilterSpec extends AnyFlatSpec with Matchers {
       keyed("r", "r NOT IN (0.1)")                                      -> "r",
       keyed("r", "r = '0.1'")                                           -> "r",
       "SELECT r AS rr, COUNT(*) AS c FROM t GROUP BY r HAVING rr = 0.1" -> "rr",
-      keyed("r", "r = 0.1 AND COUNT(*) > 1")                            -> "r"
+      keyed("r", "r = 0.1 AND COUNT(*) > 1")                            -> "r",
+      // SCHEMA-7 (R-56): a `half_float` key is a REAL key, compared as Elasticsearch widens it
+      keyed("hf", "hf = 0.1") -> "hf"
     ).foreach { case (sql, key) =>
       withClue(sql)(verdict(sql).left.toOption.getOrElse("") should startWith(s"$lead $key with "))
     }
@@ -77,8 +84,10 @@ class FloatKeyFilterSpec extends AnyFlatSpec with Matchers {
       // a DOUBLE key compares exactly; a metric is no key filter
       keyed("x", "x = 0.1"),
       keyed("r", "COUNT(*) > 0.1"),
-      // a key of no SQL type (half_float, scaled_float) is not judged here
-      keyed("hf", "hf = 0.1")
+      // a `scaled_float` key is a DOUBLE (SCHEMA-7 D1): not judged here; a `half_float` key
+      // compared with a value a float holds is answered
+      keyed("sf", "sf = 0.1"),
+      keyed("hf", "hf = 0.5")
     ).foreach(sql => withClue(sql)(verdict(sql) shouldBe Right(())))
   }
 }

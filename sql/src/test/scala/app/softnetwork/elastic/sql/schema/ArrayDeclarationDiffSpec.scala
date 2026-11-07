@@ -195,6 +195,6 @@ class ArrayDeclarationDiffSpec extends AnyFlatSpec with Matchers {
         diff.safety shouldBe Impossible
       }
     }
-    ColumnTypeChanged("c", SQLTypes.Int, SQLTypes.BigInt).safety shouldBe UnsafeReindex
+    ColumnTypeChanged("c", SQLTypes.Int, SQLTypes.BigInt)().safety shouldBe UnsafeReindex
   }
 }

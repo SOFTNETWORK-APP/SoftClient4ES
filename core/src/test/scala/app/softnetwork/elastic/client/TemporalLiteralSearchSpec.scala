@@ -91,9 +91,13 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     @volatile var lastMultiQuery: Option[ElasticQueries] = None
     @volatile var schemaLookups: Int = 0
 
-    override def loadSchema(index: String): ElasticResult[Schema] = {
-      schemaLookups += 1
-      super.loadSchema(index)
+    /** A statement's schema lookup of ONE concrete index: since SCHEMA-7 (D7) through
+      * `loadQuerySchema`, the query's one seam (`loadSchema` before), counted as before -- a
+      * pattern or several sources not counted (`loadPatternSchema` before).
+      */
+    override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] = {
+      if (!IndicesApi.isPattern(source)) schemaLookups += 1
+      super.loadQuerySchema(source)
     }
 
     override private[client] def executeSingleSearch(
@@ -190,18 +194,18 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
 
   it should "remember only 404 misses, never a transient failure" in {
     val client = new RecordingClient {
-      override def loadSchema(index: String): ElasticResult[Schema] =
-        if (index.startsWith("flaky")) {
+      override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] =
+        if (source.startsWith("flaky")) {
           schemaLookups += 1
           ElasticResult.failure(
             ElasticError(
               message = "cluster hiccup",
               statusCode = Some(503),
-              index = Some(index),
+              index = Some(source),
               operation = Some("loadSchema")
             )
           )
-        } else super.loadSchema(index)
+        } else super.loadQuerySchema(source)
     }
     val statement =
       SelectStatement(s"SELECT id FROM flaky_events WHERE event_ts >= '$spaceForm' LIMIT 5")
@@ -309,7 +313,7 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     client.lastQuery shouldBe defined
     client.schemaLookups shouldBe 1
     client.search(SelectStatement("SELECT id FROM events LIMIT 5"))
-    // `schemaLookups` counts CALLS, and this fixture overrides `loadSchema`, so it is one per
+    // `schemaLookups` counts CALLS, and this fixture overrides `loadQuerySchema`, so it is one per
     // statement by construction — it cannot show the COST.
     client.schemaLookups shouldBe 2
   }

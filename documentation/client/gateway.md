@@ -232,6 +232,82 @@ Each value is read by its column's declared type, where it is first read:
 | GEO_POINT | `ListMap("lat" -> Double, "lon" -> Double)`, whatever spelling was indexed |
 | ARRAY | `List` of its elements |
 
+#### Elasticsearch mapping types
+
+*Since `0.25.0`* (they read `ANY` before, and `constant_keyword` answered NULL), the mapping types
+core reads but never writes have a declared type:
+
+| Mapping type | Declared | Reported | Value class |
+| --- | --- | --- | --- |
+| `scaled_float` | DOUBLE | DOUBLE | `Double`, the value as stored in `_source` |
+| `half_float` | REAL | REAL | `Float` |
+| `unsigned_long` (7.10+) | BIGINT | BIGINT | `Long`; a value above 2^63-1 is kept as stored, a `java.math.BigInteger` |
+| `date_nanos` (7.0+) | TIMESTAMP | TIMESTAMP | `ZonedDateTime` at UTC, nanoseconds kept |
+| `ip` | KEYWORD | VARCHAR | `String` |
+| `constant_keyword` (7.7+) | KEYWORD | VARCHAR | `String`, the mapping's value, read from its doc value |
+| `flattened` (7.3+) | ANY | ANY | as read |
+
+The column keeps its own mapping type beside its SQL type: `DESCRIBE TABLE` and `SHOW CREATE TABLE`
+show it in the column's options (`type = 'ip'`), an `ALTER TABLE` re-sends the field as it is mapped,
+and a sort or a `GROUP BY` key filter over it is decided by that type, as before. A type rule applies
+by the SQL type, as over a column declared with it: `ip + 1` is refused, as over any `KEYWORD`, and
+so is `HAVING hf = 0.1` on a `half_float` key (a `float` key's rule); a comparison with another type
+family (`u = k` with `k` a `keyword`, `ip > n` with `n` a `long`, `sf > d` with `d` a `date`) is
+refused, and `CAST(u AS VARCHAR) = k` compares as text; `dn * 2` and `dn / 2` are refused, as over
+any TIMESTAMP; a `CASE`, `COALESCE`, `NULLIF`, `GREATEST` or `LEAST` whose arms have no common type
+(`COALESCE(ip, 2)`, `COALESCE(sf, k)`, `GREATEST(dn, n)`) is refused. `dn + 1` moves a `date_nanos`
+value by a day and keeps its nanoseconds. `ALTER COLUMN dn SET DATA TYPE DATE` reindexes a
+`date_nanos` field into a `date`; `ALTER COLUMN ip SET DATA TYPE VARCHAR` maps it as `text`; a
+`constant_keyword` column keeps its type (its value is in the mapping, not in the documents).
+
+A `type` written in a column's options (`CREATE TABLE t (c VARCHAR OPTIONS (type = 'keyword'))`)
+maps the field with it, as it did before `0.25.0`, and the column reads back with that type: an
+`ALTER TABLE` re-sends it, `SHOW CREATE TABLE` prints it. Such a field is decided by its own
+mapping type, like one core reads but never writes: beside another mapping type in an index
+pattern, a native one included, it has no type. A sort over it carries the `unmapped_type` of its
+declared type, as before, when the `type` reads as another SQL type (`KEYWORD` mapped `wildcard`,
+`INT` mapped `long`), and none when it reads as the declared one (`DOUBLE` mapped `scaled_float`,
+`TIMESTAMP` mapped `date_nanos`, `KEYWORD` mapped `ip`): *since `0.25.0`*, `ORDER BY` such a column,
+or one a pattern leaves with no type, over a list or pattern where an index lacks it fails ("No
+mapping found for [c] in order to sort on"), where it answered before. `ALTER COLUMN c SET DATA
+TYPE` to another type drops it; `ARRAY<X>` of the column's own type keeps it.
+
+#### Index patterns
+
+A field the indices of a pattern (`FROM logs-*`) or of a list map differently takes the type a
+`UNION ALL` of the two gives it (*since `0.25.0`*): a `keyword` beside a `long` or a `date` is a
+VARCHAR, read by the keyword index's rules (`k + 1` is refused, as over that index), and every value
+is its text (`"007"`, `"7"`); an `integer` beside a `long` is a BIGINT; a DATE beside a TIMESTAMP of
+the same format a TIMESTAMP. A field left with no type answers as before (`ANY`): a `boolean` beside a
+number, two date formats, a type a `UNION ALL` refuses (a date beside a number, a struct beside a
+scalar), and a field one index maps with a type core reads but never writes (`ip`, `scaled_float`,
+`date_nanos`, `constant_keyword`, ...) beside another type.
+
+#### A user who may not read the mapping
+
+A user holding only the index `read` privilege is refused `GET <index>` (403) but may ask
+`_field_caps`. *Since `0.25.0`* (everything read `ANY` before, and an un-`LIMIT`ed statement failed
+with "Failed to get ES version"), such a user's queries are typed from `_field_caps`, once per source
+per schema-cache TTL, and its statements answer what a privileged user's answer, except:
+
+- `_field_caps` holds no `_meta`: a column declared `DATE` reads TIMESTAMP, an `ARRAY<X>` declaration
+  reads X (a several-valued cell answers the `List` of its values, never the several-values
+  failure), and there is no comment and no default;
+- it holds no date format: ISO text is read as a TIMESTAMP, any other value (a custom format's text,
+  an epoch) is answered as stored, and a temporal literal in `WHERE` is forwarded to Elasticsearch
+  verbatim;
+- it reports `constant_keyword` as `keyword`: its projection and `SELECT *` read NULL from `_source`,
+  as before, while `WHERE`, `GROUP BY` and conditionals over it answer its value, and a sort over
+  it carries the `unmapped_type` of a keyword, so `ORDER BY ck` over a list where one index lacks
+  `ck` answers where a privileged user's fails ("No mapping found for [ck] in order to sort on", as
+  before); a runtime field is listed as a mapped keyword, so `SELECT *` holds a NULL column for it;
+- DDL (`SHOW CREATE TABLE`, `DESCRIBE TABLE`, `ALTER TABLE`, CTAS) still needs the mapping, and
+  answers its 403;
+- an un-`LIMIT`ed statement pages by the Elasticsearch major the client is built for (`GET /` is
+  refused too): search_after on the ES 6 and ES 7 clients, PIT on the ES 8 and ES 9 clients, unsliced
+  where `_settings` is refused. A privilege granted later is seen once the schema-cache TTL expires
+  (the version: once the client restarts).
+
 A statement whose SELECT items are all computed -- literals, arithmetic, functions, casts, `CASE`
 (`SELECT 2 AS k FROM t`, `SELECT n + 1 AS v FROM t`) -- asks Elasticsearch for no `_source`
 (*since `0.25.0`*: the whole document was fetched): its script fields read doc values, so its rows

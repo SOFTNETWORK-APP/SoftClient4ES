@@ -77,20 +77,45 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     "c4" -> """{"id":"c4","n":2000000000,"k":"z"}"""
   )
 
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    Try(client.deleteIndex(table))
+  // SCHEMA-7 (AC9): the mapping types core reads but never writes, and a pattern whose indices
+  // disagree on a field
+  private val s7 = "s7c_t"
+  private val s7Pattern = "s7c_p*"
+
+  private val s7Mapping: String =
+    """{"properties": {
+      |  "id": {"type": "keyword"}, "k": {"type": "keyword"},
+      |  "sf": {"type": "scaled_float", "scaling_factor": 100}, "hf": {"type": "half_float"},
+      |  "u": {"type": "unsigned_long"}, "dn": {"type": "date_nanos"}, "ip": {"type": "ip"},
+      |  "ck": {"type": "constant_keyword", "value": "C"}
+      |}}""".stripMargin
+
+  private val s7Docs: Seq[(String, String)] = Seq(
+    "s1" -> """{"id":"s1","k":"a","sf":1.25,"hf":0.5,"u":7,"dn":"2024-01-31T10:30:00.123456789Z","ip":"10.0.0.1"}""",
+    "s2" -> """{"id":"s2","k":"b","sf":2.5,"hf":1.5,"u":8,"dn":"2024-02-01T00:00:00Z","ip":"10.0.0.2"}"""
+  )
+
+  private def load(index: String, mappingJson: String, documents: Seq[(String, String)]): Unit = {
+    Try(client.deleteIndex(index))
     client
-      .createIndex(table, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
+      .createIndex(index, settings = """{"number_of_shards": 1, "number_of_replicas": 0}""")
       .get shouldBe true
-    client.setMapping(table, mapping).get shouldBe true
-    docs.foreach { case (id, source) => client.index(table, id, source) }
-    client.refresh(table)
+    client.setMapping(index, mappingJson).get shouldBe true
+    documents.foreach { case (id, source) => client.index(index, id, source) }
+    client.refresh(index)
     ()
   }
 
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    load(table, mapping, docs)
+    load(s7, s7Mapping, s7Docs)
+    load("s7c_p1", """{"properties": {"k": {"type": "keyword"}}}""", Seq("p1" -> """{"k":"007"}"""))
+    load("s7c_p2", """{"properties": {"k": {"type": "long"}}}""", Seq("p2" -> """{"k":7}"""))
+  }
+
   override def afterAll(): Unit = {
-    Try(client.deleteIndex(table))
+    Seq(table, s7, "s7c_p1", "s7c_p2").foreach(index => Try(client.deleteIndex(index)))
     super.afterAll()
   }
 
@@ -411,5 +436,52 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
         }
       case other => fail(s"$other")
     }
+  }
+
+  /** SCHEMA-7 (AC9): `describe` and the rows of the new types and of a lattice-typed pattern field,
+    * read as arrow (`extractRows`, by the schema's names), the JDBC driver (`getString`) and the
+    * extensions (`case q: QueryRows`) read them -- plain, scroll and a UNION ALL leg. No API these
+    * consumers use changed: `ColumnTypeChanged`'s signature did (a second parameter list, D11(7)),
+    * but it has no downstream user, so nothing is published or rebuilt for it.
+    */
+  "Arrow, JDBC and the extensions" should "read the SCHEMA-7 types and a pattern field by name (AC9)" in {
+    Seq(
+      s"SELECT id, sf, hf, u, dn, ip, ck FROM $s7 LIMIT 10",
+      s"SELECT id, sf, hf, u, dn, ip, ck FROM $s7",
+      s"SELECT id, ip AS v FROM $s7 UNION ALL SELECT id, k AS v FROM $s7",
+      s"SELECT k FROM $s7Pattern",
+      s"SELECT k FROM $s7Pattern LIMIT 10"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val result = run(sql)
+        val (rows, schema) = rowsAndSchema(result)
+        rows should not be empty
+        // each reader runs the stream again: without ORDER BY a pattern's indices may answer in
+        // another order on the second run, so the rows are compared as a multiset
+        extractRows(result).map(_.toMap) should contain theSameElementsAs rows.map(_.toMap)
+        client.describe(sql) shouldBe ElasticSuccess(schema)
+        val names = schema.getOrElse(fail("no schema")).names
+        rows.foreach { row =>
+          names.foreach { n =>
+            row.contains(n) shouldBe true
+            ValueCoercion.coerceToString(row(n)) should not be null
+          }
+        }
+      }
+    }
+    val (rows, schema) = rowsAndSchema(run(s"SELECT id, sf, hf, u, dn, ip, ck FROM $s7"))
+    schema.map(_.columns.map(c => c.name -> c.sqlType.typeId)) shouldBe Some(
+      Seq(
+        "id" -> "VARCHAR",
+        "sf" -> "DOUBLE",
+        "hf" -> "REAL",
+        "u"  -> "BIGINT",
+        "dn" -> "TIMESTAMP",
+        "ip" -> "VARCHAR",
+        "ck" -> "VARCHAR"
+      )
+    )
+    rows.map(_("ck")).distinct shouldBe Seq("C")
+    rowsAndSchema(run(s"SELECT k FROM $s7Pattern"))._1.map(_("k")).toSet shouldBe Set("007", "7")
   }
 }

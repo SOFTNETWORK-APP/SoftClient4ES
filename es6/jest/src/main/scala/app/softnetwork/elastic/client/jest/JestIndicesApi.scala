@@ -92,6 +92,20 @@ trait JestIndicesApi extends IndicesApi with JestClientHelpers {
     }
   }
 
+  /** SCHEMA-7 (D7) -- `GET <source>/_field_caps?fields=*`, its body as Elasticsearch answered it;
+    * an error status (403 for a user who may not read it) is the failure's `statusCode`.
+    */
+  override private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] =
+    executeJestAction[JestResult, Option[String]](
+      operation = "fieldCaps",
+      index = Some(source),
+      retryable = true
+    ) {
+      app.softnetwork.elastic.client.jest.actions.FieldCaps(source)
+    } { result =>
+      Some(result.getJsonString)
+    }
+
   /** Delete an index.
     *
     * @see

@@ -664,7 +664,7 @@ package object client extends SerializationApi {
             HitReading.of(
               single,
               dates,
-              HitReading.Default,
+              HitReading.multiValuedFor(single),
               elements.keySet
             ),
             single.doubleKeyLevels
@@ -695,7 +695,7 @@ package object client extends SerializationApi {
             HitReading.of(
               base,
               dates,
-              HitReading.Default,
+              HitReading.multiValuedFor(base),
               elements.keySet,
               request.windowFunctions.flatMap(_.buckets),
               PartitionKeys.instantColumns(request, dates)

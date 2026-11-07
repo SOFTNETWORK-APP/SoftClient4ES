@@ -134,6 +134,30 @@ object Bucket {
   /** A column's OWN type, without the functions a key applies to it. */
   private[query] def columnType(column: Identifier): SQLType = column.withFunctions(Nil).baseType
 
+  /** SCHEMA-7 (D2) -- whether `column` resolves to a field mapped with a type elasticsql does not
+    * write for its SQL type (`Column.foreignMapping`: `ip`, `unsigned_long`, `half_float`, ...):
+    * Elasticsearch parses, sorts and filters it its own way, which its SQL type does not say.
+    */
+  private[query] def foreignColumn(column: Identifier): Boolean =
+    column match {
+      case g: GenericIdentifier => g.col.exists(_.foreignMapping)
+      case _                    => false
+    }
+
+  /** SCHEMA-7 (D2, A-75) -- whether a FIELD sort over `column` carries no `unmapped_type`: the
+    * column is foreign ([[foreignColumn]]) and its SQL type is the one its mapping type reads as
+    * (`SQLTypes.apply`) -- a field mapped `half_float`, `date_nanos`, `ip`, ... read from its
+    * mapping, or a `DOUBLE` a DDL statement wrote `scaled_float`. A `_meta` declaration over a
+    * written type its mapping type does not read as (a `KEYWORD` mapped `wildcard`, an `INT` mapped
+    * `long`) keeps the `unmapped_type` of its declared type, as before the types were read.
+    */
+  private[query] def sortsByForeignType(column: Identifier): Boolean =
+    column match {
+      case g: GenericIdentifier =>
+        g.col.exists(c => c.foreignMapping && SQLTypes(c.mappingType) == c.dataType)
+      case _ => false
+    }
+
   /** The mapped types of a FIELD level whose key filter is proven exact
     * ([[Bucket.isExactKeyKind]]).
     */
@@ -575,13 +599,13 @@ case class Bucket(
     *
     * 🔴 A conditional REPORTS the common type of its typed arms
     * (`SQLTypeUtils.leastCommonSuperType` lets any number win), so an arm of a type no mapping says
-    * (`scaled_float`, `ip`, `unsigned_long`: `Any`) or of another kind (`geo_point`) beside an
-    * integer literal reports BIGINT while its values are not whole numbers, or not numbers.
-    * MEASURED on Elasticsearch 8.18.3: `GROUP BY COALESCE(num, 2)` over a `scaled_float` sent as a
-    * `long` level grouped -3.75 with -3 and 0.1 with 0, and `COALESCE(ip, 2)` failed every shard
-    * ("Unsupported script value [10.0.0.1], expected a number, date, or boolean"). Such a key keeps
-    * its string `terms`, whose keys are its values; `COALESCE(CAST(num AS DOUBLE), 2)` is a
-    * `double` level.
+    * (`Any`; `scaled_float`, `ip` and `unsigned_long` were, until SCHEMA-7) or of another kind
+    * (`geo_point`) beside an integer literal reports BIGINT while its values are not whole numbers,
+    * or not numbers. MEASURED on Elasticsearch 8.18.3: `GROUP BY COALESCE(num, 2)` over a
+    * `scaled_float` sent as a `long` level grouped -3.75 with -3 and 0.1 with 0, and `COALESCE(ip,
+    * 2)` failed every shard ("Unsupported script value [10.0.0.1], expected a number, date, or
+    * boolean"). Such a key keeps its string `terms`, whose keys are its values; `COALESCE(CAST(num
+    * AS DOUBLE), 2)` is a `double` level.
     */
   private[this] def answersNumbersOf(valueType: String): Boolean = {
     def readsAs(t: SQLType): Boolean =
@@ -652,9 +676,10 @@ case class Bucket(
     *     `Double.parseDouble`, compared bit for bit with the key.
     *
     * Not proven, so not decided: `float` (the same `Double.parseDouble`, against a key that is the
-    * float widened to a double), `half_float`, `scaled_float` and `unsigned_long` (no SQL type, or
-    * `NUMERIC`), every date type and `ip` (parsed by their own format, so two spellings name one
-    * key), `boolean`, `text`, and any column the mapping does not type.
+    * float widened to a double), `half_float`, `scaled_float` and `unsigned_long` (typed REAL,
+    * DOUBLE and BIGINT since SCHEMA-7, but parsed their own way: [[Bucket.foreignColumn]]), every
+    * date type and `ip` (parsed by their own format, so two spellings name one key), `boolean`,
+    * `text`, and any column the mapping does not type.
     *
     * A COMPUTED level is a string `terms`: the script's values have no ordinals, so the level runs
     * in the `map` mode (`TermsAggregatorFactory.bytesSupplier`), each value is the text of the
@@ -681,7 +706,7 @@ case class Bucket(
     if (isScriptedKey) isExactComputedKey
     else
       !isBucketScript && !isDateHistogram && identifier.functions.isEmpty &&
-      Bucket.exactFieldType(Bucket.columnType(identifier))
+      Bucket.exactFieldType(Bucket.columnType(identifier)) && !Bucket.foreignColumn(identifier)
 
   private[this] def isExactComputedKey: Boolean = {
     val rendered = renderedTypeOf(identifier)
@@ -691,7 +716,9 @@ case class Bucket(
       functions.forall(f => Bucket.stringType(renderedTypeOf(f)))
     else
       rendered.isNumber && !rendered.isInstanceOf[SQLReal] &&
-      keyColumns.forall(c => Bucket.exactSourceType(Bucket.columnType(c))) &&
+      keyColumns.forall(c =>
+        Bucket.exactSourceType(Bucket.columnType(c)) && !Bucket.foreignColumn(c)
+      ) &&
       !functions.exists {
         case conversion: Conversion =>
           conversion.targetType.isInstanceOf[SQLReal] || conversion.targetType == SQLTypes.Numeric

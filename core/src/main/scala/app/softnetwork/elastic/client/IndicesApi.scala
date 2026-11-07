@@ -295,7 +295,9 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       index,
       (_, existing) =>
         existing match {
-          case entry: CachedSchema if !entry.isExpired(now) =>
+          // SCHEMA-7 (D7): an entry typed from `_field_caps` types a query, never DDL -- a miss here,
+          // which keeps it when the mapping cannot be read
+          case entry: CachedSchema if !entry.isExpired(now) && !IndicesApi.fromFieldCaps(entry) =>
             logger.debug(s"📦 Schema cache hit for '$index'")
             result = ElasticSuccess(entry.schema)
             entry
@@ -339,7 +341,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       pattern,
       (_, existing) =>
         existing match {
-          case entry: CachedSchema if !entry.isExpired(now) =>
+          case entry: CachedSchema if !entry.isExpired(now) && !IndicesApi.fromFieldCaps(entry) =>
             logger.debug(s"📦 Schema cache hit for '$pattern'")
             result = ElasticSuccess(entry.schema)
             entry
@@ -358,6 +360,111 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
     if (fetched && schemaCache.size() > schemaCachePurgeThreshold) purgeExpiredSchemas(now)
     result
   }
+
+  /** SCHEMA-7 (D7) -- THE schema lookup of a QUERY's source (`SearchApi.lookupSchema`, which every
+    * query consumer reaches: the attach, a subquery's scope, `describe`, the reload of an explicit
+    * unmapped path): ONE `schemaCache.compute` on the source key, the single-flight of
+    * [[loadSchema]]. A live entry of either origin answers with no round trip. On a miss the
+    * mapping is read as [[loadSchema]] / [[loadPatternSchema]] read it; when Elasticsearch refuses
+    * it (403: a user who may search the index but not read its mapping), or when a pattern matches
+    * no index, the schema is typed from `_field_caps` instead ([[fetchFieldCapsSchema]]), in the
+    * same `compute`, cached under the same key, TTL and invalidation. A `_field_caps` answer naming
+    * no index is the 404 main answered, remembered as one.
+    *
+    * DDL never reads here: [[loadSchema]] reads a `_field_caps` entry as a miss, and keeps its 403.
+    */
+  private[client] def loadQuerySchema(source: String): ElasticResult[Schema] = {
+    val pattern = IndicesApi.isPattern(source)
+    val now = System.currentTimeMillis()
+    var result: ElasticResult[Schema] = null
+    var fetched = false
+    schemaCache.compute(
+      source,
+      (_, existing) =>
+        existing match {
+          case entry: CachedSchema if !entry.isExpired(now) =>
+            logger.debug(s"📦 Schema cache hit for '$source'")
+            result = ElasticSuccess(entry.schema)
+            entry
+          case _ =>
+            fetched = true
+            def cached(schema: Schema): CachedSchema =
+              CachedSchema(
+                schema,
+                now,
+                if (pattern) schemaCacheTtlMs else resolveTtlMs(source, schema)
+              )
+            (if (pattern) fetchPatternSchema(source) else fetchSchemaFromES(source)) match {
+              case success @ ElasticSuccess(schema) =>
+                result = success
+                cached(schema)
+              case ElasticFailure(error)
+                  if error.statusCode
+                    .contains(403) || (pattern && error.statusCode.contains(404)) =>
+                fetchFieldCapsSchema(source) match {
+                  case success @ ElasticSuccess(schema) =>
+                    logger.info(
+                      s"📦 Schema of '$source' typed from _field_caps: its mapping is not readable " +
+                      s"(${error.message})"
+                    )
+                    result = success
+                    cached(schema)
+                  case ElasticFailure(capsError) if capsError.statusCode.contains(404) =>
+                    result = ElasticFailure(capsError)
+                    existing
+                  case _ =>
+                    result = ElasticFailure(error)
+                    existing
+                }
+              case failure =>
+                result = failure
+                existing
+            }
+        }
+    )
+    if (fetched && schemaCache.size() > schemaCachePurgeThreshold) purgeExpiredSchemas(now)
+    result
+  }
+
+  /** SCHEMA-7 (D7) -- `source`'s schema typed from `_field_caps` ([[executeFieldCaps]]): each index
+    * it describes as the document `GET <index>` would answer (`schema.FieldCaps.members`), read by
+    * `Index(name, document).schema` and merged by `mergedSchema`, as a pattern's mappings are -- so
+    * both origins type a field the same way --, marked `TableType.FieldCapabilities`. A 404 when
+    * the answer describes no index.
+    */
+  private def fetchFieldCapsSchema(source: String): ElasticResult[Schema] =
+    executeFieldCaps(source) match {
+      case ElasticSuccess(Some(json)) =>
+        app.softnetwork.elastic.schema.FieldCaps.members(source, mapper.readTree(json)) match {
+          case Seq() =>
+            ElasticFailure(
+              ElasticError(
+                message = s"No index matches '$source'",
+                statusCode = Some(404),
+                index = Some(source),
+                operation = Some("loadSchema")
+              )
+            )
+          case members =>
+            val (schema, disagreements) = mergedSchema(
+              source,
+              members.map { case (name, document) => name -> Index(name, document).schema }
+            )
+            if (disagreements.nonEmpty)
+              logger.info(
+                s"⚠️ The indices of '$source' disagree on ${disagreements.mkString(", ")}: " +
+                "statements are typed by Elasticsearch on those fields"
+              )
+            ElasticSuccess(
+              schema.copy(tableType =
+                app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
+              )
+            )
+        }
+      case ElasticSuccess(None) =>
+        ElasticFailure(ElasticError.notFound(index = source, operation = "loadSchema"))
+      case ElasticFailure(error) => ElasticFailure(error.copy(operation = Some("loadSchema")))
+    }
 
   private def fetchPatternSchema(pattern: String): ElasticResult[Schema] = {
     def notFound(message: String): ElasticResult[Schema] =
@@ -2207,6 +2314,21 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
   private[client] def executeGetIndex(index: String): ElasticResult[Option[String]]
 
+  /** SCHEMA-7 (D7) -- `GET <source>/_field_caps?fields=*`, its raw JSON body: the field types a
+    * user who may search `source` reads even when its mapping is refused to him (403 mapped to
+    * `statusCode = Some(403)` by the client). The default answers a 501 failure -- the fallback is
+    * absent -- so a client that does not implement it, and every test stub, keeps compiling.
+    */
+  private[client] def executeFieldCaps(source: String): ElasticResult[Option[String]] =
+    ElasticFailure(
+      ElasticError(
+        message = s"_field_caps is not implemented by ${getClass.getSimpleName}",
+        statusCode = Some(501),
+        index = Some(source),
+        operation = Some("fieldCaps")
+      )
+    )
+
   private[client] def executeDeleteIndex(index: String): ElasticResult[Boolean]
 
   private[client] def executeCloseIndex(index: String): ElasticResult[Boolean]
@@ -2252,6 +2374,10 @@ object IndicesApi {
   /** A FROM expression that names several indices: a `*` wildcard or a comma list. */
   private[client] def isPattern(source: String): Boolean =
     source.contains("*") || source.contains(",")
+
+  /** SCHEMA-7 (D7) -- a cache entry typed from `_field_caps`, which types a query and never DDL. */
+  private[client] def fromFieldCaps(entry: CachedSchema): Boolean =
+    entry.schema.tableType == app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
 
   /** THE rule for the cached keys an index's change reaches beyond its own (#292): the PATTERN and
     * LIST keys among `keys` that match `index` ([[patternMatches]]). Both maps an elasticsql DDL

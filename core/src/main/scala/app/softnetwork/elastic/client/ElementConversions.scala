@@ -89,11 +89,20 @@ private[client] object ElementConversions {
     dates: DateReading
   ): Any => Any = {
     val source = UnnestScope.elementSourceType(single, c)
-    val format =
-      if (source.isTemporal)
-        UnnestScope.elementColumn(single, c).map(TemporalLiterals.FieldFormat.of(_).spec)
-      else None
-    converter(source, c.target, c.truncation, c.safe, c.expression, c.path, format, dates)
+    val column = if (source.isTemporal) UnnestScope.elementColumn(single, c) else None
+    val format = column.map(TemporalLiterals.FieldFormat.of(_).spec)
+    converter(
+      source,
+      c.target,
+      c.truncation,
+      c.safe,
+      c.expression,
+      c.path,
+      format,
+      dates,
+      // SCHEMA-7 (D3): a `date_nanos` element to the nanosecond, as its hit reader reads it
+      nanos = column.exists(HitReading.readsNanos)
+    )
   }
 
   /** The conversion of ONE element value of `source` (`ANY`: typed by its value), built once per
@@ -107,12 +116,13 @@ private[client] object ElementConversions {
     expression: String,
     path: String,
     format: Option[String],
-    dates: DateReading
+    dates: DateReading,
+    nanos: Boolean = false
   ): Any => Any = {
     val nonScalar =
       s"Conversion Error: $expression converts ONE value, and an element of $path holds several"
     val declared =
-      SetOperationValues.elementReader(source, format, path, expression, dates, nonScalar)
+      SetOperationValues.elementReader(source, format, path, expression, dates, nonScalar, nanos)
     val read: Any => Any = source match {
       // A TIMESTAMP element is read as every UNNEST column is: a date-only value -- the response
       // parser reads `2024-01-03` as a `LocalDate` -- is a DATE, its day read by the field's format

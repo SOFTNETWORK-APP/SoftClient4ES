@@ -30,8 +30,17 @@ class TableTypeVocabularySpec extends AnyFlatSpec with Matchers {
     TableType.MaterializedView -> (("materialized_view", "MATERIALIZED VIEW")),
     TableType.External         -> (("external", "EXTERNAL")),
     TableType.Changelog        -> (("changelog", "CHANGELOG")),
-    TableType.Enrichment       -> (("enrichment", "ENRICHMENT"))
+    TableType.Enrichment       -> (("enrichment", "ENRICHMENT")),
+    // SCHEMA-7 (D7): a plain index typed from `_field_caps` for a user who may not read its
+    // mapping -- a TABLE to every client; never stored, never listed by `SHOW TABLES`
+    TableType.FieldCapabilities -> (("field_caps", "TABLE"))
   )
+
+  /** The types `SHOW TABLES` can list: the stored ones. A `_field_caps` table is a QUERY's view of
+    * a plain index, kept in the schema cache only, so it shares the plain index's client name.
+    */
+  private val listed: Seq[TableType] =
+    TableTypeEnumeration.declaredTableTypes.filterNot(_ == TableType.FieldCapabilities)
 
   /** The enumeration is derived from the COMPILED package, never from a hand-written list, and it
     * is shared with `ShowTablesTableTypeSpec` so the two cannot disagree about how many types
@@ -105,8 +114,9 @@ class TableTypeVocabularySpec extends AnyFlatSpec with Matchers {
     * client name would make `SHOW TABLES` ambiguous.
     */
   it should "give every type a distinct, well-formed client name" in {
-    val names = declaredTableTypes.map(_.sqlName)
+    val names = listed.map(_.sqlName)
     names.distinct.size shouldBe names.size
+    TableType.FieldCapabilities.sqlName shouldBe TableType.Regular.sqlName
     names.foreach { n =>
       withClue(s"client name `$n`: ") {
         n should fullyMatch regex "[A-Z]+( [A-Z]+)*"

@@ -101,7 +101,7 @@ private[client] object AggregateReading {
         new HitReading.Readers(
           single.fieldAliases,
           dates,
-          HitReading.Default,
+          HitReading.multiValuedFor(single),
           single.sources.headOption.getOrElse(""),
           HitReading.remedyOf(single.schema)
         )
