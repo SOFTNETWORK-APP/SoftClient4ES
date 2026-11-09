@@ -1874,11 +1874,17 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * operands render there. Read outside that scope, a transform's `COALESCE(d2, d) > ts` took the
     * query's DATE for a conditional whose arms render their doc values there, and appended
     * `.atStartOfDay(…)` to a `ZonedDateTime`.
+    *
+    * The scope is entered BEFORE [[literalsInPlace]] is asked, which reads it (A-98 α applies in a
+    * query only): asked first, a processor or a transform entering `COALESCE('2024-01-15', d) = k`
+    * read the query's literal in place of the `COALESCE`, where its bytes are the comparison's.
     */
   override def painless(context: Option[PainlessContext]): String =
-    literalsInPlace match {
-      case Some(mapped) => mapped.painless(context)
-      case None         => SQLTypeUtils.renderingIn(context)(comparisonPainless(context))
+    SQLTypeUtils.renderingIn(context) {
+      literalsInPlace match {
+        case Some(mapped) => mapped.painless(context)
+        case None         => comparisonPainless(context)
+      }
     }
 
   /** 🔴 This EQUALITY (`=`, `<>`, `!=`) with each side that `ComparisonRule.literalInPlaceOf` maps

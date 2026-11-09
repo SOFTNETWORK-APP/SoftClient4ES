@@ -940,6 +940,54 @@ class QuotedArmReadingSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  private val scopeTable = table.copy(columns = table.columns :+ Column("d2", SQLTypes.Date))
+
+  /** `t`'s declarations and the WHERE criteria of `sql` rendered in `t`, on a fresh node: `scoped`
+    * renders it inside the scope of `t` (`SQLTypeUtils.renderingIn`), as an ingest processor's
+    * script does; else the criteria itself is the rendering's entry, as a bridge script query is.
+    */
+  private def criteriaIn(sql: String, t: PainlessContextType, scoped: Boolean): String = {
+    val c = PainlessContext(t)
+    val criteria = Parser(sql) match {
+      case Right(s: SingleSearch) =>
+        s.update(Some(scopeTable)).where.flatMap(_.criteria).getOrElse(fail(s"no WHERE: $sql"))
+      case other => fail(s"not a single search: $other")
+    }
+    val p =
+      if (scoped) SQLTypeUtils.renderingIn(Some(c))(criteria.painless(Some(c)))
+      else criteria.painless(Some(c))
+    s"$c$p"
+  }
+
+  private val outsideQuery =
+    Seq(PainlessContextType.Transform -> "doc['d']", PainlessContextType.Processor -> "ctx.d")
+
+  it should "be read in a query only, also where the comparison enters the script (RV6-1)" in {
+    val sql = s"SELECT k FROM t WHERE $cdr = k"
+    outsideQuery.foreach { case (t, d) =>
+      withClue(s"$t: ") {
+        val entry = criteriaIn(sql, t, scoped = false)
+        // the bytes of the comparison rendered in its scope: the COALESCE is read whole
+        entry shouldBe criteriaIn(sql, t, scoped = true)
+        entry should include(d)
+      }
+    }
+  }
+
+  it should "keep the query's bytes, and those of a comparison it does not read (RV6-1)" in {
+    val alpha = s"SELECT k FROM t WHERE $cdr = k"
+    // the literal compared with k as text, d never read (A-98 α)
+    val query = criteriaIn(alpha, PainlessContextType.Query, scoped = false)
+    query should include("(\"2024-01-15\" == param1)")
+    query should not include "doc['d']"
+    val control = "SELECT k FROM t WHERE COALESCE(d, '2024-01-15') = d2"
+    outsideQuery.foreach { case (t, _) =>
+      withClue(s"$t: ") {
+        criteriaIn(control, t, scoped = false) shouldBe criteriaIn(control, t, scoped = true)
+      }
+    }
+  }
+
   behavior of "COALESCE(NULLIF(a, b), b) over a read-moved conditional (A-98 β)"
 
   /** A rendering with its parameter names erased. */
