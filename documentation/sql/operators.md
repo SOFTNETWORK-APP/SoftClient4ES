@@ -634,13 +634,17 @@ SELECT * FROM emp WHERE department = 'IT';
 SELECT * FROM orders
 WHERE customer_id = shipping_customer_id;
 
--- Columns of incompatible types (id KEYWORD, n INT) are refused by name once the column types
--- are known, rather than answering no rows
+-- Since 0.25.0, a text column against a number column (id KEYWORD, n INT) is compared as DuckDB
+-- casts it: the text is read as a number (see "Comparing values of different types" below)
 SELECT * FROM t WHERE id = n;
--- Error: Type mismatch: 'KEYWORD' is not compatible with 'INT' in expression: id = n
+
+-- Columns whose types no comparison reads (a KEYWORD against a DATE) are refused by name once the
+-- column types are known, rather than answering no rows
+SELECT * FROM t WHERE id = d;
+-- Error: Type mismatch: 'KEYWORD' is not compatible with 'DATE' in expression: id = d
 
 -- Cast one side to the other's type
-SELECT * FROM t WHERE id = CAST(n AS VARCHAR);
+SELECT * FROM t WHERE id = CAST(d AS VARCHAR);
 ```
 
 **String Comparison:**
@@ -680,6 +684,50 @@ SELECT * FROM emp WHERE manager = NULL;  -- Returns no rows!
 -- Use IS NULL instead
 SELECT * FROM emp WHERE manager IS NULL;
 ```
+
+**Comparing values of different types** *(since `0.25.0`)*:
+
+A comparison between a text and a number or a boolean, and between a boolean and a number, answers
+for the operators DuckDB binds, as DuckDB casts it:
+
+| Left / right                         | Operators                                   | Compared as        |
+|--------------------------------------|---------------------------------------------|--------------------|
+| text and `TINYINT` … `BIGINT`        | `=`, `<>`, `!=`, `IN`, `NULLIF`, `CASE x WHEN` | `BIGINT`        |
+| text and `DOUBLE`, `REAL`, `NUMERIC` | `=`, `<>`, `!=`, `IN`, `NULLIF`, `CASE x WHEN` | `DOUBLE`        |
+| text and `BOOLEAN`                   | `=`, `<>`, `!=`, `IN`, `NULLIF`, `CASE x WHEN` | `BOOLEAN`       |
+| `BOOLEAN` and `TINYINT` … `BIGINT`   | every comparison, `BETWEEN`, `IN`           | the whole type (`1` / `0`) |
+| `BOOLEAN` and `DOUBLE`, `REAL`       | `=`, `<>`, `!=`, `IN`, `NULLIF`, `CASE x WHEN` | `DOUBLE` (`1.0` / `0.0`) |
+
+```sql
+-- k KEYWORD holds '1', ' 1 ', '1.5'; n INT holds 1, 1, 2
+SELECT * FROM t WHERE k = n;                         -- the three rows: '1.5' is read as 2
+SELECT CASE WHEN k = 1 THEN 'one' ELSE 'other' END AS v FROM t;
+SELECT NULLIF(k, 0) AS v FROM t;                     -- k itself, NULL where k reads as 0
+SELECT * FROM t WHERE b = n;                         -- b BOOLEAN read as 1 / 0
+```
+
+- A text is read as a whole number by rounding half away from zero (`'1.5'` is `2`, `'-2.5'` is
+  `-3`), as a `DOUBLE` by the number it spells, as a `BOOLEAN` by the spellings a boolean literal
+  reads (`t`, `true`, `y`, `yes`, `on`, `1` / `f`, `false`, `n`, `no`, `off`, `0`, any case,
+  surrounding spaces ignored). A stored text that spells no such value (`'abc'`, `''`, `'1,5'`,
+  `'NaN'`, `'2'` beside a boolean) **fails the query**, as DuckDB fails it. `'on'`, `'off'` and
+  `' true '` beside a boolean answer, where DuckDB fails.
+- Ordering a text against a number (`k < n`, `k BETWEEN 1 AND 2`) stays refused, as DuckDB refuses
+  it; so does a text against a `DATE` or a `TIMESTAMP` column.
+- Over an `ARRAY<X>` column, a query compares the element it reads.
+- A `HAVING` group filter reads a boolean metric as `1.0` / `0.0`: `HAVING MAX(b) > 0`.
+- A bare column compared with a literal in a `WHERE` clause (`WHERE k = 1`) is still a query on the
+  column's mapping, which Elasticsearch coerces as it always has; the rule above applies to a
+  scripted comparison (`CASE WHEN k = 1`, a function of the column, two columns).
+- Outside a query — a computed column (`SCRIPT AS`, including the ones a `CREATE TABLE … AS
+  SELECT` copies), an ingest pipeline, a materialized view's transform — a text side keeps
+  `0.24.0`'s verdict: `NULLIF(k, 0)` is refused there, because a pipeline would silently drop a
+  document whose text converts to nothing. The boolean rows apply everywhere. A conditional that
+  reads a quoted argument as a number is that number there too (see
+  [Conditional functions](functions_conditional.md)), so `NULLIF(COALESCE(n, '3'), k)`,
+  `NULLIF(k, COALESCE(n, '3'))` and `NULLIF(COALESCE(n, '3'), '2024-01-15')` are refused in a
+  computed column, where `0.24.0` accepted them over a pipeline that stored no value on every
+  document holding `n` and `k`.
 
 ---
 

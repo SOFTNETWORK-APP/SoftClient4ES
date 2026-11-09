@@ -165,6 +165,94 @@ package object cond {
     */
   trait AnswersArms extends Function {
     def answeredArms: List[PainlessScript]
+
+    private[this] val _armReadings = new SQLTypeUtils.PerScope[Option[SQLTypeUtils.ArmReadings]]
+    private[this] val _armTypes = new SQLTypeUtils.PerScope[List[SQLType]]
+
+    /** What the string-literal arms are READ as (SCHEMA-5b D1, `SQLTypeUtils.armReadings`),
+      * computed ONCE per node and per scope (`SQLTypeUtils.PerScope`, A-45 (2), A-95): the type
+      * rule, the reported type and the rendering all read it. Attaching the schema copies the node,
+      * so a resolved statement reads its literals against the resolved types. A computed column's
+      * validation has its own slot: an `ARRAY<X>` arm is read whole there and as its element in a
+      * query.
+      */
+    final def armReadings: Option[SQLTypeUtils.ArmReadings] =
+      _armReadings(SQLTypeUtils.armReadings(answeredArms))
+
+    /** The type each arm is read as (SCHEMA-5b D2 / D5, `SQLTypeUtils.armTypesOf`), per scope as
+      * [[armReadings]]. In a query, a nested conditional holding a read quoted argument is the
+      * VARCHAR 0.24.0 typed it where only that keeps the arms from mixing (A-97).
+      */
+    final def armTypes: List[SQLType] =
+      _armTypes(SQLTypeUtils.armTypesOf(answeredArms, armReadings))
+
+    /** The reading of the arm at `index`, if it is a string literal read beside the others. */
+    final def readingAt(index: Int): Option[ComparisonRule.Reading] =
+      armReadings.flatMap(_.readings.get(index))
+
+    /** The position of `arm` among [[answeredArms]], by reference. */
+    final def armIndex(arm: PainlessScript): Int = answeredArms.indexWhere(_ eq arm)
+
+    /** The rendering of the READ literal at `index` (SCHEMA-5b D3 (4)), if it is one.
+      *
+      * Outside a query (A-92) a TIMESTAMP reading is the literal as written -- the arm's own
+      * rendering, 0.24.0's bytes, which every parser of a consumer reads -- and a DATE reading its
+      * ISO date (`SQLTypeUtils.readPainless`).
+      */
+    final def readArmPainless(index: Int, context: Option[PainlessContext]): Option[String] =
+      for {
+        r       <- armReadings
+        reading <- r.readings.get(index)
+      } yield reading match {
+        case t: ComparisonRule.TemporalReading
+            if t.sqlType != SQLTypes.Date && SQLTypeUtils.rendersOutsideQuery =>
+          answeredArms(index).painless(context)
+        case _ => SQLTypeUtils.readPainless(reading, r.literalType, context)
+      }
+
+    /** 🔴 Is the arm at `index` a literal read as a DATE or a TIMESTAMP where a script reads whole
+      * values (`SQLTypeUtils.readsWholeValues`): a processor, a transform, and the validation of
+      * the computed column that installs such a processor? Such an arm renders TEXT in the
+      * processor (its ISO date, or the literal as written, [[readArmPainless]]: `ctx` holds JSON),
+      * so it keeps its own type, text, wherever a type of the node decides between a text and a
+      * temporal value (A-92, #292): the legacy type ([[legacyArmTypes]]: `baseType`, `out`) and the
+      * type a comparison reads the node with (`SQLTypeUtils.textTypeOutsideQuery`).
+      *
+      * The validation reads it too (A-96): a verdict judges the processor it installs. Typed DATE
+      * there, `NULLIF(COALESCE(d, '2024-01-15'), k)` was refused on CREATE and on every later ALTER
+      * of a table holding it ("compares DATE with KEYWORD"), where 0.24.0 compares the two texts,
+      * and `YEAR(NULLIF(COALESCE(d, '2024-01-15'), d2))` was accepted over a processor calling
+      * `.get(ChronoField.YEAR)` on a String, where 0.24.0 refuses it.
+      */
+    final def readsAsTextOutsideQuery(index: Int): Boolean =
+      SQLTypeUtils.readsWholeValues &&
+      readingAt(index).exists(_.isInstanceOf[ComparisonRule.TemporalReading])
+
+    /** Is the arm at `index` RENDERED as text ([[readsAsTextOutsideQuery]]), in a script rendered
+      * outside a query (`SQLTypeUtils.rendersOutsideQuery`)? The rendering's switch: the arm a
+      * COALESCE cuts at, and a CASE result's conversion (`Case.armOf`).
+      */
+    final def rendersAsTextOutsideQuery(index: Int): Boolean =
+      SQLTypeUtils.rendersOutsideQuery && readsAsTextOutsideQuery(index)
+
+    /** The types the legacy derivations read (an ingest processor's, arms with no common type):
+      * each arm's `out`, a read literal its reading's type (SCHEMA-5b D3 (5)).
+      *
+      * 🔴 Outside a query, and while a computed column is validated (A-96), a literal read as a
+      * DATE or a TIMESTAMP keeps its own type, text ([[readsAsTextOutsideQuery]], A-92), so the
+      * node keeps 0.24.0's type and every consumer keeps 0.24.0's parse of it. Typed DATE over that
+      * text, `DATE_ADD(COALESCE(d, '2024-01-15'), …)` called `.plus` on a String: every document
+      * failed, and `ignore_failure` dropped the column silently.
+      */
+    final def legacyArmTypes: List[SQLType] =
+      answeredArms.zipWithIndex.map { case (a, i) =>
+        if (readsAsTextOutsideQuery(i)) a.out
+        else
+          readingAt(i) match {
+            case Some(_) => armReadings.map(_.literalType).getOrElse(a.out)
+            case None    => a.out
+          }
+      }
   }
 
   /** 🔴 DuckDB 1.5.5's refusal of a conditional whose arms have NO common type, asked once the
@@ -173,47 +261,27 @@ package object cond {
     * INTEGER and DATE in CASE expression - an explicit cast is required`, measured). Rendered, such
     * a node answered two classes in one column, or failed in Painless.
     *
-    * Read on what each arm REPORTS. A BOOLEAN beside a number is accepted, as DuckDB types it an
-    * INTEGER. Left out, as DuckDB reads them by the other arms: a NULL, a string literal (read as
-    * the type beside it), an arm of a type still unknown (no schema, `date_nanos`); and an
-    * aggregate arm, whose per-group value Elasticsearch computes. `expression` names the node as
-    * DuckDB does (`CASE expression`, `COALESCE operator`); DuckDB names the newer arm first in a
-    * CASE and the earlier one first in a COALESCE.
+    * Read on the type each arm is READ as (`AnswersArms.armTypes`), by the ONE family rule
+    * (`SQLTypeUtils.mixedArmTypes`, SCHEMA-5b A-97) that the arm types' own text rule reads. A
+    * BOOLEAN beside a number is accepted, as DuckDB types it an INTEGER. Left out, as DuckDB reads
+    * them by the other arms: a NULL, a string literal (read as the type beside it), an arm of a
+    * type still unknown (no schema, `date_nanos`); and an aggregate arm, whose per-group value
+    * Elasticsearch computes. In a query, a conditional holding a read quoted argument nested beside
+    * text is the VARCHAR 0.24.0 typed it ([[AnswersArms.armTypes]]), so it mixes with nothing it
+    * did not mix with then. `expression` names the node as DuckDB does (`CASE expression`,
+    * `COALESCE operator`); DuckDB names the newer arm first in a CASE and the earlier one first in
+    * a COALESCE.
     */
   private[cond] def mixedArmsError(
-    arms: List[PainlessScript],
+    node: AnswersArms,
     expression: String,
     newerFirst: Boolean
-  ): Option[String] = {
-    def family(t: SQLType): Int =
-      if (t.isNumber) 0
-      else if (t == SQLTypes.Boolean) 1
-      else if (
-        t == SQLTypes.Date || t == SQLTypes.DateTime || t == SQLTypes.Timestamp ||
-        t == SQLTypes.Temporal
-      ) 2
-      else if (t == SQLTypes.Time) 3
-      else if (t.isText) 4
-      else -1
-    // a BOOLEAN and a number have a common type, INTEGER
-    def common(a: Int, b: Int): Boolean = a == b || Set(a, b) == Set(0, 1)
-    if (arms.exists(_.hasAggregation)) None
-    else {
-      val typed = arms
-        .filterNot(a => ComparisonRule.stringLiteral(a).isDefined)
-        // an `ARRAY<X>` arm is one X element (SCHEMA-6 D7)
-        .map(a => SQLTypeUtils.operandType(a.reportedType))
-        .filterNot(t => t == SQLTypes.Null || t.isUnknown)
-        .filter(family(_) >= 0)
-      typed.headOption.flatMap { first =>
-        typed.tail.find(t => !common(family(first), family(t))).map { other =>
-          val (a, b) = if (newerFirst) (other, first) else (first, other)
-          s"Cannot mix values of type ${a.typeId} and ${b.typeId} in $expression - an explicit " +
-          "cast is required"
-        }
-      }
+  ): Option[String] =
+    SQLTypeUtils.mixedArmTypes(node.answeredArms, node.armTypes).map { case (first, other) =>
+      val (a, b) = if (newerFirst) (other, first) else (first, other)
+      s"Cannot mix values of type ${a.typeId} and ${b.typeId} in $expression - an explicit " +
+      "cast is required"
     }
-  }
 
   sealed trait ConditionalFunction[In <: SQLType]
       extends TransformFunction[In, SQLBool]
@@ -276,13 +344,44 @@ package object cond {
       extends TransformFunction[SQLAny, SQLType]
       with FunctionWithIdentifier
       with AnswersArms {
-    override def answeredArms: List[PainlessScript] = values
+
+    /** The arms COALESCE answers (SCHEMA-5b A-98 β, R-115): its arguments, but in a QUERY a
+      * `NULLIF(a, b)` arm directly followed by `b` that its temporal-against-text rule refuses over
+      * a read-moved conditional (`NullIf.answeredByFirst`) is `a` -- `COALESCE(NULLIF(a, b), b)` is
+      * `COALESCE(a, b)` -- where the arms then mix nothing (`SQLTypeUtils.mixedArmTypes`, A-97
+      * typing a read-moved arm VARCHAR beside text). `COALESCE(NULLIF(CASE WHEN n > 0 THEN d ELSE
+      * '2024-01-15' END, k), k)` answers, per row, that CASE's text or `k`. One pass over the
+      * arguments; computed once per scope. The type, the refusal and the rendering read it (the
+      * replaced NULLIF is not judged: `functionsOf` walks [[args]]); `sql` and `update` keep
+      * `values`.
+      */
+    override def answeredArms: List[PainlessScript] = _answeredArms(nullIfsAnsweredByFirst)
+
+    private[this] val _answeredArms = new SQLTypeUtils.PerScope[List[PainlessScript]]
+
+    private[this] def nullIfsAnsweredByFirst: List[PainlessScript] =
+      if (SQLTypeUtils.readsWholeValues) values
+      else {
+        val arms = values.zipWithIndex.map { case (arm, i) =>
+          SQLTypeUtils.conditionalNode(arm) match {
+            case n: NullIf
+                if values.lift(i + 1).exists(_.sql == n.expr2.sql) && n.answeredByFirst =>
+              n.expr1
+            case _ => arm
+          }
+        }
+        if (arms.corresponds(values)(_ eq _)) values
+        else {
+          val types = SQLTypeUtils.armTypesOf(arms, SQLTypeUtils.armReadings(arms))
+          if (SQLTypeUtils.mixedArmTypes(arms, types).isEmpty) arms else values
+        }
+      }
 
     def operator: ConditionalOp = Coalesce
 
     override def fun: Option[ConditionalOp] = Some(operator)
 
-    override def args: List[PainlessScript] = values
+    override def args: List[PainlessScript] = answeredArms
 
     override def outputType: SQLType =
       baseType //SQLTypeUtils.leastCommonSuperType(args.map(_.baseType))
@@ -299,13 +398,17 @@ package object cond {
       * `COALESCE(CAST(n AS DOUBLE), 2)` the double of `n` or the integer 2, `COALESCE(CAST(d AS
       * DATE), ts)` a `LocalDate` or a `ZonedDateTime`. Arms with no common type keep the least
       * common supertype of their `out` and render as they did (`SQLTypeUtils.armsType`).
+      *
+      * The legacy type also where the node is text (`SQLTypeUtils.textTypeOutsideQuery`: a literal
+      * read as a date, the validation of a computed column, A-96), as its processor types it.
       */
     override def baseType: SQLType =
-      if (SQLTypeUtils.rendersOutsideQuery) SQLTypeUtils.leastCommonSuperType(argTypes)
+      if (SQLTypeUtils.rendersOutsideQuery || SQLTypeUtils.textTypeOutsideQuery(this).isDefined)
+        SQLTypeUtils.leastCommonSuperType(legacyArmTypes)
       else
         SQLTypeUtils
-          .armsType(answeredArms, reportedType)
-          .getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes))
+          .armsType(this, reportedType)
+          .getOrElse(SQLTypeUtils.leastCommonSuperType(legacyArmTypes))
 
     /** `COALESCE` returns whichever arm is first non-null, so the type it REPORTS is the common
       * super type of the arms — the same derivation as [[baseType]], over the arms' own reported
@@ -314,7 +417,15 @@ package object cond {
       * `TIMESTAMP` column is `TIMESTAMP`. An arm of a still-unknown type (a `date_nanos` column)
       * beside a DATE makes it a TIMESTAMP (`SQLTypeUtils.armsReportedType`).
       */
-    override def reportedType: SQLType = SQLTypeUtils.armsReportedType(reportedArgTypes)
+    override def reportedType: SQLType = SQLTypeUtils.armsReportedType(armTypes)
+
+    /** A string literal read beside the other arms renders the value it is read as (SCHEMA-5b D3
+      * (4)): `COALESCE(n, '3')` answers the number 3, not the text.
+      */
+    override protected def ownArgumentPainless(
+      index: Int,
+      context: Option[PainlessContext]
+    ): Option[String] = readArmPainless(index, context)
 
     override def validate(): Either[String, Unit] = {
       if (values.isEmpty) Left("COALESCE requires at least one argument")
@@ -323,7 +434,7 @@ package object cond {
 
     /** Arms with no common type are refused, as DuckDB refuses them ([[mixedArmsError]]). */
     override def typeError: Option[String] =
-      mixedArmsError(answeredArms, "COALESCE operator", newerFirst = false)
+      mixedArmsError(this, "COALESCE operator", newerFirst = false)
 
     override def checkIfNullable: Boolean = false
 
@@ -337,10 +448,10 @@ package object cond {
         // `.sql` and an ingest processor's bytes are unchanged.
         case _
             if SQLTypeUtils.convertsArms(context) &&
-              values.exists(ArithmeticExpression.nullLiteral) =>
+              answeredArms.exists(ArithmeticExpression.nullLiteral) =>
           callArgs
             .map(_.trim)
-            .zip(values)
+            .zip(answeredArms)
             .filterNot(a => ArithmeticExpression.nullLiteral(a._2)) match {
             case Nil                    => "null"
             case (single, value) :: Nil => arm(single, value, last = true, context)
@@ -351,23 +462,52 @@ package object cond {
         // opened nowhere: `String.valueOf( : param1))`, which Painless cannot parse. Degenerate SQL,
         // legal SQL, and UNREACHABLE until issue #367 stopped predicates from dropping the operand's
         // transform — `WHERE COALESCE(d) = 'x'` compared the raw column before and emits this now.
-        case single :: Nil => arm(single.trim, values.head, last = true, context)
+        case single :: Nil => arm(single.trim, answeredArms.head, last = true, context)
         // 🔴 A RIGHT fold, because the old one opened `values.length - 1` parentheses and closed
         // exactly ONE: at two arguments that balances by luck, and at three or more it emitted
         // `(a != null ? a : (b != null ? b : c)` — Painless cannot parse it, so `COALESCE(a, b, c)`
         // was a shard failure in EVERY venue, SELECT included, and no test had ever looked. Found by
         // the delimiter check in `PredicateTransformSurvivalSpec`. Byte-identical at two arguments,
         // which is what every existing fixture pins.
-        case _ => folded(callArgs.map(_.trim).zip(values), context)
+        case _ => folded(callArgs.map(_.trim).zip(answeredArms), context)
       }
 
     private[this] def folded(
       args: List[(String, PainlessScript)],
       context: Option[PainlessContext]
-    ): String =
-      args.init.foldRight(arm(args.last._1, args.last._2, last = true, context)) {
+    ): String = {
+      // a READ literal is never NULL (SCHEMA-5b): COALESCE ends there, and the arms after it can
+      // never be answered -- `3 != null` would not even compile. Outside a query a read date or
+      // timestamp is text, typed and rendered as 0.24.0 renders it (A-92), so it is tested as then.
+      // Nor is a GREATEST / LEAST holding a literal (A-99, R-116: `NumericReducer.neverNull`), in
+      // every scope: tested, its primitive cast failed to compile (`((long) …) != null`)
+      val cut = args.indexWhere { case (_, value) =>
+        val index = armIndex(value)
+        (readingAt(index).isDefined && !rendersAsTextOutsideQuery(index)) ||
+        (SQLTypeUtils.conditionalNode(value) match {
+          case reducer: NumericReducer => reducer.neverNull
+          case _                       => false
+        })
+      }
+      val kept = if (cut >= 0) args.take(cut + 1) else args
+      kept.init.foldRight(arm(kept.last._1, kept.last._2, last = true, context)) {
         case ((rendered, value), rest) =>
-          s"($rendered != null ? ${arm(rendered, value, last = false, context)} : $rest)"
+          val tested = nullTested(rendered, value)
+          s"($tested != null ? ${arm(rendered, value, last = false, context)} : $rest)"
+      }
+    }
+
+    /** 🔴 An arm as its NULL test reads it (SCHEMA-5b R-113): a `CASE` arm renders an unenclosed
+      * conditional (`c ? a : b`), and `c ? a : b != null ? … : k` tests `b` alone -- Painless's
+      * conditional binds last -- so `COALESCE(CASE WHEN c THEN a ELSE b END, k)` answered `a`,
+      * NULL, where `c` held and `a` was NULL, instead of `k`, and a NULL `ELSE` compared `null !=
+      * null`. The arm is tested enclosed, as ONE value (`SQLTypeUtils.asOneValue`); every other
+      * rendering keeps its bytes. In every scope: the processor tested `b` alone too.
+      */
+    private[this] def nullTested(rendered: String, value: PainlessScript): String =
+      SQLTypeUtils.conditionalNode(value) match {
+        case _: Case => SQLTypeUtils.asOneValue(rendered)
+        case _       => rendered
       }
 
     /** An arm as COALESCE answers it: in a query, the type COALESCE reports, converted once from
@@ -383,17 +523,30 @@ package object cond {
     ): String =
       if (
         !SQLTypeUtils.convertsArms(context) ||
-        SQLTypeUtils.armsType(answeredArms, reportedType).isEmpty
+        SQLTypeUtils.armsType(this, reportedType).isEmpty
       ) rendered
       else {
+        val index = armIndex(value)
         val converted =
-          SQLTypeUtils.convertArm(
-            value,
-            rendered,
-            baseType,
-            last && SQLTypeUtils.mayRenderNull(value, context),
-            context
-          )
+          armReadings.filter(_.readings.contains(index)) match {
+            // a read literal is converted FROM the type it is read as (SCHEMA-5b D3 (4))
+            case Some(r) =>
+              SQLTypeUtils.convertRendered(
+                rendered,
+                r.literalType,
+                baseType,
+                nullable = false,
+                context
+              )
+            case None =>
+              SQLTypeUtils.convertArm(
+                value,
+                rendered,
+                baseType,
+                last && SQLTypeUtils.mayRenderNull(value, context),
+                context
+              )
+          }
         // a primitive (`((double) x)`) opposite a branch that can be NULL is boxed, as every
         // conversion behind a NULL guard is (`SQLTypeUtils.coerce`)
         if (last || converted == rendered || !baseType.isNumber) converted
@@ -408,7 +561,7 @@ package object cond {
       */
     override def nullable: Boolean =
       if (SQLTypeUtils.rendersOutsideQuery) values.forall(_.nullable)
-      else values.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
+      else answeredArms.filterNot(ArithmeticExpression.nullLiteral).forall(_.nullable)
 
     override def update(request: query.SingleSearch): Coalesce = {
       this.copy(values = values.map {
@@ -436,11 +589,53 @@ package object cond {
   private[cond] case object WhenAsResult extends WhenComparison
   private[cond] case object WhenInstants extends WhenComparison
   private[cond] case object WhenNumbers extends WhenComparison
+  private[cond] case object WhenImplicit extends WhenComparison
+
+  /** A side of the implicit-cast table (`ComparisonRule.implicitTarget`, SCHEMA-5b D6): neither a
+    * string literal -- READ by what it is compared with -- nor NULL.
+    */
+  private[cond] def tableSide(arg: PainlessScript): Boolean =
+    ComparisonRule.stringLiteral(arg).isEmpty && !ArithmeticExpression.nullLiteral(arg)
+
+  /** The implicit target of `left` against `right` (SCHEMA-5b D6) for a pair main's rule refuses
+    * (`mainRefuses`), with the table's sides only, and no text side beside an aggregate (a group
+    * filter converts nothing); `None` otherwise.
+    */
+  private[cond] def implicitTargetOf(
+    leftArg: PainlessScript,
+    rightArg: PainlessScript,
+    left: SQLType,
+    right: SQLType,
+    equality: Boolean,
+    mainRefuses: Boolean
+  ): Option[SQLType] =
+    if (!mainRefuses || !tableSide(leftArg) || !tableSide(rightArg)) None
+    else {
+      val text =
+        ComparisonRule.textType(SQLTypeUtils.operandType(left)) ||
+        ComparisonRule.textType(SQLTypeUtils.operandType(right))
+      if (text && (leftArg.hasAggregation || rightArg.hasAggregation)) None
+      else ComparisonRule.implicitTarget(left, right, equality)
+    }
 
   case class NullIf(expr1: PainlessScript, expr2: PainlessScript)
       extends ConditionalFunction[SQLAny]
       with AnswersArms {
-    override def answeredArms: List[PainlessScript] = List(expr1)
+
+    /** The first argument as NULLIF compares and answers it: the literal a literal-first `COALESCE`
+      * is read in place of beside a text second argument (SCHEMA-5b A-98 α,
+      * `ComparisonRule.literalInPlaceOf`), else `expr1`. `NULLIF(COALESCE('2024-01-15', d), k)`
+      * compares and answers `'2024-01-15'`, VARCHAR, as 0.24.0 did (right on every row, RUN). Every
+      * reader of an argument's type, reading or rendering reads [[first]] and [[second]].
+      */
+    private[cond] def first: PainlessScript =
+      ComparisonRule.literalInPlaceOf(expr1, expr2).getOrElse(expr1)
+
+    /** The second argument as NULLIF compares it ([[first]]). */
+    private[cond] def second: PainlessScript =
+      ComparisonRule.literalInPlaceOf(expr2, expr1).getOrElse(expr2)
+
+    override def answeredArms: List[PainlessScript] = List(first)
 
     override def conditionalOp: ConditionalOp = NullIf
 
@@ -454,11 +649,15 @@ package object cond {
       * that argument is converted to in a query where it is the answer ([[toPainlessCall]]), as a
       * `CASE` converts its results. `NULLIF(d, x)` over a DATE `d` answered `d`'s doc value, a
       * `ZonedDateTime`, in a DATE column. A first argument READ beside the second (`firstReading`)
-      * renders that reading already, and keeps [[comparedType]].
+      * renders that reading already, and keeps [[comparedType]], as does a first argument that is
+      * text where its processor runs (`SQLTypeUtils.textTypeOutsideQuery`, A-96).
       */
     override def baseType: SQLType =
-      (if (firstReading.isDefined || SQLTypeUtils.rendersOutsideQuery) None
-       else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(comparedType)
+      (if (
+         firstReading.isDefined || SQLTypeUtils.rendersOutsideQuery ||
+         SQLTypeUtils.textTypeOutsideQuery(this).isDefined
+       ) None
+       else SQLTypeUtils.armsType(this, reportedType)).getOrElse(comparedType)
 
     /** The type the two arguments are COMPARED in -- what [[toPainlessCall]] switches on to pick a
       * comparison, unless a cast over the `NULLIF` sets one: the least common supertype of what
@@ -533,13 +732,14 @@ package object cond {
       * Computed ONCE per `NULLIF` and per scope, and memoised (`SQLTypeUtils.PerScope`: its type,
       * its rendering and the comparison it sits in all ask it; `ComparisonRule` says why with no
       * lock); attaching the schema copies the `NULLIF` (`update`), so a resolved statement's
-      * reading is read against the resolved types.
+      * reading is read against the resolved types. A computed column's validation has its own slot
+      * (A-95): the declared type it reads may differ there.
       */
     private[cond] def secondReading: Option[ComparisonRule.Reading] =
-      _secondReading(ComparisonRule.readingOf(expr2, ComparisonRule.declaredTypeOf(expr1)))
+      _secondReading(ComparisonRule.readingOf(second, ComparisonRule.declaredTypeOf(first)))
 
     private[cond] def firstReading: Option[ComparisonRule.Reading] =
-      _firstReading(ComparisonRule.readingOf(expr1, ComparisonRule.declaredTypeOf(expr2)))
+      _firstReading(ComparisonRule.readingOf(first, ComparisonRule.declaredTypeOf(second)))
 
     private[this] val _secondReading = new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
     private[this] val _firstReading = new SQLTypeUtils.PerScope[Option[ComparisonRule.Reading]]
@@ -564,8 +764,8 @@ package object cond {
     /** A literal argument counts as what it is read as: `NULLIF(n, '3')` compares two numbers. */
     override def argTypes: List[SQLType] =
       List(
-        firstReading.map(_.sqlType).getOrElse(argTypeOf(expr1)),
-        secondReading.map(_.sqlType).getOrElse(argTypeOf(expr2))
+        firstReading.map(_.sqlType).getOrElse(argTypeOf(first)),
+        secondReading.map(_.sqlType).getOrElse(argTypeOf(second))
       )
 
     /** 🔴 `NULLIF` REPORTS THE TYPE OF ITS FIRST ARGUMENT, not the super type of both.
@@ -596,7 +796,13 @@ package object cond {
       * which a `CREATE TABLE … AS SELECT` declared, storing text.
       */
     override def reportedType: SQLType =
-      firstReading.map(_.sqlType).getOrElse(reportedArgTypes.headOption.getOrElse(baseType))
+      firstReading
+        .map(_.sqlType)
+        .getOrElse(
+          // a first argument read in place of its literal (A-98 α) answers that literal's text
+          if (first ne expr1) first.reportedType
+          else reportedArgTypes.headOption.getOrElse(baseType)
+        )
 
     /** The rejection this `NULLIF` earns when its two arguments RENDER types SQL does not compare
       * (issue #382, the LEAD RULING of 2026-09-23).
@@ -683,26 +889,61 @@ package object cond {
     private def temporalAgainstText(left: SQLType, right: SQLType): Boolean =
       (left.isTemporal && right.isText) || (left.isText && right.isTemporal)
 
+    /** The type the two arguments are compared IN by the implicit-cast table (SCHEMA-5b D6), for a
+      * pair main refuses ([[comparable]] over what they render, or the comparison rule over what
+      * they declare): `NULLIF(k, 0)` over a KEYWORD `k` compares `k` read as a BIGINT with 0, and
+      * answers `k`; `NULLIF(b, 0)` compares `b` as 1 / 0. A literal READ beside the other argument
+      * keeps its reading. Asked LIVE: the table's text rows hold in a query only (A-82), so a
+      * computed column keeps #382's refusal.
+      */
+    private[cond] def implicitTarget: Option[SQLType] =
+      if (firstReading.isDefined || secondReading.isDefined) None
+      else {
+        val left = ComparisonRule.comparedType(None, first)
+        val right = ComparisonRule.comparedType(None, second)
+        val mainRefuses =
+          !comparable(argTypeOf(first), argTypeOf(second)) ||
+          ComparisonRule.mismatch(left, right).isDefined
+        implicitTargetOf(first, second, left, right, equality = true, mainRefuses)
+      }
+
+    /** Is this NULLIF refused by its temporal-against-text rule ([[typeMismatchError]])? */
+    private[cond] def temporalAgainstTextRefused: Boolean =
+      secondReading.isEmpty && firstReading.isEmpty &&
+      temporalAgainstText(argTypeOf(first), argTypeOf(second))
+
+    /** 🔴 Is this NULLIF, an arm of a `COALESCE` directly followed by its second argument, answered
+      * there by its FIRST (SCHEMA-5b A-98 β, read by `Coalesce.answeredArms`)? Where it is refused
+      * by its temporal-against-text rule ([[temporalAgainstTextRefused]]), neither argument is a
+      * string literal and one is a read-moved conditional (`SQLTypeUtils.readMoved`): then
+      * `COALESCE(NULLIF(a, b), b)` is `COALESCE(a, b)` -- `a` where `a` is not `b`, and `b` where
+      * it is, or where `a` is NULL. The `COALESCE` asks it in a query only.
+      */
+    private[cond] def answeredByFirst: Boolean =
+      temporalAgainstTextRefused &&
+      ComparisonRule.stringLiteral(expr1).isEmpty && ComparisonRule.stringLiteral(expr2).isEmpty &&
+      (SQLTypeUtils.readMoved(expr1) || SQLTypeUtils.readMoved(expr2))
+
     def typeMismatchError: Option[String] = {
-      val left = argTypeOf(expr1)
-      val right = argTypeOf(expr2)
+      val left = argTypeOf(first)
+      val right = argTypeOf(second)
       // A literal the other argument READS (`secondReading`) is a value of that argument's kind:
       // comparable by construction, and rendered as that value. Asked first, by the query seam
       // and the DDL one alike, so a computed column and a query read `NULLIF(n, '3')` the same.
       if (secondReading.isDefined || firstReading.isDefined) None
-      else if (temporalAgainstText(left, right))
+      else if (temporalAgainstTextRefused)
         // The resolver goes first so a MALFORMED literal is named as such (`'x'` is not a date for
         // this field's format) rather than reported as a bare type mismatch; a WELL-FORMED one
         // falls through to a message that says what is actually wrong -- the engine, not the SQL.
-        temporalLiteralError(expr1, left, expr2, right)
-          .orElse(temporalLiteralError(expr2, right, expr1, left))
+        temporalLiteralError(first, left, second, right)
+          .orElse(temporalLiteralError(second, right, first, left))
           .orElse(
             Some(
               s"$sql compares ${left.typeId} with ${right.typeId}: comparing a temporal value " +
               "with a string is not supported yet, so cast the string to the column's type"
             )
           )
-      else if (!comparable(left, right))
+      else if (!comparable(left, right) && implicitTarget.isEmpty)
         Some(
           s"$sql compares ${left.typeId} with ${right.typeId}: NULLIF requires two arguments of " +
           "comparable types, so cast one of them"
@@ -864,7 +1105,12 @@ package object cond {
         case List(_, _)
             if SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr1) =>
           bound("null", context)
-        case List(rendered0, rendered1) =>
+        case List(own0, own1) =>
+          // an argument read in place of its literal (A-98 α) renders that literal's quoted text
+          def inPlace(arg: PainlessScript, own: PainlessScript, rendered: String): String =
+            if (arg eq own) rendered else ComparisonRule.quotedText(arg).getOrElse(rendered)
+          val rendered0 = inPlace(first, expr1, own0)
+          val rendered1 = inPlace(second, expr2, own1)
           // A string literal argument is the value the other argument READS it as -- the number
           // or the boolean it spells, rendered as one (`secondReading` / `firstReading`).
           def scalar(reading: Option[ComparisonRule.Reading], rendered: String): String =
@@ -872,15 +1118,15 @@ package object cond {
           val arg0 = operand(scalar(firstReading, rendered0), context)
           val typedAnswer =
             SQLTypeUtils.convertsArms(context) && firstReading.isEmpty &&
-            SQLTypeUtils.armsType(answeredArms, reportedType).isDefined
-          if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(expr2))
+            SQLTypeUtils.armsType(this, reportedType).isDefined
+          if (SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(second))
             return bound(
               if (typedAnswer)
                 SQLTypeUtils.convertArm(
-                  expr1,
+                  first,
                   arg0,
                   baseType,
-                  SQLTypeUtils.mayRenderNull(expr1, context),
+                  SQLTypeUtils.mayRenderNull(first, context),
                   context
                 )
               else arg0,
@@ -906,7 +1152,7 @@ package object cond {
           // there. An ingest processor keeps its bytes.
           val answer =
             if (typedAnswer)
-              SQLTypeUtils.convertArm(expr1, arg0, baseType, nullable = false, context)
+              SQLTypeUtils.convertArm(first, arg0, baseType, nullable = false, context)
             else arg0
           def nullIf(comparison: String): String =
             s"$arg0 == null || ($arg1 != null && $comparison) ? null : $answer"
@@ -927,16 +1173,36 @@ package object cond {
           // `processorInstant` arm below -- and its source is persisted: it keeps its bytes.)
           val mixedTemporals =
             !context.exists(_.isProcessor) && !receiverIsTime &&
-            dateCarrying(ComparisonRule.declaredTypeOf(expr1)) &&
-            dateCarrying(ComparisonRule.declaredTypeOf(expr2)) && {
-              val (java1, java2) = (argTypeOf(expr1), argTypeOf(expr2))
+            dateCarrying(ComparisonRule.declaredTypeOf(first)) &&
+            dateCarrying(ComparisonRule.declaredTypeOf(second)) && {
+              val (java1, java2) = (argTypeOf(first), argTypeOf(second))
               !java1.isUnknown && !java2.isUnknown && java1 != java2
             }
           lazy val instants =
-            s"${ArithmeticExpression.comparedMillis(expr1, firstReading, arg0, context)} == " +
-            s"${ArithmeticExpression.comparedMillis(expr2, secondReading, arg1, context)}"
+            s"${ArithmeticExpression.comparedMillis(first, firstReading, arg0, context)} == " +
+            s"${ArithmeticExpression.comparedMillis(second, secondReading, arg1, context)}"
           val expr =
-            if (secondReading.exists(_.isInstanceOf[ComparisonRule.TemporalReading]))
+            if (implicitTarget.isDefined) {
+              // SCHEMA-5b D6 / D7: both arguments read as the type the table compares them in;
+              // NULLIF still answers its FIRST argument as it is
+              val target = implicitTarget.get
+              val left =
+                SQLTypeUtils.implicitCast(arg0, argTypeOf(first), target, nullable = false, context)
+              val right =
+                SQLTypeUtils.implicitCast(
+                  arg1,
+                  argTypeOf(second),
+                  target,
+                  nullable = false,
+                  context
+                )
+              // a literal second argument is never NULL, and `0 != null` does not compile
+              if (
+                NumericReducer.numberLiteral(second) ||
+                NumericReducer.booleanLiteral(second).isDefined
+              ) s"$arg0 == null || $left == $right ? null : $answer"
+              else nullIf(s"$left == $right")
+            } else if (secondReading.exists(_.isInstanceOf[ComparisonRule.TemporalReading]))
               s"$arg0 == null || ($instants) ? null : $answer"
             else if (temporalLiteral)
               s"$arg0 == null || ($arg1 != null && $instants) ? null : $answer"
@@ -981,7 +1247,7 @@ package object cond {
                 // `==` is null-safe in Painless, so a numeric / boolean pair needs no guard --
                 // but a CONVERTED answer does: `NULLIF(d, 2)` rendered `p1 == 2 ? null :
                 // p1.toInstant()…`, which ran on the NULL of every document missing `d`.
-                case _ if answer != arg0 && SQLTypeUtils.mayRenderNull(expr1, context) =>
+                case _ if answer != arg0 && SQLTypeUtils.mayRenderNull(first, context) =>
                   s"$arg0 == null || $arg0 == $arg1 ? null : $answer"
                 case _ => s"$arg0 == $arg1 ? null : $answer"
               }
@@ -1012,15 +1278,18 @@ package object cond {
       */
     override def typeError: Option[String] =
       typeMismatchError.orElse {
-        // judged on the readings this NULLIF already holds (`firstReading`, `secondReading`)
-        ComparisonRule
-          .mismatch(
-            ComparisonRule.comparedType(firstReading, expr1),
-            ComparisonRule.comparedType(secondReading, expr2)
-          )
-          .map { case (left, right) =>
-            s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
-          }
+        // judged on the readings this NULLIF already holds (`firstReading`, `secondReading`); a
+        // pair the implicit-cast table binds is compared (SCHEMA-5b D6)
+        if (implicitTarget.isDefined) None
+        else
+          ComparisonRule
+            .mismatch(
+              ComparisonRule.comparedType(firstReading, first),
+              ComparisonRule.comparedType(secondReading, second)
+            )
+            .map { case (left, right) =>
+              s"Type mismatch: output '${left.typeId}' is not compatible with input '${right.typeId}'"
+            }
       }
 
     override def update(request: query.SingleSearch): NullIf = {
@@ -1079,18 +1348,21 @@ package object cond {
       * type for the class the CASE answers: `DATE_TRUNC(CASE … END, MONTH)` called `truncatedTo` on
       * the `LocalDate` rows.
       *
-      * Arms with no common type keep the arms' `out` ([[legacyType]]), and render as they did.
+      * Arms with no common type keep the arms' `out` ([[legacyType]]), and render as they did; so
+      * does a CASE that is text where its processor runs (`SQLTypeUtils.textTypeOutsideQuery`, a
+      * literal read as a date, the validation of a computed column, A-96).
       */
     override def baseType: SQLType =
-      if (SQLTypeUtils.rendersOutsideQuery) legacyType
-      else SQLTypeUtils.armsType(arms, reportedType).getOrElse(legacyType)
+      if (SQLTypeUtils.rendersOutsideQuery || SQLTypeUtils.textTypeOutsideQuery(this).isDefined)
+        legacyType
+      else SQLTypeUtils.armsType(this, reportedType).getOrElse(legacyType)
 
     /** The type of the CASE's value where its arms have no common type ([[SQLTypeUtils.armsType]])
       * and in an ingest processor, whose persisted bytes do not move: the least common supertype of
       * the arms' `out`, which each arm is converted to from its own `baseType`.
       */
     private[this] def legacyType: SQLType =
-      SQLTypeUtils.leastCommonSuperType(arms.map(_.out))
+      SQLTypeUtils.leastCommonSuperType(legacyArmTypes)
 
     /** The type a cast over the CASE sets (`CAST(CASE … END AS DATE)`): a simple CASE compares in
       * it, and the arms are converted to it where the CASE keeps its old conversion
@@ -1119,12 +1391,34 @@ package object cond {
       * the cast's target were converted a second time -- `.toInstant()` on the `LocalDate` they had
       * become.
       */
-    private[this] def armOf(arm: PainlessScript, context: Option[PainlessContext]): String =
-      if (
-        SQLTypeUtils.convertsArms(context) && !SQLTypeUtils.armTypeUnknown(arm) &&
-        SQLTypeUtils.armsType(arms, reportedType).isDefined
-      ) SQLTypeUtils.convertArm(arm, baseType, context)
-      else SQLTypeUtils.coerce(arm, arm.baseType, legacyOut, context)
+    private[this] def armOf(arm: PainlessScript, context: Option[PainlessContext]): String = {
+      val index = armIndex(arm)
+      // a READ literal (SCHEMA-5b D4) renders the value it is read as, and is converted FROM the
+      // type it is read as: in a processor too, where `coerce` would parse its text per document
+      (armReadings.filter(_.readings.contains(index)), readArmPainless(index, context)) match {
+        case (Some(r), Some(read)) =>
+          if (
+            SQLTypeUtils
+              .convertsArms(context) && SQLTypeUtils.armsType(this, reportedType).isDefined
+          )
+            SQLTypeUtils.convertRendered(read, r.literalType, baseType, nullable = false, context)
+          else if (rendersAsTextOutsideQuery(index))
+            // A-89 / A-92: outside a query a read date / timestamp is TEXT (`ctx` holds JSON, which
+            // a `date` field and the consumers' parsers read; `legacyArmTypes` keeps its text type)
+            // and that text never feeds a java.time conversion -- `"2024-01-15".atStartOfDay(…)`
+            // is refused by Painless when the pipeline is created. Without a cast, the reading's
+            // text; under a cast over the CASE, the arm as 0.24.0 renders it.
+            if (castType.isEmpty) read
+            else SQLTypeUtils.coerce(arm, arm.baseType, legacyOut, context)
+          else SQLTypeUtils.coerce(read, r.literalType, legacyOut, nullable = false, context)
+        case _ =>
+          if (
+            SQLTypeUtils.convertsArms(context) && !SQLTypeUtils.armTypeUnknown(arm) &&
+            SQLTypeUtils.armsType(this, reportedType).isDefined
+          ) SQLTypeUtils.convertArm(arm, baseType, context)
+          else SQLTypeUtils.coerce(arm, arm.baseType, legacyOut, context)
+      }
+    }
 
     /** The type a simple CASE compares its operand and each `WHEN` value in: the common supertype
       * of the operand and the results -- what [[baseType]] answered while it included the operand
@@ -1132,7 +1426,49 @@ package object cond {
       * Only the VALUE's type moved ([[baseType]]).
       */
     private[this] def comparisonType: SQLType =
-      castType.filter(_ != legacyType).getOrElse(SQLTypeUtils.leastCommonSuperType(argTypes))
+      castType
+        .filter(_ != legacyType)
+        .getOrElse(SQLTypeUtils.leastCommonSuperType(comparedArgTypes))
+
+    /** [[argTypes]] with the operand as its `WHEN` values compare it: a literal read in place of
+      * the operand ([[whenOperand]], A-98 α) is its text.
+      */
+    private[this] def comparedArgTypes: List[SQLType] =
+      expression match {
+        case Some(e) if whenOperand(e) ne e => SQLTypes.Varchar :: argTypes.tail
+        case _                              => argTypes
+      }
+
+    /** 🔴 The CASE operand as its `WHEN` values compare it (SCHEMA-5b A-98 α, R-119): the literal a
+      * literal-first `COALESCE` is read in place of (`ComparisonRule.literalInPlaceOf`) where EVERY
+      * value reads it so -- the operand is rendered once for all of them -- else the operand. `CASE
+      * COALESCE('2024-01-15', d) WHEN k …` compares `'2024-01-15'` with `k`, as 0.24.0 did.
+      */
+    private[this] def whenOperand(expr: PainlessScript): PainlessScript = {
+      val inPlace = conditions.map { case (cond, _) => ComparisonRule.literalInPlaceOf(expr, cond) }
+      if (inPlace.nonEmpty && inPlace.forall(_.isDefined)) inPlace.head.get else expr
+    }
+
+    /** A `WHEN` value as it is compared with the operand `expr` (A-98 α): `CASE k WHEN
+      * COALESCE('2024-01-15', d) …` compares `k` with `'2024-01-15'`.
+      */
+    private[this] def whenValue(expr: PainlessScript, cond: PainlessScript): PainlessScript =
+      ComparisonRule.literalInPlaceOf(cond, expr).getOrElse(cond)
+
+    /** An operand or a value as the generic `WHEN` comparison renders it, converted to `compared`:
+      * one read in place of its literal (A-98 α) is that literal's quoted text.
+      */
+    private[this] def whenSide(
+      side: PainlessScript,
+      own: PainlessScript,
+      compared: SQLType,
+      context: Option[PainlessContext]
+    ): String =
+      ComparisonRule.quotedText(side).filter(_ => side ne own) match {
+        case Some(text) =>
+          SQLTypeUtils.coerce(text, SQLTypes.Varchar, compared, nullable = false, context)
+        case None => SQLTypeUtils.coerce(own, own.baseType, compared, context)
+      }
 
     override def validate(): Either[String, Unit] = {
       // Story 22.2 (AD-6) — a CASE-WHEN condition is parsed by `case_condition`, which shares
@@ -1160,7 +1496,7 @@ package object cond {
       * type that is still unknown is accepted: Elasticsearch answers.
       */
     override def typeError: Option[String] =
-      conditionsTypeError.orElse(mixedArmsError(answeredArms, "CASE expression", newerFirst = true))
+      conditionsTypeError.orElse(mixedArmsError(this, "CASE expression", newerFirst = true))
 
     private[this] def conditionsTypeError: Option[String] =
       expression match {
@@ -1173,10 +1509,15 @@ package object cond {
         // on their DECLARED types, a DATE comparable with a TIMESTAMP, a string literal read by
         // what it is compared with -- `CASE n WHEN '3'`, `CASE d WHEN CAST('2024-01-31' AS DATE)`
         // -- judged on the readings this CASE already holds (`whenReadings`).
-        case Some(e) if {
+        // a value the implicit-cast table binds is compared (SCHEMA-5b D6)
+        case Some(e) if whenImplicitTarget(e).isDefined => None
+        // the operand and each value as the equality compares them (A-98 α, [[whenOperand]])
+        case Some(operand) if {
+              val e = whenOperand(operand)
               val (declared, readings) = whenReadings(e)
               val literalExpression = ComparisonRule.stringLiteral(e).isDefined
-              conditions.zip(readings).exists { case ((cond, _), reading) =>
+              conditions.zip(readings).exists { case ((value, _), reading) =>
+                val cond = whenValue(operand, value)
                 val left =
                   if (!literalExpression) declared
                   else
@@ -1199,9 +1540,9 @@ package object cond {
       * `date_nanos` column) is beside a DATE one (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      SQLTypeUtils.armsReportedType(
-        conditions.map { case (_, result) => result.reportedType } ++ default.map(_.reportedType)
-      )
+      // the THEN results and the ELSE are [[answeredArms]]; a read literal and a BOOLEAN beside
+      // whole numbers are the type they are read as (SCHEMA-5b, `armTypes`)
+      SQLTypeUtils.armsReportedType(armTypes)
 
     /** Whether the CASE EXPRESSION -- the receiver of every `WHEN` comparison -- renders a
       * `java.time.LocalTime`. `out` reports the CASE's result type and cannot say (issue #373).
@@ -1315,6 +1656,24 @@ package object cond {
       } else WhenAsResult
     }
 
+    /** The type `CASE <expr> WHEN <v> …` compares its expression and EVERY value in by the
+      * implicit-cast table (SCHEMA-5b D6, an equality): `CASE k WHEN 1` over a KEYWORD `k` reads
+      * `k` as a BIGINT, `CASE b WHEN 1` reads `b` as 1 / 0. Only when every value needs the table
+      * (no string literal, which the expression reads; none main compares as it stands); `None`
+      * otherwise, and the CASE keeps main's rule. Asked LIVE (A-82).
+      */
+    private[this] def whenImplicitTarget(expr: PainlessScript): Option[SQLType] = {
+      val declared = ComparisonRule.declaredTypeOf(expr)
+      val targets = conditions.map { case (cond, _) =>
+        val right = ComparisonRule.comparedType(None, cond)
+        val mainRefuses = ComparisonRule.mismatch(declared, right).isDefined
+        implicitTargetOf(expr, cond, declared, right, equality = true, mainRefuses)
+      }
+      if (targets.nonEmpty && targets.forall(_.isDefined))
+        Some(SQLTypeUtils.leastCommonSuperType(targets.flatten))
+      else None
+    }
+
     /** The CASE expression's DECLARED type and what each `WHEN` value is read as beside it
       * (`ComparisonRule.readingOf`), computed ONCE per CASE and per scope, and memoised
       * (`SQLTypeUtils.PerScope`; `ComparisonRule` says why with no lock): its type rule, the
@@ -1417,12 +1776,30 @@ package object cond {
           s"($ref != null ? (def)(${ArithmeticExpression.comparedMillis(operand, None, ref, context)}) : null)"
         )
       val e = bind(expr.painless(context))
-      val key = if (kind == WhenInstants) instant(expr, e) else e
+      // SCHEMA-5b D6 / D7: the expression and each value read as the type the table compares in
+      val target = if (kind == WhenImplicit) whenImplicitTarget(expr) else None
+      def implicitly(operand: PainlessScript, ref: String): String =
+        bind(
+          SQLTypeUtils.implicitCast(
+            ref,
+            ComparisonRule.declaredTypeOf(operand),
+            target.get,
+            nullable = true,
+            context
+          )
+        )
+      val key =
+        if (kind == WhenInstants) instant(expr, e)
+        else if (target.isDefined) implicitly(expr, e)
+        else e
       conditions
         .zip(readings)
         .map { case ((cond, res), reading) =>
           val r = whenResult(cond, res, context)
           val test = reading match {
+            case _ if target.isDefined =>
+              val value = implicitly(cond, bind(cond.painless(context)))
+              s"$value != null && $key == $value"
             case Some(t: ComparisonRule.TemporalReading) => s"$key == ${t.epochMillis}L"
             case Some(scalar) =>
               s"$key == ${ComparisonRule.scalarPainless(scalar).getOrElse(cond.painless(context))}"
@@ -1449,19 +1826,25 @@ package object cond {
         case Some(ctx) =>
           var cases =
             expression match {
-              case Some(expr) if whenComparison(expr, context) != WhenAsResult =>
+              case Some(expr) if whenImplicitTarget(expr).isDefined =>
+                comparedWhens(expr, WhenImplicit, ctx, context)
+              // an operand read in place of its literal (A-98 α) is text: compared as a result
+              case Some(expr) if whenComparison(whenOperand(expr), context) != WhenAsResult =>
                 comparedWhens(expr, whenComparison(expr, context), ctx, context)
-              case Some(expr) => // case with expression to evaluate
+              case Some(operand) => // case with expression to evaluate
                 // the operand and each value are converted to the type they are COMPARED in; the
-                // results, below, to the CASE's own (`out`)
+                // results, below, to the CASE's own (`out`); each as the equality compares it
+                // (A-98 α)
+                val expr = whenOperand(operand)
                 val compared = comparisonType
-                val e = SQLTypeUtils.coerce(expr, expr.baseType, compared, context)
+                val e = whenSide(expr, operand, compared, context)
                 val expParam = ctx.addParam(
                   LiteralParam(e)
                 )
                 conditions
                   .zip(whenReadings(expr)._2)
-                  .map { case ((cond, res), whenReading) =>
+                  .map { case ((value, res), whenReading) =>
+                    val cond = whenValue(operand, value)
                     val name =
                       cond match {
                         case e: Expression =>
@@ -1494,7 +1877,7 @@ package object cond {
                                     .coerce(_, reading.sqlType, compared, nullable = false, context)
                                 )
                             )
-                            .getOrElse(SQLTypeUtils.coerce(cond, cond.baseType, compared, context))
+                            .getOrElse(whenSide(cond, value, compared, context))
                         )
                     val r =
                       boxWhenNoDefault(res match {
@@ -1694,14 +2077,17 @@ package object cond {
       *
       * Computed ONCE per reducer and per scope (`SQLTypeUtils.PerScope`): a declared type may
       * depend on the scope, so a query and an ingest processor rendering the same node each read
-      * their own.
+      * their own, and so does a computed column's validation (A-95): it reads [[armTypes]].
       */
-    private[cond] def numericType: Option[SQLNumeric] = _numericType(numericTypeOfValues)
+    private[cond] def numericType: Option[SQLNumeric] =
+      _numericType(numericTypeOfValues)
 
     private[this] val _numericType = new SQLTypeUtils.PerScope[Option[SQLNumeric]]
 
     private[this] def numericTypeOfValues: Option[SQLNumeric] = {
-      val declared = values.map(ComparisonRule.declaredTypeOf).filterNot(_ == SQLTypes.Null)
+      // each argument's declared type (`ComparisonRule.declaredTypeOf`, its reported type), a read
+      // literal and a BOOLEAN beside whole numbers the type they are read as (SCHEMA-5b `armTypes`)
+      val declared = armTypes.filterNot(_ == SQLTypes.Null)
       val fractional = declared.filter(t => t.isNumber && !NumericReducer.wholeNumber(t))
       if (declared.isEmpty || declared.exists(t => !t.isNumber && !t.isUnknown)) None
       else if (declared.forall(NumericReducer.wholeNumber))
@@ -1725,10 +2111,10 @@ package object cond {
     override def baseType: SQLType =
       if (overDates)
         (if (SQLTypeUtils.rendersOutsideQuery) None
-         else SQLTypeUtils.armsType(answeredArms, reportedType)).getOrElse(SQLTypes.Timestamp)
+         else SQLTypeUtils.armsType(this, reportedType)).getOrElse(SQLTypes.Timestamp)
       else
         numericType.getOrElse(foldedArgument.getOrElse {
-          SQLTypeUtils.leastCommonSuperType(argTypes) match {
+          SQLTypeUtils.leastCommonSuperType(legacyArmTypes) match {
             case n: SQLNumeric => n
             case _             => outputType
           }
@@ -1768,8 +2154,15 @@ package object cond {
       * boolean, a TIME), or numbers mixed with dates, is refused by name.
       */
     override def typeError: Option[String] = {
-      val known = values
-        .map(v => (v: PainlessScript) -> renderedTypeOf(v))
+      // a read literal and a BOOLEAN beside whole numbers count as the type they are read as
+      // (SCHEMA-5b D3 (3) / D5): neither is an offender
+      val read = armTypes
+      val known = values.zipWithIndex
+        .map { case (v, i) =>
+          (v: PainlessScript) ->
+            (if (readingAt(i).isDefined || SQLTypeUtils.booleanBesideWhole(this, i)) read(i)
+             else renderedTypeOf(v))
+        }
         .filterNot(_._2.isInstanceOf[SQLAny])
       val numbers = known.filter(_._2.isInstanceOf[SQLNumeric])
       val dates = known.filter(a => NumericReducer.dateCarrying(a._2))
@@ -1799,7 +2192,24 @@ package object cond {
       * the arguments' REPORTED types, as `COALESCE` reports (`SQLTypeUtils.armsReportedType`).
       */
     override def reportedType: SQLType =
-      numericType.getOrElse(SQLTypeUtils.armsReportedType(reportedArgTypes))
+      numericType.getOrElse(SQLTypeUtils.armsReportedType(armTypes))
+
+    /** A string literal read beside the other arguments renders the value it is read as (SCHEMA-5b
+      * D3 (4)): `GREATEST(n, '1.5')` compares `n` with the number 2.
+      */
+    override protected def ownArgumentPainless(
+      index: Int,
+      context: Option[PainlessContext]
+    ): Option[String] = readArmPainless(index, context)
+
+    /** 🔴 Is this GREATEST / LEAST never NULL (SCHEMA-5b A-99, R-116)? A number literal or a READ
+      * literal is among its arguments: it is never NULL, and NULLs are skipped, so neither is the
+      * result -- in any scope and on any major. ONE predicate (#292) for the primitive cast of the
+      * per-document value ([[typedResult]]) and for the arm a `COALESCE` ends at
+      * (`Coalesce.folded`), which tested `((long) …) != null`: Painless refuses to compile it.
+      */
+    private[cond] def neverNull: Boolean =
+      values.indices.exists(i => NumericReducer.numberLiteral(values(i)) || readingAt(i).isDefined)
 
     /** NULL where every argument is; a NULL literal argument is NULL, and folded away in a query
       * ([[toPainlessCall]]): `LEAST(NULL, x)` is `x`. An ingest processor renders it as before.
@@ -1916,7 +2326,7 @@ package object cond {
         case Some((ctx, t)) =>
           val cast = SQLTypeUtils.painlessType(t)
           val v = value.trim
-          if (values.exists(NumericReducer.numberLiteral))
+          if (neverNull)
             s"(($cast) ${if (NumericReducer.oneValue(v)) v else s"($v)"})"
           else {
             val isName =
@@ -1943,9 +2353,36 @@ package object cond {
     private def typedArgument(
       rendered: String,
       argument: PainlessScript,
+      index: Int,
       context: Option[PainlessContext]
     ): String =
       perDocumentType(context) match {
+        // 🔴 A BOOLEAN beside whole numbers is the number DuckDB reads it as, 1 or 0 (SCHEMA-5b D5,
+        // R-107), converted by `coerce`'s BOOLEAN -> NUMERIC arm, per document in a query and in an
+        // ingest processor -- where `Math.max` over a `Boolean` threw and `ignore_failure` stored
+        // nothing. A processor reads the raw `_source` value as Elasticsearch reads a boolean:
+        // `true` / `"true"` are true, `false` / `"false"` / `""` false. A NULL stays NULL (skipped).
+        // a boolean CONSTANT is its numeral (`1L`): `(true ? 1L : 0L)` is a conditional over a
+        // constant, which Elasticsearch 6.8's Painless refuses to compile
+        case Some((_, t))
+            if SQLTypeUtils.booleanBesideWhole(this, index) &&
+              NumericReducer.booleanLiteral(argument).isDefined =>
+          SQLTypeUtils
+            .booleanConstant(NumericReducer.booleanLiteral(argument).get, t)
+            .getOrElse(rendered)
+        case Some((ctx, t)) if SQLTypeUtils.booleanBesideWhole(this, index) =>
+          val raw = rendered.trim
+          val name =
+            if (ArithmeticExpression.isBareName(raw) && (raw.head.isLetter || raw.head == '_')) raw
+            else ctx.bindLocal(raw, "lv")
+          val operand =
+            if (ctx.isProcessor) SQLTypeUtils.processorBoolean(name)
+            else name
+          val converted =
+            SQLTypeUtils.coerce(operand, SQLTypes.Boolean, t, nullable = false, Some(ctx))
+          if (nullableArgument(argument, context))
+            ctx.bindLocal(s"($name == null ? null : (def)($converted))", "lv")
+          else converted
         case Some((_, SQLTypes.BigInt)) if NumericReducer.numberLiteral(argument) =>
           val r = rendered.trim
           if (
@@ -1966,14 +2403,15 @@ package object cond {
         // and PostgreSQL skip a NULL, and rendered it was `Math.min(null, param1)`, which Painless
         // refuses to compile. With none left the reducer is NULL. An ingest processor keeps its
         // bytes.
-        val arguments =
-          callArgs.zip(values).filterNot { case (_, argument) =>
+        val indexed =
+          callArgs.zip(values).zipWithIndex.filterNot { case ((_, argument), _) =>
             SQLTypeUtils.convertsArms(context) && ArithmeticExpression.nullLiteral(argument)
           }
+        val arguments = indexed.map(_._1)
         if (arguments.isEmpty && callArgs.nonEmpty) return "null"
         val typedArgs =
-          arguments.map { case (rendered, argument) =>
-            typedArgument(rendered, argument, context)
+          indexed.map { case ((rendered, argument), index) =>
+            typedArgument(rendered, argument, index, context)
           }
         typedResult(
           typedArgs match {
@@ -2008,33 +2446,45 @@ package object cond {
       if (callArgs.isEmpty)
         throw new IllegalArgumentException(s"$operator requires at least one argument")
       val perDocument = context.filterNot(_.isTransform)
-      val millis = callArgs.zip(values).filterNot(a => ArithmeticExpression.nullLiteral(a._2)).map {
-        case (ref, argument) =>
-          val nullable = nullableArgument(argument, context)
-          perDocument match {
-            case Some(ctx) =>
-              val name =
-                if (ArithmeticExpression.isBareName(ref.trim)) ref.trim
-                else ctx.bindLocal(ref, "lv")
-              val converted = ArithmeticExpression.instantMillis(argument, name, context)
-              val guarded =
-                if (nullable) s"($name == null ? null : (def)($converted))" else converted
-              (ctx.bindLocal(guarded, "lv"), nullable)
-            case None if argument.isAggregation =>
-              val metric = ref.trim
-              val converted = ArithmeticExpression.instantMillis(argument, metric, context)
-              // A NULL metric (a group filter's, over a group with none of its values) is handed
-              // back as it is -- the same NULL, which the fold skips. The group filter's gate
-              // (`MetricSelectorScript.disqualifyRendering`) refuses a rendering that spells
-              // `? null :` or reads `def`, so neither is written: the conditional is a `def` by its
-              // first branch, the metric itself.
-              if (converted == metric) (metric, nullable)
-              else if (nullable) (s"($metric == null ? $metric : $converted)", nullable)
-              else (converted, nullable)
-            case None =>
-              (ArithmeticExpression.instantMillis(argument, ref.trim, context), nullable)
-          }
-      }
+      val millis = callArgs
+        .zip(values)
+        .zipWithIndex
+        .filterNot(a => ArithmeticExpression.nullLiteral(a._1._2))
+        .map {
+          // a string literal READ as a date or a timestamp is the instant it denotes, a constant
+          // (SCHEMA-5b D3 (4)): never NULL, never parsed per document
+          case ((_, _), index)
+              if readingAt(index).exists(_.isInstanceOf[ComparisonRule.TemporalReading]) =>
+            (
+              s"${readingAt(index).get.asInstanceOf[ComparisonRule.TemporalReading].epochMillis}L",
+              false
+            )
+          case ((ref, argument), _) =>
+            val nullable = nullableArgument(argument, context)
+            perDocument match {
+              case Some(ctx) =>
+                val name =
+                  if (ArithmeticExpression.isBareName(ref.trim)) ref.trim
+                  else ctx.bindLocal(ref, "lv")
+                val converted = ArithmeticExpression.instantMillis(argument, name, context)
+                val guarded =
+                  if (nullable) s"($name == null ? null : (def)($converted))" else converted
+                (ctx.bindLocal(guarded, "lv"), nullable)
+              case None if argument.isAggregation =>
+                val metric = ref.trim
+                val converted = ArithmeticExpression.instantMillis(argument, metric, context)
+                // A NULL metric (a group filter's, over a group with none of its values) is handed
+                // back as it is -- the same NULL, which the fold skips. The group filter's gate
+                // (`MetricSelectorScript.disqualifyRendering`) refuses a rendering that spells
+                // `? null :` or reads `def`, so neither is written: the conditional is a `def` by its
+                // first branch, the metric itself.
+                if (converted == metric) (metric, nullable)
+                else if (nullable) (s"($metric == null ? $metric : $converted)", nullable)
+                else (converted, nullable)
+              case None =>
+                (ArithmeticExpression.instantMillis(argument, ref.trim, context), nullable)
+            }
+        }
       if (millis.isEmpty) return if (perDocument.isEmpty) "((def) null)" else "null"
       val (winner, nullable) = fold(millis, integral = false)
       perDocument match {
@@ -2092,6 +2542,19 @@ package object cond {
     private[sql] def wholeNumber(t: SQLType): Boolean = t match {
       case _: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt => true
       case _                                                         => false
+    }
+
+    /** The value of a boolean literal (`TRUE` / `FALSE`), bare or as the one function of the
+      * nameless identifier the parser wraps an operand in.
+      */
+    private[cond] def booleanLiteral(v: PainlessScript): Option[Boolean] = v match {
+      case b: BooleanValue => Some(b.value)
+      case i: Identifier if i.name.trim.isEmpty =>
+        i.functions match {
+          case (b: BooleanValue) :: Nil => Some(b.value)
+          case _                        => None
+        }
+      case _ => None
     }
 
     /** A number literal -- bare, or the one function of the nameless identifier the parser wraps an

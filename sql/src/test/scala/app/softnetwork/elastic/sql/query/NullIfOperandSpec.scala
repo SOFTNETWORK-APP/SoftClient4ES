@@ -375,7 +375,12 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
   it should "emit compareTo only when BOTH operands render text, over the whole corpus" in {
     val offenders = corpus.flatMap { case (expr, dataType) =>
       everyVenueEmission(expr, dataType).collect {
-        case (venue, emitted) if emitted.contains(".compareTo(") && mixesTextWithNonText(expr) =>
+        // (SCHEMA-5b D7: a text compared with a number in a query is read as one, and that
+        // conversion bounds the text's BigDecimal with `compareTo` -- not a String comparison)
+        case (venue, emitted)
+            if emitted
+              .replaceAll("nv\\d+x(\\.abs\\(\\))?\\.compareTo\\(", "")
+              .contains(".compareTo(") && mixesTextWithNonText(expr) =>
           s"[$venue] [$expr] -> [$emitted]"
       }
     }
@@ -627,34 +632,40 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         ("NULLIF(1.5, CAST(n AS KEYWORD))", "KEYWORD", "DOUBLE", "KEYWORD")
       )
     ) { (expr, dataType, left, right) =>
-      everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
-        withClue(s"[$venue] [$expr] -> $verdict ") {
-          val reason = verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED"))
-          // 🔴 Story 21.4's lesson: a rejection test is UNFALSIFIABLE while any `Left` passes it.
-          // The message must NAME BOTH rendered types and must not be an internal-error label --
-          // restoring the defect yields a `Left` too.
-          //
-          // 🔴 Read from the TYPE clause, not with `include` (issue #382, found by review). The
-          // message echoes the whole expression AND, in the DDL venue, up to 200 characters of the
-          // caller's SQL (#262) -- which declares `s KEYWORD, n BIGINT`. So `include("KEYWORD")`
-          // and `include("BIGINT")` were free, and a message naming only ONE type, or the WRONG
-          // pair, passed.
-          val named = NamedTypes
-            .findFirstMatchIn(reason)
-            .orElse(NamedTypesAtParse.findFirstMatchIn(reason))
-            .getOrElse(fail(s"[$venue] [$expr] message names no type pair: $reason"))
-          (named.group(1), named.group(2)) shouldBe ((left, right))
-          reason should not include "Internal"
-          reason should not include "Operation failed"
-          // ...and the DDL venue, which is the one the ruling repairs, must NAME THE EXPRESSION
-          // and the column. (A `CAST(<numeric> AS <text>)` pair is already refused at PARSE in the
-          // query venues by the pre-existing `NullIf.validate()`, whose message predates #382 and
-          // names only the two types -- see the release note.)
-          if (venue == "computed column") {
-            reason should include(expr.substring(expr.indexOf("NULLIF")))
-            reason should include("Column 'c'")
+      everyVenueVerdict(expr, dataType).foreach {
+        // SCHEMA-5b D6: in a QUERY a text is compared with a number as DuckDB casts it (`NULLIF(s,
+        // 0)` reads `s` as a BIGINT); a computed column keeps this refusal (A-82), and so does a
+        // string literal, read by the comparison rule ('x' spells no number)
+        case (venue, verdict) if venue != "computed column" && !expr.contains("'") =>
+          withClue(s"[$venue] [$expr] ")(verdict shouldBe Right(()))
+        case (venue, verdict) =>
+          withClue(s"[$venue] [$expr] -> $verdict ") {
+            val reason = verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED"))
+            // 🔴 Story 21.4's lesson: a rejection test is UNFALSIFIABLE while any `Left` passes it.
+            // The message must NAME BOTH rendered types and must not be an internal-error label --
+            // restoring the defect yields a `Left` too.
+            //
+            // 🔴 Read from the TYPE clause, not with `include` (issue #382, found by review). The
+            // message echoes the whole expression AND, in the DDL venue, up to 200 characters of the
+            // caller's SQL (#262) -- which declares `s KEYWORD, n BIGINT`. So `include("KEYWORD")`
+            // and `include("BIGINT")` were free, and a message naming only ONE type, or the WRONG
+            // pair, passed.
+            val named = NamedTypes
+              .findFirstMatchIn(reason)
+              .orElse(NamedTypesAtParse.findFirstMatchIn(reason))
+              .getOrElse(fail(s"[$venue] [$expr] message names no type pair: $reason"))
+            (named.group(1), named.group(2)) shouldBe ((left, right))
+            reason should not include "Internal"
+            reason should not include "Operation failed"
+            // ...and the DDL venue, which is the one the ruling repairs, must NAME THE EXPRESSION
+            // and the column. (A `CAST(<numeric> AS <text>)` pair is already refused at PARSE in the
+            // query venues by the pre-existing `NullIf.validate()`, whose message predates #382 and
+            // names only the two types -- see the release note.)
+            if (venue == "computed column") {
+              reason should include(expr.substring(expr.indexOf("NULLIF")))
+              reason should include("Column 'c'")
+            }
           }
-        }
       }
     }
   }
@@ -741,7 +752,8 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         ("expr", "dataType", "left", "right"),
         ("NULLIF(d, 0)", "DATE", "TIMESTAMP", "BIGINT"),
         ("NULLIF(0, d)", "DATE", "BIGINT", "TIMESTAMP"),
-        ("NULLIF(b, 0)", "BOOLEAN", "BOOLEAN", "BIGINT"),
+        // (`NULLIF(b, 0)` is compared since SCHEMA-5b, DuckDB's implicit cast in every scope (D6):
+        // pinned below, with the pairs an arm expresses)
         ("NULLIF(b, 'x')", "BOOLEAN", "BOOLEAN", "VARCHAR"),
         ("NULLIF(s, d)", "KEYWORD", "KEYWORD", "TIMESTAMP"),
         ("NULLIF(d, b)", "DATE", "TIMESTAMP", "BOOLEAN")
@@ -770,7 +782,9 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         ("NULLIF(n, 0)", "BIGINT"), // both numeric
         ("NULLIF(b, false)", "BOOLEAN"), // both boolean
         ("NULLIF(d, d)", "DATE"), // both temporal
-        ("NULLIF(CAST(d AS DATE), CAST('2025-01-01' AS DATE))", "DATE")
+        ("NULLIF(CAST(d AS DATE), CAST('2025-01-01' AS DATE))", "DATE"),
+        // a boolean against a whole number, as 1 / 0 (SCHEMA-5b D6; refused before)
+        ("NULLIF(b, 0)", "BOOLEAN")
       )
     ) { (expr, dataType) =>
       everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
@@ -793,11 +807,16 @@ class NullIfOperandSpec extends AnyFlatSpec with Matchers with TableDrivenProper
         ("NULLIF(NULLIF(s, status), 0)", "KEYWORD")
       )
     ) { (expr, dataType) =>
-      everyVenueVerdict(expr, dataType).foreach { case (venue, verdict) =>
-        withClue(s"[$venue] [$expr] -> $verdict ") {
-          verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED")) should
-          include("requires two arguments of comparable types")
-        }
+      everyVenueVerdict(expr, dataType).foreach {
+        // SCHEMA-5b D6: a query compares a text with a number as DuckDB casts it; a computed
+        // column keeps the refusal (A-82)
+        case (venue, verdict) if venue != "computed column" =>
+          withClue(s"[$venue] [$expr] ")(verdict shouldBe Right(()))
+        case (venue, verdict) =>
+          withClue(s"[$venue] [$expr] -> $verdict ") {
+            verdict.left.getOrElse(fail(s"[$venue] [$expr] was ACCEPTED")) should
+            include("requires two arguments of comparable types")
+          }
       }
     }
   }

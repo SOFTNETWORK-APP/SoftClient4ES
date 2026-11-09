@@ -72,6 +72,24 @@ SELECT '2025-09-11'::DATE AS d, '125'::BIGINT AS b FROM logs;
 - `TRY_CAST` (`SAFE_CAST`) returns `NULL` instead of failing.  
 - `::` is syntactic sugar, easier to read in queries.  
 - Type inference relies on `baseType`, and explicit `CAST`/`TRY_CAST`/`::` updates the type context for following functions.  
+- *Since `0.25.0`.* A `BOOLEAN` cannot be cast to a `DATE`, a `TIME` or a `TIMESTAMP` — in a query,
+  a computed column and a pipeline alike, with `CAST`, `TRY_CAST` or `::` — as DuckDB refuses it:
+  `CAST(b AS DATE)` used to answer the boolean itself in a date column.
+- *Since `0.25.0`.* A comparison between values of different types reads them as DuckDB casts them
+  (see [Comparing values of different types](operators.md#operator-)): a text compared with a
+  number is read as one, rounding half away from zero for a whole type. `CAST(k AS BIGINT)` keeps
+  its strict parse (`'1.5'` fails the cast).
+- *Since `0.25.0`.* A string function (`UPPER`, `LOWER`, `TRIM`, `LENGTH`, `SUBSTRING`, `LEFT`,
+  `RIGHT`, `REPLACE`, `REVERSE`) over a number or a boolean reads its text: `UPPER(n)` and
+  `LENGTH(n)` answer (they failed the query), and over a `CASE` they read the whole `CASE`'s value.
+  The same holds in a computed column (`SCRIPT AS`), whose pipeline `ALTER TABLE` re-creates (see
+  [Conditional functions](functions_conditional.md)).
+- *Since `0.25.0`.* A text that spells a number past the `DOUBLE` range (`'1e400'`, `'-1e400'`) is
+  read in two ways, as `0.24.0`'s literal rule and DuckDB read it. As a quoted literal it reads as no
+  number, like `'NaN'` and `'Infinity'`: `COALESCE(x, '1e400')` answers the text and
+  `GREATEST(x, '1e400')` is refused (DuckDB answers `1.5` and `inf`). As a stored text compared with
+  a `DOUBLE` column it is `+Infinity` or `-Infinity`, DuckDB's value: `k = x` is false and `k <> x`
+  true. A stored `'NaN'` or `'Infinity'` fails the query.
 
 ---
 

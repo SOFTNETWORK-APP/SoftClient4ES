@@ -205,7 +205,13 @@ class MixedArmsRefusalSpec extends AnyFlatSpec with Matchers {
       val sql = statement(c)
       withClue(s"[$origin] $sql: ") {
         val control = errors(statement(native), table)
-        control should not be empty
+        // SCHEMA-5b D6: a NULLIF compares a text with a number or a boolean as DuckDB casts it, in
+        // a query -- the native column and the D1 one alike; every other cell stays refused
+        val d6 = conditional.startsWith("NULLIF") && (others match {
+          case `keywordArms` => other == "nb" || other == "bo"
+          case _             => other == "tx" && c != "dn"
+        })
+        if (d6) control shouldBe empty else control should not be empty
         errors(sql, table) shouldBe control.map(_.replaceAll(s"\\b$native\\b", c))
         count += 1
       }

@@ -1045,6 +1045,13 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   /** The type the left operand is DECLARED with (`ComparisonRule.declaredTypeOf`), which every
     * literal of this comparison is read against and the type rule judges: computed ONCE, and
     * memoised like [[literalReading]].
+    *
+    * 🔴 A declared type may answer differently while a computed column is validated than in a query
+    * (a conditional over an `ARRAY<X>` arm is VARCHAR there and INT in a query, SCHEMA-5b), and
+    * outside a query than in one (a conditional holding a literal read as a date is text there,
+    * A-92): this type and every reading read against it ([[literalReading]],
+    * [[leftLiteralReading]], an IN's and a BETWEEN's) keep one answer per scope
+    * (`SQLTypeUtils.PerScope`, A-95), and no scope reads another's.
     */
   protected def operandDeclaredType: SQLType =
     _operandDeclaredType(ComparisonRule.declaredTypeOf(identifier))
@@ -1178,7 +1185,11 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * by [[painlessValue]] — which is the whole defect: `ts > CAST(d AS DATE)` promoted the side
     * that was already a `ZonedDateTime` and left the `LocalDate` alone.
     */
-  protected def comparisonTargetType: SQLType = {
+  protected def comparisonTargetType: SQLType =
+    implicitComparisonTarget.getOrElse(renderedTargetType)
+
+  /** [[comparisonTargetType]] of a pair main compares: from what both sides render. */
+  private def renderedTargetType: SQLType = {
     val operandType = operandRenderedType
     maybeValue match {
       // 🔴 Two numbers are compared as numbers, with NO widening. Painless compares boxed numerics
@@ -1322,6 +1333,15 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * call sites are all in [[painless]].
     */
   protected def promotedRight(ref: String, context: Option[PainlessContext]): String =
+    implicitComparisonTarget match {
+      // SCHEMA-5b D6 / D7: the right side of an implicit cast, converted to the type the pair is
+      // compared in; it is never NULL here (every route below tests it first)
+      case Some(target) =>
+        SQLTypeUtils.implicitCast(ref, valueRenderedType, target, nullable = false, context)
+      case None => promotedRendered(ref, context)
+    }
+
+  private def promotedRendered(ref: String, context: Option[PainlessContext]): String =
     if (rightNeedsTemporalPromotion(context))
       SQLTypeUtils.coerce(ref, valueRenderedType, comparisonTargetType, nullable = false, context)
     else processorParsedRight(ref, context)
@@ -1440,8 +1460,7 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           SQLTypeUtils
             .processorTemporal(chain, identifier.declaredType)
             .getOrElse(
-              SQLTypeUtils
-                .coerce(chain, operandType, targetedType, identifier.nullable, context)
+              convertedLeft(chain, operandType, targetedType, identifier.nullable, context)
             )
         // 🔴 A temporal chain in a PROCESSOR needs no coercion at all, because story 21.8's rule 3
         // has already collapsed it: every temporal value in an ingest script is a `ZonedDateTime`,
@@ -1463,12 +1482,26 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
         case _ =>
           val nullable = SQLTypeUtils.mayRenderNull(identifier, context)
           val operand = if (nullable) chain else SQLTypeUtils.asOneValue(chain)
-          val converted =
-            SQLTypeUtils.coerce(operand, operandType, targetedType, nullable, context)
+          val converted = convertedLeft(operand, operandType, targetedType, nullable, context)
           if (converted == operand) chain else converted
       }
     (chain, coerced)
   }
+
+  /** The left operand converted to the type the comparison reads it as: an implicit cast's
+    * conversion (SCHEMA-5b D7, `SQLTypeUtils.implicitCast`), else [[SQLTypeUtils.coerce]], as
+    * before.
+    */
+  private def convertedLeft(
+    operand: String,
+    from: SQLType,
+    to: SQLType,
+    nullable: Boolean,
+    context: Option[PainlessContext]
+  ): String =
+    if (implicitComparisonTarget.isDefined)
+      SQLTypeUtils.implicitCast(operand, from, to, nullable, context)
+    else SQLTypeUtils.coerce(operand, from, to, nullable, context)
 
   /** The operand with its target-type coercion — [[leftOperand]] 's second element, for the callers
     * that do not need the chain rendering apart from it.
@@ -1507,6 +1540,10 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     val readsMetric =
       isAggregation || (context.isEmpty && (referencesBucketMetric || reducesDateMetrics))
     op match {
+      // SCHEMA-5b D6: both sides of an implicit cast are values of its target -- a number or a
+      // boolean -- whatever type the right-hand side was declared with
+      case _: ComparisonOperator if implicitComparisonTarget.isDefined =>
+        s"$param ${op.painless(None)} $value"
       case _: ComparisonOperator =>
         // 🔴 Story BIDC-8 AD-9 — dispatch on the EFFECTIVE operator, i.e. with a `NOT` folded in,
         // exactly as `painlessOp` does for the generic fallback below. Each arm here returns a
@@ -1839,7 +1876,19 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     * `.atStartOfDay(…)` to a `ZonedDateTime`.
     */
   override def painless(context: Option[PainlessContext]): String =
-    SQLTypeUtils.renderingIn(context)(comparisonPainless(context))
+    literalsInPlace match {
+      case Some(mapped) => mapped.painless(context)
+      case None         => SQLTypeUtils.renderingIn(context)(comparisonPainless(context))
+    }
+
+  /** 🔴 This EQUALITY (`=`, `<>`, `!=`) with each side that `ComparisonRule.literalInPlaceOf` maps
+    * in place of its literal (SCHEMA-5b A-98 α, R-119): `COALESCE('2024-01-15', d) = k` is
+    * `'2024-01-15' = k`, the text comparison 0.24.0 ran, right on every row. Read by the type rule
+    * ([[comparisonError]]) and the rendering ([[painless]]) alike, so what is judged is what runs;
+    * every reader below (the declared type, the implicit target, the target type, both operands)
+    * reads the mapped comparison. `None` for every other comparison, in a query or not.
+    */
+  protected def literalsInPlace: Option[Expression] = None
 
   private def comparisonPainless(context: Option[PainlessContext]): String = {
     // A context-free rendering of an aggregate predicate is a bucket-pipeline rendering.
@@ -2008,7 +2057,9 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
           // byte-identical while sending everything else to the general path below, which binds the
           // operand to a local (`bindLocal`) and guards it -- the machinery `UPPER(status)` and
           // `ABS(amount)` already used, and the reason those were never affected.
-          case Some(p) if !rightNullable && p == chainRendering =>
+          case Some(p)
+              if !rightNullable && p == chainRendering &&
+                (implicitComparisonTarget.isEmpty || innerLeft == chainRendering) =>
             if (identifier.nullable)
               return s"$p == null ? false : $painlessNot(${check(context, utc(p, leftUtc), utc(rightPromoted, rightUtc))})"
             else
@@ -2124,6 +2175,12 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
     *     always has. A CASE condition is a script, so the rule judges it like any other comparison.
     */
   def comparisonError(scripted: Boolean): Option[String] =
+    literalsInPlace match {
+      case Some(mapped) => mapped.comparisonError(scripted)
+      case None         => ownComparisonError(scripted)
+    }
+
+  private def ownComparisonError(scripted: Boolean): Option[String] =
     maybeValue.flatMap { value =>
       if (!scripted && Expression.literalAgainstBareColumn(identifier, value)) None
       else
@@ -2151,8 +2208,64 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
          else ComparisonRule.readingOf(identifier, ComparisonRule.declaredTypeOf(value)))
           .map(_.sqlType)
           .getOrElse(operandDeclaredType)
-    ComparisonRule.mismatch(left, ComparisonRule.comparedType(reading, value))
+    val right = ComparisonRule.comparedType(reading, value)
+    if (implicitAllowed(value, left, right))
+      ComparisonRule.mismatch(left, right, equalityComparison)
+    else ComparisonRule.mismatch(left, right)
   }
+
+  /** Is this comparison an EQUALITY (`=`, `<>`, `!=`, IN) for the implicit-cast table
+    * (`ComparisonRule.implicitTarget`, SCHEMA-5b D6)?
+    */
+  protected def equalityComparison: Boolean = effectiveOperator match {
+    case EQ | NE | DIFF => true
+    case _              => false
+  }
+
+  /** May the implicit-cast table (SCHEMA-5b D6) judge the left operand against `value`, whose types
+    * are `left` and `right`? Neither side is a string literal (a literal is READ by what it is
+    * compared with, `ComparisonRule.readingOf`) or NULL; a text side reads no aggregate -- a group
+    * filter reads every metric as a number, converts nothing, and Elasticsearch's `max` / `min`
+    * read no keyword (T0-4).
+    */
+  protected def implicitAllowed(value: Token, left: SQLType, right: SQLType): Boolean =
+    (effectiveOperator match {
+      // the comparisons DuckDB's table binds; LIKE, RLIKE, MATCH and the null tests keep main's rule
+      case EQ | NE | DIFF | LT | LE | GT | GE | IN | BETWEEN => true
+      case _                                                 => false
+    }) && tableSide(identifier) && tableSide(value) && {
+      val text =
+        ComparisonRule.textType(SQLTypeUtils.operandType(left)) ||
+        ComparisonRule.textType(SQLTypeUtils.operandType(right))
+      !(text && (identifier.hasAggregation || (value match {
+        case p: PainlessScript => p.hasAggregation
+        case _                 => false
+      })))
+    }
+
+  /** A side of the implicit-cast table: neither a string literal nor NULL. */
+  protected def tableSide(token: Token): Boolean =
+    ComparisonRule.stringLiteral(token).isEmpty && !(token match {
+      case p: PainlessScript => ArithmeticExpression.nullLiteral(p)
+      case _                 => false
+    })
+
+  /** 🔴 The type this comparison's two sides are compared IN by the implicit-cast table (SCHEMA-5b
+    * D6, `ComparisonRule.implicitTarget`), for a pair main's rule refuses; `None` -- every other
+    * comparison keeps main's rendering, byte for byte. The type rule ([[mismatchWith]]) reads the
+    * same table, so what is judged is what runs. Asked LIVE (A-82): the table's text rows depend on
+    * the scope, and a memo's query slot also serves a computed column's validation.
+    */
+  protected def implicitComparisonTarget: Option[SQLType] =
+    maybeValue.flatMap { value =>
+      val left = operandDeclaredType
+      val right = ComparisonRule.comparedType(literalReading, value)
+      if (
+        ComparisonRule.stringLiteral(identifier).isDefined ||
+        !implicitAllowed(value, left, right) || ComparisonRule.mismatch(left, right).isEmpty
+      ) None
+      else ComparisonRule.implicitTarget(left, right, equalityComparison)
+    }
 }
 
 object Expression {
@@ -2189,6 +2302,26 @@ object Expression {
     */
   private[query] def literalAgainstBareColumn(left: Token, right: Token): Boolean =
     (bareColumn(left) && literal(right)) || (literal(left) && bareColumn(right))
+
+  /** The two sides of an equality as SCHEMA-5b A-98 α reads them
+    * (`ComparisonRule.literalInPlaceOf`, R-119): each side a `COALESCE` whose literal it reads in
+    * place of it becomes that literal, a fresh one rendering its quoted text; `None` where neither
+    * side does.
+    */
+  private[query] def literalsInPlace(
+    equality: Boolean,
+    left: Identifier,
+    right: Token
+  ): Option[(Identifier, Token)] =
+    if (!equality) None
+    else {
+      def literal(arm: PainlessScript): Option[Identifier] =
+        ComparisonRule.stringLiteral(arm).map(text => Identifier(StringValue(text)))
+      val l = ComparisonRule.literalInPlaceOf(left, right).flatMap(literal)
+      val r = ComparisonRule.literalInPlaceOf(right, left).flatMap(literal)
+      if (l.isEmpty && r.isEmpty) None
+      else Some((l.getOrElse(left), r.getOrElse(right)))
+    }
 }
 
 case class GenericExpression(
@@ -2198,6 +2331,11 @@ case class GenericExpression(
   maybeNot: Option[NOT.type] = None
 ) extends Expression {
   override def maybeValue: Option[Token] = Option(value)
+
+  override protected def literalsInPlace: Option[Expression] =
+    Expression.literalsInPlace(equalityComparison, identifier, value).map { case (l, r) =>
+      copy(identifier = l, value = r)
+    }
 
   override def negated: Option[Criteria] =
     Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
@@ -2225,6 +2363,12 @@ case class Comparison(
   maybeNot: Option[NOT.type] = None
 ) extends Expression {
   override def maybeValue: Option[Token] = Option(value)
+
+  override protected def literalsInPlace: Option[Expression] =
+    Expression.literalsInPlace(equalityComparison, identifier, value).map {
+      case (l, r: PainlessScript) => copy(identifier = l, value = r)
+      case (l, _)                 => copy(identifier = l)
+    }
 
   override def negated: Option[Criteria] =
     Some(this.copy(maybeNot = if (maybeNot.isDefined) None else Some(NOT)))
@@ -2484,6 +2628,36 @@ case class InExpr[R, +T <: Value[R]](
         .map { case (left, right) =>
           s"Type mismatch: '${left.typeId}' is not compatible with '${right.typeId}' in expression: $this"
         }
+
+  /** `x IN (a, b)` is `x = a OR x = b`: an equality for the implicit-cast table (SCHEMA-5b D6). */
+  override protected def equalityComparison: Boolean = true
+
+  /** The implicit-cast table reads an IN whose elements are all NUMBER literals (`k IN (1, 2)`, `b
+    * IN (1, 0)`); a list holding a string literal keeps main's rule, its literals read by the
+    * operand (`readingFor`).
+    */
+  override protected def implicitAllowed(value: Token, left: SQLType, right: SQLType): Boolean =
+    values.values.nonEmpty &&
+    values.values.forall(v => ComparisonRule.stringLiteral(v).isEmpty) &&
+    super.implicitAllowed(value, left, right)
+
+  /** The type the operand and the elements are compared IN (SCHEMA-5b D6): each element's implicit
+    * target against the operand, when every element needs one -- their common supertype (`k IN (1,
+    * 1.5)` is compared as DOUBLE).
+    */
+  override protected def implicitComparisonTarget: Option[SQLType] =
+    if (ComparisonRule.stringLiteral(identifier).isDefined) None
+    else {
+      val left = operandDeclaredType
+      val targets = values.values.map { v =>
+        val right = ComparisonRule.comparedType(None, v)
+        if (!implicitAllowed(v, left, right) || ComparisonRule.mismatch(left, right).isEmpty) None
+        else ComparisonRule.implicitTarget(left, right, equality = true)
+      }
+      if (targets.nonEmpty && targets.forall(_.isDefined))
+        Some(SQLTypeUtils.leastCommonSuperType(targets.flatten.toList))
+      else None
+    }
 
   /** What each element is READ as (`readingFor`), computed ONCE per IN and memoised (like
     * `literalReading`): the type rule, the type questions, both renderings and the group filter all
@@ -3029,6 +3203,28 @@ case class BetweenExpr(
     else if (bound eq fromTo.to) boundReadings._2
     else readingFor(bound)
 
+  /** The type the operand and the bounds are compared IN (SCHEMA-5b D6): BETWEEN is no equality, so
+    * the table binds a BOOLEAN beside a whole number only (`b BETWEEN 0 AND 1`, `n BETWEEN b AND
+    * 5`). A bound main compares keeps its type; every other bound needs the table, or none applies.
+    */
+  override protected def implicitComparisonTarget: Option[SQLType] =
+    if (ComparisonRule.stringLiteral(identifier).isDefined) None
+    else {
+      val left = operandDeclaredType
+      val perBound = Seq(fromTo.from, fromTo.to).map { b =>
+        val right = ComparisonRule.comparedType(boundReading(b), b)
+        if (ComparisonRule.mismatch(left, right).isEmpty) Some(None)
+        else if (!implicitAllowed(b, left, right)) None
+        else ComparisonRule.implicitTarget(left, right, equality = false).map(Some(_))
+      }
+      if (perBound.exists(_.isEmpty)) None
+      else
+        perBound.flatten.flatten match {
+          case Nil     => None
+          case targets => Some(SQLTypeUtils.leastCommonSuperType(targets.toList))
+        }
+    }
+
   /** What a bare column's `range` query sends for `bound`: the whole number the one comparison rule
     * rounded a quoted bound to beside a whole-declared column (`queryTextOf`, R-54), else `None` --
     * its own text.
@@ -3096,7 +3292,19 @@ case class BetweenExpr(
       val rendered = readingPainless(boundReading(b), b, context)
       val from = boundRenderedType(b)
       val to = comparisonTargetType
-      if (
+      // SCHEMA-5b D6 / D7: a BOOLEAN bound beside a whole operand is the number it is compared as
+      if (implicitComparisonTarget.isDefined)
+        SQLTypeUtils.implicitCast(
+          rendered,
+          from,
+          to,
+          b match {
+            case p: PainlessScript => SQLTypeUtils.mayRenderNull(p, context)
+            case _                 => false
+          },
+          context
+        )
+      else if (
         from != to && from.isInstanceOf[SQLTemporal] && to.isInstanceOf[SQLTemporal] &&
         !context.exists(_.isProcessor)
       )

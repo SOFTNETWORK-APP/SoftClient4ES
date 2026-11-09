@@ -138,8 +138,7 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
 
   it should "be closed with the mapping for a key over a date" in {
     Seq(
-      "CONCAT(d, '')"             -> "'2024-01-03'" -> "it reads the date column d",
-      "COALESCE(d, '2024-01-01')" -> "'2024-01-03'" -> "it reads the date column d"
+      "CONCAT(d, '')" -> "'2024-01-03'" -> "it reads the date column d"
     ).foreach { case ((key, value), cause) =>
       val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $key = $value"
       withClue(sql) {
@@ -148,6 +147,18 @@ class NamelessKeyFilterSpec extends AnyFlatSpec with Matchers {
         reason should include(cause)
       }
     }
+  }
+
+  it should "close a key whose quoted argument is read as a date as a DATE grouping level" in {
+    // Re-pinned (SCHEMA-5b, R-47): `COALESCE(d, '2024-01-01')` was a VARCHAR key (the literal kept
+    // its text) and was refused as a key reading the date column d. Its literal is now read as the
+    // date it names, as DuckDB 1.5.5 reads it beside a DATE, so the key IS a DATE and is refused by
+    // the DATE grouping level's own reason -- still refused, with the reason that now applies.
+    val key = "COALESCE(d, '2024-01-01')"
+    val sql = s"SELECT $key AS k, COUNT(*) AS c FROM t GROUP BY $key HAVING $key = '2024-01-03'"
+    val reason = resolved(sql).left.getOrElse("")
+    reason should startWith(s"HAVING cannot filter a DATE grouping level: $key = '2024-01-03'")
+    reason should include(s"Restrict the rows in WHERE instead, with the same condition on $key")
   }
 
   it should "be open with the mapping for a decimal key and for a whole number written 1.0" in {

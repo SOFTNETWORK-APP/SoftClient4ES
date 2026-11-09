@@ -95,6 +95,21 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     "s2" -> """{"id":"s2","k":"b","sf":2.5,"hf":1.5,"u":8,"dn":"2024-02-01T00:00:00Z","ip":"10.0.0.2"}"""
   )
 
+  // SCHEMA-5b (D14): a quoted argument read as the type beside it, a BOOLEAN beside a whole number,
+  // a text compared with a number
+  private val s5 = "s5c_t"
+
+  private val s5Mapping: String =
+    """{"properties": {
+      |  "id": {"type": "keyword"}, "n": {"type": "integer"}, "b": {"type": "boolean"},
+      |  "k": {"type": "keyword"}
+      |}}""".stripMargin
+
+  private val s5Docs: Seq[(String, String)] = Seq(
+    "q1" -> """{"id":"q1","n":1,"b":true,"k":"5"}""",
+    "q2" -> """{"id":"q2","b":false,"k":"0"}"""
+  )
+
   private def load(index: String, mappingJson: String, documents: Seq[(String, String)]): Unit = {
     Try(client.deleteIndex(index))
     client
@@ -112,10 +127,11 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     load(s7, s7Mapping, s7Docs)
     load("s7c_p1", """{"properties": {"k": {"type": "keyword"}}}""", Seq("p1" -> """{"k":"007"}"""))
     load("s7c_p2", """{"properties": {"k": {"type": "long"}}}""", Seq("p2" -> """{"k":7}"""))
+    load(s5, s5Mapping, s5Docs)
   }
 
   override def afterAll(): Unit = {
-    Seq(table, s7, "s7c_p1", "s7c_p2").foreach(index => Try(client.deleteIndex(index)))
+    Seq(table, s7, "s7c_p1", "s7c_p2", s5).foreach(index => Try(client.deleteIndex(index)))
     super.afterAll()
   }
 
@@ -483,5 +499,31 @@ class JavaClientSchemaConsumerSpec extends AnyFlatSpecLike with ElasticDockerTes
     )
     rows.map(_("ck")).distinct shouldBe Seq("C")
     rowsAndSchema(run(s"SELECT k FROM $s7Pattern"))._1.map(_("k")).toSet shouldBe Set("007", "7")
+  }
+
+  "Arrow" should "read SCHEMA-5b's conditionals by the types core reports (D14)" in {
+    val sql = s"SELECT id, COALESCE(n, '3') AS c, GREATEST(b, 1) AS g, NULLIF(k, 0) AS z FROM $s5"
+    val result = run(sql)
+    val (rows, schema) = rowsAndSchema(result)
+    extractRows(result).map(_.toMap) shouldBe rows.map(_.toMap)
+    // COALESCE(n, '3') was VARCHAR, GREATEST(b, 1) and NULLIF(k, 0) refused, before SCHEMA-5b
+    schema.map(_.columns.map(c => c.name -> c.sqlType.typeId)) shouldBe Some(
+      Seq("id" -> "VARCHAR", "c" -> "INT", "g" -> "BIGINT", "z" -> "VARCHAR")
+    )
+    rows
+      .map(r => String.valueOf(r("id")) -> ((r("c"), r("g"), r.getOrElse("z", null))))
+      .toMap shouldBe Map(
+      "q1" -> ((Integer.valueOf(1), java.lang.Long.valueOf(1L), "5")),
+      "q2" -> ((Integer.valueOf(3), java.lang.Long.valueOf(1L), null))
+    )
+  }
+
+  "The JDBC driver" should "read SCHEMA-5b's conditionals by its match (D14)" in {
+    val rows = extractRows(run(s"SELECT id, COALESCE(n, '3') AS c, GREATEST(b, 1) AS g FROM $s5"))
+    rows
+      .map(r => ValueCoercion.coerceToString(r("id")) -> ValueCoercion.coerceToString(r("c")))
+      .toMap shouldBe
+    Map("q1" -> "1", "q2" -> "3")
+    rows.map(r => ValueCoercion.coerceToString(r("g"))).toSet shouldBe Set("1")
   }
 }

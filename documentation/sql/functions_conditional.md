@@ -22,8 +22,186 @@ column no mapping types — beside a `DATE` makes a `TIMESTAMP`.
 - **A `NULL` literal argument is folded**, as DuckDB and PostgreSQL do: `NULLIF(x, NULL)` is `x`,
   `NULLIF(NULL, x)` is `NULL`, `COALESCE` drops a `NULL` argument, and `GREATEST` / `LEAST` skip
   one. With no other argument left, the result is `NULL`.
+- *Since `0.25.0`.* **A quoted argument is read as the type of the arguments beside it**, as DuckDB
+  reads it, in `COALESCE`, `GREATEST`, `LEAST` and the results of a `CASE`: beside a number it is
+  the number it spells (beside a whole type, the whole number it rounds to, half away from zero),
+  beside a `DATE` or a `TIMESTAMP` the date or the timestamp it names, beside a `BOOLEAN` the
+  boolean it spells. `GREATEST(n, '1.5')` over an `INT` column answers `2`, an `INT` (it was
+  refused); `COALESCE(n, '3')` answers `3`, an `INT`, where it answered the text `'3'` on every row;
+  `COALESCE(d, '2024-01-15')` is a `DATE` (it was text). The literal takes the column's type —
+  `GREATEST(t, '1.5')` over a `TINYINT` is a `TINYINT` — and a whole number past that type's range
+  makes a `BIGINT` (`GREATEST(t, '200')` is `200`). Every reader of the type follows: `DESCRIBE`,
+  JDBC and Arrow metadata, a `CREATE TABLE … AS SELECT` mapping, `ORDER BY`, a `GROUP BY` key, a
+  comparison or a cast of the result. A quoted argument that does not spell a value of that type
+  (`'abc'` beside a number, `'3'` beside a date) leaves the whole expression as it was:
+  `COALESCE(n, 'abc')` answers text and `GREATEST(n, 'abc')` is refused.
+- *Since `0.25.0`.* **A `BOOLEAN` beside whole numbers answers `1` or `0`**, their type, as DuckDB
+  reads it: `COALESCE(b, 1)` answers `1` / `0` in a query (it answered `true` / `false` in an
+  integer column), and `GREATEST(b, 1)` / `LEAST(b, 1)` answer in a query and in a computed column
+  (they were refused in a query; a computed column stored no value). Beside a fractional number a
+  `BOOLEAN` is left as it was, and `GREATEST` over booleans alone is refused.
 - In a computed column (`SCRIPT AS`) and in a materialized view's computed field, a conditional is
-  rendered as before `0.24.0`, so a stored pipeline does not change.
+  rendered as before `0.24.0`, so a stored pipeline does not change — except where a quoted argument
+  is now read as a value (`COALESCE(n, '3')` stores the number `3`, and `'1.5'` beside an integer
+  column stores `2` where Elasticsearch truncated the text to `1`), for `GREATEST` / `LEAST`
+  over a `BOOLEAN` beside whole numbers, and for a `CASE` that compares a `BOOLEAN` with a number
+  (below): `ALTER TABLE` re-creates such a pipeline. A quoted argument read as a date or a
+  timestamp keeps the expression's `0.24.0` text type there (in a pipeline and in a transform
+  alike), so a function over it parses it as before — `DATE_ADD(COALESCE(d, '2024-01-15'), INTERVAL
+  1 DAY)` stores `2024-01-16` where `d` is missing — and a comparison, an `IN`, a `BETWEEN`, a
+  `NULLIF` or a `CASE … WHEN` compares that text as before (`CASE WHEN COALESCE(d, '2024-01-15') =
+  '2024-01-15' THEN 1 ELSE 0 END` keeps its pipeline). `CREATE TABLE` and `ALTER TABLE` judge the
+  column on that text type too, as before: over a `KEYWORD` `k` and a `DATE` `d2`,
+  `NULLIF(COALESCE(d, '2024-01-15'), k)` is accepted and `NULLIF(COALESCE(d, '2024-01-15'), d2)`
+  is refused; `NULLIF(COALESCE(d, '2024-01-15'), k) - d2` and
+  `COALESCE(NULLIF(COALESCE(d, '2024-01-15'), k), d2) - d2` are accepted (they were refused; the
+  pipeline subtracts the dates as `COALESCE(d, '2024-01-15') - d2` does). A quoted argument read as
+  a number makes the conditional a number there too, so `NULLIF(COALESCE(n, '3'), k)`,
+  `NULLIF(k, COALESCE(n, '3'))`, `NULLIF(COALESCE(n, '3'), '2024-01-15')`,
+  `COALESCE(NULLIF(COALESCE(n, '3'), k), k)` and `COALESCE(NULLIF(COALESCE(n, '3'), k), g)` are
+  refused by `CREATE TABLE` and `ALTER TABLE` — including any `ALTER TABLE` of a table that holds
+  one — where the pipeline compared the number with the text and stored no value on every
+  document holding both. Beside a `DATE` it is stored as its date
+  (`'2024-01-15 10:30:00'` stores `'2024-01-15'`, which the `date` field reads; it stored the text
+  as written), beside a `TIMESTAMP` as written. In `CREATE TABLE` and `ALTER TABLE` this also holds
+  under a cast: `CAST(CASE WHEN … THEN d ELSE '2024-01-15 10:30:00' END AS VARCHAR)` stores
+  `'2024-01-15'` (it stored the text as written); its `AS DATE` and `AS TIMESTAMP` twins are refused
+  by Elasticsearch when the pipeline is created, as before.
+- *Since `0.25.0`.* **A `CASE` that compares a `BOOLEAN` with a number in a computed column**
+  compares the boolean as `1` / `0`, as a query does (see
+  [Comparing values of different types](operators.md#operator-)). The pipeline compared the boolean
+  itself with the number and stored a wrong value or none (`b = 1` was never true, `b < 1` stored no
+  value, `b BETWEEN 1 AND 1` failed every document, `b <> 1` stored `1` for a `"true"` source).
+  With `b` a `BOOLEAN`, `n` an `INT`, `l` a `BIGINT` and `x` a `DOUBLE` column, these `SCRIPT AS`
+  shapes render a new pipeline, the same list in `CREATE TABLE` and in `ALTER TABLE` (which
+  re-creates it):
+  - `CASE WHEN b op n` and `CASE WHEN n op b`, and the same two over `l`, for every `op` of `=`,
+    `<>`, `!=`, `<`, `<=`, `>`, `>=`;
+  - `CASE WHEN b op x` and `CASE WHEN x op b` for `=`, `<>`, `!=` (an ordering against a `DOUBLE`
+    keeps its pipeline);
+  - `CASE WHEN b op 1` for every `op` of `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, and
+    `CASE WHEN b IN (1)`, `CASE WHEN b NOT IN (1)`, `CASE WHEN b BETWEEN 1 AND 1`,
+    `CASE WHEN b NOT BETWEEN 1 AND 1`; the same eleven with `0`;
+  - `CASE WHEN b op 1.5` for `=`, `<>`, `!=`, and `CASE WHEN b IN (1.5)`,
+    `CASE WHEN b NOT IN (1.5)`;
+  - `CASE b WHEN v` for `v` of `n`, `l`, `x`, `1`, `0`, `1.5`, and `CASE v WHEN b` for `v` of `n`,
+    `l`, `x`;
+  - `GREATEST(b, v)` and `LEAST(b, v)` for `v` of `n`, `l`, `1`, `0`, and `GREATEST(v, b)`,
+    `LEAST(v, b)` for `v` of `n`, `l` (above);
+  - `NULLIF(b, v)` for `v` of `n`, `l`, `x`, `1`, `0`, `1.5`, and `NULLIF(v, b)` for `v` of `n`,
+    `l`, `x`, which were refused and are accepted.
+- *Since `0.25.0`.* **A string function over a number, a boolean or a conditional in a computed
+  column** reads the value's text, as a query does (see
+  [Type conversion](type_conversion.md)): `UPPER(n)`, `LENGTH(n)`, `SUBSTRING(n, 1, 1)`,
+  `REVERSE(b)`, `UPPER(COALESCE(n, '3'))`, and `UPPER`, `LOWER`, `TRIM` or `LENGTH` over a `CASE`,
+  or over a `COALESCE` of a number, a date or a timestamp, render a new pipeline, which
+  `ALTER TABLE` re-creates. `UPPER(n)` stored no value;
+  `LOWER(CASE WHEN … THEN 'A' ELSE 'B' END)` stored `'A'` unchanged, lowering only the `ELSE`.
+- *Since `0.25.0`.* The new types reach every consumer: a `UNION ALL` branch (`COALESCE(n, '3')`
+  is an `INT` slot, it was `VARCHAR`), a window function's argument, a nested conditional
+  (`COALESCE(b, NULL, 'true')` takes `COALESCE(b, NULL, TRUE)`'s type), a cast
+  (`CAST(CASE WHEN … THEN ti ELSE '1.5' END AS BIGINT)` converts the number `2` where it parsed the
+  text `'1.5'` and failed), an arithmetic (`COALESCE(n, '1.5') + 1` answers; it was refused), and a
+  string function, which reads the value's text (`UPPER(CASE WHEN … THEN n ELSE '3' END)`). Over an
+  `ARRAY<X>` column the conditional reads its element in a query: `GREATEST(an, '1.5')` answers
+  (it was refused), as `GREATEST(an, 2)` does. A consumer that cannot take the new type is refused
+  as its unquoted twin is: `COALESCE(n, '3') LIKE '1%'`, `CAST(COALESCE(n, '3') AS DATE)`,
+  `COALESCE(n, '3') IN ('3', 'abc')` and, over a `KEYWORD` `k`, `COALESCE(d, '2024-01-15') = k`,
+  `COALESCE(n, '3') > k` and `CASE WHEN … THEN n ELSE '3' END > k` are refused (they failed on
+  every row, or answered wrong rows, before: `COALESCE(n, '3') > k` compared a number with a text,
+  which Painless refuses). So are, over a `KEYWORD` `k` and a `DATE` `d2`, a conditional holding a
+  quoted date or timestamp compared with `k` — `NULLIF(F, k)`, `NULLIF(k, F)`,
+  `CASE F WHEN k THEN …`, `F = k`, and the expressions over them, such as
+  `CASE WHEN NULLIF(F, k) = '2024-01-15' THEN …`, for `F` one of `COALESCE(d, '2024-01-15')`,
+  `COALESCE(d, '2024-01-15 10:30:00')`, `COALESCE(ts, '2024-01-15')`,
+  `COALESCE(ts, '2024-01-15 10:30:00')`, `COALESCE(d, ts, '2024-01-15 10:30:00')`,
+  `CASE WHEN … THEN d ELSE '2024-01-15' END`, `CASE n WHEN … THEN d ELSE '2024-01-15' END`,
+  `CASE WHEN … THEN ts ELSE '2024-01-15 10:30:00' END`, `NULLIF(COALESCE(d, '2024-01-15'), k)`,
+  `NULLIF(k, COALESCE(d, '2024-01-15'))` and `NULLIF(COALESCE(d, '2024-01-15'), '2024-01-15')`,
+  and the literal-first forms with a time part or beside a timestamp,
+  `COALESCE('2024-01-15 10:30:00', d)`, `COALESCE('2024-01-15', ts)` and
+  `COALESCE('2024-01-15 10:30:00', ts)` — and, over a number read so,
+  `CASE WHEN COALESCE(n, '3') = '2024-01-15' THEN …`,
+  `CASE WHEN COALESCE(n, '3') > '2024-01-10' THEN …`,
+  `CASE WHEN COALESCE(n, '3') BETWEEN d2 AND '2024-12-31' THEN …`,
+  `NULLIF(COALESCE(n, '3'), '2024-01-15')` and
+  `CASE WHEN NULLIF(COALESCE(n, '3'), k) = '2024-01-15' THEN …`: each compared a date or a number
+  with a text before. Over the three `CASE` operands and the literal-first forms with a time part
+  or beside a timestamp that answered wrong values on rows that tell the answers apart; over the
+  other operands it failed. Two forms answer instead, as the next two items say: a literal-first
+  `COALESCE('2024-01-15', d)` compared for equality with a text, and
+  `COALESCE(NULLIF(F, k), k)`.
+- *Since `0.25.0`.* **A literal-first `COALESCE` whose literal is a date as `yyyy-MM-dd` compares
+  that literal's text for equality with a text**: `COALESCE('2024-01-15', d)` can only answer its
+  literal, so beside a text operand that is no literal (a `KEYWORD` `k`, `UPPER(k)`), in a query,
+  `=`, `<>`, `!=`, `NULLIF` and `CASE … WHEN` compare the text `'2024-01-15'`, and `NULLIF`
+  answers it, a `VARCHAR`: `CASE WHEN COALESCE('2024-01-15', d) = k THEN 1 ELSE 0 END`,
+  `NULLIF(COALESCE('2024-01-15', d), k)`, `NULLIF(k, COALESCE('2024-01-15', d))`,
+  `CASE COALESCE('2024-01-15', d) WHEN k THEN …`, `CASE k WHEN COALESCE('2024-01-15', d) THEN …`,
+  `COALESCE(NULLIF(COALESCE('2024-01-15', d), k), k)` and `WHERE COALESCE('2024-01-15', d) = k`
+  answer as before, the same values (a `NULL` argument before the literal, or a second literal
+  after it, too). DuckDB refuses them. A text that spells the same date differently is compared
+  as text, as before: `k = '2024-01-15T00:00:00Z'` or `'3'` does not equal it. Ordering
+  (`COALESCE('2024-01-15', d) < k`, `>= k`) stays refused: it failed. `BETWEEN` is the exception:
+  between two text bounds, `CASE WHEN COALESCE('2024-01-15', d) BETWEEN k AND g THEN 1 ELSE 0 END`
+  is still accepted, and still fails when the query runs, as before. Outside a query, beside a
+  number or a date, or where a `CASE` compares its operand with values that are not all text, the
+  conditional keeps its `DATE`.
+- *Since `0.25.0`.* **`COALESCE(NULLIF(F, k), k)` answers `COALESCE(F, k)`**, in a query, where
+  `F` is a conditional holding a quoted date or timestamp and `k` a text: `F`'s text where `F` is
+  not `NULL`, else `k` — `COALESCE(NULLIF(CASE WHEN … THEN d ELSE '2024-01-15' END, k), k)` (and
+  over `ts`, and `CASE n WHEN …`), `COALESCE(NULLIF(COALESCE(d, '2024-01-15'), k), k)` (and over
+  `ts`, a time part, or `COALESCE(d, ts, …)`), `COALESCE(NULLIF(NULLIF(COALESCE(d, '2024-01-15'),
+  '2024-01-15'), k), k)`, `COALESCE(NULLIF(k, F), F)`, with more arguments after or before
+  (`COALESCE(NULLIF(F, k), k, g)`, `COALESCE(g, NULLIF(F, k), k)`) and under a string function.
+  Those over the three `CASE` operands answered the right dates before, in another text: a date
+  now answers `'2024-01-15'` where it answered `'2024-01-15T00:00Z'`, and the literal of a
+  timestamp `CASE` answers `'2024-01-15T10:30Z'` where it answered `'2024-01-15 10:30:00'`; the
+  others failed. Where `k` spells `F`'s date or instant in another text
+  (`k = '2024-01-15T00:00:00Z'` beside a date), the answer is `F`'s text, the same date. A `NULLIF`
+  that is not followed by its second argument, or whose argument is a column or a literal, keeps
+  its refusal (`COALESCE(NULLIF(F, k), g)`, `COALESCE(NULLIF(d, k), k)`).
+- *Since `0.25.0`.* **`COALESCE` over a `GREATEST` or `LEAST` holding a literal answers**: such an
+  argument is never `NULL`, so `COALESCE` ends there, in a query, a computed column
+  (`CREATE TABLE`, `ALTER TABLE`, `UPDATE … SET`) and a transform. `COALESCE(GREATEST(n, 3), l)`,
+  `COALESCE(LEAST(x, 1.5), x)`, `COALESCE(GREATEST(n, 3), n, 7)` and their computed columns failed
+  to compile (`Cannot cast from [long] to [java.lang.Object]`), as did a computed column
+  `c VARCHAR SCRIPT AS (COALESCE(GREATEST(n, '3'), k))` (`Cannot cast from [java.lang.String] to
+  [double]`); the quoted forms, refused before — `COALESCE(GREATEST(n, '3'), n)`,
+  `COALESCE(LEAST(x, '1.5'), x)` over a `TINYINT`, an `INT` or a `DOUBLE` with `'3'`, `'1.5'` or
+  `'200'`, and `COALESCE(GREATEST(n, '2'), k)` — answer too. Per group the same rule renders,
+  but `SELECT g, COALESCE(GREATEST(MAX(n), 3), 0) … GROUP BY g` is refused before it runs, as
+  before. A `GREATEST` with no literal (`COALESCE(GREATEST(n, l), x)`) and a nested
+  `COALESCE(COALESCE(GREATEST(n, 3), l), x)` render as before.
+- *Since `0.25.0`.* **Nested beside a text argument, in a query, a conditional that reads a quoted
+  argument answers text, as before**: over a `KEYWORD` `k`, `COALESCE(COALESCE(n, '3'), k)`,
+  `COALESCE(k, COALESCE(n, '3'))`, `CASE WHEN … THEN COALESCE(n, '3') ELSE k END`,
+  `COALESCE(CASE WHEN … THEN n ELSE '3' END, k)`, `COALESCE(COALESCE(d, '2024-01-15'), k)`,
+  `COALESCE(COALESCE(n, '3'), CAST(n AS VARCHAR))` or
+  `COALESCE(COALESCE(n, '3'), COALESCE(d, '2024-01-15'))` are a `VARCHAR`, each nested value
+  answered as the text of the value it is read as: `COALESCE(COALESCE(n, '1.5'), k)` answers `'2'`
+  where `n` is missing (it answered `'1.5'`), and a date its ISO date. A nested `GREATEST`, `LEAST`
+  or `NULLIF` value reading a quoted argument answers its text too, which also makes answered, over
+  a `DATE` `d2`, statements that were refused because the nested expression mixed a text with a
+  number or a date: `COALESCE(GREATEST(n, '2'), k)`, `COALESCE(GREATEST(d, '2024-01-15'), k)`,
+  `COALESCE(COALESCE(GREATEST(d, '2024-01-15'), d2), k)`,
+  `COALESCE(COALESCE(COALESCE(d, '2024-01-15'), d2), k)`,
+  `COALESCE(COALESCE(d2, COALESCE(d, '2024-01-15')), k)`,
+  `COALESCE(CASE WHEN … THEN COALESCE(d, '2024-01-15') ELSE d2 END, k)` and
+  `COALESCE(NULLIF(COALESCE(d, '2024-01-15'), d2), k)`. Beside a number or a date the nested value
+  keeps the type it is read as (`COALESCE(COALESCE(n, '3'), x)` is a `DOUBLE`), and arguments that
+  mix either way stay refused (`COALESCE(COALESCE(n, '3'), d)`). A computed column stores the
+  value the nested conditional reads (`COALESCE(COALESCE(n, '1.5'), k)` stores `2` where `n` is
+  missing).
+- *Since `0.25.0`.* **`COALESCE` over a `CASE` tests the whole `CASE` for `NULL`**:
+  `COALESCE(CASE WHEN c THEN a ELSE b END, k)` answers `k` where `c` holds and `a` is `NULL`. It
+  tested the `ELSE` alone and answered `NULL` there, and a `NULL` `ELSE`
+  (`CASE WHEN c THEN a ELSE NULL END`) compared `null` with `null`. Every `COALESCE` with a `CASE`
+  argument before its last one renders new bytes — in a query, in a computed column (`CREATE TABLE`,
+  `ALTER TABLE`, which re-creates the pipeline, and `UPDATE … SET`) and in a transform — for
+  instance `COALESCE(CASE WHEN … THEN d ELSE '2024-01-15' END, k)`,
+  `COALESCE(CASE n WHEN 1 THEN d ELSE '2024-01-15' END, d2)` and
+  `COALESCE(CASE WHEN … THEN n ELSE l END, 7)`.
 
 ---
 
@@ -345,6 +523,15 @@ FROM products
 
   A cast can *create* the mismatch as well as cure it: `NULLIF(CAST(qty AS KEYWORD), 0)` renders
   text against a number and is refused, even though `qty` is numeric.
+
+  *Since `0.25.0`*, a **query** compares a text with a number or a boolean, and a boolean with a
+  number, as DuckDB casts them (see
+  [Comparing values of different types](operators.md#operator-)): `NULLIF(status, 0)` reads
+  `status` as a `BIGINT` and answers `status`, NULL where it reads as `0`; a `status` that spells
+  no number fails the query. `NULLIF(flag, 0)` over a `BOOLEAN` compares it as `1` / `0`, in a query
+  and in a computed column. A **computed column** keeps the refusal above for a text against a
+  number or a boolean: an ingest pipeline would silently drop the document whose text converts to
+  nothing.
 
   The same rule refuses a **date against a number** (`NULLIF(created_at, 0)`) and a **boolean
   against anything but a boolean** (`NULLIF(is_active, 0)`). Before **0.24.0** these were accepted
