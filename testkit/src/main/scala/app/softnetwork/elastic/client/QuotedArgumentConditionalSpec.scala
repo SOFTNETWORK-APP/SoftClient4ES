@@ -737,8 +737,16 @@ trait QuotedArgumentConditionalSpec extends GatewayIntegrationTestKit {
     ).foreach { case (cond, expected) =>
       withClue(cond)(ids(s"SELECT id FROM s5b_c WHERE $cond") shouldBe expected)
     }
-    answers("s5b_c", "NULLIF(k, 0)", TextC, "c1"                      -> "1", "c2" -> null)
-    answers("s5b_c", "CASE WHEN k = 1 THEN 1 ELSE 0 END", LongC, "c1" -> 1, "c2"   -> 0)
+    answers("s5b_c", "NULLIF(k, 0)", TextC, "c1" -> "1", "c2" -> null)
+    // a predicate over a conditional has no column for `exists` to test: the script answers it
+    ids("SELECT id FROM s5b_c WHERE ISNOTNULL(NULLIF(k, 0))") shouldBe Set("c1")
+    ids("SELECT id FROM s5b_c WHERE ISNULL(NULLIF(k, 0))") shouldBe Set("c2")
+    ids("SELECT id FROM s5b_c WHERE ISNOTNULL(COALESCE(k, 'z'))") shouldBe Set("c1", "c2")
+    // the operand is ONE value: unenclosed, `c ? b : y == null` would answer the arm `b`
+    ids("SELECT id FROM s5b_c WHERE ISNULL(CASE WHEN n > 0 THEN b ELSE b END)") shouldBe empty
+    ids("SELECT id FROM s5b_c WHERE ISNOTNULL(CASE WHEN n = 0 THEN b ELSE b END)") shouldBe
+    Set("c1", "c2")
+    answers("s5b_c", "CASE WHEN k = 1 THEN 1 ELSE 0 END", LongC, "c1" -> 1, "c2" -> 0)
     answers(
       "s5b_c",
       "CASE k WHEN 1 THEN 'one' ELSE 'other' END",

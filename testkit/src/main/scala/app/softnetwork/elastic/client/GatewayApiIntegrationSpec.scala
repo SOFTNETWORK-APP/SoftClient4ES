@@ -1497,8 +1497,10 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     }
   }
 
-  /** 🔴 Issue #382, the LEAD RULING of 2026-09-23 — a `NULLIF` that compares TEXT with a NUMBER is
-    * a TYPE ERROR, and the engine refuses it instead of building a script around it.
+  /** 🔴 Issue #382, the LEAD RULING of 2026-09-23 — in a computed column, a `NULLIF` that compares
+    * TEXT with a NUMBER is a TYPE ERROR, and the engine refuses it instead of building a script
+    * around it. A query compares the two as DuckDB does, and a text that spells no number fails
+    * that query when its rows are read: the refusal is for the venue where the failure is silent.
     *
     * Executed, because the thing being asserted is that NOTHING is deployed and NOTHING is stored.
     * Before the ruling, the DDL form of this statement answered `200`, created the table, and then
@@ -1510,7 +1512,7 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     * column and BOTH rendered types, or a future regression that merely produces some other `Left`
     * would satisfy the row (story 21.4's lesson).
     */
-  it should "refuse a NULLIF that compares text with a number, in every venue (#382)" in {
+  it should "refuse a NULLIF of text and a number in a computed column, and fail the query on a text that spells no number (#382)" in {
     val create =
       """CREATE TABLE IF NOT EXISTS nullif_mismatch (
         |  id INT,
@@ -1530,18 +1532,43 @@ trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
     // ...and the table it would have created does not exist, so nothing was deployed half-way
     client.indexExists("nullif_mismatch", pattern = false) shouldBe ElasticSuccess(false)
 
-    // the QUERY venue of the same rule: a projection and a predicate over a table that DOES exist
+    // The QUERY venue compares them as DuckDB does: the text is read as a BIGINT, so a projection
+    // and a predicate are accepted, and this fixture's 'x' and 'yy', which spell no number, fail
+    // them when the rows are read. CONTROL: the same NULLIF over the same column, with nothing to
+    // convert, answers, so the number literal is the only difference between the two.
+    val control = collectRows(
+      System.nanoTime(),
+      client.run("SELECT id, NULLIF(s, 'x') AS c FROM nullif_fn").futureValue
+    ).map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong -> r).toMap
+    withClue(s"$control ") {
+      control.keySet shouldBe Set(1L, 2L)
+      control(1L).get("c").filterNot(v => v == null || v == Nil) shouldBe None
+      String.valueOf(scalarOf(control(2L), "c")) shouldBe "yy"
+    }
+    // ...and as a predicate: a NULLIF has no column for `exists` to test, the script answers it
+    Seq("ISNOTNULL" -> Set(2L), "ISNULL" -> Set(1L)).foreach { case (function, expected) =>
+      val sql = s"SELECT id FROM nullif_fn WHERE $function(NULLIF(s, 'x'))"
+      withClue(s"[$sql] ") {
+        collectRows(System.nanoTime(), client.run(sql).futureValue)
+          .map(r => String.valueOf(scalarOf(r, "id")).toDouble.toLong)
+          .toSet shouldBe expected
+      }
+    }
+
     Seq(
       "SELECT id, NULLIF(s, 0) AS c FROM nullif_fn",
       "SELECT id FROM nullif_fn WHERE ISNOTNULL(NULLIF(s, 0))"
     ).foreach { sql =>
-      val res = client.run(sql).futureValue
-      withClue(s"[$sql] $res ") {
-        res.isFailure shouldBe true
-        val message = String.valueOf(res)
-        message should include("NULLIF(s, 0)")
-        message should include("KEYWORD")
-        message should include("BIGINT")
+      val thrown = scala.util
+        .Try(collectRows(System.nanoTime(), client.run(sql).futureValue))
+        .failed
+        .getOrElse(fail(s"[$sql] over a text that spells no number was expected to fail"))
+      val reported = throwableText(thrown)
+      // the comparison's own conversion failing in Elasticsearch, not the engine refusing the
+      // statement: a client reports the thrown message or the response body quoting the script
+      withClue(s"[$sql] reported failure text was [$reported]: ") {
+        reported should include("could not convert string [")
+        reported should include("] to BIGINT")
       }
     }
 

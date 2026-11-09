@@ -2485,7 +2485,8 @@ case class IsNullCriteria(identifier: Identifier) extends CriteriaWithConditiona
         case None      => s"def left = $rendered; left == null"
       }
     }
-    s"${left(context)} == null"
+    // ONE value: a nameless operand can render `c ? a : b`, which the test would split
+    s"${SQLTypeUtils.asOneValue(left(context))} == null"
   }
 
 }
@@ -2529,7 +2530,8 @@ case class IsNotNullCriteria(identifier: Identifier)
         case None      => s"def left = $rendered; left != null"
       }
     }
-    s"${left(context)} != null"
+    // ONE value: a nameless operand can render `c ? a : b`, which the test would split
+    s"${SQLTypeUtils.asOneValue(left(context))} != null"
   }
 
 }
