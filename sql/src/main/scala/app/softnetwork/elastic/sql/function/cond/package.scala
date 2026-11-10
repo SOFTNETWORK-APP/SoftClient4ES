@@ -626,14 +626,19 @@ package object cond {
       * is read in place of beside a text second argument (SCHEMA-5b A-98 α,
       * `ComparisonRule.literalInPlaceOf`), else `expr1`. `NULLIF(COALESCE('2024-01-15', d), k)`
       * compares and answers `'2024-01-15'`, VARCHAR, as 0.24.0 did (right on every row, RUN). Every
-      * reader of an argument's type, reading or rendering reads [[first]] and [[second]].
+      * reader of an argument's type, reading or rendering reads [[first]] and [[second]], so each
+      * is computed ONCE PER SCOPE (`literalInPlaceOf` answers in a query only).
       */
     private[cond] def first: PainlessScript =
-      ComparisonRule.literalInPlaceOf(expr1, expr2).getOrElse(expr1)
+      _first(ComparisonRule.literalInPlaceOf(expr1, expr2).getOrElse(expr1))
+
+    private[this] val _first = new SQLTypeUtils.PerScope[PainlessScript]
 
     /** The second argument as NULLIF compares it ([[first]]). */
     private[cond] def second: PainlessScript =
-      ComparisonRule.literalInPlaceOf(expr2, expr1).getOrElse(expr2)
+      _second(ComparisonRule.literalInPlaceOf(expr2, expr1).getOrElse(expr2))
+
+    private[this] val _second = new SQLTypeUtils.PerScope[PainlessScript]
 
     override def answeredArms: List[PainlessScript] = List(first)
 

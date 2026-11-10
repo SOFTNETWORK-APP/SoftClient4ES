@@ -2259,10 +2259,18 @@ sealed trait Expression extends FunctionChain with ElasticFilter with Criteria {
   /** 🔴 The type this comparison's two sides are compared IN by the implicit-cast table (SCHEMA-5b
     * D6, `ComparisonRule.implicitTarget`), for a pair main's rule refuses; `None` -- every other
     * comparison keeps main's rendering, byte for byte. The type rule ([[mismatchWith]]) reads the
-    * same table, so what is judged is what runs. Asked LIVE (A-82): the table's text rows depend on
-    * the scope, and a memo's query slot also serves a computed column's validation.
+    * same table, so what is judged is what runs. The table's text rows depend on the scope (A-82),
+    * so it is computed ONCE PER SCOPE and memoised like [[literalReading]]: every renderer of the
+    * comparison asks it, several times each.
     */
-  protected def implicitComparisonTarget: Option[SQLType] =
+  protected final def implicitComparisonTarget: Option[SQLType] =
+    _implicitComparisonTarget(computeImplicitComparisonTarget)
+
+  private[this] val _implicitComparisonTarget = new SQLTypeUtils.PerScope[Option[SQLType]]
+
+  /** What [[implicitComparisonTarget]] computes; `InExpr` and `BetweenExpr` read their own sides.
+    */
+  protected def computeImplicitComparisonTarget: Option[SQLType] =
     maybeValue.flatMap { value =>
       val left = operandDeclaredType
       val right = ComparisonRule.comparedType(literalReading, value)
@@ -2653,7 +2661,7 @@ case class InExpr[R, +T <: Value[R]](
     * target against the operand, when every element needs one -- their common supertype (`k IN (1,
     * 1.5)` is compared as DOUBLE).
     */
-  override protected def implicitComparisonTarget: Option[SQLType] =
+  override protected def computeImplicitComparisonTarget: Option[SQLType] =
     if (ComparisonRule.stringLiteral(identifier).isDefined) None
     else {
       val left = operandDeclaredType
@@ -3215,7 +3223,7 @@ case class BetweenExpr(
     * the table binds a BOOLEAN beside a whole number only (`b BETWEEN 0 AND 1`, `n BETWEEN b AND
     * 5`). A bound main compares keeps its type; every other bound needs the table, or none applies.
     */
-  override protected def implicitComparisonTarget: Option[SQLType] =
+  override protected def computeImplicitComparisonTarget: Option[SQLType] =
     if (ComparisonRule.stringLiteral(identifier).isDefined) None
     else {
       val left = operandDeclaredType

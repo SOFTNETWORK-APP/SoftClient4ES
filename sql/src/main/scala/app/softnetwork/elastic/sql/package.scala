@@ -1983,9 +1983,10 @@ package object sql {
       * one verdict for core and arrow. The text rows bind in a QUERY only (A-82): where
       * `SQLTypeUtils.readsWholeValues` holds -- an ingest processor or a transform rendering, a
       * computed column's validation -- a processor would swallow a text that converts to nothing
-      * (`ignore_failure`) where DuckDB fails the statement, so main's verdict and bytes stay. Read
-      * LIVE, never memoised: a node's query slot also serves the validation. A string LITERAL is
-      * not a side of this table: it is read by what it is compared with ([[readingOf]]).
+      * (`ignore_failure`) where DuckDB fails the statement, so main's verdict and bytes stay. A
+      * node that keeps the answer keeps it per scope (`SQLTypeUtils.PerScope`, A-95), whose slots
+      * split the scopes as `readsWholeValues` does. A string LITERAL is not a side of this table:
+      * it is read by what it is compared with ([[readingOf]]).
       */
     def implicitTarget(left: SQLType, right: SQLType, equality: Boolean): Option[SQLType] = {
       val l = SQLTypeUtils.operandType(left)
@@ -2015,11 +2016,12 @@ package object sql {
       */
     def literalInPlaceOf(operand: Token, other: Token): Option[PainlessScript] =
       (operand, other) match {
-        // the cheap questions first: most operands are no COALESCE, and every comparison asks
-        case (p: PainlessScript, o: PainlessScript)
-            if !SQLTypeUtils.readsWholeValues && !p.hasAggregation && !o.hasAggregation =>
+        // the cheap questions first: most operands are no COALESCE, and every comparison asks;
+        // the aggregate questions walk both chains, so they come after it
+        case (p: PainlessScript, o: PainlessScript) =>
           SQLTypeUtils.conditionalNode(p) match {
-            case c: app.softnetwork.elastic.sql.function.cond.Coalesce =>
+            case c: app.softnetwork.elastic.sql.function.cond.Coalesce
+                if !SQLTypeUtils.readsWholeValues && !p.hasAggregation && !o.hasAggregation =>
               // the arms `readingAt` indexes (A-98 β may answer a NULLIF arm by its value)
               c.answeredArms.zipWithIndex
                 .find { case (arm, _) =>

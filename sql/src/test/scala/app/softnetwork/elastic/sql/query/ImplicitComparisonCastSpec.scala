@@ -393,4 +393,85 @@ class ImplicitComparisonCastSpec extends AnyFlatSpec with Matchers {
     second.typeError shouldBe None
     SQLTypeUtils.validatingComputedColumns(second.typeError) shouldBe defined
   }
+
+  /** A scope's answer, or the failure it raises. */
+  private def answer[N](n: N, ask: N => Any): Any =
+    scala.util.Try(ask(n)).fold(e => s"throws ${e.getMessage}", identity)
+
+  /** Each scope's answer on ONE node, asked in every order, is what that scope answers on a fresh
+    * node (A-95): a memo that lets the first scope to ask decide for the others fails an order.
+    */
+  private def answersEachScopeAsFresh[N](node: () => N, scopes: List[(String, N => Any)]): Unit = {
+    val fresh = scopes.map { case (scope, ask) => scope -> answer(node(), ask) }.toMap
+    scopes.permutations.foreach { order =>
+      val one = node()
+      order.foreach { case (scope, ask) =>
+        withClue(s"${order.map(_._1).mkString(" > ")}, $scope: ") {
+          answer(one, ask) shouldBe fresh(scope)
+        }
+      }
+    }
+  }
+
+  /** The whole script `painless` renders from a node in a fresh context of type `t`. */
+  private def renderedIn[N](
+    t: PainlessContextType
+  )(painless: (N, PainlessContext) => String): N => String = { n =>
+    val ctx = PainlessContext(t)
+    val p = painless(n, ctx)
+    s"$ctx$p"
+  }
+
+  it should "answer one comparison node as each scope does, in any order (A-95)" in {
+    val render = (c: Criteria, ctx: PainlessContext) => c.painless(Some(ctx))
+    val scopes: List[(String, Criteria => Any)] = List(
+      "query"      -> renderedIn(PainlessContextType.Query)(render),
+      "transform"  -> renderedIn(PainlessContextType.Transform)(render),
+      "processor"  -> renderedIn(PainlessContextType.Processor)(render),
+      "type rule"  -> ((c: Criteria) => c.typeErrors),
+      "validation" -> ((c: Criteria) => SQLTypeUtils.validatingComputedColumns(c.typeErrors)),
+      "validation render" -> ((c: Criteria) =>
+        SQLTypeUtils.validatingComputedColumns(renderedIn(PainlessContextType.Query)(render)(c))
+      )
+    )
+    Seq("k = 1", "k IN (1, 2)", "b BETWEEN 0 AND n").foreach { p =>
+      withClue(s"$p: ") {
+        val node = () => resolved(s"SELECT g FROM t WHERE $p").where.flatMap(_.criteria).get
+        if (p.startsWith("k")) {
+          // the text row converts in a query only (A-82): the scopes differ, so the pin bites
+          answer(node(), scopes.head._2).toString should include("nv1")
+          answer(node(), scopes(1)._2).toString should not include "nv1"
+          answer(node(), scopes(2)._2).toString should not include "nv1"
+          answer(node(), scopes(5)._2).toString should not include "nv1"
+        }
+        answersEachScopeAsFresh(node, scopes)
+      }
+    }
+  }
+
+  it should "answer one literal-first NULLIF node as each scope does, in any order (A-95)" in {
+    val node = () =>
+      resolved(
+        "SELECT NULLIF(COALESCE('2024-01-15', d), k) AS v FROM t"
+      ).select.fieldsWithComputedAliases.head
+    def nullIf(f: Field): NullIf = f.identifier.functions.collectFirst { case n: NullIf => n }.get
+    val render = (f: Field, ctx: PainlessContext) => f.painless(Some(ctx))
+    val scopes: List[(String, Field => Any)] = List(
+      "query"      -> renderedIn(PainlessContextType.Query)(render),
+      "processor"  -> renderedIn(PainlessContextType.Processor)(render),
+      "type rule"  -> ((f: Field) => nullIf(f).typeError),
+      "validation" -> ((f: Field) => SQLTypeUtils.validatingComputedColumns(nullIf(f).typeError)),
+      "validation render" -> ((f: Field) =>
+        SQLTypeUtils.validatingComputedColumns(renderedIn(PainlessContextType.Query)(render)(f))
+      )
+    )
+    // the literal is read in a query only (A-98 α): a query compares its text, a processor reads
+    // the COALESCE whole -- the scopes differ
+    val literalCompared = "\"2024-01-15\".compareTo(param"
+    answer(node(), scopes.head._2).toString should include(literalCompared)
+    val processor = answer(node(), scopes(1)._2).toString
+    processor should include("ctx.d")
+    processor should not include literalCompared
+    answersEachScopeAsFresh(node, scopes)
+  }
 }
