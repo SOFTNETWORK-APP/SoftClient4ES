@@ -1715,9 +1715,17 @@ package object sql {
       * COALESCE of DATE columns, `d + 1` are DATEs; an aggregate is the metric it produces, because
       * that is what an aggregate reports (`AggregateFunction.outputTypeOf`), so `COUNT(d)` is a
       * BIGINT. One derivation (#292): there is no aggregate arm here of its own.
+      *
+      * 🔴 Outside a query (an ingest processor, a transform) and while the computed column that
+      * installs such a processor is validated (A-96), a `COALESCE` or a `CASE` holding a literal
+      * read as a date or a timestamp is its TEXT type, the type its value has there
+      * (`SQLTypeUtils.textTypeOutsideQuery`, A-92, SCHEMA-5b R1-1): every comparison reads its
+      * operands here, so each one compares that text as 0.24.0 did. The arithmetic reads the
+      * reported type instead (`ArithmeticExpression`): it reads a temporal operand by its runtime
+      * class, text included.
       */
     def declaredTypeOf(operand: Token): SQLType = operand match {
-      case p: PainlessScript => p.reportedType
+      case p: PainlessScript => SQLTypeUtils.textTypeOutsideQuery(p).getOrElse(p.reportedType)
       case other             => other.out
     }
 
@@ -1950,6 +1958,119 @@ package object sql {
     def mismatch(left: SQLType, right: SQLType): Option[(SQLType, SQLType)] =
       if (comparable(SQLTypeUtils.operandType(left), SQLTypeUtils.operandType(right))) None
       else Some((left, right))
+
+    /** [[mismatch]] for a comparison whose operator class is known (SCHEMA-5b D6): a pair the
+      * implicit-cast table binds ([[implicitTarget]]) is compared, every other pair keeps
+      * [[mismatch]] 's answer and message. `equality`: `=`, `<>`, `!=`, IN, NULLIF, `CASE x WHEN`.
+      */
+    def mismatch(left: SQLType, right: SQLType, equality: Boolean): Option[(SQLType, SQLType)] =
+      mismatch(left, right) match {
+        case Some(_) if implicitTarget(left, right, equality).isDefined => None
+        case other                                                      => other
+      }
+
+    /** 🔴 The ONE implicit-cast table of a comparison (SCHEMA-5b D6): the type two operands of
+      * different families are compared IN, as DuckDB 1.5.5 binds them (RUN `duck_5b_ops.out`), or
+      * `None` -- main's rule, a refusal. Each side is read through `SQLTypeUtils.operandType` (an
+      * `ARRAY<X>` column is its element X in a query, D8):
+      *   - a text (VARCHAR, KEYWORD, TEXT, CHAR) beside a whole number: equality only, as BIGINT;
+      *   - a text beside a DOUBLE, a REAL or a NUMERIC: equality only, as DOUBLE;
+      *   - a text beside a BOOLEAN: equality only, as BOOLEAN;
+      *   - a BOOLEAN beside a whole number: every comparison, BETWEEN and IN, as the whole type;
+      *   - a BOOLEAN beside a DOUBLE or a REAL: equality only, as DOUBLE.
+      *
+      * Ordering a text against a number (and BETWEEN) is a DuckDB Binder Error, refused here too:
+      * one verdict for core and arrow. The text rows bind in a QUERY only (A-82): where
+      * `SQLTypeUtils.readsWholeValues` holds -- an ingest processor or a transform rendering, a
+      * computed column's validation -- a processor would swallow a text that converts to nothing
+      * (`ignore_failure`) where DuckDB fails the statement, so main's verdict and bytes stay. A
+      * node that keeps the answer keeps it per scope (`SQLTypeUtils.PerScope`, A-95), whose slots
+      * split the scopes as `readsWholeValues` does. A string LITERAL is not a side of this table:
+      * it is read by what it is compared with ([[readingOf]]).
+      */
+    def implicitTarget(left: SQLType, right: SQLType, equality: Boolean): Option[SQLType] = {
+      val l = SQLTypeUtils.operandType(left)
+      val r = SQLTypeUtils.operandType(right)
+      implicitTargetOf(l, r, equality).orElse(implicitTargetOf(r, l, equality))
+    }
+
+    /** Is `t` a text type, as the implicit-cast table reads one? */
+    def textType(t: SQLType): Boolean = t match {
+      case _: SQLVarchar | _: SQLChar => true
+      case _                          => false
+    }
+
+    /** 🔴 The literal an EQUALITY reads in place of `operand` beside `other` (SCHEMA-5b A-98 α,
+      * R-119), in a QUERY only: a `COALESCE` -- bare, or the one function of a nameless identifier
+      * -- whose first argument that is not NULL is a string literal read as a DATE whose text is
+      * exactly that date's `uuuu-MM-dd`, beside an operand that is neither a string literal nor
+      * NULL and is declared TEXT, neither side holding an aggregate. That literal is the one value
+      * such a `COALESCE` ever answers, and 0.24.0 compared it as text, right on every row (RUN):
+      * `COALESCE('2024-01-15', d) = k` holds where `k` is `'2024-01-15'`.
+      *
+      * ONE function for the type rule and the rendering of every equality reader (#292): `=`, `<>`,
+      * `!=` (`Expression`), `NULLIF` and its answer, `CASE x WHEN`. Ordering and BETWEEN do not
+      * read it (main fails there, RUN), nor does anything outside a query ([[SQLTypeUtils]]
+      * `.readsWholeValues`). A date-time text, a TIMESTAMP reading, a number or a boolean reading,
+      * a literal other side and an aggregate side keep the reading's verdict.
+      */
+    def literalInPlaceOf(operand: Token, other: Token): Option[PainlessScript] =
+      (operand, other) match {
+        // the cheap questions first: most operands are no COALESCE, and every comparison asks;
+        // the aggregate questions walk both chains, so they come after it
+        case (p: PainlessScript, o: PainlessScript) =>
+          SQLTypeUtils.conditionalNode(p) match {
+            case c: app.softnetwork.elastic.sql.function.cond.Coalesce
+                if !SQLTypeUtils.readsWholeValues && !p.hasAggregation && !o.hasAggregation =>
+              // the arms `readingAt` indexes (A-98 β may answer a NULLIF arm by its value)
+              c.answeredArms.zipWithIndex
+                .find { case (arm, _) =>
+                  !app.softnetwork.elastic.sql.operator.math.ArithmeticExpression.nullLiteral(arm)
+                }
+                .flatMap { case (arm, i) =>
+                  (stringLiteral(arm), c.readingAt(i)) match {
+                    case (Some(text), Some(r: TemporalReading))
+                        if r.sqlType == SQLTypes.Date && r.text == text =>
+                      Some(arm)
+                    case _ => None
+                  }
+                }
+                .filter { _ =>
+                  stringLiteral(o).isEmpty &&
+                  !app.softnetwork.elastic.sql.operator.math.ArithmeticExpression.nullLiteral(o) &&
+                  textType(SQLTypeUtils.operandType(declaredTypeOf(o)))
+                }
+            case _ => None
+          }
+        case _ => None
+      }
+
+    /** The Painless of a string literal read as text, its quoted text -- never through its `out`
+      * (A-98 α).
+      */
+    def quotedText(literal: Token): Option[String] =
+      stringLiteral(literal).map(text => s""""${escapePainlessString(text)}"""")
+
+    private def implicitTargetOf(a: SQLType, b: SQLType, equality: Boolean): Option[SQLType] =
+      if (textType(a)) {
+        if (!equality || SQLTypeUtils.readsWholeValues) None
+        else
+          b match {
+            case w if wholeNumberType(w) => Some(SQLTypes.BigInt)
+            case _: SQLNumeric           => Some(SQLTypes.Double)
+            case _: SQLBool              => Some(SQLTypes.Boolean)
+            case _                       => None
+          }
+      } else
+        a match {
+          case _: SQLBool =>
+            b match {
+              case w if wholeNumberType(w)               => Some(w)
+              case _: SQLDouble | _: SQLReal if equality => Some(SQLTypes.Double)
+              case _                                     => None
+            }
+          case _ => None
+        }
 
     /** The Painless a NUMBER or a BOOLEAN reading renders: the literal itself. */
     def scalarPainless(reading: Reading): Option[String] = reading match {

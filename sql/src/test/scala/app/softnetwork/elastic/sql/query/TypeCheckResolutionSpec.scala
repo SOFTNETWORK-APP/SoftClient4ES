@@ -75,7 +75,9 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
           "SELECT id FROM t WHERE n + 1 > 'abc'",
           "'BIGINT' is not compatible with 'VARCHAR'"
         ),
-        ("comparison", "SELECT id FROM t WHERE s = n", "'KEYWORD' is not compatible with 'INT'"),
+        // (`s = n` is answered since SCHEMA-5b, DuckDB's implicit cast (D6); ordering a text
+        // against a number is a DuckDB Binder Error, still refused)
+        ("comparison", "SELECT id FROM t WHERE s < n", "'KEYWORD' is not compatible with 'INT'"),
         ("comparison (TIME)", "SELECT id FROM t WHERE CAST(ts AS TIME) > ts", "a TIME value"),
         // IN: the operand against the list's element type
         (
@@ -100,7 +102,9 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
           "output 'INT' is not compatible with input 'VARCHAR'"
         ),
         // NULLIF: #382's rule, and the matching rule over the types the statement fixes
-        ("NULLIF (#382)", "SELECT NULLIF(s, 1) AS v FROM t", "compares KEYWORD with BIGINT"),
+        // (`NULLIF(s, 1)` is answered in a query since SCHEMA-5b (D6); a computed column keeps
+        // #382's refusal, A-82 -- `ImplicitComparisonCastSpec`)
+        ("NULLIF (#382)", "SELECT NULLIF(s, d) AS v FROM t", "compares KEYWORD with TIMESTAMP"),
         // (a DATE against a TIMESTAMP is comparable, the ONE comparison rule: TIME is not)
         (
           "NULLIF (match)",
@@ -180,7 +184,10 @@ class TypeCheckResolutionSpec extends AnyFlatSpec with Matchers with TableDriven
         "SELECT LEAST(d, ts, CURRENT_DATE) AS v FROM t",
         "SELECT id FROM t WHERE GREATEST(d, d2) > CAST('2024-02-01' AS DATE)",
         // over aggregates, in a HAVING (in a SELECT calculation it is refused, as it can be NULL)
-        "SELECT g FROM t GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2024-02-01' AS DATE)"
+        "SELECT g FROM t GROUP BY g HAVING GREATEST(MAX(d), MAX(d2)) > CAST('2024-02-01' AS DATE)",
+        // a text against a number, for an equality DuckDB binds (SCHEMA-5b D6; refused before)
+        "SELECT id FROM t WHERE s = n",
+        "SELECT NULLIF(s, 1) AS v FROM t"
       )
     ) { sql => withClue(s"[$sql] ")(resolved(sql) shouldBe Right(())) }
   }

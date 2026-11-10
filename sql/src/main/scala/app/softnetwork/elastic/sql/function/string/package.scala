@@ -31,6 +31,7 @@ import app.softnetwork.elastic.sql.operator.math.ArithmeticExpression
 import app.softnetwork.elastic.sql.`type`.{
   SQLBigInt,
   SQLBool,
+  SQLTemporal,
   SQLType,
   SQLTypeUtils,
   SQLTypes,
@@ -143,10 +144,59 @@ package object string {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(str) => s"$str${stringOp.painless(context)}"
+        case List(str) => overReceiver(str, context)(r => s"$r${stringOp.painless(context)}")
         case _         => throw new IllegalArgumentException(s"${stringOp.sql} requires 1 argument")
       }
     }
+
+    /** 🔴 The call `call` over this function's RECEIVER -- its first argument, rendered `rendered`
+      * -- read as a text (lead ruling R-109, SCHEMA-5b):
+      *   - a receiver of a known type that is no text (a number, a boolean; a date or a timestamp a
+      *     conditional answers, which a query converts to its `java.time` value) is its text,
+      *     `String.valueOf(…)`: `UPPER(n)`, `LENGTH(n)` called `toUpperCase` / `length` on a `Long`
+      *     and failed the query (MEASURED on Elasticsearch 8.18.3). A bare date column keeps its
+      *     bytes: its doc value would print as a `ZonedDateTime`, not as the date;
+      *   - a CONDITIONAL receiver (a `CASE`, a `COALESCE`, a `NULLIF`, a `GREATEST` / `LEAST`) is
+      *     ONE value, in parentheses: `param2 ? param1 : "3"` with `.toUpperCase()` appended called
+      *     it on the last arm alone. A conditional that can answer NULL is bound once and guarded,
+      *     so its NULL is NULL, never the text `"null"` nor a NullPointerException.
+      *
+      * Every other receiver -- a text, a type still unknown (no schema), a function over a text --
+      * keeps its bytes.
+      */
+    protected final def overReceiver(rendered: String, context: Option[PainlessContext])(
+      call: String => String
+    ): String =
+      args.headOption match {
+        case Some(receiver) =>
+          val conditional = SQLTypeUtils.conditional(receiver)
+          val nonText =
+            Receivers.nonText(SQLTypeUtils.operandType(receiver.reportedType), conditional)
+          val one = SQLTypeUtils.asOneValue(rendered)
+          def text(r: String): String = if (nonText) s"String.valueOf($r)" else r
+          if (!nonText && (!conditional || one == rendered)) call(rendered)
+          else
+            context match {
+              case Some(ctx) if conditional && SQLTypeUtils.mayRenderNull(receiver, context) =>
+                val value = ctx.bindLocal(rendered, "lv")
+                s"($value == null ? null : (def)(${call(text(value))}))"
+              // a call over a non-text receiver is typed `def`, as main's doc-value receiver typed
+              // it: `LENGTH(n)`'s `int` beside its NULL guard's `null` does not compile in Painless
+              // ("Cannot cast from [int] to [java.lang.Object]", MEASURED on Elasticsearch 8.18.3)
+              case _ if nonText => s"((def)(${call(text(one))}))"
+              case _            => call(one)
+            }
+        case None => call(rendered)
+      }
+  }
+
+  private[string] object Receivers {
+
+    /** Is `t` a KNOWN type whose value is no text: a number, a boolean -- or a temporal, when a
+      * conditional answers it?
+      */
+    def nonText(t: SQLType, conditional: Boolean): Boolean =
+      t.isNumber || t == SQLTypes.Boolean || (conditional && t.isInstanceOf[SQLTemporal])
   }
 
   case class StringFunctionWithOp(str: PainlessScript, stringOp: StringOp)
@@ -177,12 +227,16 @@ package object string {
     ): String = {
       callArgs match {
         // SUBSTRING(expr, start, length)
-        case List(arg0, _, _) =>
-          s"((String)$arg0).substring(${start - 1}, (int)Math.min(${start - 1 + length.get}, ((String)$arg0).length()))"
+        case List(str, _, _) =>
+          overReceiver(str, context) { arg0 =>
+            s"((String)$arg0).substring(${start - 1}, (int)Math.min(${start - 1 + length.get}, ((String)$arg0).length()))"
+          }
 
         // SUBSTRING(expr, start)
-        case List(arg0, arg1) =>
-          s"((String)$arg0).substring((int)Math.min(${start - 1}, ((String)$arg0).length() - 1))"
+        case List(str, _) =>
+          overReceiver(str, context) { arg0 =>
+            s"((String)$arg0).substring((int)Math.min(${start - 1}, ((String)$arg0).length() - 1))"
+          }
 
         case _ => throw new IllegalArgumentException("SUBSTRING requires 2 or 3 arguments")
       }
@@ -319,8 +373,10 @@ package object string {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(arg0, arg1) =>
-          s"((String)$arg0).substring(0, (int)Math.min($arg1, ((String)$arg0).length()))"
+        case List(str, arg1) =>
+          overReceiver(str, context) { arg0 =>
+            s"((String)$arg0).substring(0, (int)Math.min($arg1, ((String)$arg0).length()))"
+          }
         case _ => throw new IllegalArgumentException("LEFT requires 2 arguments")
       }
     }
@@ -354,10 +410,12 @@ package object string {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(arg0, arg1) =>
+        case List(str, arg1) =>
           if (length == 0) ""
           else
-            s"""((String)$arg0).substring(((String)$arg0).length() - (int)Math.min($arg1, ((String)$arg0).length()))"""
+            overReceiver(str, context) { arg0 =>
+              s"""((String)$arg0).substring(((String)$arg0).length() - (int)Math.min($arg1, ((String)$arg0).length()))"""
+            }
         case _ => throw new IllegalArgumentException("RIGHT requires 2 arguments")
       }
     }
@@ -392,8 +450,8 @@ package object string {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(arg0, arg1, arg2) =>
-          s"$arg0.replace($arg1, $arg2)"
+        case List(str, arg1, arg2) =>
+          overReceiver(str, context)(arg0 => s"$arg0.replace($arg1, $arg2)")
         case _ => throw new IllegalArgumentException("REPLACE requires 3 arguments")
       }
     }
@@ -435,8 +493,9 @@ package object string {
       context: Option[PainlessContext]
     ): String = {
       callArgs match {
-        case List(arg0) => s"new StringBuilder($arg0).reverse().toString()"
-        case _          => throw new IllegalArgumentException("REVERSE requires 1 argument")
+        case List(str) =>
+          overReceiver(str, context)(arg0 => s"new StringBuilder($arg0).reverse().toString()")
+        case _ => throw new IllegalArgumentException("REVERSE requires 1 argument")
       }
     }
 

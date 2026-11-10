@@ -3379,7 +3379,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       // the ONE comparison rule accepts: it RUNS, in "the ONE comparison rule" above)
       s"SELECT id, NULLIF(n, 'a') AS x FROM $table" -> Seq("compares INT with VARCHAR"),
       // one true mismatch per rule that waits for the column types
-      s"SELECT id FROM $table WHERE id = n" -> Seq("'KEYWORD' is not compatible with 'INT'"),
+      // (`id = n` is bound since SCHEMA-5b, DuckDB's implicit cast (D6): read per row below;
+      // ordering a text against a number is a DuckDB Binder Error, still refused)
+      s"SELECT id FROM $table WHERE id < n" -> Seq("'KEYWORD' is not compatible with 'INT'"),
       s"SELECT id FROM $table WHERE CAST(ts AS TIME) > ts" -> Seq(
         "a TIME value cannot be compared"
       ),
@@ -3395,7 +3397,9 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
       s"SELECT id FROM $table WHERE CAST(id AS INT) BETWEEN 'a' AND 'b'" -> Seq(
         "output 'INT' is not compatible with input 'VARCHAR'"
       ),
-      s"SELECT id, NULLIF(id, 1) AS x FROM $table" -> Seq("compares KEYWORD with BIGINT"),
+      // (`NULLIF(id, 1)` is bound in a query since SCHEMA-5b (D6): read per row below; a computed
+      // column keeps #382's refusal, A-82)
+      s"SELECT id, NULLIF(id, d) AS x FROM $table" -> Seq("compares KEYWORD with TIMESTAMP"),
       s"SELECT id, CASE WHEN n THEN 1 ELSE 0 END AS x FROM $table" -> Seq(
         "CASE WHEN conditions must be of type BOOLEAN"
       ),
@@ -3418,8 +3422,28 @@ trait DateArithmeticSpec extends AnyFlatSpecLike with ElasticDockerTestKit with 
         case Left(t)                      => Left(t.toString)
       })
     }
+    // SCHEMA-5b D6 / D7: a text against a number, for an equality DuckDB binds, is read as a
+    // number on each row; 'r1' spells none, so the statement fails as it runs, as DuckDB's
+    // "Could not convert string 'r1'" does -- no longer refused before anything runs
+    val readPerRow = Seq(
+      s"SELECT id FROM $table WHERE id = n",
+      s"SELECT id, NULLIF(id, 1) AS x FROM $table"
+    ).map { sql =>
+      sql -> (Try(Await.result(client.run(sql), 60.seconds)).toEither match {
+        case Right(ElasticFailure(error)) => Right(Seq(s"refused as [${error.message}]"))
+        case Right(ElasticSuccess(QueryStream(stream, _, _))) =>
+          Try(Await.result(stream.runWith(Sink.seq), 60.seconds)).toEither match {
+            case Left(t) =>
+              info(s"[$sql] failed as it ran: ${String.valueOf(t.getMessage).take(300)}")
+              Right(Nil)
+            case Right(rs) => Right(Seq(s"answered ${rs.size} rows instead of failing as it runs"))
+          }
+        case Right(other) => Right(Seq(s"answered $other instead of failing as it runs"))
+        case Left(t)      => Left(t.toString)
+      })
+    }
     Try(Await.result(client.run("DROP TABLE IF EXISTS date_arithmetic_refused"), 60.seconds))
-    verdict("refusals", outcomes)
+    verdict("refusals", outcomes ++ readPerRow)
   }
 
   "a CREATE OR REPLACE TABLE ... AS SELECT the rules refuse" should

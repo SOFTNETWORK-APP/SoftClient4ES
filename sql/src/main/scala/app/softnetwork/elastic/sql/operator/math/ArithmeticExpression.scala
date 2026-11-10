@@ -207,7 +207,7 @@ case class ArithmeticExpression(
     other: PainlessScript
   ): Option[ComparisonRule.NumberReading] =
     ComparisonRule
-      .readingOf(operand, ComparisonRule.declaredTypeOf(other))
+      .readingOf(operand, ArithmeticExpression.reportedTypeOf(other))
       .collect { case number: ComparisonRule.NumberReading => number }
 
   /** The temporal a string literal operand is read as beside the other one
@@ -1128,17 +1128,25 @@ object ArithmeticExpression {
   private[sql] def identifierType(i: Identifier): SQLType = renderedTypeOf(i)
 
   /** The type an operand is DECLARED with -- its REPORTED type, an aggregate's being the metric it
-    * produces: the ONE derivation the comparison rule reads too (`ComparisonRule.declaredTypeOf`).
+    * produces.
     *
     * An Elasticsearch `date` field elasticsql never declared is a TIMESTAMP at the declaration seam
     * itself (`schema.IndexField`), so it keeps its time here as everywhere else, and every chain
     * over it follows: `MAX(ts)`, `COALESCE(ts, ts2)`, `CASE … THEN ts …`.
+    *
+    * 🔴 The REPORTED type in every scope, never the comparison rule's text type of a conditional
+    * holding a read date outside a query (`ComparisonRule.declaredTypeOf`, SCHEMA-5b R1-1): date
+    * arithmetic reads a temporal operand by its runtime class, text included, so `COALESCE(d,
+    * '2024-01-15') - d2` counts the days in an ingest processor too, where the text type would
+    * subtract a String.
     */
+  private[math] def reportedTypeOf(operand: PainlessScript): SQLType = operand.reportedType
+
   /** An operand's declared type as arithmetic reads it: an `ARRAY<X>` column is one X element, the
     * value Painless reads (SCHEMA-6 D7, `SQLTypeUtils.operandType`).
     */
   private def declaredType(operand: PainlessScript): SQLType =
-    SQLTypeUtils.operandType(ComparisonRule.declaredTypeOf(operand))
+    SQLTypeUtils.operandType(reportedTypeOf(operand))
 
   /** `NULL`, bare or cast: its VALUE is NULL in every venue. */
   private[sql] def nullLiteral(operand: PainlessScript): Boolean = operand match {

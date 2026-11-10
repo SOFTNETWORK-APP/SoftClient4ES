@@ -279,13 +279,17 @@ class FieldCapsSpec extends AnyFlatSpec with Matchers {
       val sql = place.replace("%s", expr.replace("%c", c))
       withClue(s"[$origin] $sql: ") {
         val control = refusal(place.replace("%s", expr.replace("%c", native)), table)
-        control.isLeft shouldBe true
+        // SCHEMA-5b D6: a number beside a text, for an equality, is compared as DuckDB casts it --
+        // the native column and the D1 one alike; every other pair stays refused
+        control.isLeft shouldBe !(expr == "%c = k" && c != "dn")
         refusal(sql, table) shouldBe control.left.map(_.replaceAll(s"\\b$native\\b", c))
       }
     }
-    // the messages, as measured over the mapping (the review's census of the branch)
-    refusal("SELECT id FROM s7_t WHERE sf = k", mapping) shouldBe
-    Left("Type mismatch: 'DOUBLE' is not compatible with 'KEYWORD' in expression: sf = k")
+    // the messages, as measured over the mapping (the review's census of the branch); `sf = k`
+    // is answered since SCHEMA-5b (D6), refused before as 'DOUBLE' against 'KEYWORD'
+    refusal("SELECT id FROM s7_t WHERE sf = k", mapping) shouldBe Right(())
+    refusal("SELECT id FROM s7_t WHERE sf > k", mapping) shouldBe
+    Left("Type mismatch: 'DOUBLE' is not compatible with 'KEYWORD' in expression: sf > k")
     refusal("SELECT id FROM s7_t WHERE dn > n", mapping) shouldBe
     Left("Type mismatch: 'TIMESTAMP' is not compatible with 'BIGINT' in expression: dn > n")
     // a projection of `dn * 2` / `dn / 2` takes the date-arithmetic refusal too

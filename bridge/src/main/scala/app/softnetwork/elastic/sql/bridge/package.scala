@@ -1085,16 +1085,32 @@ package object bridge {
     existsQuery(identifier.name)
   }
 
+  /** Does this `ISNULL` / `ISNOTNULL` operand have no column to test? `exists` needs a field name
+    * and a conditional (`NULLIF(a, b)`, `COALESCE(a, b)`) has none: Elasticsearch rejects an
+    * `exists` on an empty field, so the script path, which renders the operand, answers it.
+    */
+  private[bridge] def hasNoField(identifier: Identifier): Boolean = identifier.name.trim.isEmpty
+
   implicit def isNullCriteriaToQuery(
     isNull: IsNullCriteria
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
+    if (hasNoField(isNull.identifier)) return scriptQueryOf(isNull)
     import isNull._
     not(existsQuery(identifier.name))
   }
 
   implicit def isNotNullCriteriaToQuery(
     isNotNull: IsNotNullCriteria
+  )(implicit
+    timestamp: Long,
+    contextType: PainlessContextType = PainlessContextType.Query,
+    target: PainlessTarget = PainlessTarget.Default
   ): Query = {
+    if (hasNoField(isNotNull.identifier)) return scriptQueryOf(isNotNull)
     import isNotNull._
     existsQuery(identifier.name)
   }

@@ -330,17 +330,30 @@ package object convert {
       * column is a date. Asked once the column types are known, like every type rule; an operand
       * whose type is still unknown is accepted. A number cast to a TIMESTAMP keeps core's
       * epoch-millisecond conversion.
+      *
+      * A BOOLEAN converted to a DATE, a TIME or a TIMESTAMP is refused too, in every scope, as
+      * DuckDB refuses it (lead ruling R-110, SCHEMA-5b): no conversion makes a boolean a temporal,
+      * and the value used to pass through unconverted under the temporal's label (`CAST(b AS DATE)`
+      * answered `true`), or to fail on every row once its text was parsed (`CAST(COALESCE(b,
+      * 'true') AS DATE)`).
       */
     override def typeError: Option[String] =
-      if (targetType != SQLTypes.Date) None
-      else {
-        val source = convertedType
-        if (!source.isNumber) None
-        else
+      targetType match {
+        case SQLTypes.Date | SQLTypes.Time | SQLTypes.Timestamp | SQLTypes.DateTime
+            if convertedType == SQLTypes.Boolean =>
           Some(
-            s"Type mismatch: cannot cast ${source.typeId} to DATE in expression: $sql; a number " +
-            "is not a date: add a number of days to a date instead"
+            s"Type mismatch: cannot cast BOOLEAN to ${targetType.typeId} in expression: $sql; a " +
+            "boolean is not a date or a time"
           )
+        case SQLTypes.Date =>
+          val source = convertedType
+          if (!source.isNumber) None
+          else
+            Some(
+              s"Type mismatch: cannot cast ${source.typeId} to DATE in expression: $sql; a number " +
+              "is not a date: add a number of days to a date instead"
+            )
+        case _ => None
       }
 
     /** The type of the value converted, as it renders: its outermost function's own type -- never
