@@ -10,8 +10,8 @@ This page documents conditional expressions.
 column**: the type they report, which is DuckDB's common type of the values they can return
 (`DATE` with `DATE` is a `DATE`, `DATE` with `TIMESTAMP` a `TIMESTAMP`, `INT` with `DOUBLE` a
 `DOUBLE`, a `BOOLEAN` with a number a number), and every row is converted to it. `NULLIF` reports
-the type of its first argument. An argument whose type is not known — a `date_nanos` column, or a
-column no mapping types — beside a `DATE` makes a `TIMESTAMP`.
+the type of its first argument. An argument whose type is not known — a column no mapping types — beside a `DATE` makes a
+`TIMESTAMP`, as a `date_nanos` column does (a `TIMESTAMP` since `0.25.0`).
 
 - **Arguments with no common type are refused**, once the column types are known, with DuckDB's
   reason: `CASE WHEN n > 0 THEN d ELSE n END` (a `DATE` beside an `INT`) answers *"Cannot mix values
@@ -69,7 +69,7 @@ column no mapping types — beside a `DATE` makes a `TIMESTAMP`.
   by Elasticsearch when the pipeline is created, as before.
 - *Since `0.25.0`.* **A `CASE` that compares a `BOOLEAN` with a number in a computed column**
   compares the boolean as `1` / `0`, as a query does (see
-  [Comparing values of different types](operators.md#operator-)). The pipeline compared the boolean
+  [Comparing values of different types](operators.md#comparing-values-of-different-types)). The pipeline compared the boolean
   itself with the number and stored a wrong value or none (`b = 1` was never true, `b < 1` stored no
   value, `b BETWEEN 1 AND 1` failed every document, `b <> 1` stored `1` for a `"true"` source).
   With `b` a `BOOLEAN`, `n` an `INT`, `l` a `BIGINT` and `x` a `DOUBLE` column, these `SCRIPT AS`
@@ -526,7 +526,7 @@ FROM products
 
   *Since `0.25.0`*, a **query** compares a text with a number or a boolean, and a boolean with a
   number, as DuckDB casts them (see
-  [Comparing values of different types](operators.md#operator-)): `NULLIF(status, 0)` reads
+  [Comparing values of different types](operators.md#comparing-values-of-different-types)): `NULLIF(status, 0)` reads
   `status` as a `BIGINT` and answers `status`, NULL where it reads as `0`; a `status` that spells
   no number fails the query. `NULLIF(flag, 0)` over a `BOOLEAN` compares it as `1` / `0`, in a query
   and in a computed column. A **computed column** keeps the refusal above for a text against a
@@ -534,7 +534,8 @@ FROM products
   nothing.
 
   The same rule refuses a **date against a number** (`NULLIF(created_at, 0)`) and a **boolean
-  against anything but a boolean** (`NULLIF(is_active, 0)`). Before **0.24.0** these were accepted
+  against a date** (`NULLIF(is_active, created_at)`); a boolean against a number
+  (`NULLIF(is_active, 0)`), refused before `0.25.0`, is now compared as `1` / `0` (above). Before **0.24.0** these were accepted
   and compared with Painless `==`, which answers `false` for a date against a number without ever
   failing — so the `NULLIF` returned its first argument for every row and the query answered `200`
   with the wrong values. If you relied on one of these, write the comparison in the type you mean.
@@ -679,8 +680,8 @@ GREATEST(expression1, expression2, ...)
 - One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
-  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+- Over numbers, the common type of all the arguments (a quoted argument counting as the number it
+  is read as), as PostgreSQL types it, and every row has it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
   fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
   argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
@@ -721,8 +722,13 @@ HAVING GREATEST(MAX(ordered_on), MAX(shipped_on)) >= CAST('2025-01-01' AS DATE)
 
 **Notes:**
 - Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
-- The arguments are all numeric, or all dates and timestamps, as in every SQL engine; any other
-  argument, or numbers mixed with dates, is refused by name once the column types are known.
+- The arguments are all numeric, or all dates and timestamps, as in every SQL engine. *Since
+  `0.25.0`*, a quoted argument counts as the type of the arguments beside it (`GREATEST(n, '1.5')` is
+  an `INT`, `GREATEST(d, '2024-01-15')` a `DATE`), and a `BOOLEAN` beside whole numbers counts as
+  `1` / `0` (see [The type of a conditional](#the-type-of-a-conditional)). Any other argument (a
+  quoted text that spells no value of that type, such as `GREATEST(n, 'abc')`, or a `BOOLEAN` alone
+  or beside a fractional number), and numbers mixed with dates, are refused by name once the column
+  types are known.
 - Dates compare as instants, a `DATE` as the start of its day (UTC); the result is a date like any
   other: `GREATEST(d, d2) - d` is a number of days (see [Date arithmetic](operators.md)).
 - Over aggregates it is computed per group. ⚠️ In a `SELECT`, over an aggregate that can be NULL —
@@ -750,8 +756,8 @@ LEAST(expression1, expression2, ...)
 - One or more expressions of one kind: all numeric, or all `DATE` / `TIMESTAMP` / `DATETIME`
 
 **Output:**
-- Over numbers, the common type of all the arguments, as PostgreSQL types it, and every row has
-  it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
+- Over numbers, the common type of all the arguments (a quoted argument counting as the number it
+  is read as), as PostgreSQL types it, and every row has it: the widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is
   fractional (a `REAL` when the fractional ones are all `REAL`); over dates, a `DATE` when every
   argument is a `DATE` and a `TIMESTAMP` when they mix; NULL if every argument is NULL
 
@@ -779,7 +785,8 @@ FROM orders
 
 **Notes:**
 - Ignores NULL arguments (PostgreSQL-style NULL handling); returns NULL only if every argument is NULL.
-- The arguments are all numeric, or all dates and timestamps; see `GREATEST` for dates, and for
+- The arguments are all numeric, or all dates and timestamps, as for `GREATEST` (a quoted argument counting as the type of the arguments beside it, and a `BOOLEAN` beside whole
+  numbers as `1` / `0`); see `GREATEST` for dates, and for
   `LEAST` over aggregates per group.
 - See also: `GREATEST`, `COALESCE`.
 

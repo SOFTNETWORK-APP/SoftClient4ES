@@ -195,7 +195,7 @@ QueryStructured(response, truncation).schema // = response.schema
 
 - The columns are in SELECT order; `SELECT *` lists the mapping's columns in their table order.
   A row keeps its document's key order: read a value **by name**, present it in schema order.
-- `schema` is `None` when no mapping is known (an index that cannot be read, an alias on the ES 8/9
+- `schema` is `None` when no mapping is known (an index that neither its mapping nor `_field_caps` can type, an alias on the ES 8/9
   clients) and for DDL / DML / SHOW results.
 - A positional pattern binds every field: `case QueryRows(rows, _, _)`. The shape immune to a future
   field is `case q: QueryRows => q.rows`.
@@ -235,7 +235,9 @@ Each value is read by its column's declared type, where it is first read:
 #### Elasticsearch mapping types
 
 *Since `0.25.0`* (they read `ANY` before, and `constant_keyword` answered NULL), the mapping types
-core reads but never writes have a declared type:
+core reads but never writes have a declared type (*Declared*, the column's type in the table, as
+`DESCRIBE TABLE` shows it) and a reported type (*Reported*, the type the result schema, JDBC and
+Arrow report):
 
 | Mapping type | Declared | Reported | Value class |
 | --- | --- | --- | --- |
@@ -317,7 +319,10 @@ by name when it does not project the target's PRIMARY KEY or PARTITION BY column
 (`searchAs…`) leaves a field the statement does not select at `None` (its default), and fails on a
 required one.
 
-A one-element array is its element, an empty array NULL. A date field whose format core cannot read
+In a column not declared a list, a one-element array is its element and an empty array NULL, and
+several values fail the statement (*since `0.25.0`*, see
+[Columns holding several values](../sql/dql_statements.md#columns-holding-several-values)); a column declared
+`ARRAY<X>` reads a single value as a list of one. A date field whose format core cannot read
 for sure (a zone name, a region id) is a VARCHAR, its text as stored; a date value Elasticsearch
 ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. An
 integral column reads a fractional number or a numeric text as Elasticsearch indexed it, truncated

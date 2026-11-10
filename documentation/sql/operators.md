@@ -569,14 +569,16 @@ SELECT order_date * 2 FROM orders;
   single index: every field its indices map alike has its type, read once per pattern from the
   merged mapping. A field two of them map with two number types takes the wider one, as DuckDB
   types it: `integer` and `long` make a `BIGINT`, `float` and `double` a `DOUBLE`, a whole-number
-  type and a `float` a `REAL`. ⚠️ A field two of them map with types that have no common type (a
-  `date` in one index, a `keyword` in another) has no type: nothing is refused on it and
+  type and a `float` a `REAL`. ⚠️ A field two of them map with types a `UNION ALL` gives no common type
+  (a `date` in one index, a `long` in another) has no type (*since `0.25.0`* a `keyword` beside a
+  `long` or a `date` is a `VARCHAR`: see [Index patterns](../client/gateway.md#index-patterns)): nothing is refused on it and
   Elasticsearch answers for it — per group, `MAX(order_date) - MIN(order_date)` over such a field
   answers milliseconds rather than days. Every other field of the pattern keeps its type.
 - Type errors are checked once the column types are known, when the statement runs and the mapping
   is read, and before anything is sent to Elasticsearch: `WHERE due_date + 7 > CURRENT_DATE` runs,
   `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map
-  differently, a mapping that cannot be read), nothing is refused on types.
+  with types a `UNION ALL` gives no common type), nothing is refused on types; a user who may not
+  read the mapping is typed from `_field_caps` (*since `0.25.0`*).
 - In a per-group calculation, a date result comes back as milliseconds since the epoch, the number
   Elasticsearch computes it as; a date aggregate on its own (`MAX(order_date)`) answers its date or
   timestamp. `CURRENT_DATE` and `NOW()` there are the time
@@ -685,7 +687,9 @@ SELECT * FROM emp WHERE manager = NULL;  -- Returns no rows!
 SELECT * FROM emp WHERE manager IS NULL;
 ```
 
-**Comparing values of different types** *(since `0.25.0`)*:
+#### Comparing values of different types
+
+*Since `0.25.0`*:
 
 A comparison between a text and a number or a boolean, and between a boolean and a number, answers
 for the operators DuckDB binds, as DuckDB casts it:
