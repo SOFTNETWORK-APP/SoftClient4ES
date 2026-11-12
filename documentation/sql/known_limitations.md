@@ -467,10 +467,10 @@ A single value in either list is unaffected, and so is every other combination.
 `HAVING year = 2025.5` over an integer grouping key keeps no group, `HAVING year <> 2025.5` keeps
 every group, as SQL answers: no integer equals that number, while Elasticsearch would round it down
 and keep the group `2025`. The rule needs the index mapping; an index pattern or several indices
-have one too, merged over the indices they match into the wider type. Where no mapping is known —
-a pattern that matches no index, a mapping that cannot be read, or a key the matched indices map
-with types that have no common type — the number is rounded down by Elasticsearch, without an
-error. A key grouped from an `UNNEST` keeps the refusal with a `400` — *"HAVING cannot compare the
+have one too, merged over the indices they match into the wider type. Where no mapping is known — a pattern that matches no index, or a key the matched indices map with
+types a `UNION ALL` gives no common type (a `long` in one, a `date` in another) — the number is
+rounded down by Elasticsearch, without an error. A user who may not read the mapping is typed from
+`_field_caps` (*since `0.25.0`*), so the rule applies to that user too. A key grouped from an `UNNEST` keeps the refusal with a `400` — *"HAVING cannot compare the
 integer GROUP BY key … with 2025.5 …"*: compare it with a whole number. See
 [Conditions on the GROUP BY key](dql_statements.md#conditions-on-the-group-by-key).
 
@@ -621,9 +621,11 @@ not give yet:
 ## Windows: partitions that read NULL
 
 A window answers NULL on every row when a `PARTITION BY` column is one the `SELECT` list does not
-return (`MIN(n) OVER (PARTITION BY g)` without `g` in the `SELECT`) and the `SELECT` list contains
-no `*`, which fetches the whole document: every window of the statement then reads NULL, and so does
-the column each one aggregates (`n`) when the `SELECT` list returns it. Return the partition columns
+return (`MIN(n) OVER (PARTITION BY g)` without `g` in the `SELECT`) and the `SELECT` list holds a
+plain column but no `*`: every window of the statement then reads NULL, and so does the column each
+one aggregates (`n`) when the `SELECT` list returns it. With `*`, which fetches the whole document,
+or with no plain column at all (`SELECT UPPER(id) AS u, SUM(n) OVER (PARTITION BY g)`: its
+partition columns' `_source` is fetched, and nothing else), the partition column is read. Return the partition columns
 in the `SELECT` list. A `date` partition column whose format has a zone name, read as its stored
 text, is the exception: it is matched by its instant whether the `SELECT` list returns it or not,
 unless another window's partition column is not returned (*since `0.25.0`*: it read NULL). A

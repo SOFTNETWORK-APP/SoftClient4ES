@@ -854,8 +854,8 @@ objects, every point is a `{lat, lon}` map whatever way Elasticsearch stored it 
 `"lat,lon"` text, an array `[lon, lat]`, a geohash (the south-west corner of its cell, as
 Elasticsearch reads it), a WKT `POINT (lon lat)` or a GeoJSON point. A `STRUCT`'s fields are taken
 by name, in name order. A value that cannot be read as its branch's point or object, or several of
-them in one row, fails the statement. A column read without a type (`ANY`), as an `ARRAY<INT>`
-column of a mapping is read today, refuses nothing.
+them in one row, fails the statement. A column read without a type (`ANY`), such as a `flattened` field, refuses nothing; a column
+declared `ARRAY<X>` is a list (*since `0.25.0`*: it was read without a type), typed by the rows above.
 
 A whole number literal is an `INT` (`SELECT 1`), a `BIGINT` past the `INT` range. The type
 compares every branch, so `d`, `n` and `'1'` make a `VARCHAR` column although `d` and `n` alone
@@ -906,7 +906,9 @@ format `"2024"` and `2024` are the year 2024. A value computed by the statement 
 whose branches already agree -- a column, or a field of an object or of a list of objects at any
 depth -- is read the same way, in every branch, with its field's format, the default format
 included (*since `0.25.0`*: a date whose branches all had the default format, and a multi-valued
-date, were returned as stored); a multi-valued date is the list of its values, each read so, and a
+date, were returned as stored); a multi-valued date in a column declared `ARRAY<DATE>` or `ARRAY<TIMESTAMP>` is the list of its
+values, each read so (in any other column it fails the statement, see
+[Columns holding several values](#columns-holding-several-values)), and a
 date core cannot read (below) is returned as stored.
 
 A value is read only where its reading is the same on every Java version core runs on (8, 11, 17
@@ -2054,6 +2056,15 @@ All functions operate on Elasticsearch documents and are evaluated by the SQL en
 | `LOG10(x)`    | Base-10 logarithm    |
 | `SIGN(x)`     | Sign of x (−1, 0, 1) |
 
+*Since `0.25.0`*, `ROUND`, `POW`, `SQRT`, `EXP`, `LOG` and `LOG10` take DuckDB's result types:
+`ROUND(x, n)` has the type of `x` (an integer column gives its integer type, a `REAL` a `REAL`, a
+`DOUBLE` a `DOUBLE`; to a negative `n` a `TINYINT`, `SMALLINT` or `INT` gives a `BIGINT`, which its
+rounded value always fits, where DuckDB keeps the operand's type), and `POW`, `SQRT`, `EXP`, `LOG`
+and `LOG10` are a `DOUBLE` whatever their operand (they were `NUMERIC`, which a
+`CREATE TABLE … AS SELECT` could not map). `ROUND` to tens, hundreds, … is exact for every whole
+number: `ROUND(423789293, -5)` is `423800000`. See
+[Mathematical functions](functions_math.md).
+
 
 ##### **Trigonometric:**
 
@@ -2174,6 +2185,11 @@ SELECT id,
 FROM dql_users;
 ```
 
+A date part compared with a quoted number reads it as DuckDB casts it to the date part's `BIGINT`:
+the whole number it rounds to, half away from zero (*since `0.25.0`*: a fraction was refused):
+`YEAR(d) = '2024'` and `YEAR(d) = '2024.4'` both compare with `2024`, `YEAR(d) = '2024.5'` with
+`2025`. A text that spells no number is refused (*"'BIGINT' is not compatible with 'VARCHAR'"*).
+
 ##### **Arithmetic:**
 
 | Function                            | Description                                                                                   |
@@ -2186,6 +2202,14 @@ FROM dql_users;
 | `DATE_DIFF(date1, date2, unit)`     | `date1 - date2` in units: the calendar boundaries crossed (UTC, weeks start on Monday)        |
 | `TIMESTAMPDIFF(unit, date1, date2)` | `date2 - date1` in units: the whole units elapsed, as MySQL counts them                       |
 | `DATE_TRUNC(date, unit)`            | Truncate to unit                                                                              |
+
+*Since `0.25.0`*: `DATE_DIFF`, `DATEDIFF` and `TIMESTAMPDIFF` are a `BIGINT` in every spelling, as
+DuckDB's `date_diff` (they were `NUMERIC`: a `GROUP BY` key read `3.0`, and `SUM` was a `DOUBLE`);
+`DATE_TRUNC` is a `TIMESTAMP` over every operand that is a date, at every unit, as DuckDB's
+`date_trunc` (over `CURRENT_DATE`, `NOW()`, a cast to `DATE`, `DATE_PARSE` or `LAST_DAY` it was a
+`DATE` or a temporal of unknown kind). An ingest processor (`SCRIPT AS`) and a materialized view
+keep the script and the type they had. See
+[Date and time functions](functions_date_time.md).
 
 ##### **Formatting & parsing:**
 
@@ -2286,6 +2310,11 @@ NULLIF(a, b)
 
 Returns NULL if `a = b`, otherwise `a`.
 
+*Since `0.25.0`*, a query compares a text with a number or a boolean as DuckDB casts it (see
+[Comparing values of different types](operators.md#comparing-values-of-different-types)):
+`NULLIF(status, 0)` over a `KEYWORD` reads `status` as a `BIGINT`, and a `status` that spells no
+number fails the query. A computed column keeps refusing a text against a number.
+
 ##### GREATEST / LEAST
 
 ```sql
@@ -2296,7 +2325,10 @@ LEAST(e1, e2, ...)
 `GREATEST` returns the largest non-null value among the given expressions; `LEAST`
 returns the smallest. The arguments are all numeric, or all dates and timestamps (a `DATE`
 compares as the start of its day, UTC; the result is a `DATE` over dates and a `TIMESTAMP` when
-they mix). Over numbers the result is the common type of all the arguments on every row: the
+they mix); *since `0.25.0`*, a quoted argument counts as the type of the arguments beside it
+(`GREATEST(n, '1.5')`, `GREATEST(d, '2024-01-15')`), and a `BOOLEAN` beside whole numbers counts as
+`1` / `0` (below). Over numbers the result is the common type of all the arguments on every row (a
+quoted argument counting as the number it is read as): the
 widest whole type when every argument is a whole number, a `DOUBLE` as soon as one is fractional.
 NULL arguments are ignored (ANSI semantics); the result is NULL only
 when every argument is NULL. Both are emitted as Painless ternary chains — over whole numbers the
@@ -2311,6 +2343,21 @@ where Elasticsearch would skip a group with no value and answer NULL for it.
 SELECT GREATEST(price_us, price_eu, price_uk) AS max_price FROM products;
 SELECT LEAST(base_price, promo_price)          AS best_price FROM orders;
 ```
+
+**Quoted arguments and booleans** (*since `0.25.0`*). In `COALESCE`, `GREATEST`, `LEAST` and the
+results of a `CASE`, a quoted argument is read as the type of the arguments beside it, as DuckDB
+reads it: beside a number it is the number it spells (beside a whole type, the whole number it
+rounds to, half away from zero), beside a `DATE` or a `TIMESTAMP` the date or the timestamp it
+names, beside a `BOOLEAN` the boolean it spells. `GREATEST(n, '1.5')` over an `INT` column answers
+`2`, an `INT` (it was refused); `COALESCE(n, '3')` answers `3`, an `INT`, where it answered the text
+`'3'`; `COALESCE(d, '2024-01-15')` is a `DATE` (it was text). A quoted argument that does not spell
+a value of that type leaves the expression as it was: `COALESCE(n, 'abc')` answers text and
+`GREATEST(n, 'abc')` is refused. A `BOOLEAN` beside whole numbers answers `1` or `0`, their type:
+`COALESCE(b, 1)`, `GREATEST(b, 1)` and `LEAST(b, 1)`. Every reader of the type follows —
+`DESCRIBE`, JDBC and Arrow metadata, a `CREATE TABLE … AS SELECT` mapping, `ORDER BY`, a
+`GROUP BY` key, a comparison or a cast of the result. A computed column renders a conditional as
+before, apart from the shapes [The type of a conditional](functions_conditional.md#the-type-of-a-conditional)
+lists, whose pipeline `ALTER TABLE` re-creates.
 
 **Example:**
 
@@ -2521,10 +2568,10 @@ SHOW TABLE users;
 | name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
 | name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
 | profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
-| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
-| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
-| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
 
 🔑 PRIMARY KEY id
 📅 PARTITION BY birthdate (MONTH)
@@ -2549,10 +2596,10 @@ CREATE OR REPLACE TABLE users (
 		raw KEYWORD COMMENT 'sortable'
 	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
 	profile STRUCT FIELDS (
-		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)),
-		join_date DATE,
+		bio VARCHAR,
 		followers INT,
-		bio VARCHAR
+		join_date DATE,
+		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))
 	) COMMENT 'user profile',
 	PRIMARY KEY (id)
 )
@@ -2583,10 +2630,10 @@ CREATE OR REPLACE TABLE users (
 		raw KEYWORD COMMENT 'sortable'
 	) DEFAULT 'anonymous' OPTIONS (analyzer = "french", search_analyzer = "french"),
 	profile STRUCT FIELDS (
-		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY)),
-		join_date DATE,
+		bio VARCHAR,
 		followers INT,
-		bio VARCHAR
+		join_date DATE,
+		seniority INT SCRIPT AS (DATE_DIFF(CURRENT_DATE, profile.join_date, DAY))
 	) COMMENT 'user profile',
 	PRIMARY KEY (id)
 )
@@ -2624,10 +2671,10 @@ Returns the **normalized SQL schema**, including :
 | name              | VARCHAR   | yes  |     | anonymous         |                 |                                                 | (analyzer = "french", search_analyzer = "french") |
 | name.raw          | KEYWORD   | yes  |     | NULL              | sortable        |                                                 | ()                                                |
 | profile           | STRUCT    | yes  |     | NULL              | user profile    |                                                 | ()                                                |
-| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
-| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
-| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
 | profile.bio       | VARCHAR   | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.followers | INT       | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.join_date | DATE      | yes  |     | NULL              |                 |                                                 | ()                                                |
+| profile.seniority | INT       | yes  |     | NULL              |                 | DATE_DIFF(CURRENT_DATE, profile.join_date, DAY) | ()                                                |
 
 ---
 
