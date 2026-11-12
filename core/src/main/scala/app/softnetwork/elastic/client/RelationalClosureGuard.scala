@@ -55,7 +55,13 @@ object RelationalClosureGuard {
     else if (ctesPresent(statement)) CteShape
     else if (closureSearches(statement).exists(_.hasCorrelatedSubqueries)) CorrelatedShape
     else if (derivedTablesPresent(statement)) "A derived table (subquery in FROM/JOIN)"
-    else "A cross-index JOIN"
+    else JoinShape
+
+  /** SCHEMA-15 (D3) -- the shape of a cross-index JOIN, and of a statement no other arm names.
+    * `GatewayApi.describePerTable` types a JOIN body only when [[shapeOf]] answers this, so a
+    * closure construct a later story names above leaves that branch with its own message.
+    */
+  private[client] val JoinShape: String = "A cross-index JOIN"
 
   /** Story 22.5. 🔴 The words `WITH clause` sit in the first 25 characters on purpose:
     * `GatewayApi.excerpt` caps a rejection at 200 characters and elides the MIDDLE (head 120 + tail

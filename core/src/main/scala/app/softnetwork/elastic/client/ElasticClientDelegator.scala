@@ -2025,6 +2025,13 @@ trait ElasticClientDelegator extends ElasticClientApi with BulkTypes {
   override def describe(statement: query.Statement): ElasticResult[Option[ResultSchema]] =
     delegate.describe(statement)
 
+  /** SCHEMA-15 (D10) -- the delegate's: its schema cache, its miss and reload memos, counted once.
+    */
+  override private[elastic] def describePerTable(
+    statement: query.Statement
+  ): ElasticResult[Option[ResultSchema]] =
+    delegate.describePerTable(statement)
+
   // ==================== Extensions (delegate) ====================
 
   /** #163 — the delegator inherits ExtensionApi's lazy vals, so `this.extensionRegistry` would be a

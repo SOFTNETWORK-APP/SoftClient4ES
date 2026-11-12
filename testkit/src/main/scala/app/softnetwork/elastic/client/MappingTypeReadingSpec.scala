@@ -20,6 +20,7 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.Sink
 import app.softnetwork.elastic.client.result.{
   ElasticFailure,
+  ElasticResult,
   ElasticSuccess,
   QueryResult,
   QueryRows,
@@ -327,6 +328,36 @@ trait MappingTypeReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     val values = rowsOf("SELECT k FROM s7_p*").map(_("k"))
     values.toSet shouldBe Set("007", "7")
     values.foreach(_ shouldBe a[String])
+  }
+
+  "A JOIN body over a pattern and the SCHEMA-7 types" should "be typed as single-table describe types each side (SCHEMA-15)" in {
+    val columns = "id" +: typedColumns
+    def body(sql: String) = Parser(sql) match {
+      case Right(statement) => statement
+      case Left(error)      => fail(s"the JOIN body does not parse: ${error.msg}")
+    }
+    val pattern = client.describe("SELECT k FROM s7_p*")
+    val typed = client.describe(s"SELECT ${columns.mkString(", ")} FROM $table")
+    def joined(
+      first: ElasticResult[Option[ResultSchema]],
+      second: ElasticResult[Option[ResultSchema]]
+    ) =
+      for {
+        f <- first
+        s <- second
+      } yield for {
+        a <- f
+        b <- s
+      } yield ResultSchema(a.columns ++ b.columns)
+    joined(pattern, typed).toOption.flatten should not be empty
+    val tItems = columns.map(c => s"t.$c").mkString(", ")
+    // the pattern on the FROM side, then on the JOIN side
+    client.describePerTable(
+      body(s"SELECT p.k, $tItems FROM s7_p* p JOIN $table t ON p.k = t.k")
+    ) shouldBe joined(pattern, typed)
+    client.describePerTable(
+      body(s"SELECT $tItems, p.k FROM $table t JOIN s7_p* p ON t.k = p.k")
+    ) shouldBe joined(typed, pattern)
   }
 
   // -------------------------------------------------------------------------------------------

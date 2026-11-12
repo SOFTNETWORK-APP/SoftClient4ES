@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.PainlessContextType
 import app.softnetwork.elastic.sql.function.aggregate.{PercentileAgg, RankingWindow}
 import app.softnetwork.elastic.sql.macros.SQLQueryMacros
 import app.softnetwork.elastic.sql.query.{
+  Field,
   GroupedRowOrder,
   Limit,
   MultiSearch,
@@ -341,27 +342,35 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   }
 
   /** The paths `statement` selects explicitly (a bare column, not `*`, not a function, not an
-    * UNNEST element, not a metadata field).
+    * UNNEST element, not a metadata field), among the items `of` keeps (SCHEMA-15: one JOIN leg's).
     */
-  private def explicitPaths(statement: SingleSearch): Seq[String] =
+  private def explicitPaths(
+    statement: SingleSearch,
+    of: Field => Boolean = _ => true
+  ): Seq[String] =
     statement.select.fields.collect {
       case f
           if f.identifier.functions.isEmpty && !f.identifier.nested &&
             f.identifier.name.nonEmpty && f.identifier.name != "*" &&
-            !f.identifier.name.startsWith("_") =>
+            !f.identifier.name.startsWith("_") && of(f) =>
         f.identifier.name
     }.distinct
 
-  /** `schema`, or -- when `statement` selects a path it lacks on ONE concrete source, not reloaded
-    * for that path within the source's TTL -- the source's mapping read again
-    * (`IndicesApi.invalidateSchema`, then [[lookupSchema]]); `schema` when the reload fails.
-    */
+  /** [[reloadedFor]] over the paths `statement` selects explicitly. */
   private def reloadedFor(statement: SingleSearch, sources: Seq[String], schema: Schema): Schema =
+    reloadedFor(explicitPaths(statement), sources, schema)
+
+  /** `schema`, or -- when `paths` holds a path it lacks on ONE concrete source, not reloaded for
+    * that path within the source's TTL -- the source's mapping read again
+    * (`IndicesApi.invalidateSchema`, then [[lookupSchema]]); `schema` when the reload fails.
+    * `paths` is by name: read only for a concrete source.
+    */
+  private def reloadedFor(paths: => Seq[String], sources: Seq[String], schema: Schema): Schema =
     this match {
       case indices: IndicesApi
           if sources.size == 1 && !sources.head.contains("*") && !sources.head.contains(",") =>
         val source = sources.head
-        val missing = explicitPaths(statement).filter(p => schema.find(p).isEmpty)
+        val missing = paths.filter(p => schema.find(p).isEmpty)
         if (missing.isEmpty) schema
         else {
           val now = System.currentTimeMillis()
@@ -435,6 +444,76 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     lookupSchema(sources) match {
       case Some(Success(ElasticSuccess(schema))) => Some(schema)
       case _                                     => None
+    }
+
+  /** SCHEMA-15 (D5, D6, D7) -- `single`, a cross-index JOIN body (one FROM table, standard JOIN
+    * legs over indices), with every leg typed from its OWN index, by the typing single-table
+    * `describe` attaches: [[attachDerived]] 's `DerivedTable.attach`, then `validateResolved`. It
+    * executes nothing and guards nothing (the caller chose the body).
+    *
+    * `ElasticSuccess(None)`, before any read, when a key no leg registers would resolve against the
+    * main table (one index name under two qualifiers, an UNNEST alias), or an item is a star (the
+    * main table's columns only would be a short schema); after the reads, when any leg's schema is
+    * unknown -- every leg is read first, then all or none, so a joined column never takes the main
+    * table's same-named column. A type error is a 400 with `validateResolved`'s reason.
+    *
+    * Cost: one [[lookupSchema]] per leg (the 5-minute cache `run` shares), one attach, one
+    * validation; a leg's explicitly selected path its cached mapping lacks reloads it once per TTL
+    * ([[reloadedFor]], the memo `run` shares).
+    */
+  private[client] def resolvePerTable(single: SingleSearch): ElasticResult[Option[SingleSearch]] = {
+    val from = single.from
+    val main = from.mainTable.name
+    val legs = (main +: from.joinedTables).distinct
+    if (
+      from.unnests.nonEmpty || !from.aliasesToTable.values.forall(legs.contains) ||
+      single.select.fields.exists(HitReading.isStar)
+    ) ElasticResult.success(None)
+    else {
+      // every leg read (a 404 remembered) before any is used
+      val read = legs.map { leg =>
+        leg -> legSchema(leg, explicitPaths(single, _.identifier.table.getOrElse(main) == leg))
+      }
+      if (read.exists(_._2.isEmpty)) ElasticResult.success(None)
+      else {
+        val schemas = read.collect { case (leg, Some(schema)) => leg -> schema }.toMap
+        def refused(reason: String): ElasticResult[Option[SingleSearch]] = {
+          logger.error(s"❌ $reason")
+          ElasticResult.failure(
+            ElasticError(
+              message = reason,
+              statusCode = Some(400),
+              index = Some(legs.mkString(",")),
+              operation = Some("describe")
+            )
+          )
+        }
+        app.softnetwork.elastic.sql.query.DerivedTable
+          .attach(single, sources => schemas.get(sources.mkString(","))) match {
+          case Left(refusal) => refused(refusal)
+          case Right(attached) =>
+            attached.validateResolved() match {
+              case Left(reason) => refused(reason)
+              case Right(_)     => ElasticResult.success(Some(attached))
+            }
+        }
+      }
+    }
+  }
+
+  /** One leg of [[resolvePerTable]]: [[lookupSchema]] 's schema (a 404 remembered as the attach of
+    * [[resolveWithSchema]] remembers it), reloaded for the `paths` it lacks ([[reloadedFor]]);
+    * `None` when unknown.
+    */
+  private def legSchema(leg: String, paths: => Seq[String]): Option[Schema] =
+    lookupSchema(Seq(leg)) match {
+      case Some(Success(ElasticSuccess(cached))) =>
+        schemaMisses.remove(leg)
+        Some(reloadedFor(paths, Seq(leg), cached))
+      case Some(Success(ElasticFailure(error))) =>
+        if (error.statusCode.contains(404)) rememberSchemaMiss(leg)
+        None
+      case _ => None
     }
 
   /** The mapped type of a column PROJECTED BY AN INNER STATEMENT, when it can be known for free

@@ -2281,7 +2281,8 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
     * than core's handles answers `None` (its layer types it); a statement `run` refuses before
     * executing anything is refused with `run`'s status and message, through the SAME resolve body
     * (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's values
-    * or Elasticsearch surfaces at `run` only. `None` where no schema is known.
+    * or Elasticsearch surfaces at `run` only. `None` where no schema is known. A JOIN body's types
+    * per table, which `run` refuses here: [[describePerTable]].
     */
   def describe(sql: String): ElasticResult[Option[ResultSchema]] =
     GatewayApi.splitStatements(sql) match {
@@ -2315,6 +2316,40 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
           "DESCRIBE answers a query only: a SELECT, a set operation or a FROM-less SELECT"
         )
     }
+
+  /** SCHEMA-15 (D1, D3, D4, D7) -- the types a statement's columns take from their OWN tables'
+    * mappings, running nothing (a mapping may be read, as [[describe]] reads one). A JOIN body --
+    * one FROM table with standard JOIN legs, and no derived table, CTE, set operation, correlated
+    * or WHERE subquery: the bodies a materialized view accepts -- is typed per table by describe's
+    * builder, whatever extension would run it; `None` where a leg's schema is unknown, a column's
+    * key names no leg or an item is a star; a type error is a 400 (`operation = "describe"`). Any
+    * other statement is [[describe]] 's answer, verbatim.
+    *
+    * The typing API of the materialized views, which store these types: a view is materialized by
+    * Elasticsearch, not by the engine that would run the body as a query, so a JOIN body `run`
+    * refuses without the relational engine is typed here, never run.
+    */
+  private[elastic] def describePerTable(
+    statement: Statement
+  ): ElasticResult[Option[ResultSchema]] = {
+    // D3 (c) -- `shapeOf` names every closure shape, and each closure story adds its own there
+    def joinBody(single: SingleSearch): Boolean =
+      single.from.tables.size == 1 && single.from.enrichmentRequired &&
+      RelationalClosureGuard.shapeOf(single) == RelationalClosureGuard.JoinShape &&
+      !app.softnetwork.elastic.sql.query.whereSubqueriesPresent(single)
+    val body: Option[SingleSearch] = statement match {
+      case select: SelectStatement =>
+        select.statement.collect {
+          case single: SingleSearch if joinBody(single) => single.copy(score = select.score)
+        }
+      case single: SingleSearch if joinBody(single) => Some(single)
+      case _                                        => None
+    }
+    body match {
+      case Some(single) => resolvePerTable(single).map(_.flatMap(statementSchema))
+      case None         => describe(statement)
+    }
+  }
 
   /** [[describe]] over a query core's own handler runs. */
   private def describeQuery(statement: Statement): ElasticResult[Option[ResultSchema]] =

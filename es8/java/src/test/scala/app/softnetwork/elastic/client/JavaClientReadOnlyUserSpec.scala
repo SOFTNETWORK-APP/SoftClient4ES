@@ -327,6 +327,25 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
     }
   }
 
+  "A read-only user's JOIN body" should "be typed per table from _field_caps (SCHEMA-15)" in {
+    val main = Seq("id", "k", "d", "sf", "hf", "ip", "u", "dn", "ck")
+    val joined = Seq("n", "x")
+    val body = app.softnetwork.elastic.sql.parser.Parser(
+      s"SELECT ${main.map(c => s"a.$c").mkString(", ")}, ${joined.map(c => s"b.$c").mkString(", ")} " +
+      s"FROM $table a JOIN $table b ON a.id = b.id"
+    ) match {
+      case Right(statement) => statement
+      case Left(error)      => fail(s"the JOIN body does not parse: ${error.msg}")
+    }
+    Seq("read-only" -> roClient, "privileged" -> client).foreach { case (who, on) =>
+      withClue(s"[$who] ") {
+        val single = on.describe(s"SELECT ${(main ++ joined).mkString(", ")} FROM $table")
+        single.toOption.flatten should not be empty
+        on.describePerTable(body) shouldBe single
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------------------------
   // A-63 (R-85) -- un-LIMITed reads page by the build major
   // -------------------------------------------------------------------------------------------
