@@ -37,5 +37,12 @@ val testJavaOptions = {
 
 Test / javaOptions ++= testJavaOptions
 
+// One Elasticsearch container per forked test JVM and per configuration, reset before each suite
+// (ElasticDockerTestKit / SharedElasticContainers). Without this property every suite boots its own.
+Test / javaOptions += "-Dsoftclient4es.testkit.shared-container=true"
+
+// Per-test durations in the log
+Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD")
+
 // Required by the Test container framework
 Test / fork := true
