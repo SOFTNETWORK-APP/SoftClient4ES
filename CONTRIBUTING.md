@@ -728,6 +728,68 @@ class ElasticClientIntegrationSpec
 }
 ```
 
+#### **One Elasticsearch container per test JVM**
+
+The five client modules (`es6rest`, `es6jest`, `es7rest`, `es8java`, `es9java`) set
+`-Dsoftclient4es.testkit.shared-container=true` in their `Test / javaOptions`. With it,
+`ElasticDockerTestKit` starts **one container per forked test JVM and per configuration** (image
+tag + rendered `elasticsearch.yml`), instead of one per suite:
+
+- before each suite, the container is **reset**: every non-dot index, legacy / index / component
+  template, ingest pipeline, stored script and enrich policy created since the container booted is
+  deleted (plus users, roles and API keys on a security-enabled configuration). Objects
+  Elasticsearch owns (names starting with `.` or holding `@`, `_meta.managed: true`, reserved users
+  and roles, anything present at boot) are never touched;
+- a change to watchers, transforms, cluster settings or the licence is **refused**: the reset
+  deletes nothing and throws, naming the suite after which the change was first seen. Restore such a
+  change in the suite that makes it (in a `finally`);
+- after each suite, a leak report lists what the suite left.
+
+Without the property (the default, e.g. in a downstream repository that has not opted in), every
+suite starts and stops a container of its own, as before.
+
+⚠️ **Suites must run serially in the test JVM** (sbt's default for a forked test group; never enable
+`testForkedParallel`): a reset deletes the indices another suite would be using.
+
+A suite that asserts on the **whole cluster** keeps a container of its own by overriding
+`sharedContainer` from `ElasticContainerSharing`:
+
+```scala
+trait MyClusterWideSpec extends AnyFlatSpecLike with ElasticContainerSharing {
+  self: ElasticTestKit =>
+  override def sharedContainer: Boolean = false
+}
+```
+
+`GatewayApiIntegrationSpec` and `ReplGatewayIntegrationSpec` do so. An override of
+`elasticContainer` (e.g. a basic-licence container) also keeps the per-suite lifecycle. To reset an
+additional kind of object, override `resetSteps` (default `ResetStep.defaults`) with an extra
+`ResetStep`.
+
+Log lines (stdout), one per event:
+
+| Line             | When                                         | Main fields                                                     |
+|------------------|----------------------------------------------|-----------------------------------------------------------------|
+| `[es-container]` | every container start, shared or not          | `boot`, `licence`, `key`, `shared`, `module`, `suite`, `id`, `live` |
+| `[es-reset]`     | before each suite on a shared container       | `suite`, `key`, `took`, `deleted`, `previous`                   |
+| `[es-leaks]`     | after each suite on a shared container        | `left`, `open_contexts`, `scroll_current`, `script_compilations`, `compilation_limit_triggered` |
+
+Run a module as a downstream repository does (property absent). The `*ResetSpec` control suites
+fail by design on an unshared container, so filter them out:
+
+```bash
+sbt 'set es8java / Test / javaOptions -= "-Dsoftclient4es.testkit.shared-container=true"' \
+    'set es8java / Test / testOptions += Tests.Filter(n => !n.endsWith("ResetSpec"))' \
+    "es8java/test"
+```
+
+Run a module's suites in reversed order (a suite that passes only after another one shows up):
+
+```bash
+sbt 'set es8java / Test / testGrouping := (es8java / Test / testGrouping).value.map(g => g.withTests(g.tests.reverse))' \
+    "es8java/test"
+```
+
 ### **Test Coverage**
 
 ✅ **DO**: Maintain high test coverage

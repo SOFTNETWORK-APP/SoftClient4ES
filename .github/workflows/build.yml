@@ -48,8 +48,20 @@ jobs:
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt + compile
     - name: log4j closure guard
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt checkLog4j
+    - name: Runner info
+      run: |
+        lscpu
+        nproc
+        free -m
+        docker info
     - name: Run tests
       run: SBT_OPTS="-Xss4M -Xms1g -Xmx4g -Dfile.encoding=UTF-8" sbt compile test
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports
+        path: '**/target/test-reports/*.xml'
 
   lint:
     runs-on: ubuntu-latest

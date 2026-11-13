@@ -27,10 +27,11 @@ import org.testcontainers.utility.{DockerImageName, MountableFile}
 
 import java.nio.file.Files
 import java.time.Duration
+import scala.util.control.NonFatal
 
 /** Created by smanciot on 28/06/2018.
   */
-trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
+trait ElasticDockerTestKit extends ElasticTestKit with ElasticContainerSharing { _: Suite =>
 
   override lazy val elasticURL: String = s"http://${elasticContainer.getHttpHostAddress}"
 
@@ -57,7 +58,48 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
     */
   lazy val xpackLicenseType: String = "trial"
 
-  lazy val elasticContainer: ElasticsearchContainer = {
+  /** The kinds of cluster object a shared-container reset inspects, in deletion order. Override to
+    * add a kind (a step absent from the boot snapshot has an empty baseline).
+    */
+  def resetSteps: Seq[ResetStep] = ResetStep.defaults
+
+  /** The configuration this suite's container is keyed by: image tag and rendered yml. */
+  private[elastic] def containerKey: ContainerKey =
+    ContainerKey(elasticVersion, renderElasticsearchYml())
+
+  /** What a reset of this suite's container inspects. Watcher is off under a `basic` licence. */
+  private[elastic] def resetTarget: ResetTarget =
+    ResetTarget(
+      elasticVersion,
+      security = xpackSecurityEnabled,
+      watcher = xpackWatcherEnabled && xpackLicenseType != "basic"
+    )
+
+  // A failed `acquire` is not retried by the same suite (its `afterAll` reads `elasticContainer`
+  // again through `restClient`): it re-throws, as a never-started container did before.
+  @volatile private[this] var sharedAcquireFailure: Throwable = _
+
+  /** This suite's container.
+    *
+    * With the system property `softclient4es.testkit.shared-container=true` and `sharedContainer`,
+    * the JVM's shared container of this configuration (started on first use); else a container of
+    * its own, started by `start()` and stopped by `stop()`. An override keeps the latter lifecycle
+    * whatever the property: `start()` and `stop()` decide by IDENTITY.
+    */
+  lazy val elasticContainer: ElasticsearchContainer =
+    if (SharedElasticContainers.enabled && sharedContainer) {
+      if (sharedAcquireFailure != null) throw sharedAcquireFailure
+      try SharedElasticContainers.acquire(containerKey, resetTarget, suiteName, resetSteps)(() =>
+        newElasticContainer()
+      )
+      catch {
+        case NonFatal(e) =>
+          sharedAcquireFailure = e
+          throw e
+      }
+    } else newElasticContainer()
+
+  private def newElasticContainer(): ElasticsearchContainer = {
     val tmpDir =
       if (localExecution) {
         val tmp = Files.createTempDirectory("es-tmp")
@@ -69,7 +111,7 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
 
     Console.println(s"📁 Temp directory: $tmpDir")
 
-    val configFile = createElasticsearchYml()
+    val configFile = writeElasticsearchYml(renderElasticsearchYml())
 
     Console.println(s"⚙️ Config file: $configFile")
 
@@ -91,7 +133,10 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
       .withStartupTimeout(Duration.ofMinutes(2))
   }
 
-  private def createElasticsearchYml(): String = {
+  /** The text of `elasticsearch.yml`: the ONE renderer, both for the file and for the container
+    * key.
+    */
+  private[scalatest] def renderElasticsearchYml(): String = {
     val enrollmentLine =
       if (ElasticsearchVersion.isEs8OrHigher(elasticVersion)) {
         s"xpack.security.enrollment.enabled: $xpackSecurityEnabled\n"
@@ -161,6 +206,11 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
         |bootstrap.memory_lock: false
         |""".stripMargin
 
+    config
+  }
+
+  /** Writes the config to a temp file and returns its path. */
+  private def writeElasticsearchYml(config: String): String = {
     val configFile = Files.createTempFile("elasticsearch-", ".yml")
     Files.write(
       configFile,
@@ -173,8 +223,24 @@ trait ElasticDockerTestKit extends ElasticTestKit { _: Suite =>
     configFile.toAbsolutePath.toString
   }
 
-  override def start(): Unit = elasticContainer.start()
+  /** A shared container is reset BEFORE the suite (a refused reset throws: the suite aborts and
+    * nothing is deleted); an unshared one is started, as it always was.
+    */
+  override def start(): Unit = {
+    val container = elasticContainer
+    if (SharedElasticContainers.isShared(container))
+      SharedElasticContainers.reset(container, suiteName, resetSteps)
+    else SharedElasticContainers.startUnshared(container, containerKey, suiteName)
+  }
 
-  override def stop(): Unit = elasticContainer.stop()
+  /** A shared container reports what the suite left (never throws) and keeps running; an unshared
+    * one is stopped, as it always was.
+    */
+  override def stop(): Unit = {
+    val container = elasticContainer
+    if (SharedElasticContainers.isShared(container))
+      SharedElasticContainers.leakReport(container, suiteName, resetSteps)
+    else SharedElasticContainers.stopUnshared(container)
+  }
 
 }

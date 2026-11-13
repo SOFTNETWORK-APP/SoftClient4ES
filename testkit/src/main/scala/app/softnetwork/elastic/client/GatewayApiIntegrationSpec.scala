@@ -18,7 +18,7 @@ package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.result.{DdlResult, DmlResult, ElasticSuccess}
 import app.softnetwork.elastic.client.spi.ElasticClientSpi
-import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.scalatest.{ElasticContainerSharing, ElasticTestKit}
 import app.softnetwork.elastic.sql.{DoubleValue, IdValue}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.health.HealthStatus
@@ -36,8 +36,15 @@ import java.time.{LocalDate, ZoneOffset}
 // Base test trait — to be mixed with ElasticDockerTestKit
 // ---------------------------------------------------------------------------
 
-trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit {
+trait GatewayApiIntegrationSpec extends GatewayIntegrationTestKit with ElasticContainerSharing {
   self: ElasticTestKit =>
+
+  /** Opted out of the shared container: this suite asserts on the WHOLE cluster (no index starting
+    * with `.` in `SHOW TABLES LIKE '.%'`, exactly one enrich policy in `SHOW ENRICH POLICIES`) and
+    * shares about 25 literal object names with `ReplGatewayIntegrationSpec`, so it keeps a
+    * container of its own.
+    */
+  override def sharedContainer: Boolean = false
 
   // -------------------------------------------------------------------------
   // SHOW / DESCRIBE TABLE tests

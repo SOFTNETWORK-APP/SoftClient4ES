@@ -27,14 +27,21 @@ import app.softnetwork.elastic.client.result.{
 import akka.stream.scaladsl.Sink
 
 import scala.collection.immutable.ListMap
-import app.softnetwork.elastic.scalatest.ElasticTestKit
+import app.softnetwork.elastic.scalatest.{ElasticContainerSharing, ElasticTestKit}
 
 import java.time.LocalDate
 
 /** Common integration tests for REPL, mirroring GatewayApiIntegrationSpec
   */
-trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit {
+trait ReplGatewayIntegrationSpec extends ReplIntegrationTestKit with ElasticContainerSharing {
   self: ElasticTestKit =>
+
+  /** Opted out of the shared container: this suite asserts on the WHOLE cluster (no index starting
+    * with `.` in `SHOW TABLES LIKE '.*'`, exactly one enrich policy in `SHOW ENRICH POLICIES`) and
+    * shares about 25 literal object names with `GatewayApiIntegrationSpec`, so it keeps a container
+    * of its own.
+    */
+  override def sharedContainer: Boolean = false
 
   // =========================================================================
   // 1. SHOW / DESCRIBE TABLE tests
