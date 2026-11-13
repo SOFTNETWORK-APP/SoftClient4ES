@@ -19,8 +19,9 @@ package app.softnetwork.elastic.client
 import akka.actor.ActorSystem
 import app.softnetwork.elastic.client.result._
 import app.softnetwork.elastic.schema.Index
-import app.softnetwork.elastic.sql.`type`.SQLTypes
-import app.softnetwork.elastic.sql.query.Statement
+import app.softnetwork.elastic.sql.`type`.{SQLTypeUtils, SQLTypes}
+import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.query.{DerivedTable, MultiSearch, SingleSearch, Statement}
 import app.softnetwork.elastic.sql.schema.Schema
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.typesafe.config.ConfigFactory
@@ -81,6 +82,14 @@ class DescribeSpec extends AnyFlatSpec with Matchers with ScalaFutures with Befo
     override protected def logger: Logger = LoggerFactory.getLogger(getClass)
 
     val searches = new AtomicInteger(0)
+
+    /** Every schema lookup a statement makes, a cache hit included (SCHEMA-15 D5). */
+    val reads = new AtomicInteger(0)
+
+    override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] = {
+      reads.incrementAndGet()
+      super.loadQuerySchema(source)
+    }
 
     override private[client] def executeVersion(): ElasticResult[String] =
       ElasticResult.success("8.18.3")
@@ -273,5 +282,477 @@ class DescribeSpec extends AnyFlatSpec with Matchers with ScalaFutures with Befo
     val c = new CountingClient // no seed: every lookup misses
     c.describe("SELECT id FROM nowhere_t") shouldBe ElasticSuccess(None)
     c.searches.get() shouldBe 0
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-15 -- `describePerTable`: a JOIN body typed per table, by describe's builder, running
+  // nothing; every other statement answered as `describe` answers it
+  // ---------------------------------------------------------------------------------------------
+
+  private def mappingOf(columns: Seq[(String, String)]): String =
+    columns.map { case (c, m) => s""""$c": $m""" }.mkString("{", ", ", "}")
+
+  private val ptAColumns: Seq[(String, String)] = Seq(
+    "aid"   -> """{"type": "keyword"}""",
+    "bid"   -> """{"type": "keyword"}""",
+    "k"     -> """{"type": "keyword"}""",
+    "t"     -> """{"type": "text"}""",
+    "n"     -> """{"type": "integer"}""",
+    "big_a" -> """{"type": "long"}""",
+    "x"     -> """{"type": "double"}""",
+    "r"     -> """{"type": "float"}""",
+    "ts"    -> """{"type": "date"}""",
+    "dc"    -> """{"type": "date", "format": "yyyy/MM/dd"}""",
+    "de"    -> """{"type": "date", "format": "epoch_second"}""",
+    "b"     -> """{"type": "boolean"}""",
+    "g"     -> """{"type": "geo_point"}""",
+    "obj"   -> """{"properties": {"a": {"type": "integer"}}}""",
+    "items" -> """{"type": "nested", "properties": {"p": {"type": "integer"}}}""",
+    "tags"  -> """{"type": "integer"}""",
+    "pz"    -> """{"type": "date", "format": "yyyy-MM-dd HH:mm z"}""",
+    "dn"    -> """{"type": "date_nanos"}"""
+  )
+
+  /** `k` and `n` collide with `pt_a`'s, `n` with another type: a wrong attribution is visible. */
+  private val ptBColumns: Seq[(String, String)] = Seq(
+    "bid"   -> """{"type": "keyword"}""",
+    "label" -> """{"type": "keyword"}""",
+    "name"  -> """{"type": "text"}""",
+    "m"     -> """{"type": "integer"}""",
+    "big"   -> """{"type": "long"}""",
+    "d2"    -> """{"type": "date"}""",
+    "addr"  -> """{"properties": {"zip": {"type": "keyword"}}}""",
+    "k"     -> """{"type": "keyword"}""",
+    "n"     -> """{"type": "long"}"""
+  )
+
+  private val ptMeta = """{"de": {"data_type": "DATE"}, "tags": {"data_type": "ARRAY<INT>"}}"""
+
+  private val ptA: Schema = schemaOf("pt_a", mappingOf(ptAColumns), ptMeta)
+  private val ptB: Schema = schemaOf("pt_b", mappingOf(ptBColumns))
+
+  /** The twin: every column of both tables (`pt_b`'s `bid`, `k`, `n` are `pt_a`'s). */
+  private val ptAB: Schema = schemaOf(
+    "pt_ab",
+    mappingOf(ptAColumns ++ ptBColumns.filterNot(c => Set("bid", "k", "n").contains(c._1))),
+    ptMeta
+  )
+
+  private def ptClient(dialect: String = "8.18.3"): CountingClient = {
+    val c = new CountingClient {
+      override private[client] def executeVersion(): ElasticResult[String] =
+        ElasticResult.success(dialect)
+    }
+    c.updateSchema("pt_a", ptA)
+    c.updateSchema("pt_b", ptB)
+    c.updateSchema("pt_ab", ptAB)
+    c
+  }
+
+  private def parsed(sql: String): Statement =
+    Parser(sql) match {
+      case Right(statement) => statement
+      case Left(error)      => fail(s"[$sql] does not parse: ${error.msg}")
+    }
+
+  private def single(sql: String): SingleSearch =
+    parsed(sql) match {
+      case s: SingleSearch => s
+      case other           => fail(s"[$sql] is not a single search: $other")
+    }
+
+  /** The item over its own table: the qualifier dropped. */
+  private def unqualified(sql: String): String =
+    sql.replaceAll("\\b(?:a2|b2|a|b|pt_a|pt_b)\\.", "")
+
+  private val onBid = "ON a.bid = b.bid"
+
+  private val joinKinds: Seq[String] =
+    Seq("JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN")
+
+  private def oneTable(q: String, c: String): Seq[String] =
+    Seq(s"$q.$c", s"$q.$c AS v", s"CAST($q.$c AS VARCHAR) AS s")
+
+  /** G1 -- (item, the table its oracle reads). */
+  private val g1: Seq[(String, String)] =
+    ptAColumns.map(_._1).flatMap(c => oneTable("a", c).map(_ -> "pt_a")) ++
+    ptBColumns.map(_._1).flatMap(c => oneTable("b", c).map(_ -> "pt_b")) ++
+    Seq("a.obj.a" -> "pt_a", "b.addr.zip AS zip" -> "pt_b")
+
+  /** G2 -- items over both tables, typed as over the twin. */
+  private val g2: Seq[(String, String)] = Seq(
+    "COALESCE(a.n, b.m) AS v",
+    "a.n + b.big AS v",
+    "GREATEST(a.x, b.m) AS v",
+    "CASE WHEN a.b THEN a.ts ELSE b.d2 END AS v",
+    "NULLIF(a.k, b.label) AS v",
+    "CONCAT(a.k, b.label) AS v",
+    "UPPER(b.name) AS v",
+    "a.ts - b.d2 AS v",
+    "DATEDIFF(a.ts, b.d2) AS v"
+  ).map(_ -> "pt_ab")
+
+  /** G3 / B8 -- (select list, group by). */
+  private val g3: Seq[(String, String)] = Seq(
+    "b.label, COUNT(*) AS c, COUNT(DISTINCT a.k) AS dk, SUM(a.n) AS s, AVG(a.x) AS av, " +
+    "MIN(a.ts) AS mi, MAX(a.dc) AS ma"           -> "b.label",
+    "b.label, a.k, COUNT(*) AS c, SUM(a.n) AS s" -> "b.label, a.k"
+  )
+
+  private val b2 =
+    "a.aid, b.label, b.addr.zip AS customer_zip, UPPER(b.name) AS uname"
+
+  /** B9 -- every B1 type of `pt_a` (keyword, text, int, long, double, date, timestamp, boolean). */
+  private val b9 = "a.aid, a.t, a.n, a.big_a, a.x, a.de, a.ts, a.b"
+
+  /** A cell: the JOIN body, and the single-table statement whose answer is its oracle. */
+  private case class Cell(body: String, oracle: String)
+
+  private def joinCells(from: String, items: Seq[(String, String)]): Seq[Cell] =
+    items.map { case (item, table) =>
+      Cell(s"SELECT $item FROM $from", s"SELECT ${unqualified(item)} FROM $table")
+    }
+
+  /** Every G1 / G2 cell under every join form, the unaliased, self-join and three-leg forms, G3. */
+  private lazy val parityCells: Seq[Cell] = {
+    val kinds = joinKinds.flatMap(kind => joinCells(s"pt_a a $kind pt_b b $onBid", g1 ++ g2))
+    val unaliased = (g1 ++ g2).map { case (item, table) =>
+      val written = item.replaceAll("\\ba\\.", "pt_a.").replaceAll("\\bb\\.", "pt_b.")
+      Cell(
+        s"SELECT $written FROM pt_a JOIN pt_b ON pt_a.bid = pt_b.bid",
+        s"SELECT ${unqualified(item)} FROM $table"
+      )
+    }
+    val ptAItems = g1.filter(_._2 == "pt_a")
+    val selfJoin = joinCells(
+      "pt_a a JOIN pt_a a2 ON a.bid = a2.bid",
+      ptAItems ++ ptAItems.map { case (item, t) => item.replaceAll("\\ba\\.", "a2.") -> t }
+    )
+    val ptBItems = g1.filter(_._2 == "pt_b")
+    val threeLegs = joinCells(
+      s"pt_a a JOIN pt_b b $onBid JOIN pt_b b2 ON a.bid = b2.bid",
+      g1 ++ g2 ++ ptBItems.map { case (item, t) => item.replaceAll("\\bb\\.", "b2.") -> t }
+    )
+    val aggregates = g3.flatMap { case (items, keys) =>
+      Seq("JOIN", "LEFT JOIN").map { kind =>
+        Cell(
+          s"SELECT $items FROM pt_a a $kind pt_b b $onBid GROUP BY $keys",
+          s"SELECT ${unqualified(items)} FROM pt_ab GROUP BY ${unqualified(keys)}"
+        )
+      }
+    }
+    val consumer = Seq(
+      Cell(s"SELECT $b2 FROM pt_a a JOIN pt_b b $onBid", s"SELECT ${unqualified(b2)} FROM pt_ab"),
+      Cell(s"SELECT $b9 FROM pt_a a JOIN pt_b b $onBid", s"SELECT ${unqualified(b9)} FROM pt_a")
+    )
+    kinds ++ unaliased ++ selfJoin ++ threeLegs ++ aggregates ++ consumer
+  }
+
+  /** Both answers equal: the same schema, or the same status and message. */
+  private def sameAnswer(
+    perTable: ElasticResult[Option[ResultSchema]],
+    oracle: ElasticResult[Option[ResultSchema]]
+  ): Unit =
+    (perTable, oracle) match {
+      case (ElasticSuccess(p), ElasticSuccess(o)) => p shouldBe o
+      case (ElasticFailure(p), ElasticFailure(o)) =>
+        p.statusCode shouldBe o.statusCode
+        p.message shouldBe o.message
+      case other => fail(s"describePerTable and its oracle disagree: $other")
+    }
+
+  private def columnsOf(answer: ElasticResult[Option[ResultSchema]]): Seq[(String, String)] =
+    answer match {
+      case ElasticSuccess(Some(schema)) => schema.columns.map(c => c.name -> c.sqlType.typeId)
+      case other                        => fail(s"no schema: $other")
+    }
+
+  "T0-2 (SCHEMA-15 premises)" should "attach both legs, and fall back to the main table for a leg the attach misses" in {
+    val byName = Map("pt_a" -> ptA, "pt_b" -> ptB)
+    // (i) both legs registered under their bare names; a joined column typed from its own leg
+    val s = single(s"SELECT a.aid, b.big FROM pt_a a JOIN pt_b b $onBid")
+    DerivedTable.attach(s, sources => byName.get(sources.mkString(","))) match {
+      case Right(attached) =>
+        attached.schemas.keySet shouldBe Set("pt_a", "pt_b")
+        MultiSearch.fieldType(attached.select.fields(1)).sqlType shouldBe SQLTypes.BigInt
+      case Left(refusal) => fail(s"(i) attach refused: $refusal")
+    }
+    // (ii) an index pattern as a JOIN leg is a leg, keyed by the pattern (MappingTypeReadingSpec
+    // types both sides)
+    val pattern = single("SELECT t.k, p.k FROM s7_t t JOIN s7_p* p ON t.k = p.k")
+    pattern.from.aliasesToTable.toSeq shouldBe Seq("t" -> "s7_t", "p" -> "s7_p*")
+    pattern.from.joinedTables shouldBe Seq("s7_p*")
+    // (iii) a qualified star parses as a star: `HitReading.isStar` is D7's whole test
+    def starForm(sql: String): Seq[(String, Option[String], Option[String], Boolean)] =
+      single(sql).select.fields.map { f =>
+        (
+          f.identifier.identifierName,
+          f.identifier.tableAlias,
+          f.identifier.table,
+          HitReading.isStar(f)
+        )
+      }
+    starForm(s"SELECT a.* FROM pt_a a JOIN pt_b b $onBid") shouldBe
+    Seq(("*", Some("a"), Some("pt_a"), true))
+    starForm(s"SELECT a.aid, b.* FROM pt_a a JOIN pt_b b $onBid") shouldBe
+    Seq(("aid", Some("a"), Some("pt_a"), false), ("*", Some("b"), Some("pt_b"), true))
+    // (iv) G3 / B8 (and B2, B9) pass the resolved-type rules once attached
+    val bodies = g3.map { case (items, keys) =>
+      s"SELECT $items FROM pt_a a JOIN pt_b b $onBid GROUP BY $keys"
+    } ++ Seq(
+      s"SELECT $b2 FROM pt_a a JOIN pt_b b $onBid",
+      s"SELECT $b9 FROM pt_a a JOIN pt_b b $onBid"
+    )
+    bodies.foreach { sql =>
+      withClue(s"(iv) [$sql] ") {
+        DerivedTable.attach(single(sql), sources => byName.get(sources.mkString(","))) match {
+          case Right(attached) => attached.validateResolved() shouldBe Right(())
+          case Left(refusal)   => fail(s"attach refused: $refusal")
+        }
+      }
+    }
+    // (v) the main table's schema answers for a leg the attach did not register (D5's reason)
+    val missing = single(s"SELECT b.n FROM pt_a a JOIN pt_b b $onBid")
+    DerivedTable.attach(missing, sources => Map("pt_a" -> ptA).get(sources.mkString(","))) match {
+      case Right(attached) =>
+        attached.schemas.keySet shouldBe Set("pt_a")
+        MultiSearch.fieldType(attached.select.fields.head).sqlType shouldBe SQLTypes.Int
+      case Left(refusal) => fail(s"(v) attach refused: $refusal")
+    }
+  }
+
+  "describePerTable (SCHEMA-15)" should "type every JOIN body per table as describe types its single-table oracle, searching nothing (AC1)" in {
+    val c = ptClient()
+    val oracles = parityCells.map(cell => cell -> c.describe(cell.oracle))
+    // a refused oracle is compared by status and message; a schema-less one would prove nothing
+    oracles
+      .collect { case (cell, o) if !o.toOption.exists(_.isDefined) => cell -> o }
+      .distinct
+      .foreach { case (cell, o) => println(s"[SCHEMA-15 oracle not typed] ${cell.oracle}: $o") }
+    oracles.collect { case (cell, ElasticSuccess(None)) => cell.oracle } shouldBe empty
+    val statements = oracles.map { case (cell, o) => (cell, parsed(cell.body), o) }
+    statements.foreach { case (cell, statement, oracle) =>
+      withClue(s"[${cell.body}] vs [${cell.oracle}] ") {
+        sameAnswer(c.describePerTable(statement), oracle)
+      }
+    }
+    c.searches.get() shouldBe 0
+  }
+
+  it should "attribute a bare name to the main table and keep repeated names, as the view does (A-110)" in {
+    val oracles = ptClient()
+    val mainN = columnsOf(oracles.describe("SELECT n FROM pt_a"))
+    val joinedN = columnsOf(oracles.describe("SELECT n FROM pt_b"))
+    mainN should not be joinedN
+    // a fresh client per cell: a path no mapping holds reloads (and, in this test double, drops)
+    // the cached mapping of its leg (D10), as single-table describe does
+    Seq(
+      "aid"      -> columnsOf(oracles.describe("SELECT aid FROM pt_a")),
+      "k"        -> columnsOf(oracles.describe("SELECT k FROM pt_a")),
+      "n"        -> mainN,
+      "label"    -> Seq("label" -> "ANY"),
+      "b.aid"    -> Seq("aid" -> "ANY"),
+      "a.n, b.n" -> (mainN ++ joinedN),
+      "a.nope"   -> Seq("nope" -> "ANY")
+    ).foreach { case (items, expected) =>
+      withClue(s"[$items] ") {
+        val c = ptClient()
+        columnsOf(
+          c.describePerTable(parsed(s"SELECT $items FROM pt_a a JOIN pt_b b $onBid"))
+        ) shouldBe
+        expected
+        c.searches.get() shouldBe 0
+      }
+    }
+  }
+
+  it should "answer None for an unknown leg, an unregistered key or a star, never the main table's column (AC3)" in {
+    // an unknown leg, joined or main, and a same-named column of the main table
+    Seq(
+      s"SELECT a.aid, z.q FROM pt_a a JOIN pt_zz z ON a.bid = z.bid",
+      s"SELECT z.n FROM pt_a a JOIN pt_zz z ON a.bid = z.bid",
+      s"SELECT z.q, b.label FROM pt_zz z JOIN pt_b b ON z.bid = b.bid"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val c = ptClient()
+        c.describePerTable(parsed(sql)) shouldBe ElasticSuccess(None)
+        // remembered: answered the same way again
+        c.describePerTable(parsed(sql)) shouldBe ElasticSuccess(None)
+        c.searches.get() shouldBe 0
+      }
+    }
+    // a failed read (not a 404)
+    val failing = new CountingClient {
+      override private[client] def loadQuerySchema(source: String): ElasticResult[Schema] =
+        if (source == "pt_b")
+          ElasticResult.failure(ElasticError(message = "boom", statusCode = Some(500)))
+        else super.loadQuerySchema(source)
+    }
+    failing.updateSchema("pt_a", ptA)
+    failing.describePerTable(parsed(s"SELECT a.n, b.m FROM pt_a a JOIN pt_b b $onBid")) shouldBe
+    ElasticSuccess(None)
+    // a key no leg registers: one index under two qualifiers (a fallback would type `p.n` BIGINT
+    // from `pt_b`), an UNNEST alias -- no mapping read
+    Seq(
+      """SELECT p.n FROM pt_b x JOIN "c1".pt_a p ON x.bid = p.bid JOIN "c2".pt_a q ON x.bid = q.bid""",
+      s"SELECT a.aid, i.p FROM pt_a a JOIN UNNEST(a.items) AS i JOIN pt_b b $onBid"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val c = ptClient()
+        val statement = parsed(sql)
+        c.reads.set(0)
+        c.describePerTable(statement) shouldBe ElasticSuccess(None)
+        c.reads.get() shouldBe 0
+        c.searches.get() shouldBe 0
+      }
+    }
+    // a star: the main table's columns only would be a short schema
+    Seq(
+      s"SELECT * FROM pt_a a JOIN pt_b b $onBid",
+      s"SELECT a.* FROM pt_a a JOIN pt_b b $onBid",
+      s"SELECT a.aid, b.* FROM pt_a a JOIN pt_b b $onBid"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        ptClient().describePerTable(parsed(sql)) shouldBe ElasticSuccess(None)
+      }
+    }
+  }
+
+  it should "answer describe's answer for every other shape, and refuse a type error as over the twin (AC2, AC3)" in {
+    val shapes = Seq(
+      s"SELECT a.aid, d.label FROM pt_a a JOIN (SELECT bid, label FROM pt_b) d ON a.bid = d.bid",
+      "WITH d AS (SELECT bid, label FROM pt_b) SELECT a.aid, d.label FROM pt_a a JOIN d ON a.bid = d.bid",
+      s"SELECT a.aid, b.label FROM pt_a a JOIN pt_b b $onBid WHERE a.k IN (SELECT k FROM pt_b)",
+      s"SELECT a.aid FROM pt_a a JOIN pt_b b $onBid WHERE a.n IN (SELECT c.m FROM pt_ab c WHERE c.aid = a.aid)",
+      "SELECT a.aid FROM pt_a a, pt_b b JOIN pt_ab c ON b.bid = c.bid",
+      s"SELECT a.aid FROM pt_a a JOIN pt_b b $onBid UNION SELECT a.aid FROM pt_a a JOIN pt_b b $onBid"
+    )
+    val statements = shapes.map(sql => sql -> parsed(sql))
+    statements.foreach { case (sql, statement) =>
+      withClue(s"[$sql] ") {
+        val c = ptClient()
+        sameAnswer(c.describePerTable(statement), c.describe(statement))
+        c.searches.get() shouldBe 0
+      }
+    }
+    // P1: a non-JOIN statement is describe's, verbatim
+    p1.foreach { sql =>
+      withClue(s"[$sql] ") {
+        val c = client()
+        val statement = parsed(sql)
+        c.describePerTable(statement) shouldBe c.describe(statement)
+      }
+    }
+    // a type error: validateResolved's reason, as single-table describe gives it over the twin;
+    // the reason quotes the expression as written, so the body's qualifiers are dropped to compare
+    val twin = ptClient().describe("SELECT aid FROM pt_ab WHERE CAST(ts AS TIME) = d2")
+    val typeError =
+      parsed(s"SELECT a.aid FROM pt_a a JOIN pt_b b $onBid WHERE CAST(a.ts AS TIME) = b.d2")
+    (ptClient().describePerTable(typeError), twin) match {
+      case (ElasticFailure(p), ElasticFailure(o)) =>
+        p.statusCode shouldBe Some(400)
+        p.operation shouldBe Some("describe")
+        unqualified(p.message) shouldBe o.message
+      case other => fail(s"a type error: $other")
+    }
+  }
+
+  it should "read dates as single-table describe does under 6.8.23 and 8.18.3 (AC4)" in {
+    Seq("6.8.23", "8.18.3").foreach { dialect =>
+      withClue(s"[$dialect] ") {
+        val c = ptClient(dialect)
+        val oracle = c.describe("SELECT dc, de, pz, ts, dn FROM pt_a")
+        columnsOf(oracle) should not be empty
+        sameAnswer(
+          c.describePerTable(
+            parsed(s"SELECT a.dc, a.de, a.pz, a.ts, a.dn FROM pt_a a JOIN pt_b b $onBid")
+          ),
+          oracle
+        )
+        sameAnswer(
+          c.describePerTable(parsed(s"SELECT b.d2 FROM pt_a a JOIN pt_b b $onBid")),
+          c.describe("SELECT d2 FROM pt_b")
+        )
+      }
+    }
+  }
+
+  it should "ignore a foreign extension for a JOIN body only (D4)" in {
+    val foreign = new ExtensionSpi {
+      override def extensionId: String = "describe-per-table-foreign-test"
+      override def extensionName: String = "Foreign handler (test double)"
+      override def version: String = "test"
+      override def priority: Int = 1
+      override def initialize(
+        config: com.typesafe.config.Config,
+        licenseRefreshStrategy: app.softnetwork.elastic.licensing.LicenseRefreshStrategy
+      ): Either[String, Unit] = Right(())
+      override def canHandle(statement: Statement): Boolean = true
+      override def execute(statement: Statement, client: ElasticClientApi)(implicit
+        system: ActorSystem
+      ): Future[ElasticResult[QueryResult]] = Future.successful(ElasticSuccess(QueryRows(Nil)))
+      override def supportedSyntax: Seq[String] = Seq.empty
+    }
+    val withForeign = new CountingClient {
+      override lazy val extensionRegistry: ExtensionRegistry =
+        new ExtensionRegistry(ConfigFactory.load(), licenseRefreshStrategy) {
+          override lazy val extensions: Seq[ExtensionSpi] = Seq(foreign)
+        }
+    }
+    Seq("pt_a" -> ptA, "pt_b" -> ptB).foreach { case (i, s) => withForeign.updateSchema(i, s) }
+    val join = parsed(s"SELECT $b9 FROM pt_a a JOIN pt_b b $onBid")
+    withForeign.describe(join) shouldBe ElasticSuccess(None)
+    val typed = withForeign.describePerTable(join)
+    typed shouldBe ptClient().describePerTable(join)
+    typed.toOption.flatten should not be empty
+    // a single-table statement: describe's answer under that extension
+    withForeign.describePerTable(parsed("SELECT aid FROM pt_a")) shouldBe ElasticSuccess(None)
+    withForeign.searches.get() shouldBe 0
+  }
+
+  it should "answer each scope as a fresh parse: after a validation pass on the same AST (AC6)" in {
+    val schemas = Map("pt_a" -> ptA, "pt_b" -> ptB)
+    Seq(
+      s"SELECT $b9, a.tags FROM pt_a a JOIN pt_b b $onBid",
+      s"SELECT a.tags, COALESCE(a.dc, b.d2) AS v, CASE WHEN a.b THEN a.ts ELSE b.d2 END AS w " +
+      s"FROM pt_a a JOIN pt_b b $onBid",
+      s"SELECT ${g3.head._1} FROM pt_a a JOIN pt_b b $onBid GROUP BY ${g3.head._2}"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        val c = ptClient()
+        val fresh = c.describePerTable(single(sql))
+        val shared = single(sql)
+        val verdict =
+          SQLTypeUtils.validatingComputedColumns(shared.updateAll(schemas).validateResolved())
+        c.describePerTable(shared) shouldBe fresh
+        // and the validation pass, after describePerTable, answers as on a fresh parse
+        SQLTypeUtils.validatingComputedColumns(
+          shared.updateAll(schemas).validateResolved()
+        ) shouldBe verdict
+        SQLTypeUtils.validatingComputedColumns(
+          single(sql).updateAll(schemas).validateResolved()
+        ) shouldBe verdict
+      }
+    }
+  }
+
+  it should "forward through a delegator: the delegate's answer, its member run once (D10)" in {
+    val calls = new AtomicInteger(0)
+    val recording = new CountingClient {
+      override private[elastic] def describePerTable(
+        statement: Statement
+      ): ElasticResult[Option[ResultSchema]] = {
+        calls.incrementAndGet()
+        super.describePerTable(statement)
+      }
+    }
+    Seq("pt_a" -> ptA, "pt_b" -> ptB).foreach { case (i, s) => recording.updateSchema(i, s) }
+    val wrapper = new ElasticClientDelegator { override val delegate: ElasticClientApi = recording }
+    val join = parsed(s"SELECT $b9 FROM pt_a a JOIN pt_b b $onBid")
+    val answer = wrapper.describePerTable(join)
+    calls.get() shouldBe 1
+    answer shouldBe ptClient().describePerTable(join)
+    answer.toOption.flatten should not be empty
+    recording.searches.get() shouldBe 0
   }
 }
