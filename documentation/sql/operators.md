@@ -726,7 +726,9 @@ SELECT * FROM t WHERE b = n;                         -- b BOOLEAN read as 1 / 0
 - Outside a query — a computed column (`SCRIPT AS`, including the ones a `CREATE TABLE … AS
   SELECT` copies), an ingest pipeline, a materialized view's transform — a text side keeps
   `0.24.0`'s verdict: `NULLIF(k, 0)` is refused there, because a pipeline would silently drop a
-  document whose text converts to nothing. The boolean rows apply everywhere. A conditional that
+  document whose text converts to nothing. The boolean rows apply everywhere, except that a
+  materialized view's `WHERE` that orders a `BOOLEAN` against a number (`b > 0`) fails at creation
+  (see [Materialized view limitations](materialized_views.md#limitations)). A conditional that
   reads a quoted argument as a number is that number there too (see
   [Conditional functions](functions_conditional.md)), so `NULLIF(COALESCE(n, '3'), k)`,
   `NULLIF(k, COALESCE(n, '3'))` and `NULLIF(COALESCE(n, '3'), '2024-01-15')` are refused in a
