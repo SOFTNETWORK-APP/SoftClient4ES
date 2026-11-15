@@ -249,8 +249,34 @@ YEAR(o.created_at)`, or `GROUP BY y`, or `GROUP BY 1` — stores one row per gro
 a `keyword` sub-field for `UPPER` and the other string functions. A view grouped by an aliased
 column (`SELECT c.city AS town, COUNT(*) … GROUP BY town`, `GROUP BY c.city` or the ordinal) stores
 the key under its alias, over one table or a JOIN. A group whose key is `NULL` is not stored.
+A `SUM` column is declared `BIGINT` over an integer column and `DOUBLE` over a
+`REAL` or a `DOUBLE` column (*since engine `0.25.0`*; see [Aggregate functions](functions_aggregate.md)).
 
 A `HAVING` in a view is more constrained than a `HAVING` in a `SELECT` — most importantly, every aggregate it reads must be published in the `SELECT` list **with an alias**, as `SUM(o.amount) AS total_amount` is above. See [HAVING in a materialized view](#having-in-a-materialized-view).
+
+### Column types
+
+*Since engine `0.25.0`*, a view declares each column of its `SELECT` list with the type a query of
+its definition reports — the type `DESCRIBE` gives that column of the view's `SELECT` — over a
+single table, and table by table over a JOIN, with two exceptions:
+
+- A column keeps the type of its source mapping where that type says more: a `KEYWORD` or `TEXT`
+  column, which a query reports as `VARCHAR`, is stored as `KEYWORD` or `TEXT`.
+- A computed column (`UPPER(c.name) AS customer_name_upper`) keeps the type its script writes.
+
+A per-group calculation over aggregates is declared with the type the query reports: a `DATEDIFF`
+is a `BIGINT` (a view created before `0.25.0` declared it `DOUBLE`; the values are the same).
+
+`DESCRIBE MATERIALIZED VIEW` reports the declared types. A query over the view reports a query's
+types, as over any table: `VARCHAR` for a `KEYWORD` or `TEXT` column.
+
+The view's `WHERE`, its `HAVING` and its per-group calculations read the definition with the source
+tables' types, as a query does: a `BOOLEAN` column compared for equality with a number column
+(`b = n`, `b <> n`) is answered, where it was refused (HTTP 400) before `0.25.0`. The transform
+still applies some conditions differently from a query: see [Limitations](#limitations).
+
+A view created before `0.25.0` keeps the types it was created with: a `CREATE OR REPLACE` with the
+same definition leaves it as it is, and `DROP MATERIALIZED VIEW` followed by `CREATE` re-types it.
 
 ---
 
@@ -310,7 +336,12 @@ REFRESH MATERIALIZED VIEW orders_with_customers_mv WITH SCHEDULE NOW;
 DESCRIBE MATERIALIZED VIEW view_name;
 ```
 
-Returns the schema of the materialized view index, showing columns, types, nullability, and other metadata.
+Returns the schema of the materialized view index, showing columns, types, nullability, and other
+metadata. The types are the ones the view declares (see [Column types](#column-types)).
+
+Besides the `SELECT` items, the view index holds the `keyword` sub-field of each text column copied
+from a source table (here `customer_name` and `email`), the columns its stages read (here the join key `customer_id`, the `WHERE` column `status` and the
+`createdAt` the computed `effective_date` reads), and `_last_updated`, the time of the last write.
 
 **Example:**
 
@@ -318,15 +349,21 @@ Returns the schema of the materialized view index, showing columns, types, nulla
 DESCRIBE MATERIALIZED VIEW orders_with_customers_mv;
 ```
 
-| Field                | Type      | Null | Key | Default | Comment | Script | Extra |
-|----------------------|-----------|------|-----|---------|---------|--------|-------|
-| id                   | INT       | yes  |     | NULL    |         |        | ()    |
-| amount               | DOUBLE    | yes  |     | NULL    |         |        | ()    |
-| customer_name        | VARCHAR   | yes  |     | NULL    |         |        | ()    |
-| email                | VARCHAR   | yes  |     | NULL    |         |        | ()    |
-| customer_zip         | VARCHAR   | yes  |     | NULL    |         |        | ()    |
-| customer_name_upper  | KEYWORD   | yes  |     | NULL    |         |        | ()    |
-| effective_date       | TIMESTAMP | yes  |     | NULL    |         |        | ()    |
+| Field                   | Type      | Null | Key | Default             | Comment                                      | Script                    | Extra |
+|-------------------------|-----------|------|-----|---------------------|----------------------------------------------|---------------------------|-------|
+| `_last_updated`         | TIMESTAMP | no   |     | `_ingest.timestamp` | Last update timestamp                        |                           | ()    |
+| `amount`                | DOUBLE    | yes  |     | NULL                |                                              |                           | ()    |
+| `createdAt`             | DATE      | yes  |     | NULL                |                                              |                           | ()    |
+| `customer_id`           | INT       | yes  |     | NULL                |                                              |                           | ()    |
+| `customer_name`         | VARCHAR   | yes  |     | NULL                | Enriched from customers.name                 |                           | ()    |
+| `customer_name.keyword` | KEYWORD   | yes  |     | NULL                | Keyword multi-field for aggregations         |                           | ()    |
+| `customer_name_upper`   | VARCHAR   | yes  |     | NULL                | Computed: UPPER(customer_name)               | `UPPER(customer_name)`    | ()    |
+| `customer_zip`          | KEYWORD   | yes  |     | NULL                | Enriched from customers.department.zip_code  |                           | ()    |
+| `effective_date`        | DATE      | yes  |     | NULL                | Computed: COALESCE(NULLIF(createdAt, …), …)  | `COALESCE(NULLIF(createdAt, DATE_PARSE('2025-09-11', '%Y-%m-%d') - INTERVAL 2 DAY), CURRENT_DATE)` | ()    |
+| `email`                 | VARCHAR   | yes  |     | NULL                | Enriched from customers.email                |                           | ()    |
+| `email.keyword`         | KEYWORD   | yes  |     | NULL                | Keyword multi-field for aggregations         |                           | ()    |
+| `id`                    | INT       | yes  | PRI | NULL                |                                              |                           | ()    |
+| `status`                | KEYWORD   | yes  |     | NULL                |                                              |                           | ()    |
 
 ---
 
@@ -548,6 +585,9 @@ DROP MATERIALIZED VIEW IF EXISTS orders_with_customers_mv;
 | **`LIMIT` / `OFFSET`**                      | A `LIMIT` in the definition is only recorded: the view stores every row or group. An `OFFSET` of groups is refused by name. |
 | **A `GROUP BY` key the view cannot compute** | A key whose function the engine does not script — `DATE_TRUNC` with an interval, `DATE_FORMAT`, … — is refused at creation, naming the key and its expression. So is a view whose aggregation would never write one of its key columns. |
 | **The `NULL` group**                         | A group whose key is `NULL` is not stored, as a query's `GROUP BY` forms no `NULL` group either. |
+| **A comparison only a query converts**      | *Since engine `0.25.0`* a query compares a text column with a number by converting the text (see [Comparing values of different types](operators.md#comparing-values-of-different-types)). A view keeps the earlier refusal where the comparison runs as a script — a computed column or `GROUP BY` key (`NULLIF(k, 0)`, `CASE WHEN k = 0 …` over a `KEYWORD` or `TEXT` column `k`), or a `WHERE` that compares the text column with a number column (`WHERE k = n`): the view is refused at creation with HTTP 400 and the engine's type message, for example *"NULLIF(k, 0) compares KEYWORD with BIGINT: NULLIF requires two arguments of comparable types, so cast one of them"*, before anything is created. Without the refusal, a view grouped by `CASE WHEN k = 0 …` stored a wrong group, without an error. A text column compared with a literal (`WHERE k = 0`) runs as before. |
+| **`YEAR(…)` of a `DATE` column in `WHERE`**  | Measured on Elasticsearch `8.x`: a view whose `WHERE` reads `YEAR(created_at) = 2024` over a `DATE` column is created, but stores **no** rows, where the same query returns the matching rows: the transform's source query does not apply the function. Filter when querying the view. |
+| **`COALESCE` over a `DATE`, or a `BOOLEAN` ordered against a number, in `WHERE`** | Measured on Elasticsearch `8.x`: `WHERE COALESCE(created_at, '2024-01-15') = '2024-01-15'` (or `>`), and `WHERE b > 0` over a `BOOLEAN` column `b`, fail at creation with HTTP 500 — *"Failed to deploy materialized view artifacts: Deployment failed and rolled back: …"* — and the deployment is rolled back. The query answers. Filter when querying the view. |
 | **A nested column in `WHERE`**               | A condition over a nested column written without `NESTED(…)` matches nothing in a view's `WHERE` (a query tests the column's elements). Write the `NESTED(…)` condition. |
 | **Every table needs its schema**             | A view one of whose tables has no schema under its index name is refused: *"Materialized view v cannot be typed: no schema was loaded for table t."* |
 | **UNNEST JOIN**                             | Not supported in materialized views                                  |
