@@ -17,6 +17,7 @@
 package app.softnetwork.elastic.client
 
 import app.softnetwork.elastic.client.metrics.MetricsConfig
+import app.softnetwork.elastic.sql.config.ConfigErrorKeys
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.StrictLogging
 import configs.ConfigReader
@@ -78,7 +79,7 @@ object ElasticConfig extends StrictLogging {
       .read(config.withFallback(defaults), "elastic")
       .toEither match {
       case Left(configError) =>
-        logger.error(s"Something went wrong with the provided arguments $configError")
+        logger.error(s"Invalid elastic configuration: ${ConfigErrorKeys(configError)}")
         throw configError.configException
       case Right(r) => r
     }

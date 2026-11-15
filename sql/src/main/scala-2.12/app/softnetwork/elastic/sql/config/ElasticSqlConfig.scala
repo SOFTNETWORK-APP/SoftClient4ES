@@ -16,7 +16,7 @@ object ElasticSqlConfig extends StrictLogging {
       .get(config.withFallback(ConfigFactory.load("softnetwork-sql.conf")), "sql")
       .toEither match {
       case Left(configError) =>
-        logger.error(s"Something went wrong with the provided arguments $configError")
+        logger.error(s"Invalid sql configuration: ${ConfigErrorKeys(configError)}")
         throw configError.configException
       case Right(r) => r
     }
