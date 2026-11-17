@@ -2112,12 +2112,11 @@ package object schema {
         }
         .map("script" -> _) ++ (if (multiFields.nonEmpty)
                                   ListMap(
+                                    // SCHEMA-17 fix R-155 (A-188): built in one pass
                                     "multi_fields" -> ObjectValue(
-                                      ListMap(
-                                        multiFields.map(field =>
-                                          field.name -> ObjectValue(field._meta)
-                                        ): _*
-                                      )
+                                      listMapOf[String, Value[_]](multiFields.iterator.map {
+                                        field => field.name -> ObjectValue(field._meta)
+                                      })
                                     ),
                                     // SCHEMA-6 (D9): the sub-fields in their DECLARED order --
                                     // Elasticsearch returns `properties` sorted and a `_meta`
@@ -2893,9 +2892,9 @@ package object schema {
       * `IndexNameProbeRefusalSpec` pins the outcome; this member must not pre-empt either.
       */
     lazy val indexName: String = name.toLowerCase
-    private[schema] lazy val cols: ListMap[String, Column] = ListMap(
-      columns.map(c => c.name -> c): _*
-    )
+    // SCHEMA-17 fix R-155 (A-188): built in one pass (`listMapOf`)
+    private[schema] lazy val cols: ListMap[String, Column] =
+      listMapOf(columns.iterator.map(c => c.name -> c))
 
     def find(path: String): Option[Column] = {
       if (path.contains(".")) {
@@ -2924,7 +2923,13 @@ package object schema {
       )
       .getOrElse(ListMap.empty) ++
       ListMap(
-        "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
+        // SCHEMA-17 fix R-155 (A-188): `cols`' entries, in their order, into a ListMap built in
+        // one pass (`listMapOf`), where `cols.map` checked each key against every earlier one
+        "columns" -> ObjectValue(
+          listMapOf[String, Value[_]](cols.iterator.map { case (name, col) =>
+            name -> ObjectValue(col._meta)
+          })
+        )
       ) ++ ListMap(
         "type" -> StringValue(tableType.name)
       ) ++ (if (materializedViews.nonEmpty)

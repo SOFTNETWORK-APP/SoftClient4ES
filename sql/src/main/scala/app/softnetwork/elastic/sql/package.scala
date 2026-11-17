@@ -1057,6 +1057,20 @@ package object sql {
     override def nullable: Boolean = false
   }
 
+  /** SCHEMA-17 fix R-155 (A-188) -- THE construction of a `ListMap` at every site that builds one
+    * per field (the `Value` map arm, `Table.cols`, `Table._meta`'s `columns`, `Column._meta`'s
+    * `multi_fields`): the entries in their order, a repeated key keeping its FIRST position and its
+    * LAST value -- what `ListMap(entries: _*)` answers on Scala 2.13 --, gathered in a
+    * `mutable.LinkedHashMap` and handed to the builder in ONE `++=`, which Scala 2.13 adds without
+    * a key check: linear, where `ListMap(entries: _*)` checked each key against every earlier one.
+    * On 2.12 the builder still adds entry by entry (as `ListMap(entries: _*)` did there).
+    */
+  private[elastic] def listMapOf[K, V](entries: Iterator[(K, V)]): ListMap[K, V] = {
+    val gathered = scala.collection.mutable.LinkedHashMap.empty[K, V]
+    entries.foreach { case (k, v) => gathered.update(k, v) }
+    (ListMap.newBuilder[K, V] ++= gathered).result()
+  }
+
   object Value {
     def apply[R: TypeTag, T <: Value[R]](value: Any): Value[_] = {
       value match {
@@ -1104,10 +1118,13 @@ package object sql {
               ).asInstanceOf[Values[R, T]]
             case _ => throw new IllegalArgumentException("Unsupported Values type")
           }
-        case _: Seq[T] => EmptyValues().asInstanceOf[Values[R, T]]
+        case _: Seq[T]    => EmptyValues().asInstanceOf[Values[R, T]]
         case o: Map[_, _] =>
-          val map = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }.toList
-          ObjectValue(ListMap(map: _*))
+          // SCHEMA-17 fix R-155 (A-187): the entries `map` answers, in ITS order -- the order this
+          // arm always rendered: a sorted map (and, on 2.12, a list map) is re-keyed through `Map`
+          // there --, into a ListMap built in one pass (`listMapOf`)
+          val mapped = o.asInstanceOf[Map[String, Any]].map { case (k, v) => k -> apply(v) }
+          ObjectValue(listMapOf[String, Value[_]](mapped.iterator))
         case other => StringValue(other.toString)
       }
     }

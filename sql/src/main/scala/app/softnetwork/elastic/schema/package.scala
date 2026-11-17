@@ -96,6 +96,16 @@ package object schema {
     private[schema] def undeclaredType(mappingType: String): String =
       if (mappingType == "date") "timestamp" else mappingType
 
+    /** SCHEMA-17 fix R-155 (A-187) -- the declarations of `_meta.columns`, or of a column's
+      * `multi_fields`, by name, read ONCE per document (per parent): what a lookup of each field in
+      * that `ListMap` answered -- an entry that is not an object declares nothing -- without
+      * walking every earlier entry for each field.
+      */
+    private[schema] def declarations(columns: ObjectValue): Map[String, ObjectValue] =
+      columns.value.iterator.collect { case (name, declared: ObjectValue) =>
+        name -> declared
+      }.toMap
+
     def apply(name: String, node: JsonNode, _meta: Option[ObjectValue]): IndexField = {
       val declaredType = _meta
         .flatMap {
@@ -122,14 +132,17 @@ package object schema {
             case _ => None
           })
 
-      val fields_meta = _meta.flatMap {
-        case m: ObjectValue =>
-          m.value.get("multi_fields") match {
-            case Some(f: ObjectValue) => Some(f)
-            case _                    => None
-          }
-        case _ => None
-      }
+      // SCHEMA-17 fix R-155 (A-187): the sub-fields' declarations indexed ONCE for this parent
+      val fields_meta: Map[String, ObjectValue] = _meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("multi_fields") match {
+              case Some(f: ObjectValue) => Some(declarations(f))
+              case _                    => None
+            }
+          case _ => None
+        }
+        .getOrElse(Map.empty)
 
       // in MAPPING order (SCHEMA-6 D9): a `Set` of the entries, mapped, lost it to a hash order
       val mapped =
@@ -138,15 +151,7 @@ package object schema {
           .map(_.properties().asScala.toList.map { entry =>
             val name = entry.getKey
             val value = entry.getValue
-            val _meta = fields_meta.flatMap {
-              case m: ObjectValue =>
-                m.value.get(name) match {
-                  case Some(colMeta: ObjectValue) => Some(colMeta)
-                  case _                          => None
-                }
-              case _ => None
-            }
-            apply(name, value, _meta)
+            apply(name, value, fields_meta.get(name))
           })
           .getOrElse(Nil)
 
@@ -340,27 +345,22 @@ package object schema {
       }
       val options = extractObject(root, ignoredKeys = Set("properties"))
       val meta = options.get("_meta")
-      val columns = meta.flatMap {
-        case m: ObjectValue =>
-          m.value.get("columns") match {
-            case Some(cols: ObjectValue) => Some(cols)
-            case _                       => None
-          }
-        case _ => None
-      }
+      // SCHEMA-17 fix R-155 (A-187): the columns' declarations indexed ONCE for this document
+      val columns: Map[String, ObjectValue] = meta
+        .flatMap {
+          case m: ObjectValue =>
+            m.value.get("columns") match {
+              case Some(cols: ObjectValue) => Some(IndexField.declarations(cols))
+              case _                       => None
+            }
+          case _ => None
+        }
+        .getOrElse(Map.empty)
       val fields = Option(root.get("properties"))
         .map(_.properties().asScala.map { entry =>
           val name = entry.getKey
           val value = entry.getValue
-          val _meta = columns.flatMap {
-            case c: ObjectValue =>
-              c.value.get(name) match {
-                case Some(colMeta: ObjectValue) => Some(colMeta)
-                case _                          => None
-              }
-            case _ => None
-          }
-          IndexField(name, value, _meta)
+          IndexField(name, value, columns.get(name))
         }.toList)
         .getOrElse(Nil)
 

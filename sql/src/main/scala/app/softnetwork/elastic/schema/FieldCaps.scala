@@ -127,7 +127,7 @@ object FieldCaps {
       }
       val declarations = declarationsOf(typed, exact)
       typed.foreach { case (path, caps) => if (FieldMeta.takesMeta(caps.tpe)) leaves += path }
-      declared ++= declarations._1.keys
+      declared ++= declarations._1.map(_._1)
       index -> document(typed, declarations)
     }
     Answer(documents, leaves.toSet -- declared)
@@ -197,11 +197,14 @@ object FieldCaps {
     *     undeclared reading, [[FieldMeta.ListsKey]] 's depths (every member's) the ancestors; every
     *     other declaration is dropped -- another index's format read into a member that lacks the
     *     key would be silently wrong.
+    *
+    * SCHEMA-17 fix R-155 (A-188): the declarations in their order (a path keeps its first position
+    * and its last declaration), with no `ListMap`: built once per member, in one pass.
     */
   private def declarationsOf(
     fields: Seq[(String, Caps)],
     exact: Boolean
-  ): (ListMap[String, String], Map[String, String]) = {
+  ): (Seq[(String, String)], Map[String, String]) = {
     val types = scala.collection.mutable.LinkedHashMap.empty[String, String]
     val formats = scala.collection.mutable.Map.empty[String, String]
     fields.foreach { case (path, caps) =>
@@ -232,7 +235,7 @@ object FieldCaps {
         }
       }
     }
-    (ListMap(types.toSeq: _*), formats.toMap)
+    (types.toList, formats.toMap)
   }
 
   private def child(parent: ObjectNode, name: String): ObjectNode =
@@ -247,7 +250,7 @@ object FieldCaps {
     */
   private def document(
     caps: Seq[(String, Caps)],
-    declarations: (ListMap[String, String], Map[String, String])
+    declarations: (Seq[(String, String)], Map[String, String])
   ): JsonNode = {
     val root = factory.objectNode()
     val mappings = root.putObject("mappings")
