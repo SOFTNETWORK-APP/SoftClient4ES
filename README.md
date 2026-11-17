@@ -1,4 +1,9 @@
-# ![SoftClient4ES Logo](https://raw.githubusercontent.com/SOFTNETWORK-APP/SoftClient4ES/main/logo_375x300.png)
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.png">
+    <img alt="SoftClient4ES" src="logo-light.png" width="360">
+  </picture>
+</h1>
 
 ![Build Status](https://github.com/SOFTNETWORK-APP/SoftClient4ES/workflows/Build/badge.svg)
 [![codecov](https://codecov.io/gh/SOFTNETWORK-APP/SoftClient4ES/graph/badge.svg?token=XYCWBGVHAC)](https://codecov.io/gh/SOFTNETWORK-APP/SoftClient4ES)
@@ -248,7 +253,7 @@ Download the self-contained fat JAR (all dependencies included) for your Elastic
 Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.4); check a download with
 `shasum -a 256 -c softclient4es8-jdbc-driver-0.3.4.jar.sha256`.
 
-> **Java 11+ recommended** (17+ for ES 9.x): **cross-index JOINs require Java 11+** — the embedded JOIN engine is built on Apache Arrow 18.x, which ships Java-11 bytecode.
+> **Java 11+ required** (17+ for ES 9.x): the driver embeds the JOIN engine, built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
 ```text
 JDBC URL:    jdbc:elastic://localhost:9200
