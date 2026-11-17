@@ -632,27 +632,35 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
       | }}, "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
   ).schema
 
-  /** `s7_t` as a `read`-only user is typed (`_field_caps`: no `_meta`, no format). */
-  private val s7Caps: Schema = {
-    val document = app.softnetwork.elastic.schema.FieldCaps
-      .members(
-        "s7_t",
-        new com.fasterxml.jackson.databind.ObjectMapper().readTree(
-          """{"indices": ["s7_t"], "fields": {
-            | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
-            | "d": {"date": {"type": "date", "metadata_field": false}},
-            | "dn": {"date_nanos": {"type": "date_nanos", "metadata_field": false}},
-            | "ck": {"keyword": {"type": "keyword", "metadata_field": false}},
-            | "tags": {"keyword": {"type": "keyword", "metadata_field": false}}
-            |}}""".stripMargin
-        )
-      )
-      .head
-      ._2
-    Index("s7_t", document).schema.copy(
-      tableType = app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
-    )
+  /** `s7_t` as a `read`-only user is typed from `fieldCaps`, as the client types it
+    * (`FieldCaps.table`).
+    */
+  private def capsSchema(fieldCaps: String): Schema = {
+    val answer = app.softnetwork.elastic.schema.FieldCaps
+      .read("s7_t", new com.fasterxml.jackson.databind.ObjectMapper().readTree(fieldCaps))
+    app.softnetwork.elastic.schema.FieldCaps
+      .table(answer, Index("s7_t", answer.members.head._2).schema)
   }
+
+  /** `s7_t` as a `read`-only user is typed (`_field_caps`: no `_meta`, no format). */
+  private val s7Caps: Schema = capsSchema(
+    """{"indices": ["s7_t"], "fields": {
+      | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "d": {"date": {"type": "date", "metadata_field": false}},
+      | "dn": {"date_nanos": {"type": "date_nanos", "metadata_field": false}},
+      | "ck": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "tags": {"keyword": {"type": "keyword", "metadata_field": false}}
+      |}}""".stripMargin
+  )
+
+  /** [[s7Caps]] where core declared `tags` (its field `meta`, SCHEMA-17 A-169). */
+  private val s7CapsDeclared: Schema = capsSchema(
+    """{"indices": ["s7_t"], "fields": {
+      | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "tags": {"keyword": {"type": "keyword", "metadata_field": false,
+      |   "meta": {"sql_type": ["KEYWORD"]}}}
+      |}}""".stripMargin
+  )
 
   private def on(table: Schema, sql: String): SingleSearch = Parser(sql) match {
     case Right(s: SingleSearch) => s.update(Some(table))
@@ -751,10 +759,11 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     }
     HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t"), Some("7.5.2")) shouldBe
     MultiValued.AsRead
-    // an undeclared several-valued cell fails as a mapping reader's does, naming the ALTER
+    // a several-valued cell of a field core declared fails as a mapping reader's does, naming the
+    // ALTER
     val failure = intercept[Exception] {
       rowsOn(
-        s7Caps,
+        s7CapsDeclared,
         "SELECT tags FROM s7_t",
         """{"_id": "a1", "_source": {"tags": ["a", "b"]}}""",
         Some("8.18.3")
@@ -763,13 +772,23 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     val message = Option(failure.getCause).fold(failure.getMessage)(_.getMessage)
     message should include("tags")
     message should include("SET DATA TYPE ARRAY<")
-    // one value: answered
+    // SCHEMA-17 fix R-150 (A-184): a field with no core meta answers its values as stored, as on
+    // 6.8 -- the statement's rule stays the default, for its objects
     rowsOn(
       s7Caps,
       "SELECT tags FROM s7_t",
-      """{"_id": "a1", "_source": {"tags": "a"}}""",
+      """{"_id": "a1", "_source": {"tags": ["a", "b"]}}""",
       Some("8.18.3")
-    ).head("tags") shouldBe "a"
+    ).head("tags") shouldBe List("a", "b")
+    // one value: answered
+    Seq(s7Caps, s7CapsDeclared).foreach { table =>
+      rowsOn(
+        table,
+        "SELECT tags FROM s7_t",
+        """{"_id": "a1", "_source": {"tags": "a"}}""",
+        Some("8.18.3")
+      ).head("tags") shouldBe "a"
+    }
   }
 
   "A date typed from _field_caps" should "read ISO text as an instant, and fail any other spelling loudly (A-40; SCHEMA-17 LEAD-Q1 b)" in {

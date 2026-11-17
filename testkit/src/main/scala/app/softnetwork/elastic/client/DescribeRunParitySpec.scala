@@ -61,6 +61,13 @@ import scala.util.Try
   *     still `object`), `SHOW CREATE TABLE` re-parsing; the same items over a `nested` field;
   *   - F3: the field `meta` core writes from 7.6, none below (CREATE and in-place ALTER succeed on
   *     every major).
+  *
+  * The one accepted residue, by name (R-146 Q2 (a), SCHEMA-17 fix R-150): a user who may not read
+  * the mapping (typed from `_field_caps`), on every major, reads a several-valued cell of a leaf no
+  * index declares to it -- no core meta, or a scalar declaration over several indices -- as the
+  * `List` of its values, where `describe` declares the field's Elasticsearch type, one value. It is
+  * pinned by the ES 8 read-only spec (`JavaClientReadOnlyUserSpec`), not here: this spec runs as
+  * the privileged client, whose undeclared cell fails.
   */
 trait DescribeRunParitySpec extends AnyFlatSpecLike with ElasticDockerTestKit with Matchers {
 

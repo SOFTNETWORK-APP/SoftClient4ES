@@ -808,7 +808,10 @@ For a user who may not read the mapping (see
   -- lists, lists of objects, `DATE`, `TIME`, a custom date format;
 - over several indices (a pattern, a list, an alias), only lists apply: Elasticsearch merges the
   `meta` of the indices that hold a key and hides the others, so a format or a narrower type of one
-  index could be applied to another that has none; such a date is read as ISO 8601 only (see there).
+  index could be applied to another that has none; such a date is read as ISO 8601 only (see there);
+- a field without such a declaration -- not written yet, or not applied over several indices --
+  answers a several-valued cell as the `List` of its values, where a field declared as one value
+  fails, naming the `ALTER TABLE` that declares it a list.
 
 ---
 

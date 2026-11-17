@@ -136,6 +136,10 @@ private[client] object HitReading {
     * `version` is the cluster's (`VersionApi`), read by `ElasticsearchVersion.supportsFieldMeta`
     * -- asked only for a schema typed from `_field_caps` (by name: every other statement never asks
     * it here).
+    *
+    * SCHEMA-17 fix R-150 (A-183, A-184): this is the STATEMENT's rule, which objects keep; a LEAF
+    * no index declares to a read-only user ([[storedLeaves]]) reads its own several values as
+    * stored where the statement's rule fails them (`Readers.leafRule`).
     */
   private[client] def multiValuedFor(
     single: SingleSearch,
@@ -148,6 +152,16 @@ private[client] object HitReading {
     )
       MultiValued.AsRead
     else Default
+
+  /** SCHEMA-17 fix R-150 (A-184) -- the LEAVES of `schema` whose own several values are read as
+    * stored, as Elasticsearch 6.8's read-only users and 0.24.0 read them: those of a table typed
+    * from `_field_caps` that no index declares (`schema.FieldCaps.undeclared`, the one answer);
+    * none for any other table. Read once per plan, by [[Readers]].
+    */
+  private[client] def storedLeaves(
+    schema: Option[app.softnetwork.elastic.sql.schema.Table]
+  ): Set[String] =
+    schema.fold(Set.empty[String])(app.softnetwork.elastic.schema.FieldCaps.undeclared)
 
   /** SCHEMA-7 (D3) -- whether a field's dates are read to the nanosecond, as Elasticsearch indexes
     * them: `Column.dateNanos`, the one `date_nanos` predicate (A-72, #292), which the date format
@@ -180,14 +194,32 @@ private[client] object HitReading {
     * path.
     *
     * `points`: the path is a `GEO_POINT` leaf ([[readsPoints]]), collected point by point.
+    *
+    * SCHEMA-17 fix R-150 (A-183): `asStored`, set for a leaf a read-only user reads as stored
+    * (`Readers.collectedReaders`), where `reader` reads it under the statement's rule.
     */
   private[client] final class ListPath(
     val key: String,
     val segments: Array[String],
     val reader: JsonNode => Any,
     val always: Boolean = false,
-    val points: Boolean = false
-  )
+    val points: Boolean = false,
+    val asStored: JsonNode => Any = null
+  ) {
+
+    /** The values `values` the path collects under its parent's value `parent`, by [[reader]];
+      * where it fails a several-valued cell and [[asStored]] is set, the CAUSE picks the rule
+      * (A-183): one object holding them reads them as stored, several fail as before.
+      */
+    private[client] def read(parent: JsonNode, values: JsonNode): Any =
+      if (asStored eq null) reader(values)
+      else
+        try reader(values)
+        catch {
+          case cell: MultiValuedCell =>
+            if (severalHold(parent, segments)) throw cell else asStored(values)
+        }
+  }
 
   /** SCHEMA-6 (A-26) -- the values the sub-path `segments` holds under `node` (a list of objects),
     * in order, every list met on the way -- an element's own list included -- flattened, as
@@ -458,7 +490,8 @@ private[client] object HitReading {
       table,
       remedyOf(single.schema),
       single.schema.fold(Set.empty[String])(t => nanosPaths(t.columns)),
-      fieldCapsDates(single)
+      fieldCapsDates(single),
+      storedLeaves(single.schema)
     )
     val fields = single.select.fieldsWithComputedAliases
     val star = fields.exists(isStar)
@@ -541,12 +574,16 @@ private[client] object HitReading {
     val listPaths = new java.util.HashMap[String, Array[ListPath]]()
     def listPath(parent: String, p: String, t: SetOperationType, always: Boolean): ListPath = {
       val path = s"$parent.$p"
+      // SCHEMA-17 fix R-150 (A-183): a leaf read as stored is read under the statement's rule
+      // first, the cause picking the rule ([[ListPath.read]])
+      val (reader, asStored) = readers.collectedReaders(path, t)
       new ListPath(
         aliases.getOrElse(path, path),
         p.split("\\."),
-        readers.column(path, t, Set.empty)._1,
+        reader,
         always,
-        readsPoints(t)
+        readsPoints(t),
+        asStored
       )
     }
     paths.foreach { case (parent, under) =>
@@ -608,12 +645,18 @@ private[client] object HitReading {
         (single.nestedHitsMappings ++ UnnestScope.rowExplosion(single)).flatMap {
           case (hit, mappings) =>
             val byField = new java.util.HashMap[String, JsonNode => Any]()
+            // SCHEMA-17 fix R-150 (A-183): an element's field is a leaf of the unnested path, its
+            // rule read there; the statement's where the path is not known
+            val unnested = single.from.unnests.find(_.innerHitsName == hit).map(_.path)
             mappings.foreach { case (subField, output) =>
               if (subField.indexOf('.') < 0 && !elements.contains(output))
                 fields.find(_.outputName == output).foreach { f =>
                   val t = typeOf(f)
                   if (readers.typed(t))
-                    byField.put(subField, readers.column(output, t, Set.empty)._1)
+                    byField.put(
+                      subField,
+                      readers.column(output, t, Set.empty, unnested.map(p => s"$p.$subField"))._1
+                    )
                 }
             }
             if (byField.isEmpty) None else Some(hit -> byField)
@@ -667,12 +710,24 @@ private[client] object HitReading {
     table: String,
     remedy: String => Option[String] = _ => None,
     nanos: Set[String] = Set.empty,
-    isoOnlyDates: Boolean = false
+    isoOnlyDates: Boolean = false,
+    stored: Set[String] = Set.empty
   ) {
 
     /** The failure of a several-element cell of `name` (SCHEMA-6 D6). */
     private def several(name: String): MultiValuedCell =
       new MultiValuedCell(name, remedy(name).getOrElse(""), table)
+
+    /** SCHEMA-17 fix R-150 (A-183, A-184) -- the rule of a LEAF's own several values at `path`: as
+      * stored where the statement's rule fails them ([[multiValuedFor]]) and no index declares the
+      * leaf to this user (`stored`, [[storedLeaves]]); else the statement's. An object takes no
+      * `meta` and is never one: a STRUCT column holding several objects (A-168), and a path several
+      * objects of a list hold (A-181), keep the statement's rule. Decided when a reader is built,
+      * never per row.
+      */
+    private def leafRule(path: String): MultiValued =
+      if (multiValued == MultiValued.Fail && stored.contains(path)) MultiValued.AsRead
+      else multiValued
 
     /** SCHEMA-17 (A-181) -- the failure `cell` of a path read under `parent`, whose `_source` value
       * `node` is a list of objects the schema does not declare one (a declared list types its paths
@@ -690,7 +745,11 @@ private[client] object HitReading {
       cell: MultiValuedCell
     ): MultiValuedCell =
       if (!severalHold(node, segments)) cell
-      else remedy(parent).fold(cell)(alter => new MultiValuedCell(parent, alter, table))
+      else listCause(parent, cell)
+
+    /** The failure naming the list `parent` as the cause of `cell` ([[fromList]]). */
+    private def listCause(parent: String, cell: MultiValuedCell): MultiValuedCell =
+      remedy(parent).fold(cell)(alter => new MultiValuedCell(parent, alter, table))
 
     /** Today's reading, the plan's answer for a key it does not type (ANY, NUMERIC, TEMPORAL) and
       * for a value a typed reader cannot read (D6, `Unreadable.KeepAsStored`).
@@ -727,6 +786,27 @@ private[client] object HitReading {
       t: SetOperationType,
       keepKeys: Set[String]
     ): (JsonNode => Any, Option[JsonNode => Any]) =
+      columnUnder(name, t, keepKeys, leafRule(name))
+
+    /** [[column]], its leaf's rule ([[leafRule]]) read at `leaf` -- the field's path where `name`
+      * is the key its failure names (an UNNEST element field's output) --; the statement's rule
+      * where the path is not known.
+      */
+    def column(
+      name: String,
+      t: SetOperationType,
+      keepKeys: Set[String],
+      leaf: Option[String]
+    ): (JsonNode => Any, Option[JsonNode => Any]) =
+      columnUnder(name, t, keepKeys, leaf.fold(multiValued)(leafRule))
+
+    /** [[column]] with `mode` the rule of a scalar or `GEO_POINT` cell's several values. */
+    private def columnUnder(
+      name: String,
+      t: SetOperationType,
+      keepKeys: Set[String],
+      mode: MultiValued
+    ): (JsonNode => Any, Option[JsonNode => Any]) =
       t.sqlType match {
         case SQLTypes.Array(_) =>
           (list(name, t.element.getOrElse(SetOperationType(SQLTypes.Any))), None)
@@ -734,21 +814,34 @@ private[client] object HitReading {
         // (`multiValued`, [[multiValuedFor]]) -- the in-place ALTER that declares an `object` field
         // `ARRAY<STRUCT>` ships in the same release (A-166), so the failure names a remedy that
         // runs; a column declared `ARRAY<STRUCT>` is read by the `Array` arm above, one object a
-        // list of one
+        // list of one. An object is no leaf: the statement's rule, whatever `mode` (R-150, A-183)
         case SQLTypes.Struct if t.fields.nonEmpty =>
-          (scalar(name, struct(name, t, keepKeys)), None)
-        case SQLTypes.GeoPoint => (geo(name), None)
+          (scalar(name, struct(name, t, keepKeys), multiValued), None)
+        case SQLTypes.GeoPoint => (geo(name, mode), None)
         case _ if !typed(t)    => (asRead, None)
         case scalarType =>
           val (one, ignoredOne) = scalarOne(name, scalarType, t.format)
           (
-            scalar(name, one),
+            scalar(name, one, mode),
             ignoredOne.map(element =>
               (node: JsonNode) =>
-                if (node != null && node.isArray) scalarValue(name, element, node) else null
+                if (node != null && node.isArray) scalarValue(name, element, node, mode) else null
             )
           )
       }
+
+    /** SCHEMA-17 fix R-150 (A-183) -- the readers of the values a selected path `path` of type `t`
+      * collects under a list of objects ([[collected]]): its reader under the statement's rule, and
+      * -- where it is a leaf whose own rule differs ([[leafRule]]) -- its reader under that rule,
+      * else `null`. The first reads; where it fails a several-valued cell, the CAUSE picks the rule
+      * ([[severalHold]], on the failure path only): several objects hold the path -- the list's
+      * failure, the statement's rule --, else one object's own field holds the values -- the leaf's
+      * own rule. Never the leaf's rule over values several objects hold: that would answer a list
+      * no object holds.
+      */
+    def collectedReaders(path: String, t: SetOperationType): (JsonNode => Any, JsonNode => Any) =
+      if (leafRule(path) == multiValued) (column(path, t, Set.empty)._1, null)
+      else (columnUnder(path, t, Set.empty, multiValued)._1, column(path, t, Set.empty)._1)
 
     /** SCHEMA-2b (A-23) -- a `DATE` / `TIME` column read EXACTLY, as the key of its aggregation
       * level is (`AggregateReading`): a value its format reads to an instant that is exactly a UTC
@@ -767,7 +860,8 @@ private[client] object HitReading {
               val instant = instantOf(node)
               val value = if (instant eq null) null else AggregateReading.exactly(kind, instant)
               if (value != null) value else asRead(node)
-            }
+            },
+            leafRule(name)
           )
         case _ => column(name, t, Set.empty)._1
       }
@@ -794,12 +888,14 @@ private[client] object HitReading {
       }
     }
 
-    /** A computed column's `fields` entry: Elasticsearch's array unwrapped (#418 part 1). */
+    /** A computed column's `fields` entry: Elasticsearch's array unwrapped (#418 part 1). A
+      * computed value is no field: the statement's rule, whatever leaf its name spells (R-150).
+      */
     def scripted(name: String, t: SetOperationType): JsonNode => Any =
       t.sqlType match {
         case SQLTypes.Array(_) => column(name, t, Set.empty)._1
         case _ if !typed(t)    => scalar(name, asRead)
-        case _                 => column(name, t, Set.empty)._1
+        case _                 => columnUnder(name, t, Set.empty, multiValued)._1
       }
 
     /** A dotted column's parent read for its selected paths only: each by its type, every other key
@@ -826,10 +922,21 @@ private[client] object HitReading {
       // a GEO_POINT leaf collected point by point (SCHEMA-17 A-181, [[collected]])
       val points: Set[String] =
         under.collect { case (p, t) if p.indexOf('.') < 0 && readsPoints(t) => p }.toSet
-      val children: Array[(String, Array[String], JsonNode => Any, Boolean)] =
-        (under.map(_._1).filter(_.indexOf('.') < 0) ++ nested.keys).distinct
-          .map(k => (k, Array(k), leaves.get(k), points.contains(k)))
-          .toArray
+      // SCHEMA-17 fix R-150 (A-183): a leaf read as stored is read under the statement's rule over
+      // a list of objects, its own reader (`leaves`) kept for the cause that is its own
+      // ([[collectedReaders]])
+      val leafTypes: Map[String, SetOperationType] =
+        under.collect { case (p, t) if p.indexOf('.') < 0 => p -> t }.toMap
+      val children: Array[(String, Array[String], JsonNode => Any, Boolean, JsonNode => Any)] =
+        (under.map(_._1).filter(_.indexOf('.') < 0) ++ nested.keys).distinct.map { k =>
+          val strict: JsonNode => Any = leafTypes.get(k) match {
+            case Some(t) if leafRule(s"$name.$k") != multiValued =>
+              columnUnder(s"$name.$k", t, Set.empty, multiValued)._1
+            case _ => null
+          }
+          if (strict eq null) (k, Array(k), leaves.get(k), points.contains(k), null)
+          else (k, Array(k), strict, points.contains(k), leaves.get(k))
+        }.toArray
       node =>
         if (node.isObject) {
           val entries = ListMap.newBuilder[String, Any]
@@ -848,18 +955,22 @@ private[client] object HitReading {
           // read by the path's reader: one value is it, several are an `ARRAY` path's list (a
           // path under a declared list of objects is one, SCHEMA-17 A-181) or fail a scalar path,
           // naming the list's in-place ALTER when several objects hold it ([[fromList]]), none is
-          // NULL
+          // NULL. R-150 (A-183): one object's own several values of a leaf read as stored are
+          // its list -- the cause is the leaf's, never the list's
           val entries = ListMap.newBuilder[String, Any]
           var i = 0
           while (i < children.length) {
-            val (k, segments, reader, leafPoints) = children(i)
+            val (k, segments, reader, leafPoints, asStored) = children(i)
             val values = collected(node, segments, leafPoints)
             val value =
               if (values eq null) null
               else
                 try reader(values)
                 catch {
-                  case cell: MultiValuedCell => throw fromList(name, node, segments, cell)
+                  case cell: MultiValuedCell =>
+                    if (asStored eq null) throw fromList(name, node, segments, cell)
+                    else if (severalHold(node, segments)) throw listCause(name, cell)
+                    else asStored(values)
                 }
             entries += aliases.getOrElse(k, k) -> value
             i += 1
@@ -879,9 +990,6 @@ private[client] object HitReading {
     /** [[scalar]] under the given [[MultiValued]] rather than the statement's. */
     def scalar(name: String, one: JsonNode => Any, mode: MultiValued): JsonNode => Any =
       node => scalarValue(name, one, node, mode)
-
-    private def scalarValue(name: String, one: JsonNode => Any, node: JsonNode): Any =
-      scalarValue(name, one, node, multiValued)
 
     private def scalarValue(
       name: String,
@@ -966,10 +1074,10 @@ private[client] object HitReading {
     }
 
     /** A `GEO_POINT` column: `{lat, lon}` (`SetOperationValues.geoPoint`) on a temporal-free value;
-      * `[lon, lat]` is ONE point, several points per [[MultiValued]]; a value that is not a point
-      * as read (D6).
+      * `[lon, lat]` is ONE point, several points per `mode` (the leaf's rule, [[leafRule]]); a
+      * value that is not a point as read (D6).
       */
-    def geo(name: String): JsonNode => Any = {
+    def geo(name: String, mode: MultiValued): JsonNode => Any = {
       val one = geoOne(name)
       node =>
         if (node == null || node.isNull) null
@@ -978,7 +1086,7 @@ private[client] object HitReading {
           if (size == 0) null
           else if (size == 1) element(one)(node.get(0))
           else
-            multiValued match {
+            mode match {
               case MultiValued.AsRead =>
                 try {
                   val values = ListBuffer.empty[Any]

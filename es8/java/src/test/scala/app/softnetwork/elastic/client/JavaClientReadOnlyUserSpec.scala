@@ -54,7 +54,9 @@ import scala.util.Try
   *   - the read-only user is typed from `_field_caps`, and every P3 statement answers what the
   *     privileged client answers, but for D8's residuals (A-67): `constant_keyword` reads as a
   *     keyword (its projection and `*` read NULL, as main), a runtime field widens `*` with a NULL
-  *     column, a several-valued cell is read as its list (A-41);
+  *     column, a several-valued cell of a leaf no index declares to it is read as its list (A-41,
+  *     SCHEMA-17 fix R-150) -- one core declared fails as the privileged client's does (A-173), and
+  *     several objects fail whatever the declaration (A-183);
   *   - its un-LIMITed `SELECT`, pattern and UNION ALL answer every row (`_count`), paged by the
   *     build major (A-63): main failed them ("Failed to get ES version").
   *
@@ -112,7 +114,56 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
   private val listed = "s7_tags"
   private val declared1 = "s7_f1"
   private val declared2 = "s7_f2"
-  private val indices = Seq(table, big, listed, "s7_p1", "s7_p2", declared1, declared2)
+
+  // SCHEMA-17 fix R-150 (A-182 population): `u` created outside core, `u2` its objects' list,
+  // `c` created by core, `cp` core's with a field added by a plain mapping update, `m` created on
+  // main, `n1` / `n2` outside core and `c1` / `c2` by core, for the several-index cells
+  private val u = "s7_u"
+  private val u2 = "s7_u2"
+  private val c = "s7_c"
+  private val cp = "s7_cp"
+  private val m = "s7_m"
+  private val n1 = "s7_n1"
+  private val n2 = "s7_n2"
+  private val c1 = "s7_c1"
+  private val c2 = "s7_c2"
+  private val r150 = Seq(u, u2, c, cp, m, n1, n2, c1, c2)
+
+  private val indices =
+    Seq(table, big, listed, "s7_p1", "s7_p2", declared1, declared2) ++ r150
+
+  /** R-150 -- the leaf kinds (A-182 K), mapped outside core (no field `meta`). */
+  private val undeclaredMapping: String =
+    """{"properties": {
+      |  "id": {"type": "keyword"}, "n": {"type": "integer"},
+      |  "k": {"type": "keyword", "fields": {"raw": {"type": "keyword"}}},
+      |  "obj": {"properties": {"a": {"type": "integer"}}},
+      |  "items": {"type": "nested", "properties": {"p": {"type": "integer"}}},
+      |  "g": {"type": "geo_point"}, "d": {"type": "date"}
+      |}}""".stripMargin
+
+  /** Each kind's own several values (u1), and one value / a list holding one object (u2). */
+  private val undeclaredDocs: Seq[(String, String)] = Seq(
+    "u1" -> """{"id":"u1","n":[1,2],"k":["x","y"],"obj":{"a":[1,2]},"items":[{"p":[1,2]}],"g":[[1.0,2.0],[3.0,4.0]],"d":["2026-11-16T00:00:00Z","2026-11-17T00:00:00Z"]}""",
+    "u2" -> """{"id":"u2","n":3,"k":"z","obj":[{"a":[3,4]}],"items":[{"p":3},{"p":4}],"g":[1.0,2.0],"d":"2026-11-18T00:00:00Z"}"""
+  )
+
+  /** The same kinds declared by core (CREATE TABLE writes each leaf's `meta`, A-169). */
+  private val coreTable: String =
+    "(id KEYWORD, n INT, ln ARRAY<INT>, k KEYWORD, obj STRUCT FIELDS (a INT), " +
+    "items ARRAY<STRUCT> FIELDS (p INT), g GEO_POINT, d TIMESTAMP, x INT)"
+
+  /** One document per declared kind holding several values, by id. */
+  private val coreDocs: Seq[(String, String)] = Seq(
+    "c1" -> """{"id":"c1","n":[1,2]}""",
+    "c2" -> """{"id":"c2","ln":[1,2]}""",
+    "c3" -> """{"id":"c3","obj":{"a":[1,2]}}""",
+    "c4" -> """{"id":"c4","k":["x","y"]}""",
+    "c5" -> """{"id":"c5","items":[{"p":[1,2]}]}""",
+    "c6" -> """{"id":"c6","g":[[1.0,2.0],[3.0,4.0]]}""",
+    "c7" -> """{"id":"c7","d":["2026-11-16T00:00:00Z","2026-11-17T00:00:00Z"]}""",
+    "c8" -> """{"id":"c8","obj":[{"a":5},{"a":6}]}"""
+  )
 
   /** SCHEMA-17 (F1) -- a table created on main (a `_meta` declaration, no field `meta`), with a
     * user's own field `meta` key (F2), then altered in place through elasticsql: the first in-place
@@ -169,6 +220,11 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
         s"""{"settings":{"number_of_shards":2,"number_of_replicas":0},"mappings":$mappingJson}"""
       )
     )._1 shouldBe 200
+    put(index, documents)
+  }
+
+  /** `documents` indexed raw into `index`, refreshed. */
+  private def put(index: String, documents: Seq[(String, String)]): Unit = {
     // raw: the core client's `index` wraps an `unsigned_long` above 2^63-1
     documents.foreach { case (id, source) =>
       raw("PUT", s"/$index/_doc/$id", Some(source))._1 should (be(200) or be(201))
@@ -177,10 +233,20 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
     ()
   }
 
+  /** A DDL statement run by the privileged client, which must succeed. */
+  private def ddl(statement: String): Unit =
+    Await.result(client.run(statement), 60.seconds) match {
+      case ElasticSuccess(_) =>
+      case other             => fail(s"[$statement] $other")
+    }
+
   override def beforeAll(): Unit = {
     super.beforeAll()
     blockUntil("licence active", 60, 1000) { () =>
       Try(raw("GET", "/_license")._2.contains("\"active\"")).getOrElse(false)
+    }
+    Seq(c, cp, c1, c2).foreach { t =>
+      Try(Await.result(client.run(s"DROP TABLE IF EXISTS $t"), 60.seconds))
     }
     indices.foreach(index => Try(raw("DELETE", s"/$index")))
     load(table, mapping, docs)
@@ -208,6 +274,33 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
       }
     }
     load("s7_p2", """{"properties": {"k": {"type":"long"}}}""", Seq("p2" -> """{"k":7}"""))
+    // SCHEMA-17 fix R-150
+    load(u, undeclaredMapping, undeclaredDocs)
+    load(u2, undeclaredMapping, Seq("m1" -> """{"id":"m1","obj":[{"a":5},{"a":6}]}"""))
+    ddl(s"CREATE TABLE $c $coreTable")
+    put(c, coreDocs)
+    ddl(s"CREATE TABLE $cp (id KEYWORD, n INT, x INT)")
+    load(
+      m,
+      """{"_meta": {"columns": {"n": {"data_type": "INT"}, "x": {"data_type": "INT"}}},
+        | "properties": {"id": {"type": "keyword"}, "n": {"type": "integer"},
+        |  "x": {"type": "integer"}}}""".stripMargin,
+      Seq("m1" -> """{"id":"m1","n":[1,2]}""")
+    )
+    Seq(n1 -> "n1", n2 -> "n2").foreach { case (index, id) =>
+      load(
+        index,
+        """{"properties": {"id": {"type":"keyword"}, "n": {"type":"integer"}}}""",
+        Seq(id -> (if (id == "n1") s"""{"id":"$id","n":[1,2]}""" else s"""{"id":"$id","n":3}"""))
+      )
+    }
+    Seq(c1 -> "c1", c2 -> "c2").foreach { case (index, id) =>
+      ddl(s"CREATE TABLE $index (id KEYWORD, n INT)")
+      put(
+        index,
+        Seq(id -> (if (id == "c1") s"""{"id":"$id","n":[1,2]}""" else s"""{"id":"$id","n":3}"""))
+      )
+    }
     raw(
       "PUT",
       "/_security/role/s7_reader",
@@ -341,12 +434,13 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
     rows(roClient, s"SELECT id, ck FROM $table").map(_.get("ck").orNull).distinct shouldBe Seq(null)
   }
 
-  it should "fail a several-valued cell of an undeclared column as the privileged client does, naming the ALTER (SCHEMA-17 A-173; A-41 read it as its list)" in {
-    Seq(roClient, client).foreach { on =>
-      outcome(on, s"SELECT id, tags FROM $listed LIMIT 10").left.getOrElse("") should include(
-        "ARRAY<KEYWORD>"
-      )
-    }
+  it should "read a several-valued cell of a field with no core meta as its list, where the privileged client fails naming the ALTER (SCHEMA-17 fix R-150; A-41)" in {
+    val sql = s"SELECT id, tags FROM $listed LIMIT 10"
+    rows(roClient, sql).map(r => r("id") -> r("tags")).toMap shouldBe Map(
+      "t1" -> List("a", "b"),
+      "t2" -> "c"
+    )
+    outcome(client, sql).left.getOrElse("") should include("ARRAY<KEYWORD>")
   }
 
   "A read-only user's table declared by elasticsql" should "be typed and read as a mapping reader's: lists, objects lists, dates (SCHEMA-17 F1)" in {
@@ -410,6 +504,192 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
           ro shouldBe outcome(client, sql)
         }
     }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-17 fix R-150 -- a leaf with no core meta reads its own several values as stored, as on
+  // ES 6.8; a leaf core declared keeps A-173; objects keep the statement's rule (A-183, A-184)
+  // -------------------------------------------------------------------------------------------
+
+  private def point(lat: Double, lon: Double): ListMap[String, Any] =
+    ListMap("lat" -> lat, "lon" -> lon)
+
+  /** A date value's instant(s), whatever zone spelling it was answered in. */
+  private def instantsOf(value: Any): Any = value match {
+    case z: _root_.java.time.ZonedDateTime => z.toInstant
+    case s: Seq[_]                         => s.map(instantsOf)
+    case other                             => other
+  }
+
+  private def instant(day: Int): _root_.java.time.Instant =
+    _root_.java.time.Instant.parse(f"2026-11-$day%02dT00:00:00Z")
+
+  /** Every value a cell holds, its lists and objects flattened. */
+  private def flat(value: Any): Seq[Any] = value match {
+    case m: scala.collection.Map[_, _] => m.values.toSeq.flatMap(flat)
+    case s: Seq[_]                     => s.flatMap(flat)
+    case other                         => Seq(other)
+  }
+
+  /** `sql`'s rows on `on`, by id. */
+  private def byId(on: ElasticClientApi, sql: String): Map[Any, ListMap[String, Any]] =
+    rows(on, sql).map(r => r("id") -> r).toMap
+
+  /** The failure `sql` answers on `on`, which must fail. */
+  private def refusal(on: ElasticClientApi, sql: String): String =
+    outcome(on, sql) match {
+      case Left(error) => error
+      case Right(rs)   => fail(s"[$sql] answered $rs instead of failing")
+    }
+
+  "A read-only user's leaf with no core meta" should "answer its own several values as stored, each by its type (R-150 AC1, C1)" in {
+    raw("GET", s"/$u/_field_caps?fields=n")._2 should not include "sql_type"
+    val r = byId(roClient, s"SELECT id, n, k, obj.a, items, g, d FROM $u LIMIT 10")
+    r("u1")("n") shouldBe List(1, 2)
+    r("u1")("n") match {
+      case values: Seq[_] =>
+        values.map(_.getClass).distinct shouldBe Seq(classOf[_root_.java.lang.Integer])
+      case other => fail(s"not a list: $other")
+    }
+    r("u2")("n") shouldBe 3
+    r("u1")("k") shouldBe List("x", "y")
+    r("u2")("k") shouldBe "z"
+    // a leaf in one object, and in a list holding one object
+    r("u1")("obj.a") shouldBe List(1, 2)
+    r("u2")("obj.a") shouldBe List(3, 4)
+    // an element's own leaf of a nested field
+    r("u1")("items") shouldBe List(ListMap("p" -> List(1, 2)))
+    r("u2")("items") shouldBe List(ListMap("p" -> 3), ListMap("p" -> 4))
+    r("u1")("g") shouldBe List(point(2.0, 1.0), point(4.0, 3.0))
+    r("u2")("g") shouldBe point(2.0, 1.0)
+    instantsOf(r("u1")("d")) shouldBe List(instant(16), instant(17))
+    instantsOf(r("u2")("d")) shouldBe instant(18)
+    // describe keeps the field's Elasticsearch type, one value: the describe / run residue ES 6.8's
+    // read-only users share (R-146 Q2 (a), AC5)
+    val types = described(roClient, s"SELECT id, n, d FROM $u")
+    types("n") shouldBe "INT"
+    types("d") shouldBe "TIMESTAMP"
+  }
+
+  it should "answer the same through every consumer: un-LIMITed, *, a top hit, a window's base, UNION ALL legs (C2)" in {
+    def ns(sql: String): Map[Any, Any] =
+      rows(roClient, sql).map(r => r("id") -> r("n")).toMap
+    ns(s"SELECT id, n FROM $u") shouldBe Map("u1" -> List(1, 2), "u2" -> 3)
+    val star = byId(roClient, s"SELECT * FROM $u LIMIT 10")
+    star("u1")("n") shouldBe List(1, 2)
+    star("u1")("obj") shouldBe ListMap("a" -> List(1, 2))
+    star("u2")("obj") shouldBe ListMap("a" -> List(3, 4))
+    star("u1")("items") shouldBe List(ListMap("p" -> List(1, 2)))
+    flat(rows(roClient, s"SELECT ARRAY_AGG(n) AS a FROM $u").head("a")).toSet shouldBe Set(1, 2, 3)
+    rows(roClient, s"SELECT id, n, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn FROM $u")
+      .map(r => r("id").toString -> flat(r("n")))
+      .toMap shouldBe Map("u1" -> Seq(1, 2), "u2" -> Seq(3))
+    rows(roClient, s"SELECT id, n FROM $u UNION ALL SELECT id, n FROM $u")
+      .map(r => r("id").toString -> flat(r("n")))
+      .sortBy(_._1) shouldBe Seq(
+      "u1" -> Seq(1, 2),
+      "u1" -> Seq(1, 2),
+      "u2" -> Seq(3),
+      "u2" -> Seq(3)
+    )
+  }
+
+  it should "keep the statement's rule for objects: several objects, and a path they hold, fail naming the list's ALTER (A-183, C1)" in {
+    Seq(roClient, client).foreach { on =>
+      refusal(on, s"SELECT id, obj.a FROM $u2 LIMIT 10") should include(
+        "Column obj holds several values"
+      )
+      refusal(on, s"SELECT id, obj FROM $u2 LIMIT 10") should include(
+        "SET DATA TYPE ARRAY<STRUCT>"
+      )
+    }
+    // the privileged client keeps refusing the undeclared leaf (SCHEMA-6 Q1, C5)
+    refusal(client, s"SELECT id, n FROM $u LIMIT 10") should include("ARRAY<INT>")
+  }
+
+  "A read-only user's leaf core declared" should "fail its several values as the privileged client does, naming the ALTER (R-150 AC2, A-173)" in {
+    raw("GET", s"/$c/_field_caps?fields=n")._2 should include("sql_type")
+    Seq(
+      ("c1", "n", "Column n holds several values"),
+      ("c3", "obj.a", "Column obj.a holds several values"),
+      ("c4", "k", "Column k holds several values"),
+      ("c5", "items", "Column items.p holds several values"),
+      ("c6", "g", "Column g holds several values"),
+      ("c7", "d", "Column d holds several values"),
+      ("c8", "obj.a", "Column obj holds several values"),
+      ("c8", "obj", "Column obj holds several values")
+    ).foreach { case (id, column, message) =>
+      val sql = s"SELECT id, $column FROM $c WHERE id = '$id'"
+      withClue(s"[$sql] ") {
+        refusal(roClient, sql) should include(message)
+        refusal(client, sql) should include(message)
+      }
+    }
+    // a column declared a list still reads its list
+    described(roClient, s"SELECT id, ln FROM $c")("ln") shouldBe "ARRAY<INT>"
+    byId(roClient, s"SELECT id, ln FROM $c WHERE id = 'c2'")("c2")("ln") shouldBe List(1, 2)
+  }
+
+  it should "fail through every consumer (C2)" in {
+    Seq(
+      s"SELECT id, n FROM $c WHERE id = 'c1' LIMIT 10",
+      s"SELECT id, n FROM $c WHERE id = 'c1'",
+      s"SELECT * FROM $c WHERE id = 'c1'",
+      s"SELECT ARRAY_AGG(n) AS a FROM $c WHERE id = 'c1'",
+      s"SELECT id, n, ROW_NUMBER() OVER (PARTITION BY id ORDER BY id) AS rn FROM $c WHERE id = 'c1'",
+      s"SELECT id, n FROM $c WHERE id = 'c1' UNION ALL SELECT id, n FROM $c WHERE id = 'c1'"
+    ).foreach { sql =>
+      withClue(s"[$sql] ") {
+        refusal(roClient, sql) should include("ARRAY<INT>")
+      }
+    }
+  }
+
+  "A read-only user's field added outside core" should "read as stored until an in-place ALTER declares it (R-150 AC3, T0-C, C3)" in {
+    def capsOf(index: String, field: String): String =
+      raw("GET", s"/$index/_field_caps?fields=$field")._2
+    raw(
+      "PUT",
+      s"/$cp/_mapping",
+      Some("""{"properties": {"pn": {"type": "integer"}}}""")
+    )._1 shouldBe
+    200
+    put(cp, Seq("p1" -> """{"id":"p1","n":3,"pn":[1,2]}"""))
+    // T0-C before: core's field carries its key, the field added by a plain mapping update none
+    capsOf(cp, "n") should include("sql_type")
+    capsOf(cp, "pn") should not include "sql_type"
+    roClient.invalidateSchema(cp)
+    byId(roClient, s"SELECT id, n, pn FROM $cp")("p1")("pn") shouldBe List(1, 2)
+    // an in-place ALTER of ANOTHER column rewrites every leaf's meta (A-171): now declared
+    ddl(s"ALTER TABLE $cp ALTER COLUMN x SET DATA TYPE ARRAY<INT>")
+    capsOf(cp, "pn") should include("sql_type")
+    roClient.invalidateSchema(cp)
+    refusal(roClient, s"SELECT id, pn FROM $cp") should include("ARRAY<INT>")
+    refusal(client, s"SELECT id, pn FROM $cp") should include("ARRAY<INT>")
+    // a table created on main carries no field meta until its first in-place ALTER (A-171)
+    capsOf(m, "n") should not include "sql_type"
+    byId(roClient, s"SELECT id, n FROM $m")("m1")("n") shouldBe List(1, 2)
+    ddl(s"ALTER TABLE $m ALTER COLUMN x SET DATA TYPE ARRAY<INT>")
+    capsOf(m, "n") should include("sql_type")
+    roClient.invalidateSchema(m)
+    refusal(roClient, s"SELECT id, n FROM $m") should include("ARRAY<INT>")
+  }
+
+  "A read-only user's scalar over several indices" should "read as stored whatever the members' meta: both, one or none (R-150 AC4, A-184, C4)" in {
+    Seq(
+      s"$n1,$n2" -> Map("n1" -> List(1, 2), "n2" -> 3),
+      s"$c1,$c2" -> Map("c1" -> List(1, 2), "c2" -> 3),
+      s"$c1,$n2" -> Map("c1" -> List(1, 2), "n2" -> 3)
+    ).foreach { case (source, expected) =>
+      withClue(s"[$source] ") {
+        rows(roClient, s"SELECT id, n FROM $source LIMIT 10")
+          .map(r => r("id") -> r("n"))
+          .toMap shouldBe expected
+        described(roClient, s"SELECT id, n FROM $source")("n") shouldBe "INT"
+      }
+    }
+    // the privileged client reads the mapping: it refuses, naming the ALTER
+    refusal(client, s"SELECT id, n FROM $c1,$c2 LIMIT 10") should include("ARRAY<INT>")
   }
 
   "A read-only user's JOIN body" should "be typed per table from _field_caps (SCHEMA-15)" in {

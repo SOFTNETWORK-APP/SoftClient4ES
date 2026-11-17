@@ -579,7 +579,9 @@ the statement then answers `List(a, b)`. A sub-field is declared a list with `SE
 message spells out with the sub-field's own options:
 `ALTER TABLE logs ALTER COLUMN obj SET FIELD a ARRAY<INT>`. The same failure is raised by a top hit
 of `FIRST_VALUE`, `LAST_VALUE` or `ARRAY_AGG`, naming that hit's document. A `WHERE` subquery's
-inner statement is not affected.
+inner statement is not affected. A user who may not read the mapping answers the `List` of a field
+elasticsql has not declared to it (no declaration in the field's mapping `meta`), as earlier versions
+did -- see [A user who may not read the mapping](../client/gateway.md#a-user-who-may-not-read-the-mapping).
 
 A **list of objects** in a `STRUCT` column (an `object` mapping, `"obj": [{"a": 5}, {"a": 50}]`)
 fails a statement that reads the column, as above, naming

@@ -707,7 +707,8 @@ the column it aggregates, whatever the other rows answer.
   `UNION ALL` gives them, or none -- see [Index patterns](../client/gateway.md#index-patterns).
 - **A user who may not read the mapping is typed from `_field_caps`**, which holds no `_meta` and no
   date format: a declared `DATE` reads TIMESTAMP, an `ARRAY<X>` declaration X (a several-valued cell
-  answers its `List`, so a column can hold two classes), custom-format dates and epochs are answered
+  of a field whose mapping `meta` holds no declaration answers its `List`, so a column can hold two
+  classes), custom-format dates and epochs are answered
   as stored, temporal literals are forwarded verbatim, a `constant_keyword` column reads NULL in a
   projection and under `*` (and `ORDER BY` it answers over a list where one index lacks it, where a
   privileged user's statement fails), and a runtime field adds a NULL column to `*`. Such a user's un-`LIMIT`ed

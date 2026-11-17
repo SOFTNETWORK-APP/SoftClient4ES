@@ -299,6 +299,27 @@ class PatternLoadSchemaSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     table.find("_id") shouldBe None
   }
 
+  it should "carry the leaves no index declares from _field_caps to the statement, through the cache (SCHEMA-17 fix R-150, A-184)" in {
+    val client = new ReadOnlyClient
+    val table = client.loadQuerySchema("s7_t").toOption.getOrElse(fail("no schema"))
+    app.softnetwork.elastic.schema.FieldCaps.undeclared(table) shouldBe Set("id", "ip", "d")
+    // the cached entry, attached to the statement every reader is built from
+    Seq(1, 2).foreach { _ =>
+      client.resolveWithSchema(statement("SELECT id, ip FROM s7_t")) match {
+        case ElasticSuccess(single) =>
+          HitReading.storedLeaves(single.schema) shouldBe Set("id", "ip", "d")
+        case ElasticFailure(error) => fail(s"refused: ${error.message}")
+      }
+    }
+    (client.gets.get(), client.caps.get()) shouldBe ((1, 1))
+    // over several indices: every scalar leaf (no list is declared)
+    client
+      .loadQuerySchema("s7_p*")
+      .toOption
+      .map(app.softnetwork.elastic.schema.FieldCaps.undeclared) shouldBe
+    Some(Set("k"))
+  }
+
   it should "remember a pattern that matches no index as the 404 main answered" in {
     val client = new ReadOnlyClient
     client.loadQuerySchema("none_*") match {

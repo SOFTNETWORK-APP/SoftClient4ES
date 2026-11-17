@@ -313,10 +313,16 @@ per schema-cache TTL, and its statements answer what a privileged user's answer,
   over one index, a field declared by elasticsql reads as for a privileged user (`ARRAY<X>`,
   `ARRAY<STRUCT>`, `DATE`, `TIME`, its date format); over several indices only its list-ness
   applies. A field with no such declaration reads by its mapping type (`DATE` reads TIMESTAMP, `X`
-  for an `ARRAY<X>`), and a several-valued cell of a column not declared a list fails as a
-  privileged user's does, naming the `ALTER TABLE` that declares it. On Elasticsearch 6.8 there is
-  no field `meta`: such a cell answers the `List` of its values (the one value-typed residue). There
-  is no comment and no default;
+  for an `ARRAY<X>`). A several-valued cell of a field declared by elasticsql, but not as a list,
+  fails as a privileged user's does, naming the `ALTER TABLE` that declares it. A several-valued
+  cell of a field with no declaration this user can read -- an index created outside elasticsql, a
+  field a bulk load or a plain mapping update added later (until the table's next in-place
+  `ALTER TABLE`, which declares every field), a field over several indices not declared a list --
+  answers the `List` of its values, each read by the field's type, as on Elasticsearch 6.8, which
+  has no field `meta`: the one value-typed residue (`describe` types such a column by its mapping
+  type, one value). An object takes no `meta`: a list of objects in an object field, and a path
+  several of its objects hold, fail on 7.6 and later as for a privileged user. There is no comment
+  and no default;
 - a date with no declared format (6.8, several indices, a field never declared) is read as ISO
   8601 text, a TIMESTAMP; any other value (a custom format's text, an epoch) fails the statement,
   naming the column, the document and the remedy -- a grant to read the mapping

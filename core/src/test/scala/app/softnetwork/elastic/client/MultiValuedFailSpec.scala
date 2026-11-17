@@ -16,7 +16,7 @@
 
 package app.softnetwork.elastic.client
 
-import app.softnetwork.elastic.schema.Index
+import app.softnetwork.elastic.schema.{FieldCaps, Index}
 import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.{
   AlterColumnField,
@@ -493,5 +493,255 @@ class MultiValuedFailSpec extends AnyFlatSpec with Matchers {
       geoRow("SELECT id, obj.in, obj.in.q FROM zs_geo", """{"obj": {"in": {"q": 1}}}""", geo)
     one("obj.in") shouldBe ListMap("q" -> 1)
     one("obj.in.q") shouldBe 1
+  }
+
+  behavior of "a read-only user's leaf no index declares (SCHEMA-17 fix R-150, A-183, A-184)"
+
+  private val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+
+  /** A `_field_caps` entry of one Elasticsearch type, with core's `sql_type` when declared. */
+  private def caps(tpe: String, declared: Option[String] = None): String = {
+    val meta = declared.fold("")(d => ", \"meta\": {\"sql_type\": [\"" + d + "\"]}")
+    s"""{"$tpe": {"type": "$tpe", "metadata_field": false$meta}}"""
+  }
+
+  /** The table a read-only user is typed by, built as the client builds it
+    * (`IndicesApi.fetchFieldCapsSchema`): the answer read, its members merged, `FieldCaps.table`.
+    */
+  private def readOnly(source: String, fieldCaps: String): Schema = {
+    val answer = FieldCaps.read(source, mapper.readTree(fieldCaps))
+    FieldCaps.table(
+      answer,
+      app.softnetwork.elastic.sql.schema
+        .mergedSchema(
+          source,
+          answer.members.map { case (name, document) => name -> Index(name, document).schema }
+        )
+        ._1
+    )
+  }
+
+  /** `zs_ro`, created outside core: no field carries core's meta. */
+  private lazy val undeclared: Schema = readOnly(
+    "zs_ro",
+    s"""{"indices": ["zs_ro"], "fields": {
+       | "id": ${caps("keyword")}, "n": ${caps("integer")}, "g": ${caps("geo_point")},
+       | "ts": ${caps("date")}, "obj": ${caps("object")}, "obj.a": ${caps("integer")},
+       | "items": ${caps("nested")}, "items.p": ${caps("integer")}
+       |}}""".stripMargin
+  )
+
+  /** `zs_ro` created by core (each leaf's meta), `m` and `obj.b` added later outside it. */
+  private lazy val declared: Schema = readOnly(
+    "zs_ro",
+    s"""{"indices": ["zs_ro"], "fields": {
+       | "id": ${caps("keyword", Some("KEYWORD"))}, "n": ${caps("integer", Some("INT"))},
+       | "m": ${caps("integer")}, "g": ${caps("geo_point", Some("GEO_POINT"))},
+       | "obj": ${caps("object")}, "obj.a": ${caps("integer", Some("INT"))},
+       | "obj.b": ${caps("integer")},
+       | "items": ${caps("nested")}, "items.p": ${caps("integer", Some("INT"))}
+       |}}""".stripMargin
+  )
+
+  /** Two indices: `n` declared a scalar (by both, or one -- Elasticsearch's merged `meta` cannot
+    * tell), `l` declared a list by one, `u` by none.
+    */
+  private lazy val several: Schema = readOnly(
+    "zs_ra,zs_rb",
+    s"""{"indices": ["zs_ra", "zs_rb"], "fields": {
+       | "id": ${caps("keyword")}, "n": ${caps("integer", Some("INT"))},
+       | "l": ${caps("integer", Some("ARRAY<INT>"))}, "u": ${caps("integer")}
+       |}}""".stripMargin
+  )
+
+  private def roRow(
+    sql: String,
+    source: String,
+    schema: Schema,
+    on: String = version
+  ): ListMap[String, Any] =
+    rows(
+      sql,
+      s"""{"_index": "zs_ro", "_id": "r1", "_source": $source}""",
+      schema,
+      s => SchemaColumns.of(s, NativeContext, Some(on))
+    ).head
+
+  private def classes(value: Any): Seq[Class[_]] = value match {
+    case list: Seq[_] => list.map(_.getClass)
+    case other        => fail(s"not a list: $other")
+  }
+
+  it should "mark every leaf no index declares, never an object, and nothing on another table" in {
+    FieldCaps.undeclared(undeclared) shouldBe Set("id", "n", "g", "ts", "obj.a", "items.p")
+    FieldCaps.undeclared(declared) shouldBe Set("m", "obj.b")
+    // over several indices only a list declaration declares (A-179)
+    FieldCaps.undeclared(several) shouldBe Set("id", "n", "u")
+    several.find("l").map(_.dataType) shouldBe Some(SQLTypes.Array(SQLTypes.Int))
+    several.find("n").map(_.dataType) shouldBe Some(SQLTypes.Int)
+    // a mapping reader's table, and a table marked `field_caps` another way, carry none
+    FieldCaps.undeclared(raw) shouldBe empty
+    FieldCaps.undeclared(
+      raw.copy(tableType = app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities)
+    ) shouldBe empty
+  }
+
+  it should "answer a leaf's own several values as stored, each by the leaf's type (AC1)" in {
+    val n = roRow("SELECT id, n FROM zs_ro", """{"id": "r1", "n": [1, 2]}""", undeclared)("n")
+    n shouldBe List(1, 2)
+    classes(n) shouldBe Seq(classOf[java.lang.Integer], classOf[java.lang.Integer])
+    roRow("SELECT id, n FROM zs_ro", """{"id": "r1", "n": 3}""", undeclared)("n") shouldBe 3
+    roRow("SELECT id, g FROM zs_ro", """{"g": [[1.0, 2.0], [3.0, 4.0]]}""", undeclared)(
+      "g"
+    ) shouldBe List(point(2.0, 1.0), point(4.0, 3.0))
+    roRow(
+      "SELECT id, ts FROM zs_ro",
+      """{"ts": ["2024-01-31T10:30:00Z", "2024-02-01T00:00:00Z"]}""",
+      undeclared
+    )("ts") shouldBe List(
+      java.time.ZonedDateTime.of(2024, 1, 31, 10, 30, 0, 0, java.time.ZoneOffset.UTC),
+      java.time.ZonedDateTime.of(2024, 2, 1, 0, 0, 0, 0, java.time.ZoneOffset.UTC)
+    )
+    // a leaf in one object, or in a list holding one object: its own values
+    Seq(
+      """{"obj": {"a": [1, 2]}}""",
+      """{"obj": [{"a": [1, 2]}]}"""
+    ).foreach { source =>
+      withClue(source) {
+        roRow("SELECT id, obj.a FROM zs_ro", source, undeclared)("obj.a") shouldBe List(1, 2)
+        // beside its parent read whole, in each spelling
+        val both = roRow("SELECT id, obj, obj.a FROM zs_ro", source, undeclared)
+        both("obj.a") shouldBe List(1, 2)
+        roRow("SELECT *, obj.a FROM zs_ro", source, undeclared)("obj.a") shouldBe List(1, 2)
+      }
+    }
+    // ONE object of a list of several holds them: the path is that object's list; the parent read
+    // whole is a STRUCT of several objects, which keeps the statement's rule (A-168, A-183)
+    val oneHolder = """{"obj": [{"a": [1, 2]}, {"b": "x"}]}"""
+    roRow("SELECT id, obj.a FROM zs_ro", oneHolder, undeclared)("obj.a") shouldBe List(1, 2)
+    Seq("SELECT id, obj, obj.a FROM zs_ro", "SELECT *, obj.a FROM zs_ro").foreach { sql =>
+      withClue(sql) {
+        val struct = failure(roRow(sql, oneHolder, undeclared))
+        struct should include("Column obj holds several values")
+        struct should include("SET DATA TYPE ARRAY<STRUCT>")
+      }
+    }
+    roRow("SELECT id, obj FROM zs_ro", """{"obj": [{"a": [1, 2]}]}""", undeclared)(
+      "obj"
+    ) shouldBe ListMap("a" -> List(1, 2))
+    // an element's own leaf of a nested field
+    roRow("SELECT id, items FROM zs_ro", """{"items": [{"p": [1, 2]}, {"p": 3}]}""", undeclared)(
+      "items"
+    ) shouldBe List(ListMap("p" -> List(1, 2)), ListMap("p" -> 3))
+    // `SELECT *`
+    val star = roRow(
+      "SELECT * FROM zs_ro",
+      """{"id": "r1", "n": [1, 2], "obj": {"a": [3, 4]}, "items": [{"p": [5, 6]}]}""",
+      undeclared
+    )
+    star("n") shouldBe List(1, 2)
+    star("obj") shouldBe ListMap("a" -> List(3, 4))
+    star("items") shouldBe List(ListMap("p" -> List(5, 6)))
+  }
+
+  it should "keep the statement's rule for objects: a STRUCT of several objects, a path several objects hold (A-183)" in {
+    val objects = """{"obj": [{"a": 1}, {"a": 2}]}"""
+    val struct = failure(roRow("SELECT id, obj FROM zs_ro", objects, undeclared))
+    struct should include("Column obj holds several values")
+    struct should include("SET DATA TYPE ARRAY<STRUCT>")
+    // the list is the cause: never read with the leaf's own rule, which would answer [1, 2]
+    val path = failure(roRow("SELECT id, obj.a FROM zs_ro", objects, undeclared))
+    path should include("Column obj holds several values")
+    path should not include "SET FIELD"
+    remedy(path).statements shouldBe List(AlterColumnType("obj", SQLTypes.Array(SQLTypes.Struct)))
+    failure(roRow("SELECT id, obj, obj.a FROM zs_ro", objects, undeclared)) should include(
+      "Column obj holds several values"
+    )
+  }
+
+  it should "fail a leaf core declared as a mapping reader's does, each field by its own rule (AC2, AC3)" in {
+    val n = failure(roRow("SELECT id, n FROM zs_ro", """{"n": [1, 2]}""", declared))
+    n should include("Column n holds several values")
+    remedy(n).statements shouldBe List(AlterColumnType("n", SQLTypes.Array(SQLTypes.Int)))
+    // a field added beside them by a plain mapping update: no core meta, its list
+    roRow("SELECT id, m FROM zs_ro", """{"m": [1, 2]}""", declared)("m") shouldBe List(1, 2)
+    // in one object: the declared leaf names its SET FIELD, the undeclared one is its list
+    val a = failure(roRow("SELECT id, obj.a FROM zs_ro", """{"obj": {"a": [1, 2]}}""", declared))
+    a should include("Column obj.a holds several values")
+    a should include("SET FIELD")
+    Seq("""{"obj": {"b": [1, 2]}}""", """{"obj": [{"b": [1, 2]}]}""").foreach { source =>
+      withClue(source) {
+        roRow("SELECT id, obj.b FROM zs_ro", source, declared)("obj.b") shouldBe List(1, 2)
+      }
+    }
+    failure(
+      roRow("SELECT id, items FROM zs_ro", """{"items": [{"p": [1, 2]}]}""", declared)
+    ) should include("Column items.p holds several values")
+    failure(
+      roRow("SELECT id, g FROM zs_ro", """{"g": [[1.0, 2.0], [3.0, 4.0]]}""", declared)
+    ) should include("Column g holds several values")
+  }
+
+  it should "read a scalar over several indices as stored, whatever their meta, a list declared by one as a list (AC4, A-184)" in {
+    def two(sql: String, source: String): ListMap[String, Any] =
+      rows(sql, s"""{"_index": "zs_ra", "_id": "r1", "_source": $source}""", several).head
+    two("SELECT id, n FROM zs_ra,zs_rb", """{"n": [1, 2]}""")("n") shouldBe List(1, 2)
+    two("SELECT id, u FROM zs_ra,zs_rb", """{"u": [1, 2]}""")("u") shouldBe List(1, 2)
+    two("SELECT id, l FROM zs_ra,zs_rb", """{"l": [1, 2]}""")("l") shouldBe List(1, 2)
+    two("SELECT id, l FROM zs_ra,zs_rb", """{"l": 3}""")("l") shouldBe List(3)
+  }
+
+  it should "leave Elasticsearch 6.8's read-only reading as read, objects included (LEAD-Q2)" in {
+    val objects = """{"obj": [{"a": 1}, {"a": 2}]}"""
+    roRow("SELECT id, n FROM zs_ro", """{"n": [1, 2]}""", undeclared, "6.8.23")("n") shouldBe
+    List(1, 2)
+    roRow("SELECT id, obj.a FROM zs_ro", objects, undeclared, "6.8.23")("obj.a") shouldBe
+    List(1, 2)
+    roRow("SELECT id, obj FROM zs_ro", objects, undeclared, "6.8.23")("obj") shouldBe
+    List(ListMap("a" -> 1), ListMap("a" -> 2))
+  }
+
+  it should "read a top hit's and an UNNEST element's undeclared leaf as stored, a declared one failing" in {
+    def first(schema: Schema): Seq[ListMap[String, Any]] = {
+      val single = statement("SELECT FIRST(n) AS f FROM zs_ro", schema)
+      val clients = ListMap(single.sqlAggregations.toSeq.map { case (k, v) =>
+        k -> sqlAggregationToClientAggregation(v)
+      }: _*)
+      ElasticConversion
+        .parseResponse(
+          s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": []},
+             | "aggregations": {"f": {"hits": {"hits": [
+             |   {"_index": "zs_ro", "_id": "t1", "_source": {"n": [1, 2]}}]}}}}""".stripMargin,
+          single.fieldAliases,
+          clients,
+          outputs(single)
+        )(SchemaColumns.of(single, NativeContext, Some(version)))
+        .get
+    }
+    // FIRST answers its top hit's source (beside the response's `bucket_root`): its `n` read
+    first(undeclared).head("f") match {
+      case top: scala.collection.Map[_, _] =>
+        top.asInstanceOf[scala.collection.Map[String, Any]].get("n") shouldBe Some(List(1, 2))
+      case other => fail(s"not a top hit: $other")
+    }
+    failure(first(declared)) should include("Column n holds several values")
+    // an UNNEST element's field: the leaf of the unnested path (`items.p`)
+    def element(schema: Schema): com.fasterxml.jackson.databind.JsonNode => Any =
+      SchemaColumns.of(
+        statement("SELECT t.id, i.p AS ip FROM zs_ro AS t JOIN UNNEST(t.items) AS i", schema),
+        NativeContext,
+        Some(version)
+      ) match {
+        case s: SchemaColumns =>
+          s.reading.inner
+            .get("i")
+            .flatMap(byField => Option(byField.get("p")))
+            .getOrElse(
+              fail(s"no element reader in ${s.reading.inner}")
+            )
+        case other => fail(s"not read by a plan: $other")
+      }
+    element(undeclared)(mapper.readTree("[1, 2]")) shouldBe List(1, 2)
+    intercept[HitReading.MultiValuedCell](element(declared)(mapper.readTree("[1, 2]")))
   }
 }

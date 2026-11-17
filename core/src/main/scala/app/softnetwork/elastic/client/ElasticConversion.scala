@@ -857,7 +857,9 @@ trait ElasticConversion {
               if (list || path.always) {
                 if (collectedPaths eq null) collectedPaths = ListBuffer.empty
                 val values = HitReading.collected(e.getValue, path.segments, path.points)
-                collectedPaths += path.key -> (if (values eq null) null else path.reader(values))
+                // R-150 (A-183): the cause of a several-valued cell picks its rule (`read`)
+                collectedPaths += path.key -> (if (values eq null) null
+                                               else path.read(e.getValue, values))
               }
             }
           }

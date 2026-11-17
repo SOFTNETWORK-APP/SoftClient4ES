@@ -436,15 +436,17 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   }
 
   /** SCHEMA-7 (D7) -- `source`'s schema typed from `_field_caps` ([[executeFieldCaps]]): each index
-    * it describes as the document `GET <index>` would answer (`schema.FieldCaps.members`), read by
+    * it describes as the document `GET <index>` would answer (`schema.FieldCaps.read`), read by
     * `Index(name, document).schema` and merged by `mergedSchema`, as a pattern's mappings are -- so
-    * both origins type a field the same way --, marked `TableType.FieldCapabilities`. A 404 when
-    * the answer describes no index.
+    * both origins type a field the same way --, made a `TableType.FieldCapabilities` table by
+    * `schema.FieldCaps.table`, which carries the leaves no index declares (SCHEMA-17 fix R-150,
+    * A-184). A 404 when the answer describes no index.
     */
   private def fetchFieldCapsSchema(source: String): ElasticResult[Schema] =
     executeFieldCaps(source) match {
       case ElasticSuccess(Some(json)) =>
-        app.softnetwork.elastic.schema.FieldCaps.members(source, mapper.readTree(json)) match {
+        val answer = app.softnetwork.elastic.schema.FieldCaps.read(source, mapper.readTree(json))
+        answer.members match {
           case Seq() =>
             ElasticFailure(
               ElasticError(
@@ -456,9 +458,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
             )
           case members =>
             ElasticSuccess(
-              membersSchema(source, members).copy(tableType =
-                app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
-              )
+              app.softnetwork.elastic.schema.FieldCaps.table(answer, membersSchema(source, members))
             )
         }
       case ElasticSuccess(None) =>
