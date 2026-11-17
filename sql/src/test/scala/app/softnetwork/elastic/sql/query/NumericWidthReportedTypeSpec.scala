@@ -209,17 +209,20 @@ class NumericWidthReportedTypeSpec extends AnyFlatSpec with Matchers {
     ) assertDeclared(s"SELECT ROUND($operand$scale) AS a FROM t", expected, es)
     assertDeclared("SELECT ROUND(CAST(2147483647 AS INT), -1) AS a FROM t", SQLTypes.BigInt, "long")
     assertDeclared("SELECT ROUND(CAST(127 AS TINYINT), -1) AS a FROM t", SQLTypes.BigInt, "long")
-    // a negative scale over no known number type keeps NUMERIC
-    resolved("SELECT ROUND(s, -1) AS a FROM t")._2.reportedType shouldBe SQLTypes.Numeric
+    // SCHEMA-17 (A-175): never NUMERIC -- a negative scale over a text operand reports the DOUBLE
+    // its script answers
+    resolved("SELECT ROUND(s, -1) AS a FROM t")._2.reportedType shouldBe SQLTypes.Double
   }
 
-  it should "keep NUMERIC over an operand of no known number type, and its outputType NUMERIC" in {
-    resolved("SELECT ROUND(s) AS a FROM t")._2.reportedType shouldBe SQLTypes.Numeric
+  it should "never report NUMERIC over an operand of no number type, its outputType NUMERIC (SCHEMA-17 A-175)" in {
+    // a text operand: the BIGINT a whole rounding answers (DuckDB refuses it: a binder error)
+    resolved("SELECT ROUND(s) AS a FROM t")._2.reportedType shouldBe SQLTypes.BigInt
     val (_, unresolved) = {
       val s = search("SELECT ROUND(n) AS a FROM t")
       (s, s.select.fields.head.identifier)
     }
-    unresolved.reportedType shouldBe SQLTypes.Numeric
+    // no schema: an ANY operand makes the item ANY
+    unresolved.reportedType shouldBe SQLTypes.Any
     resolved("SELECT ROUND(n) AS a FROM t")._2.functions.headOption.map(_.out) shouldBe Some(
       SQLTypes.Numeric
     )

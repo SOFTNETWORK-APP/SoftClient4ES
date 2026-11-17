@@ -249,13 +249,17 @@ class SchemaMissInvalidationSpec extends AnyFlatSpec with Matchers with BeforeAn
     }
     typed(client, "events_alias") shouldBe true // resolved from `events`
     client.schemaMissCount shouldBe 0
-    client.getIndexOverride = { case "events_alias" => // now over two indices: ambiguous
+    client.getIndexOverride = { case "events_alias" => // now over two indices
       Some(
         s"""{"events":${document(""""events_alias":{}""")},"archive":${document(
           """"events_alias":{}"""
         )}}"""
       )
     }
+    // SCHEMA-17 (A-161): an alias over several indices is typed by its members' merge, no miss
+    typed(client, "events_alias") shouldBe true
+    client.schemaMissCount shouldBe 0
+    client.getIndexOverride = { case "events_alias" => None } // the alias removed: a 404
     typed(client, "events_alias") shouldBe false
     client.schemaMissCount shouldBe 1
 

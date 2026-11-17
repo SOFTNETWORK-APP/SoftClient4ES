@@ -1500,7 +1500,7 @@ Resolution is deliberately skipped when it cannot produce a usable answer:
 |---|---|
 | the FROM names more than one source | a bare column reference is ambiguous |
 | the FROM is a wildcard (`events*`) | the concrete mapping is not knowable |
-| an index alias resolving to several indices | ditto — the alias must resolve to exactly one |
+| an index alias resolving to several indices | *not skipped since `0.25.0`*: an alias, a rollover alias or a data stream over several indices is typed by the merge of its members' mappings, as a pattern is (the same field-by-field rule); its entry is dropped when an elasticsql DDL statement changes one of its members, and a rollover done outside elasticsql is seen once the entry's schema-cache TTL expires (the default TTL, whatever its members declare). DDL through such an alias is refused as before (404) |
 | the schema cannot be loaded | the statement executes unresolved rather than failing |
 
 ### What it costs

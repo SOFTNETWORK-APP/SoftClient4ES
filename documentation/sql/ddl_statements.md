@@ -238,6 +238,13 @@ CREATE TABLE store (
 
 - `products` is an `ARRAY<STRUCT>` column.
 - Maps naturally to Elasticsearch `nested`.
+- `products ARRAY<STRUCT> FIELDS (...) OPTIONS (type = 'object')` declares a list of objects over
+  an `object` field instead (*since `0.25.0`*): its documents are indexed as Elasticsearch indexes
+  any object list (the paths of all the objects flattened, no per-object matching), and it is read
+  as a list, one object being a list of one. `UNNEST`, nested queries and `inner_hits` apply to a
+  `nested` field only; a filter on a sub-path (`products.price > 10`) is a plain one.
+- A sub-path selected under a list of objects, `nested` or `object` alike (`SELECT products.price`),
+  is a list of its objects' values, `ARRAY<BIGINT>` here (*since `0.25.0`*).
 
 ---
 
@@ -758,10 +765,50 @@ ALTER TABLE logs ALTER COLUMN tags SET DATA TYPE ARRAY<KEYWORD>;
 ALTER TABLE logs ALTER COLUMN obj SET FIELD a ARRAY<INT>;
 ```
 
+An `object` field is declared a list of objects the same way, in place, and keeps its `object`
+mapping (*since `0.25.0`*): the column becomes `ARRAY<STRUCT> OPTIONS (type = 'object')`, which
+`SHOW CREATE TABLE` prints and which re-parses to the same table. A `STRUCT` column whose documents
+hold several objects fails a query that reads it, naming this statement:
+
+```sql
+ALTER TABLE logs ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>;
+-- a sub-field object: the option keeps it an object
+ALTER TABLE logs ALTER COLUMN p SET FIELD obj ARRAY<STRUCT> FIELDS (a INT) OPTIONS (type = 'object');
+```
+
+`CREATE TABLE t (obj ARRAY<STRUCT> ...)` still creates a `nested` field. A `CREATE TABLE … AS
+SELECT` or a materialized view writes the SQL type's own mapping, `nested`, for such a column.
+
 This is the statement a query names when a column holds several values but is declared as one
 (see [DQL: columns holding several values](dql_statements.md#columns-holding-several-values)).
 Changing the element type of a list column (`ARRAY<INT>` → `ARRAY<BIGINT>` or `ARRAY<KEYWORD>`),
 or declaring a list of another Elasticsearch type (`KEYWORD` → `ARRAY<INT>`), stays `Impossible`.
+
+#### The declaration in each field's mapping `meta`
+
+*Since `0.25.0`*, on Elasticsearch 7.6 and later, every `CREATE TABLE` and every `ALTER TABLE`
+applied in place also copies each leaf field's SQL declaration into the field's mapping `meta` --
+`sql_type` (`ARRAY<KEYWORD>`, `DATE`, `TIME`, ...), `sql_format` (a date's mapping format, the
+default one included) and, under a list of objects declared over an `object` field,
+`sql_list_depths` -- because a user who may search an index but not read its mapping sees a field's
+`meta` (through `_field_caps`) and nothing of the table's `_meta`. A user's own `meta` keys are kept
+and sent again with core's; where together they would exceed Elasticsearch's limits (5 entries,
+50-character values) core's keys are left out of that field, with one warning per statement (a
+format longer than 50 characters leaves out `sql_format` alone). `SHOW CREATE TABLE`, `DESCRIBE
+TABLE` and a table diff never show core's keys. Below 7.6 no `meta` is written.
+
+A table created before `0.25.0` gains the keys on its first `ALTER TABLE` applied in place. A date's
+format is declared with the column option `OPTIONS (format = '<pattern>')`, the mapping's own
+`format`.
+
+For a user who may not read the mapping (see
+[A user who may not read the mapping](../client/gateway.md#a-user-who-may-not-read-the-mapping)):
+
+- over ONE index, each field declared this way is typed and read exactly as for a privileged user
+  -- lists, lists of objects, `DATE`, `TIME`, a custom date format;
+- over several indices (a pattern, a list, an alias), only lists apply: Elasticsearch merges the
+  `meta` of the indices that hold a key and hides the others, so a format or a narrower type of one
+  index could be applied to another that has none; such a date is read as ISO 8601 only (see there).
 
 ---
 

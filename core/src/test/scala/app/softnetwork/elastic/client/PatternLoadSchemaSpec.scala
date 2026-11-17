@@ -352,4 +352,84 @@ class PatternLoadSchemaSpec extends AnyFlatSpec with Matchers with BeforeAndAfte
     client.resolveWithSchema(statement("SELECT id FROM none_*"))
     client.caps.get() shouldBe 1
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-161) -- an alias or a data stream over SEVERAL indices is typed by the pattern
+  // merge, in the query seam only; DDL keeps main's 404
+  // ---------------------------------------------------------------------------------------------
+
+  /** `GET <alias>` answers its members' documents, keyed by member name (never by the alias). */
+  private class AliasClient(template: Option[String] = None) extends NopeClientApi {
+    override protected def logger: Logger = LoggerFactory.getLogger(getClass)
+
+    @volatile var gets: List[String] = Nil
+
+    override private[client] def executeVersion(): ElasticResult[String] =
+      ElasticResult.success("8.18.3")
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+      gets = gets :+ index
+      index match {
+        case "al2" | "alt" =>
+          ElasticResult.success(
+            Some(
+              s"""{"logs-1":${document("")},"logs-2":${document(
+                ""","level":{"type":"keyword"}"""
+              )}}"""
+            )
+          )
+        case "logs-1" => ElasticResult.success(Some(s"""{"logs-1":${document("")}}"""))
+        case _        => ElasticResult.success(None)
+      }
+    }
+
+    override private[client] def executeGetComposableTemplate(
+      templateName: String
+    ): ElasticResult[Option[String]] =
+      ElasticResult.success(template.filter(_ => templateName == "alt"))
+  }
+
+  "an alias over two indices" should "answer its members' merged schema to a query (A-161)" in {
+    val client = new AliasClient
+    client.loadQuerySchema("al2") match {
+      case ElasticSuccess(schema) =>
+        schema.columns.map(_.name).sorted shouldBe List("event_ts", "id", "level")
+      case ElasticFailure(error) => fail(s"refused: ${error.message}")
+    }
+    // one GET of the alias, then the entry answers
+    client.loadQuerySchema("al2") shouldBe a[ElasticSuccess[_]]
+    client.gets shouldBe List("al2")
+  }
+
+  it should "keep main's 404 for DDL, after a query warmed the entry" in {
+    val client = new AliasClient
+    client.loadQuerySchema("al2") shouldBe a[ElasticSuccess[_]]
+    client.loadSchema("al2") match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(404)
+      case other                 => fail(s"expected the 404, got $other")
+    }
+  }
+
+  it should "be read again once a member's schema is invalidated" in {
+    val client = new AliasClient
+    client.loadQuerySchema("al2") shouldBe a[ElasticSuccess[_]]
+    client.invalidateSchema("logs-1")
+    client.loadQuerySchema("al2") shouldBe a[ElasticSuccess[_]]
+    client.gets shouldBe List("al2", "al2")
+  }
+
+  "an alias over two indices named like a template" should "keep the template's schema on both paths (#292)" in {
+    val template =
+      """{"index_template":{"index_patterns":["zz-never-*"],"template":{"mappings":{"properties":{"tk":{"type":"keyword"}}}}}}"""
+    val client = new AliasClient(Some(template))
+    client.loadQuerySchema("alt") match {
+      case ElasticSuccess(schema) => schema.columns.map(_.name) shouldBe List("tk")
+      case ElasticFailure(error)  => fail(s"refused: ${error.message}")
+    }
+    val ddl = new AliasClient(Some(template))
+    ddl.loadSchema("alt") match {
+      case ElasticSuccess(schema) => schema.columns.map(_.name) shouldBe List("tk")
+      case ElasticFailure(error)  => fail(s"refused: ${error.message}")
+    }
+  }
 }

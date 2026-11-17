@@ -582,10 +582,20 @@ of `FIRST_VALUE`, `LAST_VALUE` or `ARRAY_AGG`, naming that hit's document. A `WH
 inner statement is not affected.
 
 A **list of objects** in a `STRUCT` column (an `object` mapping, `"obj": [{"a": 5}, {"a": 50}]`)
-keeps answering: the column's value is the list of its objects, so a `STRUCT` column may hold a
-list. A path under it (`SELECT obj.a`) holds the values its objects hold, in order — `[5, 50]`, as
-Elasticsearch indexes `obj.a` (it answered NULL before) — and is read like any column: one value
-is that value, several fail as above until the sub-field is declared `ARRAY<X>`, none is NULL.
+fails a statement that reads the column, as above, naming
+`ALTER TABLE logs ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>`, which declares the field a list of
+objects in place (*since `0.25.0`*; earlier versions answered the list as read).
+
+A path under a list of objects (`SELECT obj.a`) holds the values its objects hold, in order —
+`[5, 50]`, as Elasticsearch indexes `obj.a` — and is typed and read as a list (`ARRAY<INT>`),
+whether the parent is declared `ARRAY<STRUCT>` over an `object` field or mapped `nested`
+(`items.p`): one object is a list of one, none is NULL (*since `0.25.0`*; earlier versions typed it
+as one value). Under a `STRUCT` column not declared a list, a path that several objects hold fails
+the statement naming the parent's `SET DATA TYPE ARRAY<STRUCT>`; one object whose own field holds
+several values names the sub-field's `SET FIELD`. A `GROUP BY` key, a `WHERE` condition and an
+`UNNEST` element field read each value, one at a time. A point stored as `[lon, lat]` is one
+element of such a list (`ARRAY<GEO_POINT>`), and a path holds the same values when a path above it
+is selected beside it (`SELECT obj.in, obj.in.q`).
 
 A column declared `ARRAY<X>` is used as an `X` wherever Elasticsearch works on each element —
 `WHERE arr = 5`, `arr > 5` and `arr IN (…)` match a document holding a matching element, a function

@@ -195,8 +195,10 @@ QueryStructured(response, truncation).schema // = response.schema
 
 - The columns are in SELECT order; `SELECT *` lists the mapping's columns in their table order.
   A row keeps its document's key order: read a value **by name**, present it in schema order.
-- `schema` is `None` when no mapping is known (an index that neither its mapping nor `_field_caps` can type, an alias on the ES 8/9
-  clients) and for DDL / DML / SHOW results.
+- `schema` is `None` when no mapping is known (an index that neither its mapping nor `_field_caps` can type) and for DDL /
+  DML / SHOW results. An alias or a data stream over several indices is typed by the merge of its members' mappings,
+  as a pattern is (*since `0.25.0`*); a pattern matching no index carries an empty schema (`SELECT *` has no column),
+  as its 0 rows do.
 - A positional pattern binds every field: `case QueryRows(rows, _, _)`. The shape immune to a future
   field is `case q: QueryRows => q.rows`.
 
@@ -209,8 +211,21 @@ gateway.describe("SELECT id, ts FROM events") // ElasticSuccess(Some(ResultSchem
 
 It accepts one query (a SELECT, a set operation, a FROM-less SELECT) and refuses anything else with
 a `400`; a statement `run` refuses before executing anything is refused with the same status and
-message. A statement handled by another extension than core's (a cross-index JOIN under the arrow
-extension) answers `None`.
+message. *Since `0.25.0`*, one rule for every consumer:
+
+- `ElasticSuccess(Some(schema))`: every column is typed before any row, at every depth -- the
+  `SELECT *` legs of a `UNION ALL` from their own mappings (after a first branch that names its
+  columns, its names; after a first branch `SELECT *`, the legs' row names in first-seen order, a
+  name typed over the legs that carry it), an alias or a data stream over several indices from its
+  members;
+- a failure: refused with the status `run` answers -- an unknown index is a `404`, a mapping read
+  that fails otherwise keeps its status (`operation = "describe"`; it answered `None` before);
+- `ElasticSuccess(None)`: only for a statement another extension than core's handles (a
+  cross-index JOIN under the arrow extension), whose own layer types it.
+
+No result column is typed `NUMERIC` or `TEMPORAL`: `ABS` and `ROUND` over a column of no known type
+are `ANY`, over `NULL` a `BIGINT`, over a text, a boolean or a date the class their script answers
+(`ABS` a `DOUBLE`, `ROUND` a `BIGINT`, to decimal places a `DOUBLE`).
 
 #### Value classes
 
@@ -292,12 +307,22 @@ A user holding only the index `read` privilege is refused `GET <index>` (403) bu
 with "Failed to get ES version"), such a user's queries are typed from `_field_caps`, once per source
 per schema-cache TTL, and its statements answer what a privileged user's answer, except:
 
-- `_field_caps` holds no `_meta`: a column declared `DATE` reads TIMESTAMP, an `ARRAY<X>` declaration
-  reads X (a several-valued cell answers the `List` of its values, never the several-values
-  failure), and there is no comment and no default;
-- it holds no date format: ISO text is read as a TIMESTAMP, any other value (a custom format's text,
-  an epoch) is answered as stored, and a temporal literal in `WHERE` is forwarded to Elasticsearch
-  verbatim;
+- `_field_caps` holds no `_meta`. On Elasticsearch 7.6 and later it holds each field's mapping
+  `meta`, where core copies a field's declaration (*since `0.25.0`*, see
+  [DDL: the declaration in each field's mapping meta](../sql/ddl_statements.md#the-declaration-in-each-fields-mapping-meta)):
+  over one index, a field declared by elasticsql reads as for a privileged user (`ARRAY<X>`,
+  `ARRAY<STRUCT>`, `DATE`, `TIME`, its date format); over several indices only its list-ness
+  applies. A field with no such declaration reads by its mapping type (`DATE` reads TIMESTAMP, `X`
+  for an `ARRAY<X>`), and a several-valued cell of a column not declared a list fails as a
+  privileged user's does, naming the `ALTER TABLE` that declares it. On Elasticsearch 6.8 there is
+  no field `meta`: such a cell answers the `List` of its values (the one value-typed residue). There
+  is no comment and no default;
+- a date with no declared format (6.8, several indices, a field never declared) is read as ISO
+  8601 text, a TIMESTAMP; any other value (a custom format's text, an epoch) fails the statement,
+  naming the column, the document and the remedy -- a grant to read the mapping
+  (`view_index_metadata`), or, on 7.6 and later, an in-place `ALTER TABLE` by the table's owner
+  (*since `0.25.0`*; it was answered as stored); a temporal literal in `WHERE` is forwarded to
+  Elasticsearch verbatim;
 - it reports `constant_keyword` as `keyword`: its projection and `SELECT *` read NULL from `_source`,
   as before, while `WHERE`, `GROUP BY` and conditionals over it answer its value, and a sort over
   it carries the `unmapped_type` of a keyword, so `ORDER BY ck` over a list where one index lacks

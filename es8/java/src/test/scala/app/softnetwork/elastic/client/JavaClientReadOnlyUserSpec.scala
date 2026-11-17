@@ -110,7 +110,30 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
   private val table = "s7_t"
   private val big = "s7_big"
   private val listed = "s7_tags"
-  private val indices = Seq(table, big, listed, "s7_p1", "s7_p2")
+  private val declared1 = "s7_f1"
+  private val declared2 = "s7_f2"
+  private val indices = Seq(table, big, listed, "s7_p1", "s7_p2", declared1, declared2)
+
+  /** SCHEMA-17 (F1) -- a table created on main (a `_meta` declaration, no field `meta`), with a
+    * user's own field `meta` key (F2), then altered in place through elasticsql: the first in-place
+    * ALTER writes every leaf's declaration into its mapping `meta` (A-171).
+    */
+  private val declaredMapping: String =
+    """{"_meta": {"columns": {"dc": {"data_type": "DATE"}, "tm": {"data_type": "TIME"},
+      | "d": {"data_type": "DATE"}}},
+      | "properties": {
+      |  "id": {"type": "keyword"}, "tags": {"type": "keyword"},
+      |  "obj": {"properties": {"a": {"type": "integer"}, "s": {"type": "keyword"}}},
+      |  "dc": {"type": "date"}, "tm": {"type": "date", "format": "HH:mm:ss"},
+      |  "d": {"type": "date", "format": "dd/MM/yyyy"},
+      |  "dz": {"type": "date", "format": "yyyy-MM-dd HH:mm z"},
+      |  "ts": {"type": "date", "meta": {"unit": "utc"}}
+      |}}""".stripMargin
+
+  private val declaredDocs: Seq[(String, String)] = Seq(
+    "f1" -> """{"id":"f1","tags":["a","b"],"obj":[{"a":1,"s":"x"},{"a":2,"s":"y"}],"dc":"2026-11-16","tm":"10:30:00","d":"16/11/2026","dz":"2026-11-16 10:30 UTC","ts":"2026-11-16T10:30:00Z"}""",
+    "f2" -> """{"id":"f2","tags":"c","obj":{"a":3,"s":"z"},"dc":"2026-11-17","tm":"11:00:00","d":"17/11/2026","ts":"2026-11-17T00:00:00Z"}"""
+  )
 
   private val mapping: String =
     """{"runtime": {"rt": {"type": "keyword", "script": "emit('r')"}},
@@ -172,6 +195,18 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
       Seq("t1" -> """{"id":"t1","tags":["a","b"]}""", "t2" -> """{"id":"t2","tags":"c"}""")
     )
     load("s7_p1", """{"properties": {"k": {"type":"keyword"}}}""", Seq("p1" -> """{"k":"007"}"""))
+    Seq(declared1, declared2).foreach { index =>
+      load(index, declaredMapping, declaredDocs)
+      Seq(
+        s"ALTER TABLE $index ALTER COLUMN tags SET DATA TYPE ARRAY<KEYWORD>",
+        s"ALTER TABLE $index ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>"
+      ).foreach { ddl =>
+        Await.result(client.run(ddl), 60.seconds) match {
+          case ElasticSuccess(_) =>
+          case other             => fail(s"[$ddl] $other")
+        }
+      }
+    }
     load("s7_p2", """{"properties": {"k": {"type":"long"}}}""", Seq("p2" -> """{"k":7}"""))
     raw(
       "PUT",
@@ -306,13 +341,63 @@ class JavaClientReadOnlyUserSpec extends AnyFlatSpecLike with ElasticDockerTestK
     rows(roClient, s"SELECT id, ck FROM $table").map(_.get("ck").orNull).distinct shouldBe Seq(null)
   }
 
-  it should "read a several-valued cell as its list, where the privileged client fails with Q1 (A-41)" in {
-    val ro = rows(roClient, s"SELECT id, tags FROM $listed LIMIT 10")
-      .map(r => r("id") -> r("tags"))
-      .toMap
-    ro("t1") shouldBe List("a", "b")
-    outcome(client, s"SELECT id, tags FROM $listed LIMIT 10").left.getOrElse("") should include(
-      "ARRAY<KEYWORD>"
+  it should "fail a several-valued cell of an undeclared column as the privileged client does, naming the ALTER (SCHEMA-17 A-173; A-41 read it as its list)" in {
+    Seq(roClient, client).foreach { on =>
+      outcome(on, s"SELECT id, tags FROM $listed LIMIT 10").left.getOrElse("") should include(
+        "ARRAY<KEYWORD>"
+      )
+    }
+  }
+
+  "A read-only user's table declared by elasticsql" should "be typed and read as a mapping reader's: lists, objects lists, dates (SCHEMA-17 F1)" in {
+    val sql = s"SELECT * FROM $declared1"
+    val ro = described(roClient, sql)
+    ro shouldBe described(client, sql)
+    ro("tags") shouldBe "ARRAY<VARCHAR>"
+    ro("obj") shouldBe "ARRAY<STRUCT>"
+    ro("dc") shouldBe "DATE"
+    ro("tm") shouldBe "TIME"
+    ro("d") shouldBe "DATE"
+    ro("ts") shouldBe "TIMESTAMP"
+    sorted(rows(roClient, sql)) shouldBe sorted(rows(client, sql))
+    // one object is a list of one
+    rows(roClient, s"SELECT id, obj FROM $declared1")
+      .find(_("id") == "f2")
+      .map(_("obj")) match {
+      case Some(list: Seq[_]) => list.size shouldBe 1
+      case other              => fail(s"one object: $other")
+    }
+  }
+
+  it should "keep the user's own field meta beside core's, which SHOW CREATE TABLE never shows (F2)" in {
+    val (_, body) = raw("GET", s"/$declared1/_mapping")
+    val ts = new com.fasterxml.jackson.databind.ObjectMapper()
+      .readTree(body)
+      .path(declared1)
+      .path("mappings")
+      .path("properties")
+      .path("ts")
+      .path("meta")
+    ts.path("unit").asText() shouldBe "utc"
+    ts.path("sql_type").asText().toLowerCase shouldBe "timestamp"
+    Await.result(client.run(s"SHOW CREATE TABLE $declared1"), 60.seconds) match {
+      case ElasticSuccess(app.softnetwork.elastic.client.result.SQLResult(ddl)) =>
+        ddl should not include "sql_"
+        ddl should include("unit")
+      case other => fail(s"SHOW CREATE TABLE: $other")
+    }
+  }
+
+  it should "read list-ness only over several indices, and fail a date of no readable format loudly (A-179, LEAD-Q1 b)" in {
+    val sql = s"SELECT id, tags, obj FROM $declared1,$declared2"
+    val ro = described(roClient, sql)
+    ro("tags") shouldBe "ARRAY<VARCHAR>"
+    ro("obj") shouldBe "ARRAY<STRUCT>"
+    sorted(rows(roClient, sql)) shouldBe sorted(rows(client, sql))
+    // a date's format is not applied over several indices: ISO 8601 only, any other spelling refused
+    described(roClient, s"SELECT d FROM $declared1,$declared2")("d") shouldBe "TIMESTAMP"
+    outcome(roClient, s"SELECT id, d FROM $declared1,$declared2").left.getOrElse("") should include(
+      "view_index_metadata"
     )
   }
 

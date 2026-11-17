@@ -436,6 +436,28 @@ trait MappingTypeReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
   // AC5 -- the write direction
   // -------------------------------------------------------------------------------------------
 
+  /** `node` without core's field `meta` keys (SCHEMA-17 A-169), at every depth -- through
+    * `properties` and `fields` alike --, a `meta` they leave empty dropped.
+    */
+  private def withoutCoreMeta(node: JsonNode): JsonNode = {
+    val copy = node.deepCopy[JsonNode]()
+    def strip(n: JsonNode): Unit =
+      n match {
+        case o: ObjectNode =>
+          o.get("meta") match {
+            case m: ObjectNode =>
+              app.softnetwork.elastic.schema.FieldMeta.Keys.foreach(k => m.remove(k))
+              if (m.size() == 0) o.remove("meta")
+            case _ =>
+          }
+          val it = o.elements()
+          while (it.hasNext) strip(it.next())
+        case _ =>
+      }
+    strip(copy)
+    copy
+  }
+
   "ALTER TABLE ADD COLUMN" should "keep every field's mapping type and parameters (AC5)" in {
     val before = properties(addIndex)
     ddl(s"ALTER TABLE $addIndex ADD COLUMN z INT") shouldBe a[Right[_, _]]
@@ -443,7 +465,14 @@ trait MappingTypeReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
     after.get("z").get("type").asText() shouldBe "integer"
     val without = after.deepCopy()
     without.remove("z")
-    without shouldBe before
+    // SCHEMA-17 (A-169, A-171): the in-place ALTER writes the whole mapping, each leaf with core's
+    // field meta from Elasticsearch 7.6 on -- every type and parameter otherwise kept
+    withoutCoreMeta(without) shouldBe withoutCoreMeta(before)
+    if (Try(ElasticsearchVersion.supportsFieldMeta(elasticVersion)).getOrElse(false)) {
+      val d = after.get("d").path("meta")
+      d.has("sql_type") shouldBe true
+      d.has("sql_format") shouldBe true
+    } else after.toString should not include "\"meta\""
     // and the rows read as before
     byId(rowsOf(s"SELECT id, sf, ip FROM $addIndex"))("r1")("ip") shouldBe "10.0.0.1"
   }

@@ -90,6 +90,17 @@ private[client] final class HitReading(
   /** Whether a hit's `_ignored` must be read (D8): the plan reads some `_source` key as a date. */
   private[client] val readsIgnored: Boolean = !ignoredDates.isEmpty
 
+  /** Whether some selected path is collected whatever its parent's value is (SCHEMA-17 A-181,
+    * [[HitReading.ListPath.always]]): decided once per statement, so a row of a statement with none
+    * keeps reading only its list values.
+    */
+  private[client] val collectsAlways: Boolean = {
+    var found = false
+    val it = listPaths.values().iterator()
+    while (!found && it.hasNext) found = it.next().exists(_.always)
+    found
+  }
+
   /** The reader of `key`'s cell when the hit's `_ignored` names it (D8); `null` for a key that is
     * not read as a date, which keeps its own reader (a keyword keeps its stored text).
     */
@@ -114,15 +125,26 @@ private[client] object HitReading {
 
   /** SCHEMA-7 (A-41) -- what a several-element cell of a scalar column answers in `single`: as read
     * (a `List` of its elements, each read by the column's type) when its schema was typed from
-    * `_field_caps` -- no `_meta`, so a column declared `ARRAY<X>` reads X, and [[Default]] 's
-    * failure would have no remedy that reaches this user (R-55) --, else [[Default]]. Read at every
-    * argument [[Default]] was given.
+    * `_field_caps` on a cluster whose fields take no `meta` -- Elasticsearch 6.8, or a version not
+    * known (R-55, kept by the lead's LEAD-Q2 (a) of 2026-11-16: the one value-typed residue) --,
+    * else [[Default]]. Read at every argument [[Default]] was given.
+    *
+    * SCHEMA-17 (A-173): from 7.6 a field core declared carries its declaration in its mapping
+    * `meta`, which `_field_caps` returns -- a column declared `ARRAY<X>` reads `ARRAY<X>` there --,
+    * and an undeclared several-valued cell fails as a mapping reader's does, naming the `ALTER`: a
+    * user who may alter the table runs it, and the read-only user then sees the field declared.
+    * `version` is the cluster's (`VersionApi`), read by `ElasticsearchVersion.supportsFieldMeta`
+    * -- asked only for a schema typed from `_field_caps` (by name: every other statement never asks
+    * it here).
     */
-  private[client] def multiValuedFor(single: SingleSearch): MultiValued =
+  private[client] def multiValuedFor(
+    single: SingleSearch,
+    version: => Option[String]
+  ): MultiValued =
     if (
       single.schema.exists(
         _.tableType == app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
-      )
+      ) && !version.exists(ElasticsearchVersion.supportsFieldMeta)
     )
       MultiValued.AsRead
     else Default
@@ -149,29 +171,92 @@ private[client] object HitReading {
     * obj.a`, `SELECT *, obj.a`): where the parent's `_source` value is a list of objects, the row
     * key `key` holds the values the path `segments` collects there ([[Readers.collected]]), read by
     * `reader`, the path's own reader -- as the parent read for its paths only answers them.
+    *
+    * SCHEMA-17 (A-181): `always` for a path under a list of objects (`MultiSearch.listedPath`),
+    * typed a list: collected whatever the parent's value is -- one object holds a list of one
+    * value, as the parent declared a list reads it a list of one object. Also `always` for a path
+    * under a list of objects whose prefix is itself a selected path under a parent NOT read whole
+    * (`obj.in.q` beside `obj.in`): the parent's reader reads the prefix, a list, and never the
+    * path.
+    *
+    * `points`: the path is a `GEO_POINT` leaf ([[readsPoints]]), collected point by point.
     */
   private[client] final class ListPath(
     val key: String,
     val segments: Array[String],
-    val reader: JsonNode => Any
+    val reader: JsonNode => Any,
+    val always: Boolean = false,
+    val points: Boolean = false
   )
 
   /** SCHEMA-6 (A-26) -- the values the sub-path `segments` holds under `node` (a list of objects),
     * in order, every list met on the way -- an element's own list included -- flattened, as
     * Elasticsearch indexes a path under a list of objects; `null` when it holds none.
+    *
+    * SCHEMA-17 (A-181): `points` for a `GEO_POINT` leaf ([[readsPoints]]): a coordinates array met
+    * at the leaf (`[lon, lat]` or `[lon, lat, z]`, [[coordinates]]) is ONE value, never flattened
+    * into its numbers; a list of them (one object holding several points) is one value each.
     */
-  private[client] def collected(node: JsonNode, segments: Array[String]): JsonNode = {
+  private[client] def collected(
+    node: JsonNode,
+    segments: Array[String],
+    points: Boolean = false
+  ): JsonNode = {
     val out = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode()
     def walk(n: JsonNode, i: Int): Unit =
       if (n != null && !n.isNull) {
         if (n.isArray) {
-          val it = n.elements()
-          while (it.hasNext) walk(it.next(), i)
+          if (points && i == segments.length && coordinates(n)) out.add(n)
+          else {
+            val it = n.elements()
+            while (it.hasNext) walk(it.next(), i)
+          }
         } else if (i == segments.length) out.add(n)
         else if (n.isObject) walk(n.get(segments(i)), i + 1)
       }
     walk(node, 0)
     if (out.size() == 0) null else out
+  }
+
+  /** `[lon, lat]` or `[lon, lat, z]`: one point, not a list (R-34). The one test of the readers'
+    * `geo` and `list` and of [[collected]].
+    */
+  private[client] def coordinates(node: JsonNode): Boolean = {
+    val size = node.size()
+    (size == 2 || size == 3) && {
+      var all = true
+      val it = node.elements()
+      while (all && it.hasNext) all = it.next().isNumber
+      all
+    }
+  }
+
+  /** SCHEMA-17 (A-181) -- whether a path of type `t` holds points: `GEO_POINT`, or a list of them
+    * (at any depth), whose `[lon, lat]` values [[collected]] keeps whole.
+    */
+  private[client] def readsPoints(t: SetOperationType): Boolean =
+    t.sqlType match {
+      case SQLTypes.GeoPoint => true
+      case SQLTypes.Array(_) => t.element.exists(readsPoints)
+      case _                 => false
+    }
+
+  /** SCHEMA-17 (A-181) -- whether several objects of the list of objects `node` hold a value at the
+    * sub-path `segments` (every list met flattened, as [[collected]] reads them): the values of a
+    * several-valued cell of that path then come from the LIST, not from one object's own field.
+    * Read on the error path only.
+    */
+  private[client] def severalHold(node: JsonNode, segments: Array[String]): Boolean = {
+    var holders = 0
+    def walk(n: JsonNode): Unit =
+      if (holders < 2 && n != null && !n.isNull) {
+        if (n.isArray) {
+          val it = n.elements()
+          while (holders < 2 && it.hasNext) walk(it.next())
+        } else if (collected(n, segments) ne null) holders += 1
+      }
+    walk(node)
+    holders > 1
   }
 
   /** A bare `*` item. */
@@ -213,6 +298,53 @@ private[client] object HitReading {
     s"Column ${cell.column} holds several values$where, but is declared as one value$remedy"
   }
 
+  /** SCHEMA-17 (LEAD-Q1 b) -- the formats a `_field_caps` date is read by when its mapping `meta`
+    * names none (A-40): ISO 8601 only, the one spelling read as an instant without knowing the
+    * field's own format.
+    */
+  private val IsoOnlyFormats: Set[String] = Set(
+    app.softnetwork.elastic.sql.query.TemporalLiterals.FieldCapsDateFormat,
+    app.softnetwork.elastic.sql.query.TemporalLiterals.FieldCapsDateNanosFormat
+  )
+
+  /** Whether `single`'s dates of no declared format are read as ISO 8601 only, failing any other
+    * spelling (SCHEMA-17, the lead's LEAD-Q1 (b) of 2026-11-16): its schema was typed from
+    * `_field_caps`, which has no `format`.
+    */
+  private[client] def fieldCapsDates(single: SingleSearch): Boolean =
+    single.schema.exists(
+      _.tableType == app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
+    )
+
+  /** Thrown by a date reader of a `_field_caps` schema ([[fieldCapsDates]]) for a value that is not
+    * ISO 8601; the hit loop names the document and its index ([[unreadableDateMessage]]).
+    */
+  private[client] final class UnreadableDateCell(
+    val column: String,
+    val value: String,
+    val table: String
+  ) extends RuntimeException(column, null, false, false)
+
+  /** The message an [[UnreadableDateCell]] fails with: the column, the value, the document and its
+    * index, and the remedies -- a grant to read the mapping, which runs on every version and over
+    * several indices (accepted by the lead by name), or, on Elasticsearch 7.6 or later and one
+    * index, an in-place `ALTER TABLE` by the table's owner, which writes the field's declaration
+    * into its mapping `meta`.
+    */
+  private[client] def unreadableDateMessage(
+    cell: UnreadableDateCell,
+    id: Option[String],
+    index: Option[String]
+  ): String = {
+    val in = index.filter(_.nonEmpty).getOrElse(cell.table)
+    val where =
+      id.fold("")(i => s" in document $i") + (if (in.nonEmpty) s" of index $in" else "")
+    s"Column ${cell.column} holds ${cell.value}$where, which is not an ISO 8601 date: its mapping " +
+    "format cannot be read by a user who may not read the index's mapping. Grant this user the " +
+    "privilege to read the mapping (view_index_metadata), or, on Elasticsearch 7.6 or later, have " +
+    "the table's owner alter the table in place, which declares the field's format to every user"
+  }
+
   /** The `ALTER COLUMN …` clause declaring the column at `path` of `schema` a list of its own type
     * (SCHEMA-6 D6), read on the error path only: `ALTER COLUMN c SET DATA TYPE ARRAY<X>` for a
     * column, X its declared type; for a sub-field `p.f`, `ALTER COLUMN p SET FIELD <f>`, `<f>` the
@@ -239,7 +371,19 @@ private[client] object HitReading {
             .split("\\.")
             .map(app.softnetwork.elastic.sql.renderColumnName)
             .mkString(".")
-          val field = c.copy(dataType = list, struct = None).update()
+          // SCHEMA-17 (A-166): the list keeps the field's Elasticsearch type -- `type = 'object'`
+          // for a STRUCT, which `ARRAY<STRUCT>` alone would make `nested` -- so the sub-field is
+          // declared a list in place, as `SET DATA TYPE` declares a column
+          val kept =
+            if (
+              !c.options.contains("type") &&
+              app.softnetwork.elastic.sql.`type`.SQLTypeUtils.elasticType(list) != c.mappingType
+            )
+              c.options + ("type" -> (app.softnetwork.elastic.sql.StringValue(
+                c.mappingType
+              ): app.softnetwork.elastic.sql.Value[_]))
+            else c.options
+          val field = c.copy(dataType = list, struct = None, options = kept).update()
           s"ALTER COLUMN $parent SET FIELD ${field.sql.replaceAll("\\n\\t*", " ")}"
         }
       }
@@ -313,7 +457,8 @@ private[client] object HitReading {
       multiValued,
       table,
       remedyOf(single.schema),
-      single.schema.fold(Set.empty[String])(t => nanosPaths(t.columns))
+      single.schema.fold(Set.empty[String])(t => nanosPaths(t.columns)),
+      fieldCapsDates(single)
     )
     val fields = single.select.fieldsWithComputedAliases
     val star = fields.exists(isStar)
@@ -359,6 +504,8 @@ private[client] object HitReading {
     // type; a computed column's `fields` entry by output name
     val paths =
       scala.collection.mutable.LinkedHashMap.empty[String, ListBuffer[(String, SetOperationType)]]
+    // SCHEMA-17 (A-181): the selected paths under a list of objects, typed a list
+    val listedPaths = scala.collection.mutable.Set.empty[String]
     fields.filterNot(isStar).foreach { f =>
       val id = f.identifier
       if (isComputed(f)) {
@@ -379,6 +526,7 @@ private[client] object HitReading {
         } else {
           val parent = name.substring(0, dot)
           paths.getOrElseUpdate(parent, ListBuffer.empty) += (name.substring(dot + 1) -> t)
+          if (MultiSearch.listedPath(id)) listedPaths += name
           // SCHEMA-12 A-3's flat spelling, read first by `flatValue`
           if (!source.containsKey(name)) {
             val (reader, _) = readers.column(name, t, Set.empty)
@@ -391,18 +539,35 @@ private[client] object HitReading {
     // as read; a parent read whole: its selected paths collected where it holds a list of objects
     // (SCHEMA-6 A-26)
     val listPaths = new java.util.HashMap[String, Array[ListPath]]()
+    def listPath(parent: String, p: String, t: SetOperationType, always: Boolean): ListPath = {
+      val path = s"$parent.$p"
+      new ListPath(
+        aliases.getOrElse(path, path),
+        p.split("\\."),
+        readers.column(path, t, Set.empty)._1,
+        always,
+        readsPoints(t)
+      )
+    }
     paths.foreach { case (parent, under) =>
-      if (!source.containsKey(parent)) source.put(parent, readers.paths(parent, under.toList))
-      else
+      if (!source.containsKey(parent)) {
+        source.put(parent, readers.paths(parent, under.toList))
+        // SCHEMA-17 (A-181): a path under a list of objects whose prefix is itself selected
+        // (`obj.in.q` beside `obj.in`) is never read by the parent's reader, which reads the
+        // prefix -- a list the row path cannot walk through --: collected from the parent's value
+        // as its own value, as under a parent read whole
+        val shadowed = under.collect {
+          case (p, t)
+              if listedPaths.contains(s"$parent.$p") &&
+                under.exists { case (q, _) => p.startsWith(q + ".") } =>
+            listPath(parent, p, t, always = true)
+        }
+        if (shadowed.nonEmpty) listPaths.put(parent, shadowed.toArray)
+      } else
         listPaths.put(
           parent,
           under.map { case (p, t) =>
-            val path = s"$parent.$p"
-            new ListPath(
-              aliases.getOrElse(path, path),
-              p.split("\\."),
-              readers.column(path, t, Set.empty)._1
-            )
+            listPath(parent, p, t, listedPaths.contains(s"$parent.$p"))
           }.toArray
         )
     }
@@ -501,12 +666,31 @@ private[client] object HitReading {
     multiValued: MultiValued,
     table: String,
     remedy: String => Option[String] = _ => None,
-    nanos: Set[String] = Set.empty
+    nanos: Set[String] = Set.empty,
+    isoOnlyDates: Boolean = false
   ) {
 
     /** The failure of a several-element cell of `name` (SCHEMA-6 D6). */
     private def several(name: String): MultiValuedCell =
       new MultiValuedCell(name, remedy(name).getOrElse(""), table)
+
+    /** SCHEMA-17 (A-181) -- the failure `cell` of a path read under `parent`, whose `_source` value
+      * `node` is a list of objects the schema does not declare one (a declared list types its paths
+      * lists, which never fail): where several of its objects hold the path ([[severalHold]]), the
+      * LIST is the cause, and the failure names `parent` with the in-place `ALTER` declaring it
+      * `ARRAY<STRUCT>` -- after which the path reads its objects' values as a list --; where one
+      * object's own field holds several values, the path's own `SET FIELD` (`cell`). An enclosing
+      * parent read the same way names itself in turn when several of its objects hold the path: the
+      * outermost list is the cause.
+      */
+    private def fromList(
+      parent: String,
+      node: JsonNode,
+      segments: Array[String],
+      cell: MultiValuedCell
+    ): MultiValuedCell =
+      if (!severalHold(node, segments)) cell
+      else remedy(parent).fold(cell)(alter => new MultiValuedCell(parent, alter, table))
 
     /** Today's reading, the plan's answer for a key it does not type (ANY, NUMERIC, TEMPORAL) and
       * for a value a typed reader cannot read (D6, `Unreadable.KeepAsStored`).
@@ -546,11 +730,13 @@ private[client] object HitReading {
       t.sqlType match {
         case SQLTypes.Array(_) =>
           (list(name, t.element.getOrElse(SetOperationType(SQLTypes.Any))), None)
-        // SCHEMA-6 (A-26): a list of objects in an `object` column answers a `List` of its struct
-        // reads whatever `MultiValued` says -- `ARRAY<STRUCT>` is `nested`, and no in-place ALTER
-        // turns an object into one, so failing it would ship a refusal with no remedy
+        // SCHEMA-17 (A-168): a list of objects in a column declared STRUCT takes the default rule
+        // (`multiValued`, [[multiValuedFor]]) -- the in-place ALTER that declares an `object` field
+        // `ARRAY<STRUCT>` ships in the same release (A-166), so the failure names a remedy that
+        // runs; a column declared `ARRAY<STRUCT>` is read by the `Array` arm above, one object a
+        // list of one
         case SQLTypes.Struct if t.fields.nonEmpty =>
-          (scalar(name, struct(name, t, keepKeys), MultiValued.AsRead), None)
+          (scalar(name, struct(name, t, keepKeys)), None)
         case SQLTypes.GeoPoint => (geo(name), None)
         case _ if !typed(t)    => (asRead, None)
         case scalarType =>
@@ -636,10 +822,13 @@ private[client] object HitReading {
       nested.foreach { case (k, sub) =>
         if (!leaves.containsKey(k)) leaves.put(k, paths(s"$name.$k", sub.toList))
       }
-      // SCHEMA-6 (A-26): the selected children, in selection order, read under a list of objects
-      val children: Array[(String, Array[String], JsonNode => Any)] =
+      // SCHEMA-6 (A-26): the selected children, in selection order, read under a list of objects;
+      // a GEO_POINT leaf collected point by point (SCHEMA-17 A-181, [[collected]])
+      val points: Set[String] =
+        under.collect { case (p, t) if p.indexOf('.') < 0 && readsPoints(t) => p }.toSet
+      val children: Array[(String, Array[String], JsonNode => Any, Boolean)] =
         (under.map(_._1).filter(_.indexOf('.') < 0) ++ nested.keys).distinct
-          .map(k => (k, Array(k), leaves.get(k)))
+          .map(k => (k, Array(k), leaves.get(k), points.contains(k)))
           .toArray
       node =>
         if (node.isObject) {
@@ -656,14 +845,23 @@ private[client] object HitReading {
         } else if (node.isArray && children.nonEmpty) {
           // a list of objects: each selected path holds the values its elements hold, collected in
           // order -- as Elasticsearch indexes `obj.a` = [5, 50] for `obj: [{a: 5}, {a: 50}]` --,
-          // read by the path's reader: one value is it, several fail a scalar path (Q1, its
-          // `SET FIELD` remedy) or are an `ARRAY` path's list, none is NULL
+          // read by the path's reader: one value is it, several are an `ARRAY` path's list (a
+          // path under a declared list of objects is one, SCHEMA-17 A-181) or fail a scalar path,
+          // naming the list's in-place ALTER when several objects hold it ([[fromList]]), none is
+          // NULL
           val entries = ListMap.newBuilder[String, Any]
           var i = 0
           while (i < children.length) {
-            val (k, segments, reader) = children(i)
-            val values = collected(node, segments)
-            entries += aliases.getOrElse(k, k) -> (if (values eq null) null else reader(values))
+            val (k, segments, reader, leafPoints) = children(i)
+            val values = collected(node, segments, leafPoints)
+            val value =
+              if (values eq null) null
+              else
+                try reader(values)
+                catch {
+                  case cell: MultiValuedCell => throw fromList(name, node, segments, cell)
+                }
+            entries += aliases.getOrElse(k, k) -> value
             i += 1
           }
           entries.result()
@@ -804,17 +1002,6 @@ private[client] object HitReading {
     private def point(name: String, node: JsonNode): Any =
       SetOperationValues.geoPoint(HitReading.plain(node), name)
 
-    /** `[lon, lat]` or `[lon, lat, z]`: one point, not a list (R-34). */
-    private def coordinates(node: JsonNode): Boolean = {
-      val size = node.size()
-      (size == 2 || size == 3) && {
-        var all = true
-        val it = node.elements()
-        while (all && it.hasNext) all = it.next().isNumber
-        all
-      }
-    }
-
     /** ONE non-null, non-array value of a scalar type, and -- for a date read by its format -- the
       * same read answering NULL where the format does not read the value (D8).
       */
@@ -916,10 +1103,15 @@ private[client] object HitReading {
                   (node => if (node.isValueNode) node.asText() else asRead(node), None)
                 case DateRoute.Typed =>
                   val read = byFormat(kind, spec, nanos.contains(name))
+                  // SCHEMA-17 (LEAD-Q1 b): a `_field_caps` date of no declared format is read as
+                  // ISO 8601 only -- any other spelling fails loudly, never kept as stored
+                  val loud = isoOnlyDates && IsoOnlyFormats.contains(spec)
                   (
                     node => {
                       val value = read(node)
-                      if (value != null) value else asRead(node)
+                      if (value != null) value
+                      else if (loud) throw new UnreadableDateCell(name, node.toString, table)
+                      else asRead(node)
                     },
                     Some(read)
                   )

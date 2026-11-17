@@ -728,6 +728,28 @@ class MigrationRollbackSpec
       .map { case (shape, ls) => shape -> ls.sortBy(_(1).toInt).map(_(2)) } finally source.close()
   }
 
+  /** A `meta` object holding only core's keys (SCHEMA-17 A-169, `FieldMeta.Keys`), as the mapping
+    * writer appends it to a leaf field's node.
+    */
+  private val coreFieldMeta =
+    ""","meta":\{(?:"sql_(?:type|format|list_depths)":"[^"]*",?)+\}""".r
+
+  /** SCHEMA-17 (A-169): every mapping writer, a migration's included, adds core's keys to each leaf
+    * field's `meta` from Elasticsearch 7.6 (this cluster answers 8.18.3) -- the ONE difference from
+    * main's requests. With those `meta` objects removed, a call is main's, request for request.
+    */
+  private def withoutCoreFieldMeta(calls: Seq[String]): Seq[String] =
+    calls.map(coreFieldMeta.replaceAllIn(_, ""))
+
+  /** The created indices' mappings carry each leaf's declared type, `field -> (ES type, SQL type)`.
+    */
+  private def declaresLeaves(calls: Seq[String], leaves: (String, (String, String))*): Unit = {
+    val creates = calls.filter(_.startsWith("create("))
+    creates should not be empty
+    for (call <- creates; (field, (esType, sqlType)) <- leaves)
+      call should include(s""""$field":{"type":"$esType","meta":{"sql_type":"$sqlType"}}""")
+  }
+
   it should "send main's requests when an updateMapping migration succeeds [census]" in {
     val c = new IndexCluster()
     c.stage(
@@ -751,7 +773,9 @@ class MigrationRollbackSpec
       Seq("1" -> """{"id":"1","n":1}""", "2" -> """{"id":"2","n":2}""")
     )
     c.run("ALTER TABLE t ALTER COLUMN n SET DATA TYPE BIGINT").futureValue.isSuccess shouldBe true
-    c.calls.toList shouldBe mainCensus("alter")
+    val calls = c.calls.toList
+    withoutCoreFieldMeta(calls) shouldBe mainCensus("alter")
+    declaresLeaves(calls, "id" -> ("keyword" -> "KEYWORD"), "n" -> ("long" -> "BIGINT"))
   }
 
   it should "send main's requests when an ALTER TABLE migration through a routed pipeline succeeds [census]" in {
@@ -763,7 +787,15 @@ class MigrationRollbackSpec
       status
     )
     c.run("ALTER TABLE t ADD COLUMN x INT SCRIPT AS (a * 2)").futureValue.isSuccess shouldBe true
-    c.calls.toList shouldBe mainCensus("routed")
+    val calls = c.calls.toList
+    withoutCoreFieldMeta(calls) shouldBe mainCensus("routed")
+    declaresLeaves(
+      calls,
+      "a"  -> ("integer" -> "INT"),
+      "c"  -> ("integer" -> "INT"),
+      "id" -> ("keyword" -> "KEYWORD"),
+      "x"  -> ("integer" -> "INT")
+    )
   }
 
   // ----------------------------------------------------------------------------------------------

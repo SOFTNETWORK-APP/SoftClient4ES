@@ -128,6 +128,15 @@ object ElasticsearchVersion {
     major == 7
   }
 
+  /** Check if a field's mapping parameter `meta` is supported (ES >= 7.6; 7.5's mapping parameters
+    * have none). Core copies a field's SQL declaration there (SCHEMA-17 A-169), the one place
+    * `_field_caps` returns it to a user who may not read the mapping; below 7.6 every mapping
+    * writer leaves core's keys out (`MappingConverter`).
+    */
+  def supportsFieldMeta(version: String): Boolean = {
+    isAtLeast(version, 7, 6)
+  }
+
   /** Check if Data Streams are supported (ES >= 7.9)
     */
   def supportsDataStreams(version: String): Boolean = {

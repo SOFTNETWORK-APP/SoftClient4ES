@@ -90,17 +90,22 @@ class UnmappedRelationFactSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "be true exactly for a column declared ARRAY<STRUCT>, whatever its mapping says" in {
+  /** SCHEMA-17 (A-167): the predicate follows the field's REAL Elasticsearch type (its
+    * `mappingType`), never its declared SQL type -- a list of objects declared over an `object`
+    * field is not nested (it was, whatever its mapping said, before the declaration existed).
+    */
+  it should "follow the mapping, never the declaration: ARRAY<STRUCT> over object is not nested (A-167)" in {
     val names = SQLKeywords.typeWords.toSeq.sorted.flatMap(w => Seq(w, s"ARRAY<$w>"))
     names should contain("ARRAY<STRUCT>")
-    val declaredNested = names.filter { name =>
-      val meta = s""""_meta": {"columns": {"items": {"data_type": "$name"}}}, """
+    def declared(name: String, field: String): Boolean =
       NestedElements.mappedAsNested(
-        Some(itemsMapped("""{"properties": {"k": {"type": "keyword"}}}""", meta)),
+        Some(itemsMapped(field, s""""_meta": {"columns": {"items": {"data_type": "$name"}}}, """)),
         "items"
       )
-    }
-    declaredNested shouldBe Seq("ARRAY<STRUCT>")
+    names.filter(declared(_, """{"properties": {"k": {"type": "keyword"}}}""")) shouldBe empty
+    names.filterNot(
+      declared(_, """{"type": "nested", "properties": {"k": {"type": "keyword"}}}""")
+    ) shouldBe empty
   }
 
   it should "follow a full dotted path, under a nested or an object parent" in {

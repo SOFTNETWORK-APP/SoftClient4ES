@@ -4203,7 +4203,41 @@ package object query {
     }
 
     private def operandOf(branch: Int, field: Field): Operand =
-      Operand(branch, field, declaredOperandType(field), identifierType(field.identifier))
+      Operand(
+        branch,
+        field,
+        projectedType(field.identifier, declaredOperandType(field)),
+        identifierType(field.identifier)
+      )
+
+    /** SCHEMA-17 (A-181) -- whether the projection item `id` is a sub-path under a list of objects:
+      * a bare column (no function, no UNNEST element field) some ancestor of which is declared
+      * `ARRAY<STRUCT>` (`Column.underListOfObjects`), mapped `object` or `nested` alike. Its cell
+      * holds the values the list's objects hold -- Elasticsearch's `obj.a` = [5, 50] for `obj: [{a:
+      * 5}, {a: 50}]` --, so the item is typed AND read as a list ([[projectedType]]). THE one
+      * decision: the result schema, the set-operation positions, a derived table's columns and the
+      * hit reader (`HitReading`) read it, never a second rule. A GROUP BY key, a filter operand and
+      * an UNNEST element field (`i.p`) stay scalar: they never read it.
+      */
+    private[elastic] def listedPath(id: Identifier): Boolean =
+      id match {
+        case g: GenericIdentifier =>
+          g.functions.isEmpty && !g.nested && g.col.exists(_.underListOfObjects)
+        case _ => false
+      }
+
+    /** SCHEMA-17 (A-181) -- the type the projection item `id`, declared `declared`, holds: a list
+      * of its type where it is a sub-path under a list of objects ([[listedPath]]), flattened as
+      * Elasticsearch indexes the path -- a leaf declared `ARRAY<X>` stays `ARRAY<X>`, never a list
+      * of lists --; `declared` anywhere else.
+      */
+    private def projectedType(id: Identifier, declared: SQLType): SQLType =
+      if (!listedPath(id)) declared
+      else
+        declared match {
+          case list: SQLArray => list
+          case one            => SQLTypes.Array(one)
+        }
 
     /** The operand of `field`, an item of the statement `s` (SCHEMA-6 A-27): a GROUP BY key of `s`
       * is typed by its key's type ([[bucketType]]: X for an `ARRAY<X>` column, Elasticsearch
@@ -4225,7 +4259,9 @@ package object query {
 
     /** The type of ONE identifier as a set operation types a projection item of it: its declared
       * type ([[declaredOperandType]]) at every depth, a bare column's date format included
-      * ([[positionType]]).
+      * ([[positionType]]); a sub-path under a list of objects a list of it (SCHEMA-17 A-181,
+      * [[projectedType]]). An aggregation level's key (`element`) is the element a terms
+      * aggregation buckets, never a list.
       */
     private def identifierType(id: Identifier, element: Boolean = false): SetOperationType = {
       val column = id match {
@@ -4233,7 +4269,10 @@ package object query {
         case _                                           => None
       }
       val declared = declaredOperandType(id)
-      positionType(if (element) SQLTypeUtils.operandType(declared) else declared, column)
+      positionType(
+        if (element) SQLTypeUtils.operandType(declared) else projectedType(id, declared),
+        column
+      )
     }
 
     /** SCHEMA-2b (B2) -- the type of the key of the aggregation level `b` (a GROUP BY level, a
@@ -4699,6 +4738,105 @@ package object query {
       operators: Seq[SetOperator]
     ): Either[String, Seq[SetOperationColumn]] =
       typedColumns(requests, operators).map(_.map(_._1))
+
+    /** SCHEMA-17 (A-165) -- the columns of core's `UNION ALL` whose `SELECT *` legs are typed from
+      * their mappings, exactly as their rows are built: `names`, the result's columns in order,
+      * each typed ([[SetOperationColumn]], its branches the legs' types there, `None` for a leg
+      * that does not carry it), and whether the rows are matched `byName`.
+      */
+    private[elastic] final case class StarUnion(
+      names: Seq[String],
+      columns: Seq[SetOperationColumn],
+      byName: Boolean
+    )
+
+    /** A branch projecting exactly a bare `*`: its rows are its mapping's columns. */
+    private def bareStar(s: SingleSearch): Boolean =
+      s.select.fields match {
+        case Seq(f) => f.identifier.name == "*" && f.identifier.functions.isEmpty
+        case _      => false
+      }
+
+    /** SCHEMA-17 (A-165) -- core's `UNION ALL` (`requests`, `UNION ALL` between every branch) with
+      * its `SELECT *` legs typed from their mappings, as `SearchApi.unionAllRowMappers` builds
+      * their rows -- `None` when no leg is a bare `*`, when a `*` leg has no schema (its columns
+      * are not known) or when a leg mixes `*` with other items: [[columnTypes]] then types the
+      * statement, as before. `Left`, by name, a column the lattice refuses (a date beside a
+      * number).
+      *
+      *   - P, the first branch declares items: the result's columns are its names, in order, and a
+      *     later `*` leg's rows are read by them; that leg's branch at position i is its mapping's
+      *     column named as position i, a NULL branch where it has none.
+      *   - N, the first branch is `*`: rows are matched by name, each leg's its own; the columns
+      *     are the legs' row names in first-seen order -- a `*` leg's mapping columns in table
+      *     order, an explicit leg's output names -- each typed over the legs that carry it, as
+      *     DuckDB types `UNION ALL BY NAME`.
+      *
+      * The declaring legs' opacity for [[branchArity]] is unchanged: no new width refusal.
+      */
+    private[elastic] def starUnion(
+      requests: Seq[SingleSearch]
+    ): Option[Either[String, StarUnion]] =
+      if (
+        requests.isEmpty || !requests.exists(bareStar) ||
+        requests.exists(r => declared(r).isEmpty && (!bareStar(r) || r.schema.isEmpty))
+      ) None
+      else {
+        val byName = bareStar(requests.head)
+        val tree = typingTree(
+          precedenceTree(requests.indices.toList, joinsOf(requests, Nil).toList)
+        )
+        def starColumns(r: SingleSearch): Seq[Column] = r.schema.fold(Seq.empty[Column])(_.columns)
+        val names: Seq[String] =
+          if (byName)
+            requests.flatMap { r =>
+              if (bareStar(r)) starColumns(r).map(_.name)
+              else r.select.fieldsWithComputedAliases.map(_.outputName)
+            }.distinct
+          else requests.head.select.fieldsWithComputedAliases.map(_.outputName)
+        def starOperand(branch: Int, name: String, r: SingleSearch): Option[Operand] =
+          starColumns(r).find(_.name == name) match {
+            case Some(c) =>
+              Some(Operand(branch, Field(Identifier(c.name)), c.dataType, columnType(c)))
+            // P: a name the leg's mapping lacks reads NULL in its rows
+            case None if !byName =>
+              Some(
+                Operand(
+                  branch,
+                  Field(Identifier(name)),
+                  SQLTypes.Null,
+                  SetOperationType(SQLTypes.Null)
+                )
+              )
+            case None => None
+          }
+        val starTyped: Either[String, Vector[SetOperationColumn]] = names.indices
+          .foldLeft[Either[String, Vector[SetOperationColumn]]](Right(Vector.empty)) {
+            case (Right(columns), pos) =>
+              val name = names(pos)
+              val leaves: Seq[Option[Operand]] = requests.indices.map { branch =>
+                val r = requests(branch)
+                if (bareStar(r)) starOperand(branch, name, r)
+                else if (byName)
+                  r.select.fieldsWithComputedAliases
+                    .find(_.outputName == name)
+                    .map(f => operandOf(branch, f, r))
+                else declared(r).flatMap(_.lift(pos)).map(f => operandOf(branch, f, r))
+              }
+              typeOf(tree, leaves) match {
+                case Right(typed) =>
+                  Right(
+                    columns :+ SetOperationColumn(
+                      typed.result.fold(SetOperationType(SQLTypes.Any))(r => resultOf(r.valueType)),
+                      leaves.map(_.map(_.valueType))
+                    )
+                  )
+                case Left(refused) => Left(refusal(pos, refused))
+              }
+            case (refused, _) => refused
+          }
+        Some(starTyped.map(columns => StarUnion(names, columns, byName)))
+      }
 
     /** The operators between the branches: `Nil` is `UNION ALL` everywhere. */
     private def joinsOf(

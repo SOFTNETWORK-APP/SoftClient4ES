@@ -173,8 +173,11 @@ class ResultSchemaSpec extends AnyFlatSpec with Matchers {
     converters(1).get.apply(0)(java.time.ZonedDateTime.parse("2024-01-31T10:30:00Z")) shouldBe
     "2024-01-31 10:30:00"
     converters(0).get.apply(0)("2024-01-31 10:30 CET") shouldBe "2024-01-31 10:30 CET"
-    // an opaque first branch declares nothing
-    ResultSchemas.of(union("SELECT * FROM s2_t UNION ALL SELECT id FROM s2_t"), es8) shouldBe None
+    // SCHEMA-17 (A-165 N): a SELECT * first branch -- the legs' row names in first-seen order, each
+    // typed over the legs that carry it
+    ResultSchemas
+      .of(union("SELECT * FROM s2_t UNION ALL SELECT id FROM s2_t"), es8)
+      .map(_.names) shouldBe Some(schemaOf("SELECT * FROM s2_t").names)
   }
 
   "The presenters" should "take the header from the schema, the rows keeping their key order (A-14)" in {

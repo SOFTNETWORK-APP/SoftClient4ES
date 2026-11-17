@@ -332,7 +332,10 @@ package object client extends SerializationApi {
     nestedHits: Map[String, Seq[(String, String)]],
     aggregations: ListMap[String, ClientAggregation],
     converters: Option[Array[Any => Any]] = None,
-    context: Option[ConversionContext] = None
+    context: Option[ConversionContext] = None,
+    // SCHEMA-17 (A-165 N): a leg matched BY NAME (the first branch is `SELECT *`) converts each
+    // value of a column whose legs disagree to the column's type, applied to each row it builds
+    rows: Option[ListMap[String, Any] => ListMap[String, Any]] = None
   )
 
   /** Retry configuration
@@ -664,7 +667,7 @@ package object client extends SerializationApi {
             HitReading.of(
               single,
               dates,
-              HitReading.multiValuedFor(single),
+              HitReading.multiValuedFor(single, dates.elasticVersion),
               elements.keySet
             ),
             single.doubleKeyLevels
@@ -695,7 +698,7 @@ package object client extends SerializationApi {
             HitReading.of(
               base,
               dates,
-              HitReading.multiValuedFor(base),
+              HitReading.multiValuedFor(base, dates.elasticVersion),
               elements.keySet,
               request.windowFunctions.flatMap(_.buckets),
               PartitionKeys.instantColumns(request, dates)

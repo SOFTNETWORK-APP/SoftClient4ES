@@ -169,8 +169,22 @@ package object schema {
       // `keyword`). `Column.mappingType` reads it back: the field's Elasticsearch type for every
       // consumer that turns it into an Elasticsearch-side decision, so an ALTER re-sends the field
       // as it is mapped instead of the `object` its SQL type would give it
+      //
+      // SCHEMA-17 (A-169): core's keys in the field's `meta` (`FieldMeta`) are core's own copy of
+      // the declaration for `_field_caps`, never an option of the column -- `SHOW CREATE TABLE`, a
+      // diff and the column's options see the user's keys alone, and no `meta` when only core's
+      // were there. Rebuilt entry by entry, so the options keep their order on every Scala version
       val options =
-        extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties")) ++
+        ListMap(
+          extractObject(node, ignoredKeys = Set("type", "null_value", "fields", "properties")).toSeq
+            .flatMap { entry =>
+              val kept: Option[(String, Value[_])] = entry match {
+                case ("meta", meta: ObjectValue) => FieldMeta.userOnly(meta).map(m => "meta" -> m)
+                case other                       => Some(other)
+              }
+              kept
+            }: _*
+        ) ++
         Some(mappedType)
           .filter(_ != SQLTypeUtils.elasticType(SQLTypes(tpe)))
           .map(kept => "type" -> StringValue(kept))

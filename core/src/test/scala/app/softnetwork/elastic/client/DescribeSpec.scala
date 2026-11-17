@@ -278,9 +278,87 @@ class DescribeSpec extends AnyFlatSpec with Matchers with ScalaFutures with Befo
     }
   }
 
-  it should "answer None where run carries no schema (no mapping)" in {
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-163) -- no schema found: describe answers what run would do, decided at prepare
+  // ---------------------------------------------------------------------------------------------
+
+  it should "refuse an unknown concrete index with 404, as run does (A-163 a)" in {
     val c = new CountingClient // no seed: every lookup misses
-    c.describe("SELECT id FROM nowhere_t") shouldBe ElasticSuccess(None)
+    Seq("SELECT id FROM nowhere_t", "SELECT * FROM nowhere_t", "SELECT * FROM nomatch_*,gone_t")
+      .foreach { sql =>
+        withClue(s"[$sql] ") {
+          c.describe(sql) match {
+            case ElasticFailure(error) =>
+              error.statusCode shouldBe Some(404)
+              error.operation shouldBe Some("describe")
+            case other => fail(s"expected a 404, got $other")
+          }
+        }
+      }
+    // a remembered miss answers the same
+    c.describe("SELECT id FROM nowhere_t") match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(404)
+      case other                 => fail(s"expected a 404, got $other")
+    }
+    c.searches.get() shouldBe 0
+  }
+
+  it should "attach an EMPTY table to a pattern matching no index: no column for *, ANY for a name (A-163 b)" in {
+    val c = new CountingClient
+    c.describe("SELECT * FROM nomatch_*") shouldBe ElasticSuccess(Some(ResultSchema(Nil)))
+    c.describe("SELECT k FROM nomatch_*") match {
+      case ElasticSuccess(Some(schema)) =>
+        schema.columns.map(col => col.name -> col.sqlType) shouldBe Seq("k" -> SQLTypes.Any)
+      case other => fail(s"$other")
+    }
+    c.describe("SELECT * FROM nomatch_*,gone_*") shouldBe ElasticSuccess(Some(ResultSchema(Nil)))
+    // run carries the same schema (both modes attach it)
+    runSchema(new CountingClient, "SELECT * FROM nomatch_*") shouldBe
+    ElasticSuccess(Some(ResultSchema(Nil)))
+    c.searches.get() shouldBe 0
+  }
+
+  it should "refuse with the lookup's own status when the mapping read fails otherwise (A-163 c)" in {
+    val failing = new CountingClient {
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+        ElasticFailure(
+          ElasticError(
+            message = s"cluster unavailable for $index",
+            statusCode = Some(503),
+            index = Some(index)
+          )
+        )
+    }
+    failing.describe("SELECT id FROM s9_t") match {
+      case ElasticFailure(error) =>
+        error.statusCode shouldBe Some(503)
+        error.operation shouldBe Some("describe")
+      case other => fail(s"expected the 503, got $other")
+    }
+    failing.searches.get() shouldBe 0
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-165) -- the SELECT * legs of a UNION ALL are typed from their mappings
+  // ---------------------------------------------------------------------------------------------
+
+  "describe of a UNION ALL whose first branch is SELECT *" should "answer the legs' row names in first-seen order (A-165 N)" in {
+    val c = client()
+    val single = c.describe("SELECT * FROM s2_t") match {
+      case ElasticSuccess(Some(schema)) => schema
+      case other                        => fail(s"$other")
+    }
+    c.describe("SELECT * FROM s2_t UNION ALL SELECT * FROM s2_t") shouldBe
+    ElasticSuccess(Some(single))
+    val otherNames = c.describe("SELECT * FROM other_t") match {
+      case ElasticSuccess(Some(schema)) => schema.names
+      case other                        => fail(s"$other")
+    }
+    c.describe("SELECT * FROM other_t UNION ALL SELECT * FROM s2_t") match {
+      case ElasticSuccess(Some(schema)) =>
+        schema.names shouldBe (otherNames ++ single.names).distinct
+      case other => fail(s"$other")
+    }
     c.searches.get() shouldBe 0
   }
 
@@ -754,5 +832,104 @@ class DescribeSpec extends AnyFlatSpec with Matchers with ScalaFutures with Befo
     answer shouldBe ptClient().describePerTable(join)
     answer.toOption.flatten should not be empty
     recording.searches.get() shouldBe 0
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-181) -- a sub-path under a list of objects is a list
+  // -------------------------------------------------------------------------------------------
+
+  /** `lst` a list of objects declared over an `object` field, `items` a nested field, `obj` an
+    * object: the three parents a projected sub-path may have.
+    */
+  private val t17: Schema = schemaOf(
+    "t17",
+    """{"k": {"type": "keyword"}, "n": {"type": "integer"},
+      | "obj": {"properties": {"a": {"type": "integer"}}},
+      | "lst": {"properties": {"a": {"type": "integer"}, "tags": {"type": "keyword"},
+      |  "inner": {"properties": {"q": {"type": "integer"}}}}},
+      | "items": {"type": "nested", "properties": {"p": {"type": "integer"}}}}""".stripMargin,
+    """{"lst": {"data_type": "ARRAY<STRUCT>",
+      | "multi_fields": {"tags": {"data_type": "ARRAY<KEYWORD>"}}}}""".stripMargin
+  )
+
+  private def client17(): CountingClient = {
+    val c = client()
+    c.updateSchema("t17", t17)
+    c
+  }
+
+  /** describe's answer for `sql`, checked against run's: the same schema, or the same refusal. */
+  private def described17(sql: String): ElasticResult[Option[ResultSchema]] = {
+    val described = client17().describe(sql)
+    (described, runSchema(client17(), sql)) match {
+      case (ElasticSuccess(d), ElasticSuccess(r)) => d shouldBe r
+      case (ElasticFailure(d), ElasticFailure(r)) =>
+        d.statusCode shouldBe r.statusCode
+        d.message shouldBe r.message
+      case other => fail(s"[$sql] describe and run disagree: $other")
+    }
+    described
+  }
+
+  private def typeOf17(
+    sql: String,
+    column: String
+  ): Option[app.softnetwork.elastic.sql.`type`.SQLType] =
+    described17(sql) match {
+      case ElasticSuccess(Some(schema)) =>
+        schema.columns
+          .find(c => c.name == column || c.name.endsWith(s".$column"))
+          .map(_.sqlType)
+      case other => fail(s"[$sql] $other")
+    }
+
+  "describe" should "type a projected sub-path under a list of objects as a list, object and nested alike (SCHEMA-17 A-181)" in {
+    typeOf17("SELECT k, lst.a FROM t17", "lst.a") shouldBe Some(SQLTypes.Array(SQLTypes.Int))
+    typeOf17("SELECT k, items.p FROM t17", "items.p") shouldBe Some(SQLTypes.Array(SQLTypes.Int))
+    // two levels under the list: still one list of the leaf
+    typeOf17("SELECT k, lst.inner.q FROM t17", "lst.inner.q") shouldBe
+    Some(SQLTypes.Array(SQLTypes.Int))
+    // a leaf declared a list stays one list, flattened as Elasticsearch indexes it
+    typeOf17("SELECT k, lst.tags FROM t17", "lst.tags") match {
+      case Some(SQLTypes.Array(element)) =>
+        element.isInstanceOf[app.softnetwork.elastic.sql.`type`.SQLArray] shouldBe false
+      case other => fail(s"lst.tags: $other")
+    }
+    // read whole beside it, and qualified: the same list
+    typeOf17("SELECT k, lst, lst.a FROM t17", "lst.a") shouldBe Some(SQLTypes.Array(SQLTypes.Int))
+    typeOf17("SELECT t.k, t.lst.a FROM t17 AS t", "lst.a") shouldBe
+    Some(SQLTypes.Array(SQLTypes.Int))
+    // the list's own objects keep their fields one value each
+    typeOf17("SELECT lst FROM t17", "lst") shouldBe Some(SQLTypes.Array(SQLTypes.Struct))
+    // under an object, one value
+    typeOf17("SELECT k, obj.a FROM t17", "obj.a") shouldBe Some(SQLTypes.Int)
+  }
+
+  it should "keep a GROUP BY key, an aggregate and an UNNEST element field under a list of objects one value (SCHEMA-17 A-181)" in {
+    typeOf17("SELECT lst.a AS a, COUNT(*) AS c FROM t17 GROUP BY lst.a", "a") shouldBe
+    Some(SQLTypes.Int)
+    typeOf17("SELECT items.p AS p, COUNT(*) AS c FROM t17 GROUP BY items.p", "p") shouldBe
+    Some(SQLTypes.Int)
+    // a leaf declared a list buckets its elements: the key is one element (SCHEMA-6 A-27)
+    typeOf17("SELECT lst.tags AS g, COUNT(*) AS c FROM t17 GROUP BY lst.tags", "g") shouldBe
+    Some(SQLTypes.Varchar)
+    typeOf17("SELECT MAX(lst.a) AS m FROM t17", "m")
+      .exists(_.isInstanceOf[app.softnetwork.elastic.sql.`type`.SQLArray]) shouldBe false
+    typeOf17("SELECT t.k, i.p FROM t17 AS t JOIN UNNEST(t.items) AS i", "i.p") shouldBe
+    Some(SQLTypes.Int)
+    // a filter reads each value: the projection is unchanged by it
+    typeOf17("SELECT k FROM t17 WHERE lst.a = 2", "k") shouldBe Some(SQLTypes.Varchar)
+  }
+
+  it should "answer a set operation or a derived table over such a path as run does (SCHEMA-17 A-181)" in {
+    Seq(
+      "SELECT lst.a AS v FROM t17 UNION ALL SELECT lst.a AS v FROM t17",
+      "SELECT lst.a AS v FROM t17 UNION ALL SELECT n AS v FROM t17",
+      "SELECT items.p AS v FROM t17 UNION ALL SELECT n AS v FROM t17",
+      "SELECT * FROM (SELECT k, lst.a FROM t17) d",
+      "SELECT d.k FROM (SELECT k, items.p FROM t17) d"
+    ).foreach(described17)
+    typeOf17("SELECT lst.a AS v FROM t17 UNION ALL SELECT lst.a AS v FROM t17", "v") shouldBe
+    Some(SQLTypes.Array(SQLTypes.Int))
   }
 }

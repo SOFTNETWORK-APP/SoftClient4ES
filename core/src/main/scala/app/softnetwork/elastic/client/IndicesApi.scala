@@ -296,8 +296,12 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
       (_, existing) =>
         existing match {
           // SCHEMA-7 (D7): an entry typed from `_field_caps` types a query, never DDL -- a miss here,
-          // which keeps it when the mapping cannot be read
-          case entry: CachedSchema if !entry.isExpired(now) && !IndicesApi.fromFieldCaps(entry) =>
+          // which keeps it when the mapping cannot be read. SCHEMA-17 (A-161): so does the merge of
+          // an alias or a data stream over several indices (`members`), so DDL through it keeps
+          // main's 404
+          case entry: CachedSchema
+              if !entry.isExpired(now) && !IndicesApi.fromFieldCaps(entry) &&
+                entry.members.size <= 1 =>
             logger.debug(s"📦 Schema cache hit for '$index'")
             result = ElasticSuccess(entry.schema)
             entry
@@ -394,10 +398,15 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
                 now,
                 if (pattern) schemaCacheTtlMs else resolveTtlMs(source, schema)
               )
-            (if (pattern) fetchPatternSchema(source) else fetchSchemaFromES(source)) match {
-              case success @ ElasticSuccess(schema) =>
-                result = success
-                cached(schema)
+            // SCHEMA-17 (A-161): a concrete source reads the member map of its ONE `GET <source>`
+            // ([[fetchSourceSchema]]): an alias or a data stream over several indices is merged as a
+            // pattern is, its entry recording its members, on the default TTL a pattern takes
+            (if (pattern) fetchPatternSchema(source).map(_ -> Set.empty[String])
+             else fetchSourceSchema(source)) match {
+              case ElasticSuccess((schema, members)) =>
+                result = ElasticSuccess(schema)
+                if (members.size > 1) CachedSchema(schema, now, schemaCacheTtlMs, members)
+                else cached(schema)
               case ElasticFailure(error)
                   if error.statusCode
                     .contains(403) || (pattern && error.statusCode.contains(404)) =>
@@ -416,8 +425,8 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
                     result = ElasticFailure(error)
                     existing
                 }
-              case failure =>
-                result = failure
+              case ElasticFailure(error) =>
+                result = ElasticFailure(error)
                 existing
             }
         }
@@ -446,17 +455,8 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
               )
             )
           case members =>
-            val (schema, disagreements) = mergedSchema(
-              source,
-              members.map { case (name, document) => name -> Index(name, document).schema }
-            )
-            if (disagreements.nonEmpty)
-              logger.info(
-                s"⚠️ The indices of '$source' disagree on ${disagreements.mkString(", ")}: " +
-                "statements are typed by Elasticsearch on those fields"
-              )
             ElasticSuccess(
-              schema.copy(tableType =
+              membersSchema(source, members).copy(tableType =
                 app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
               )
             )
@@ -489,24 +489,73 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         val members: Seq[(String, JsonNode)] =
           if (root.has(pattern)) Seq(pattern -> root.get(pattern)) else Index.indexDocuments(root)
         if (members.isEmpty) notFound(s"No index matches '$pattern'")
-        else {
-          val (schema, disagreements) = mergedSchema(
-            pattern,
-            members.map { case (name, document) => name -> Index(name, document).schema }
-          )
-          if (disagreements.nonEmpty)
-            logger.info(
-              s"⚠️ The indices of '$pattern' disagree on ${disagreements.mkString(", ")}: " +
-              "statements are typed by Elasticsearch on those fields"
-            )
-          ElasticSuccess(schema)
-        }
+        else ElasticSuccess(membersSchema(pattern, members))
       case ElasticSuccess(None) => notFound(s"No index matches '$pattern'")
       case ElasticFailure(error) if error.statusCode.contains(404) =>
         notFound(s"No index matches '$pattern'")
       case ElasticFailure(error) => ElasticFailure(error)
     }
   }
+
+  /** The ONE merge of several indices' documents into the schema a query over `source` is typed by
+    * (`schema.mergedSchema`, its disagreements logged): a pattern or a list
+    * ([[fetchPatternSchema]]), a `_field_caps` answer ([[fetchFieldCapsSchema]]), an alias or a
+    * data stream over several indices ([[fetchSourceSchema]], SCHEMA-17 A-161) -- one rule for
+    * every multi-index source (#292).
+    */
+  private def membersSchema(source: String, members: Seq[(String, JsonNode)]): Schema = {
+    val (schema, disagreements) = mergedSchema(
+      source,
+      members.map { case (name, document) => name -> Index(name, document).schema }
+    )
+    if (disagreements.nonEmpty)
+      logger.info(
+        s"⚠️ The indices of '$source' disagree on ${disagreements.mkString(", ")}: " +
+        "statements are typed by Elasticsearch on those fields"
+      )
+    schema
+  }
+
+  /** SCHEMA-17 (A-161) -- the schema of a CONCRETE source a query reads ([[loadQuerySchema]]), from
+    * the member map of its ONE `GET <source>`, and the indices merged into it:
+    *
+    *   - one document, or one member (an alias or a data stream over ONE index, #276): that index,
+    *     its alias target remembered, as [[getIndex]] / [[fetchSchemaFromES]] answer it;
+    *   - several members (an alias, a rollover alias, a data stream past its first rollover): a
+    *     template named like the source keeps main's schema (#292: on both paths); else the members
+    *     merged ([[membersSchema]]), as a pattern is, with their names;
+    *   - none: the template lookup, as [[fetchSchemaFromES]] does it.
+    *
+    * Main's requests: one GET, then the template lookup. [[getIndex]] and [[loadSchema]] (DDL) keep
+    * their answer, `None` / 404, for several members.
+    */
+  private def fetchSourceSchema(source: String): ElasticResult[(Schema, Set[String])] =
+    if (validateIndexName(source).isDefined) fetchSchemaFromES(source).map(_ -> Set.empty[String])
+    else
+      executeGetIndex(source) match {
+        case ElasticSuccess(Some(json)) =>
+          val root = mapper.readTree(json)
+          val members = if (root.has(source)) Nil else Index.indexDocuments(root)
+          if (members.size <= 1)
+            ElasticSuccess(indexSchema(source, Index(source, root)) -> Set.empty[String])
+          else
+            templateSchema(source) match {
+              case ElasticSuccess(Some(schema)) => ElasticSuccess(schema -> Set.empty[String])
+              case ElasticSuccess(None) =>
+                logger.info(
+                  s"📦 '$source' is an alias over ${members.size} indices " +
+                  s"(${members.map(_._1).mkString(", ")}): its query schema is their merge"
+                )
+                ElasticSuccess(membersSchema(source, members) -> members.map(_._1).toSet)
+              case ElasticFailure(error) => ElasticFailure(error)
+            }
+        case ElasticSuccess(None) => notFoundOrTemplate(source).map(_ -> Set.empty[String])
+        case ElasticFailure(error) if error.statusCode.contains(404) =>
+          notFoundOrTemplate(source).map(_ -> Set.empty[String])
+        case ElasticFailure(error) =>
+          logger.error(s"❌ Failed to load schema for index '$source': ${error.message}")
+          ElasticFailure(error.copy(operation = Some("loadSchema")))
+      }
 
   /** Drop every expired entry — each on ITS own clock, through the single `isExpired` rule — plus
     * the alias->target rows for exactly those entries.
@@ -555,7 +604,7 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
   /** Drop every cached ALIAS schema resolved from `index` (#276 / review R4-21), and the 404 the
     * alias may have answered since (a miss is remembered for the alias's own key only).
     */
-  private def invalidateAliasesOf(index: String): Unit =
+  private def invalidateAliasesOf(index: String): Unit = {
     schemaAliasTargets
       .entrySet()
       .asScala
@@ -567,6 +616,19 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
         withSchemaMisses(_.forgetSchemaMiss(alias))
         logger.debug(s"📦 Schema cache invalidated for alias '$alias' (target '$index')")
       }
+    // SCHEMA-17 (A-161): the merge of an alias or a data stream over several indices carries its
+    // members on its entry -- a change of any of them drops it
+    schemaCache
+      .entrySet()
+      .asScala
+      .collect { case e if e.getValue.members.contains(index) => e.getKey }
+      .toList
+      .foreach { alias =>
+        schemaCache.remove(alias)
+        withSchemaMisses(_.forgetSchemaMiss(alias))
+        logger.debug(s"📦 Schema cache invalidated for alias '$alias' (member '$index')")
+      }
+  }
 
   /** Drop every cached PATTERN schema ([[loadPatternSchema]]) whose pattern matches `index`: its
     * merged columns read `index`'s mapping, so an elasticsql DDL statement that creates, alters or
@@ -623,77 +685,95 @@ trait IndicesApi extends ElasticClientHelpers with SchemaCacheTtlApi {
 
   private def fetchSchemaFromES(index: String): ElasticResult[Schema] = {
     getIndex(index) match {
-      case ElasticSuccess(Some(idx)) =>
-        // #276 -- remember which concrete index an ALIAS resolved to, so invalidating that index
-        // also drops the alias entry.
-        idx.resolvedFrom.filter(_ != index) match {
-          case Some(concrete) => val _ = schemaAliasTargets.put(index, concrete)
-          case None           => val _ = schemaAliasTargets.remove(index)
-        }
-        ElasticSuccess(idx.schema)
+      case ElasticSuccess(Some(idx)) => ElasticSuccess(indexSchema(index, idx))
       case ElasticSuccess(None) =>
         logger.warn(s"Index '$index' not found for schema loading")
-        getTemplate(index) match {
-          case ElasticSuccess(Some(template)) =>
-            logger.info(s"✅ Template '$index' found for schema loading")
-            var templateNode = mapper.readTree(template).asInstanceOf[ObjectNode]
-            if (templateNode.has("index_template")) {
-              // Index template
-              templateNode = templateNode.get("index_template").asInstanceOf[ObjectNode]
-            }
-            if (templateNode.has("template")) {
-              // Composable template
-              templateNode = templateNode.get("template").asInstanceOf[ObjectNode]
-            }
-            val root = mapper.createObjectNode()
-            if (templateNode.has("mappings")) {
-              root.set("mappings", templateNode.get("mappings"))
-            }
-            if (templateNode.has("settings")) {
-              root.set("settings", templateNode.get("settings"))
-            }
-            if (templateNode.has("aliases")) {
-              root.set("aliases", templateNode.get("aliases"))
-            }
-            loadIndexAsSchema(index, root.toString) match {
-              case ElasticSuccess(Some(idx)) =>
-                ElasticSuccess(idx.schema)
-              case ElasticSuccess(None) =>
-                val error =
-                  ElasticError(
-                    message = s"Failed to load schema from template for index '$index'",
-                    cause = None,
-                    statusCode = Some(404),
-                    index = Some(index),
-                    operation = Some("loadSchema")
-                  )
-                logger.error(s"❌ ${error.message}")
-                ElasticFailure(error)
-              case ElasticFailure(error) =>
-                logger.error(
-                  s"❌ Failed to load schema from template for index '$index': ${error.message}"
-                )
-                ElasticFailure(error.copy(operation = Some("loadSchema")))
-            }
-          case ElasticSuccess(None) =>
-            logger.warn(s"Template '$index' not found for schema loading")
-            ElasticFailure(
-              ElasticError.notFound(
-                index = index,
-                operation = "loadSchema"
-              )
-            )
-          case ElasticFailure(error) =>
-            logger.error(
-              s"❌ Failed to load template for schema of index '$index': ${error.message}"
-            )
-            ElasticFailure(error.copy(operation = Some("loadSchema")))
-        }
+        notFoundOrTemplate(index)
       case ElasticFailure(error) =>
         logger.error(s"❌ Failed to load schema for index '$index': ${error.message}")
         ElasticFailure(error.copy(operation = Some("loadSchema")))
     }
   }
+
+  /** `idx`'s schema, read for `index` -- remembering, #276, which concrete index an ALIAS resolved
+    * to, so invalidating that index also drops the alias entry.
+    */
+  private def indexSchema(index: String, idx: Index): Schema = {
+    idx.resolvedFrom.filter(_ != index) match {
+      case Some(concrete) => val _ = schemaAliasTargets.put(index, concrete)
+      case None           => val _ = schemaAliasTargets.remove(index)
+    }
+    idx.schema
+  }
+
+  /** The schema of the template named `index` when one exists, else the 404 of an unknown index:
+    * the lookup after a `GET <index>` that resolved no single index.
+    */
+  private def notFoundOrTemplate(index: String): ElasticResult[Schema] =
+    templateSchema(index) match {
+      case ElasticSuccess(Some(schema)) => ElasticSuccess(schema)
+      case ElasticSuccess(None) =>
+        logger.warn(s"Template '$index' not found for schema loading")
+        ElasticFailure(
+          ElasticError.notFound(
+            index = index,
+            operation = "loadSchema"
+          )
+        )
+      case ElasticFailure(error) => ElasticFailure(error)
+    }
+
+  /** The schema of the template named `index`; `None` when there is no such template. */
+  private def templateSchema(index: String): ElasticResult[Option[Schema]] =
+    getTemplate(index) match {
+      case ElasticSuccess(Some(template)) =>
+        logger.info(s"✅ Template '$index' found for schema loading")
+        var templateNode = mapper.readTree(template).asInstanceOf[ObjectNode]
+        if (templateNode.has("index_template")) {
+          // Index template
+          templateNode = templateNode.get("index_template").asInstanceOf[ObjectNode]
+        }
+        if (templateNode.has("template")) {
+          // Composable template
+          templateNode = templateNode.get("template").asInstanceOf[ObjectNode]
+        }
+        val root = mapper.createObjectNode()
+        if (templateNode.has("mappings")) {
+          root.set("mappings", templateNode.get("mappings"))
+        }
+        if (templateNode.has("settings")) {
+          root.set("settings", templateNode.get("settings"))
+        }
+        if (templateNode.has("aliases")) {
+          root.set("aliases", templateNode.get("aliases"))
+        }
+        loadIndexAsSchema(index, root.toString) match {
+          case ElasticSuccess(Some(idx)) =>
+            ElasticSuccess(Some(idx.schema))
+          case ElasticSuccess(None) =>
+            val error =
+              ElasticError(
+                message = s"Failed to load schema from template for index '$index'",
+                cause = None,
+                statusCode = Some(404),
+                index = Some(index),
+                operation = Some("loadSchema")
+              )
+            logger.error(s"❌ ${error.message}")
+            ElasticFailure(error)
+          case ElasticFailure(error) =>
+            logger.error(
+              s"❌ Failed to load schema from template for index '$index': ${error.message}"
+            )
+            ElasticFailure(error.copy(operation = Some("loadSchema")))
+        }
+      case ElasticSuccess(None) => ElasticSuccess(None)
+      case ElasticFailure(error) =>
+        logger.error(
+          s"❌ Failed to load template for schema of index '$index': ${error.message}"
+        )
+        ElasticFailure(error.copy(operation = Some("loadSchema")))
+    }
 
   /** Get an index with the provided name.
     * @param index
@@ -2374,6 +2454,13 @@ object IndicesApi {
   /** A FROM expression that names several indices: a `*` wildcard or a comma list. */
   private[client] def isPattern(source: String): Boolean =
     source.contains("*") || source.contains(",")
+
+  /** SCHEMA-17 (A-163 b) -- a FROM expression every comma part of which holds a `*`: one that
+    * matches no index is searched as Elasticsearch's `allow_no_indices` answers it, 0 rows, never a
+    * 404 -- a concrete part matching no index is the search's 404 (`ignore_unavailable = false`).
+    */
+  private[client] def wildcardsOnly(source: String): Boolean =
+    source.split(",").map(_.trim).forall(_.contains("*"))
 
   /** SCHEMA-7 (D7) -- a cache entry typed from `_field_caps`, which types a query and never DDL. */
   private[client] def fromFieldCaps(entry: CachedSchema): Boolean =

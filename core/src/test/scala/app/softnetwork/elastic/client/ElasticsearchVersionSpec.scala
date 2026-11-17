@@ -139,4 +139,15 @@ class ElasticsearchVersionSpec extends AnyWordSpec with Matchers {
       ElasticsearchVersion.isEs8OrHigher("6.8.23") shouldBe false
     }
   }
+
+  "ElasticsearchVersion.supportsFieldMeta" should {
+    "answer true from 7.6, where a field's mapping takes a meta (SCHEMA-17 A-170)" in {
+      ElasticsearchVersion.supportsFieldMeta("6.8.23") shouldBe false
+      ElasticsearchVersion.supportsFieldMeta("7.5.2") shouldBe false
+      ElasticsearchVersion.supportsFieldMeta("7.6.0") shouldBe true
+      ElasticsearchVersion.supportsFieldMeta("7.17.29") shouldBe true
+      ElasticsearchVersion.supportsFieldMeta("8.18.3") shouldBe true
+      ElasticsearchVersion.supportsFieldMeta("9.0.3") shouldBe true
+    }
+  }
 }

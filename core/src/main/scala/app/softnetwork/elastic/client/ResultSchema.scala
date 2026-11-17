@@ -29,8 +29,8 @@ import app.softnetwork.elastic.sql.schema.Column
   * @param sqlType
   *   its type at this depth: `KEYWORD`, `TEXT` and `CHAR` are `VARCHAR`, a `DATETIME` a
   *   `TIMESTAMP`; a date field whose format core cannot read for sure is `VARCHAR` (its text as
-  *   stored); `ANY` where it is not known, `NUMERIC` / `TEMPORAL` for a number / a temporal of
-  *   unknown width
+  *   stored); `ANY` where it is not known (SCHEMA-17 A-175: never the internal `NUMERIC` /
+  *   `TEMPORAL`)
   * @param nullable
   *   always `true` in this release
   * @param fields
@@ -65,13 +65,25 @@ final case class ResultSchema(columns: Seq[ResultColumn]) {
 private[client] object ResultSchemas {
 
   /** `None` where no schema is known: no mapping attached to the statement (a client that is not an
-    * `IndicesApi`, an es8/es9 alias, a mapping that could not be read).
+    * `IndicesApi`, or `run`'s statement over a mapping that could not be read -- `describe` refuses
+    * there instead, SCHEMA-17 A-163). An alias or a data stream over several indices is typed by
+    * its members' merge (A-161).
+    *
+    * Each item is typed as an item OF `single` (`MultiSearch.fieldType(field, single)`), the rule
+    * run's reader types it by ([[HitReading.of]]): a GROUP BY key has its key's type (SCHEMA-6
+    * A-27), never the list a projected sub-path under a list of objects is (SCHEMA-17 A-181).
     */
   def of(single: SingleSearch, dates: SetOperationValues.DateReading): Option[ResultSchema] =
-    of(single, dates, MultiSearch.fieldType _, MultiSearch.columnType _)
+    of(
+      single,
+      dates,
+      (field: Field) => MultiSearch.fieldType(field, single),
+      MultiSearch.columnType _
+    )
 
   /** The same, over the types its caller computed once per statement for its own use (`typeOf`
-    * = `MultiSearch.fieldType`, `columnTypeOf` = `MultiSearch.columnType`): [[HitReading.of]].
+    * = `MultiSearch.fieldType(_, single)`, `columnTypeOf` = `MultiSearch.columnType`):
+    * [[HitReading.of]].
     */
   private[client] def of(
     single: SingleSearch,
@@ -88,11 +100,29 @@ private[client] object ResultSchemas {
     }
 
   /** A set operation's schema (D12): its columns typed ONCE ([[SetOperationValues.routedColumns]],
-    * the typing core's converters read too), named by the first branch. `None` where the first
-    * branch is opaque (`SELECT *`), where no branch has a schema, or where the statement is
-    * refused.
+    * the typing core's converters read too), named by the first branch. `None` where no branch has
+    * a schema, or where the statement is refused.
+    *
+    * SCHEMA-17 (A-165): a `UNION ALL` with a `SELECT *` leg of known schema is typed as its rows
+    * are built ([[SetOperationValues.starUnionColumns]], the typing the converters read): after a
+    * declaring first branch, its names; after a `*` first branch, the legs' row names in first-seen
+    * order.
     */
   def of(multiple: MultiSearch, dates: SetOperationValues.DateReading): Option[ResultSchema] =
+    SetOperationValues.starUnionColumns(multiple, dates) match {
+      case Some(Right(star)) =>
+        Some(ResultSchema(star.names.zip(star.columns).map { case (name, column) =>
+          resultColumnOf(name, column)
+        }))
+      case Some(Left(_)) => None
+      case None          => declaredOf(multiple, dates)
+    }
+
+  /** [[of]] of a set operation whose branches all declare their items. */
+  private def declaredOf(
+    multiple: MultiSearch,
+    dates: SetOperationValues.DateReading
+  ): Option[ResultSchema] =
     multiple.requests.headOption.flatMap { first =>
       if (multiple.requests.forall(_.schema.isEmpty)) None
       else
@@ -139,6 +169,9 @@ private[client] object ResultSchemas {
             ResultColumn(name, SQLTypes.Array(element.sqlType), element = Some(element))
           case None => ResultColumn(name, t.sqlType)
         }
+      // SCHEMA-17 (A-175): the internal lattice kinds never leave the builder -- every class the
+      // census found typed so is typed exactly upstream; one left over is not known, `ANY`
+      case SQLTypes.Numeric | SQLTypes.Temporal => ResultColumn(name, SQLTypes.Any)
       case scalar =>
         DateRoute.of(scalar, t.format, dates) match {
           case DateRoute.Typed       => ResultColumn(name, scalar)

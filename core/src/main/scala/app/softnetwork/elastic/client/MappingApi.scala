@@ -83,9 +83,13 @@ trait MappingApi extends ElasticClientHelpers {
       }
     }
 
+    // SCHEMA-17 (A-170): below 7.6 no field takes a `meta`, so core's keys are left out (the
+    // per-major seam every writer passes, `MappingConverter`)
+    val versioned = MappingConverter.withoutCoreFieldMeta(mapping, elasticVersion)
+
     val updatedMapping: String =
       if (ElasticsearchVersion.requiresDocTypeWrapper(elasticVersion)) {
-        val root = mapper.readTree(mapping).asInstanceOf[ObjectNode]
+        val root = mapper.readTree(versioned).asInstanceOf[ObjectNode]
 
         if (root.has("properties") || root.has("_meta")) {
           logger.info(s"Wrapping mappings with '_doc' type for ES version $elasticVersion")
@@ -109,10 +113,10 @@ trait MappingApi extends ElasticClientHelpers {
 
           root.toString
         } else {
-          mapping
+          versioned
         }
       } else {
-        mapping
+        versioned
       }
 
     logger.debug(s"Setting mapping for index '$index': $updatedMapping")

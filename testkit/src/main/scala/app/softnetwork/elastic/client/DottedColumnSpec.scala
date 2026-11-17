@@ -622,17 +622,27 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
   // SCHEMA-6 (A-26, D6): a list of objects in an `object` column
   // -------------------------------------------------------------------------------------------
 
-  "A list of objects in an object column" should "answer the column, fail its scalar path with its remedy, then read the path's values (A-26)" in {
-    // the STRUCT column answers its list of struct reads, as main did
+  "A list of objects in an object column" should "fail the column and its scalar path with their remedies, then read them (A-26; SCHEMA-17 A-168)" in {
+    // SCHEMA-17 (A-168): the STRUCT column holding a list of objects fails, naming the in-place
+    // ALTER that declares it a list of objects (A-26 answered its list of struct reads); one
+    // object still answers its struct
     rowRoutes.foreach { route =>
       withClue(s"[$route] ") {
-        val obj = byId(rowsOk(s"SELECT id, obj FROM $listTable", route))
-        obj("dl")("obj") shouldBe List(ListMap("a" -> 5), ListMap("a" -> 50))
-        obj("dl1")("obj") shouldBe ListMap("a" -> 7)
+        rowsOn(s"SELECT id, obj FROM $listTable", route) match {
+          case Left(message) =>
+            message should include(
+              s"ALTER TABLE $listTable ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>"
+            )
+          case Right(rows) => fail(s"answered $rows instead of the multi-valued failure")
+        }
+        byId(rowsOk(s"SELECT id, obj FROM $listTable WHERE id = 'dl1'", route))("dl1")(
+          "obj"
+        ) shouldBe ListMap("a" -> 7)
       }
     }
-    // a scalar path under it holds several values (Elasticsearch's `obj.a` = [5, 50]): Q1's
-    // failure, naming the document, the index and the ALTER that declares it a list
+    // a scalar path under it holds several values (Elasticsearch's `obj.a` = [5, 50]), which come
+    // from the list (SCHEMA-17 A-181): Q1's failure names the document, the index and the in-place
+    // ALTER that declares the list of objects -- never the path's own SET FIELD
     val failures = rowRoutes.map { route =>
       rowsOn(s"SELECT id, obj.a FROM $listTable", route) match {
         case Left(message) => message
@@ -640,21 +650,24 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
       }
     }
     failures.foreach { message =>
-      message should include("Column obj.a holds several values in document dl")
-      message should include(s"ALTER TABLE $listTable ALTER COLUMN obj SET FIELD a ARRAY<INT>")
+      message should include("Column obj holds several values in document dl")
+      message should include(s"ALTER TABLE $listTable ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>")
+      message should not include "SET FIELD"
     }
-    // beside the parent read whole too, never NULL
+    // beside the parent read whole too, never NULL: the parent or its path names itself first
     Seq(s"SELECT id, obj, obj.a FROM $listTable", s"SELECT *, obj.a FROM $listTable").foreach {
       sql =>
         rowsOn(sql, "P1") match {
-          case Left(message) => message should include("Column obj.a holds several values")
+          case Left(message) => message should include("holds several values")
           case Right(rows)   => fail(s"$sql answered $rows instead of the multi-valued failure")
         }
     }
-    // the remedy runs (meta-only) ...
+    // the remedy runs (meta-only, in place): the parent's list of objects, alone
     val remedy = failures.head.substring(failures.head.indexOf("ALTER TABLE"))
+    remedy shouldBe s"ALTER TABLE $listTable ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>"
     runOk(remedy)
-    // ... and the path reads its values on every route, in each spelling
+    // ... and the path reads its objects' values as a list on every route, in each spelling --
+    // one object a list of one (A-181)
     rowRoutes.foreach { route =>
       withClue(s"[$route] ") {
         val a = byId(rowsOk(s"SELECT id, obj.a FROM $listTable", route))
@@ -664,6 +677,7 @@ trait DottedColumnSpec extends AnyFlatSpecLike with ElasticDockerTestKit with Ma
         a("dl3")("obj.a") shouldBe (null: Any)
         val both = byId(rowsOk(s"SELECT id, obj, obj.a FROM $listTable", route))
         both("dl")("obj.a") shouldBe List(5, 50)
+        both("dl1")("obj.a") shouldBe List(7)
         byId(rowsOk(s"SELECT *, obj.a FROM $listTable", route))("dl")("obj.a") shouldBe
         List(5, 50)
       }

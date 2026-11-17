@@ -2277,12 +2277,20 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 
   /** SCHEMA-2 (D14, A-19) -- the result schema `run(sql)` would carry, running NOTHING: no search,
     * no subquery; a mapping may be read (the attach, and an explicit path's reload, D10). ONE query
-    * -- a SELECT, a set operation, a FROM-less SELECT -- else a 400. A statement another extension
-    * than core's handles answers `None` (its layer types it); a statement `run` refuses before
-    * executing anything is refused with `run`'s status and message, through the SAME resolve body
-    * (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's values
-    * or Elasticsearch surfaces at `run` only. `None` where no schema is known. A JOIN body's types
-    * per table, which `run` refuses here: [[describePerTable]].
+    * -- a SELECT, a set operation, a FROM-less SELECT -- else a 400. A statement `run` refuses
+    * before executing anything is refused with `run`'s status and message, through the SAME resolve
+    * body (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's
+    * values or Elasticsearch surfaces at `run` only. A JOIN body's types per table, which `run`
+    * refuses here: [[describePerTable]].
+    *
+    * SCHEMA-17 (A-160) -- the contract, one rule for every consumer:
+    *   - `ElasticSuccess(Some(schema))`: every column typed, at every depth, before any row -- an
+    *     alias or a data stream over several indices by its members' merge, a `SELECT *` leg of a
+    *     `UNION ALL` by its mapping, a source of `*` parts matching no index as an empty table;
+    *   - a failure: refused, with the status `run` would answer -- an unknown index is its 404, a
+    *     lookup that failed otherwise keeps its status (`operation = "describe"`);
+    *   - `ElasticSuccess(None)`: ONLY for a statement another extension than core's handles, whose
+    *     own layer types it.
     */
   def describe(sql: String): ElasticResult[Option[ResultSchema]] =
     GatewayApi.splitStatements(sql) match {
