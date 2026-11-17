@@ -804,8 +804,9 @@ format is declared with the column option `OPTIONS (format = '<pattern>')`, the 
 For a user who may not read the mapping (see
 [A user who may not read the mapping](../client/gateway.md#a-user-who-may-not-read-the-mapping)):
 
-- over ONE index, each field declared this way is typed and read exactly as for a privileged user
-  -- lists, lists of objects, `DATE`, `TIME`, a custom date format;
+- over ONE index, each field declared this way is typed and read as for a privileged user (lists,
+  lists of objects, `DATE`, `TIME`, a custom date format), but a temporal literal in `WHERE` is
+  forwarded verbatim, as every literal of this user is;
 - over several indices (a pattern, a list, an alias), only lists apply: Elasticsearch merges the
   `meta` of the indices that hold a key and hides the others, so a format or a narrower type of one
   index could be applied to another that has none; such a date is read as ISO 8601 only (see there);

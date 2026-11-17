@@ -224,8 +224,8 @@ message. *Since `0.25.0`*, one rule for every consumer:
   cross-index JOIN under the arrow extension), whose own layer types it.
 
 No result column is typed `NUMERIC` or `TEMPORAL`: `ABS` and `ROUND` over a column of no known type
-are `ANY`, over `NULL` a `BIGINT`, over a text, a boolean or a date the class their script answers
-(`ABS` a `DOUBLE`, `ROUND` a `BIGINT`, to decimal places a `DOUBLE`).
+are `ANY`, over `NULL` a `BIGINT`, over a text, a boolean, a date or a time the class their script answers
+(`ABS` a `DOUBLE`, `ROUND` a `BIGINT`, with an `n` other than 0 a `DOUBLE`).
 
 #### Value classes
 
@@ -327,8 +327,9 @@ per schema-cache TTL, and its statements answer what a privileged user's answer,
   8601 text, a TIMESTAMP; any other value (a custom format's text, an epoch) fails the statement,
   naming the column, the document and the remedy -- a grant to read the mapping
   (`view_index_metadata`), or, on 7.6 and later, an in-place `ALTER TABLE` by the table's owner
-  (*since `0.25.0`*; it was answered as stored); a temporal literal in `WHERE` is forwarded to
-  Elasticsearch verbatim;
+  (*since `0.25.0`*; it was answered as stored);
+- every temporal literal in `WHERE` is forwarded to Elasticsearch verbatim, also against a field
+  whose mapping `meta` declares its date format;
 - it reports `constant_keyword` as `keyword`: its projection and `SELECT *` read NULL from `_source`,
   as before, while `WHERE`, `GROUP BY` and conditionals over it answer its value, and a sort over
   it carries the `unmapped_type` of a keyword, so `ORDER BY ck` over a list where one index lacks

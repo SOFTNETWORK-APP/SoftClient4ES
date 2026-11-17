@@ -36,6 +36,7 @@ import app.softnetwork.persistence.generateUUID
 import org.apache.http.entity.ContentType
 import org.apache.http.nio.entity.NStringEntity
 import org.elasticsearch.client.Request
+import org.json4s.{JObject, JString, JValue}
 import org.json4s.jackson.JsonMethods.{compact, parse, render}
 import org.scalatest.flatspec.AnyFlatSpecLike
 import org.scalatest.matchers.should.Matchers
@@ -741,14 +742,27 @@ trait ComputedProjectionSpec extends AnyFlatSpecLike with ElasticDockerTestKit w
   // CTAS (AC5)
   // -------------------------------------------------------------------------------------------
 
-  private def mappedType(index: String, column: String): String =
-    client.getMapping(index) match {
-      case ElasticSuccess(js) =>
-        val field = ("\"" + java.util.regex.Pattern.quote(column) +
-          "\"\\s*:\\s*\\{\\s*\"type\"\\s*:\\s*\"([a-z_]+)\"").r
-        field.findFirstMatchIn(js).map(_.group(1)).getOrElse(s"no type in $js")
-      case ElasticFailure(e) => fail(s"[$index] ${e.message}")
+  /** The `type` of `column` in the first `properties` object holding it, whatever the mapping's
+    * wrapper and whatever keys sit beside `type`: from 7.6 core writes the field's `meta` there,
+    * and some clients return it before `type`.
+    */
+  private def mappedType(index: String, column: String): String = {
+    def typeOf(json: JValue): Option[String] = json match {
+      case JObject(fields) =>
+        fields
+          .collectFirst { case ("properties", JObject(properties)) => properties }
+          .flatMap(_.collectFirst { case (`column`, JObject(field)) => field })
+          .flatMap(_.collectFirst { case ("type", JString(t)) => t })
+          .orElse(fields.iterator.map { case (_, child) => typeOf(child) }.collectFirst {
+            case Some(t) => t
+          })
+      case _ => None
     }
+    client.getMapping(index) match {
+      case ElasticSuccess(js) => typeOf(parse(js)).getOrElse(s"no type in $js")
+      case ElasticFailure(e)  => fail(s"[$index] ${e.message}")
+    }
+  }
 
   "CREATE TABLE … AS SELECT" should "map each width as DuckDB types it (AC5)" in {
     Seq(

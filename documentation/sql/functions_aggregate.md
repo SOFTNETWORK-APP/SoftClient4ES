@@ -41,9 +41,11 @@ declare: `COUNT` is `BIGINT`; `AVG`, the `STDDEV` / `VARIANCE` family and the pe
 `DOUBLE` column (*since `0.25.0`*: it kept the summed column's type, which overflowed); `MIN`, `MAX`,
 `FIRST_VALUE` and `LAST_VALUE`
 keep the type of the expression they aggregate (`MAX(YEAR(d))` is `BIGINT`, `MAX(CAST(ts AS DATE))`
-a `DATE`). The values are unchanged. `MIN` / `MAX` over `ROUND(x, n)` or a `DATEDIFF` report
-`NUMERIC`, which a `CREATE TABLE … AS SELECT` cannot map: it fails at index creation
-(`Field [scaling_factor] is required`) and leaves no index behind.
+a `DATE`). The values are unchanged. `MIN` / `MAX` over `ROUND(x, n)` of a number column `x` take the
+type `ROUND` gives it (see [ROUND](functions_math.md#round)), over a `DATEDIFF` a `BIGINT`, and a
+`CREATE TABLE … AS SELECT` maps them by that type (*since `0.25.0`*: they were typed `NUMERIC`,
+which a `CREATE TABLE … AS SELECT` could not map: it failed at index creation
+(`Field [scaling_factor] is required`) and left no index behind).
 
 ---
 

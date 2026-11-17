@@ -542,15 +542,20 @@ WHERE event_ts >= '2026-06-04T00:00:00'          -- what Elasticsearch's default
   columns qualified with a `JOIN` alias (the FROM table's own columns are resolved) and `HAVING`
   conditions are never touched. A `date_nanos` column is resolved against its own format, the
   `date_nanos` default (`strict_date_optional_time_nanos||epoch_millis`) unless it sets one (*since
-  `0.25.0`*: it was never touched). For a user typed from `_field_caps`, who knows no format, every
-  literal is forwarded verbatim.
+  `0.25.0`*: it was never touched). For a user typed from `_field_caps` every literal is forwarded
+  verbatim, even against a field whose mapping `meta` declares its format (one index, Elasticsearch
+  7.6 and later).
 - The resolution needs the index mapping, loaded through the schema cache (one lookup per index per
   TTL — `elastic.schema-cache.ttl`, 5 minutes by default, and an index may set its own with
   `ALTER TABLE … SET SCHEMA CACHE TTL`). An
   **index alias over exactly one index** resolves to that index's mapping (`SHOW TABLE` /
   `DESCRIBE` through such an alias resolve the same way); an alias over **several** indices is
-  ambiguous and is treated as unresolvable. When the statement reads several indices or a wildcard,
-  or the mapping cannot be loaded, the literal is forwarded verbatim as in previous releases, and a
+  resolved against the merge of its members' mappings (*since `0.25.0`*; it was forwarded verbatim):
+  a date field its members map with one format is resolved against that format, one they map with
+  different formats has no type and its literal is forwarded verbatim.
+  A comma list of indices or a wildcard is resolved the same way, against the merge of the mappings
+  of the indices it names or matches (*since `0.24.0`*). When the mapping cannot be loaded, the
+  literal is forwarded verbatim as in previous releases, and a
   failed mapping lookup is remembered for the DEFAULT TTL (a miss has no index metadata to read a
   per-index one from) so it is not retried on every statement.
 
@@ -920,7 +925,9 @@ depth -- is read the same way, in every branch, with its field's format, the def
 included (*since `0.25.0`*: a date whose branches all had the default format, and a multi-valued
 date, were returned as stored); a multi-valued date in a column declared `ARRAY<DATE>` or `ARRAY<TIMESTAMP>` is the list of its
 values, each read so (in any other column it fails the statement, see
-[Columns holding several values](#columns-holding-several-values)), and a
+[Columns holding several values](#columns-holding-several-values), except, for a user who may not
+read the mapping, in a field with no declaration this user can read, which answers the `List` of
+its values), and a
 date core cannot read (below) is returned as stored.
 
 A value is read only where its reading is the same on every Java version core runs on (8, 11, 17

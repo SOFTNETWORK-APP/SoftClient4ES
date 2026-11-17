@@ -705,12 +705,16 @@ the column it aggregates, whatever the other rows answer.
 - **A field the indices of a pattern map as `keyword` and `text`** is typed as the index whose name
   sorts first maps it (`KEYWORD` or `TEXT`); a field they map as two other types takes the type a
   `UNION ALL` gives them, or none -- see [Index patterns](../client/gateway.md#index-patterns).
-- **A user who may not read the mapping is typed from `_field_caps`**, which holds no `_meta` and no
-  date format: a declared `DATE` reads TIMESTAMP, an `ARRAY<X>` declaration X (a several-valued cell
-  of a field whose mapping `meta` holds no declaration answers its `List`, so a column can hold two
-  classes), custom-format dates and epochs are answered
-  as stored, temporal literals are forwarded verbatim, a `constant_keyword` column reads NULL in a
-  projection and under `*` (and `ORDER BY` it answers over a list where one index lacks it, where a
+- **A user who may not read the mapping is typed from `_field_caps`**, which holds no `_meta`. On
+  Elasticsearch 7.6 and later it holds each field's mapping `meta`, where core copies the field's
+  declaration (*since `0.25.0`*): over one index such a field reads as for a privileged user (lists,
+  `DATE`, `TIME`, its date format), over several indices only its list-ness applies. A field with no
+  such declaration reads by its mapping type (a column declared `DATE` reads TIMESTAMP, `ARRAY<X>`
+  reads X, and a several-valued cell of a leaf field answers its `List`, so a column can hold two classes). A date
+  with no declared format is read as ISO 8601 text; a custom-format date or an epoch fails the
+  statement, naming the remedy (*since `0.25.0`*; it was answered as stored). Temporal literals are
+  forwarded verbatim, a `constant_keyword` column reads NULL in a projection and under `*`
+  (and `ORDER BY` it answers over a list where one index lacks it, where a
   privileged user's statement fails), and a runtime field adds a NULL column to `*`. Such a user's un-`LIMIT`ed
   statements page by the client's Elasticsearch major (search_after on the ES 7 client, even over a
   7.17 cluster), unsliced where `_settings` is refused; a privilege granted later is seen once the
@@ -734,9 +738,9 @@ the column it aggregates, whatever the other rows answer.
   reads by type carry the class of their column's declared type (*since `0.25.0`*), so a `BIGINT`
   column is reported as a `BIGINT` (`Int(64)`) whatever its values, and a computed column the engine
   declares `DOUBLE` holds a `Double` on every row. A value the engine answers as stored keeps its
-  own class (see [Value classes](../client/gateway.md#value-classes)), and a column the engine types
-  only as `NUMERIC` or `ANY` can carry whole and decimal numbers alike: there, the column is
-  reported as the type of its first value. JDBC reports a `TINYINT` or `SMALLINT` column, whose
+  own class (see [Value classes](../client/gateway.md#value-classes)), and a column of no known type
+  (`ANY`) can carry whole and decimal numbers alike: there, the column is reported as the type of
+  its first value. JDBC reports a `TINYINT` or `SMALLINT` column, whose
   values are `Integer`s, as an `INTEGER`. A set operation (`UNION ALL` and the others) is typed from
   the declared types.
 
