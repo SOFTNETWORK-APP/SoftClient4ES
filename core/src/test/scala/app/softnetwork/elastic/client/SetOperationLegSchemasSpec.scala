@@ -615,10 +615,20 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "have no slot at NUMERIC or TEMPORAL, the other legs keeping theirs" in {
-    // ROUND over an operand of no known number type reports NUMERIC (SCHEMA-5 D10's residual)
-    val residual = slots(union("ROUND(meta, 2)", "x"))
-    residual.head shouldBe Some(Seq(None))
-    residual(1).flatMap(_.head).map(_.sqlType) shouldBe Some(SetOperationType(SQLTypes.Double))
+    // ROUND over an operand of type ANY is ANY, no longer NUMERIC (SCHEMA-5 D10's residual ends
+    // with SCHEMA-17 A-175): the column's type is not known, so no leg has a slot, as for any
+    // ANY column
+    slots(union("ROUND(meta, 2)", "x")) shouldBe Seq(Some(Seq(None)), Some(Seq(None)))
+    // a constructed NUMERIC leg (no SQL form yields one any more) beside a DOUBLE one, joined as
+    // the lattice joins them: no slot at NUMERIC, the DOUBLE leg keeping its own
+    val numeric = SetOperationColumn(
+      SetOperationType(SQLTypes.Double),
+      Seq(Some(SetOperationType(SQLTypes.Numeric)), Some(SetOperationType(SQLTypes.Double)))
+    )
+    val numericDates = SetOperationValues.DateReading(es8)
+    SetOperationValues.legSlot(numeric, 0, "k", "", numericDates) shouldBe None
+    SetOperationValues.legSlot(numeric, 1, "k", "x", numericDates).map(_.sqlType) shouldBe
+    Some(SetOperationType(SQLTypes.Double))
     // SCHEMA-5 (D5, D7) -- ROUND reports its operand's type and DATEDIFF a BIGINT, as DuckDB 1.5.5
     // types them (`round(DOUBLE, 2)` DOUBLE, `date_diff` BIGINT): each leg has its slot
     val rounded = slots(union("ROUND(x, 2)", "x"))

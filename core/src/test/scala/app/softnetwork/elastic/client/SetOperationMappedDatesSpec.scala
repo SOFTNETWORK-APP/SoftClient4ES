@@ -203,8 +203,10 @@ class SetOperationMappedDatesSpec extends AnyFlatSpec with Matchers {
     Seq(Some(Seq(true, false, false)), Some(Seq(true, false, false)))
     // a NULL literal reads nothing
     plan(union("c_es", "NULL")).map(_.isDefined) shouldBe Seq(true, false)
-    // beside a SELECT * branch, whose values are not typed, nothing is read
-    plan("SELECT c_es AS k FROM t UNION ALL SELECT * FROM t") shouldBe Seq(None, None)
+    // SCHEMA-17 (A-165 P): a SELECT * branch is typed from its mapping, its column `k` a NULL one
+    // (the mapping has none): the first branch's dates are read by their format, as alone
+    plan("SELECT c_es AS k FROM t UNION ALL SELECT * FROM t").map(_.isDefined) shouldBe
+    Seq(true, false)
     // objects and lists whose date fields all have the default format: as read, at no cost
     plan(union("objd", "objd")) shouldBe Seq(None, None)
     plan(union("itemsd", "itemsd")) shouldBe Seq(None, None)

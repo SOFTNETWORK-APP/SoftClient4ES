@@ -99,22 +99,28 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * have left the attach dead for nearly every query. Cost: one lookup per index per cache TTL.
     *
     * Schema-absent path = verbatim (#276 AD-S4-1.2): the lookup is skipped when this client is not
-    * an [[IndicesApi]]; no schema is attached when it cannot be loaded (alias without a template,
-    * unknown index, cluster error or a thrown lookup) -- the literal is then forwarded exactly as
-    * before, and no TYPE is refused: Elasticsearch answers. A field the indices of a `*` pattern or
-    * a list of sources disagree on is attached untyped, with the same effect for that field alone.
-    * The schema comes from [[IndicesApi.loadSchema]] 's 5-minute cache (a pattern's, merged, from
-    * [[IndicesApi.loadPatternSchema]] 's, under the same key rules), so a miss costs one `GET
-    * <index>` per index -- or per pattern -- per TTL. A literal that cannot be a date under a
+    * an [[IndicesApi]]; no schema is attached when it cannot be loaded (unknown index without a
+    * template, cluster error or a thrown lookup) -- the literal is then forwarded exactly as
+    * before, and no TYPE is refused: Elasticsearch answers. A field the indices of a `*` pattern, a
+    * list of sources, or an alias or a data stream over several indices disagree on is attached
+    * untyped, with the same effect for that field alone. The schema comes from
+    * [[IndicesApi.loadQuerySchema]] 's cache (5 minutes by default; a pattern's, an alias's or a
+    * data stream's over several indices merged, SCHEMA-17 A-161), so a miss costs one `GET <index>`
+    * per index -- or per pattern -- per TTL. A literal that cannot be a date under a
     * fully-understood mapping format is a `400` that names the literal and the field, instead of
     * Elasticsearch's `search_phase_execution_exception`.
     *
-    * `loadSchema` caches successes only, so a source it cannot resolve -- an ALIAS on the es8/es9
-    * clients (`executeGetIndex` looks the alias up as a key and finds nothing), an unknown index
-    * without a template -- would otherwise cost one failed lookup (two round trips + WARN lines)
-    * per statement. [[schemaMisses]] remembers a 404 miss for [[schemaMissTtlMs]] and skips the
-    * lookup; the literal is verbatim either way. A NON-404 failure (a transient 5xx, a thrown
-    * lookup) is never remembered, so a cluster blip cannot disable the resolution for the TTL.
+    * SCHEMA-17 (A-163) -- where no schema is found, the answer is decided here, in the mode of the
+    * call: a source of `*` parts only that matches no index is typed as an EMPTY table in both
+    * modes (`run` answers 0 rows); in `describe`'s mode (`executeSubqueries = false`) an unknown
+    * concrete source, or a remembered miss, is its 404 and any other lookup failure keeps its
+    * status (`operation = "describe"`); `run` sends the statement verbatim.
+    *
+    * The cache keeps successes only, so a source it cannot resolve -- an unknown index without a
+    * template -- would otherwise cost one failed lookup (two round trips + WARN lines) per
+    * statement. [[schemaMisses]] remembers a 404 miss for [[schemaMissTtlMs]] and skips the lookup;
+    * the literal is verbatim either way. A NON-404 failure (a transient 5xx, a thrown lookup) is
+    * never remembered, so a cluster blip cannot disable the resolution for the TTL.
     *
     * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
     *
@@ -136,6 +142,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * latency — under 0.1%. That is why resolution is UNCONDITIONAL rather than filtered on
     * statement content. Documented for operators in `documentation/client/search.md`.
     *
+    * SCHEMA-17 (R-159, A-191) -- `describe(statement)` alone skips the attach on a repeat: the SAME
+    * statement instance over the SAME cached schema instance answers from [[describeAnswers]]
+    * (successes only, never a statement with a WHERE subquery, never `describe(sql)`). `run` never
+    * reads it.
+    *
     * 🔴 If a filter is ever revisited, the predicate must NOT be "the statement contains a cast":
     * `coerce` also serves FunctionN argument and CASE branch coercion, so a cast-scoped attach
     * would make `UPPER(col)` emit differently depending on whether a cast happened to appear
@@ -146,15 +157,43 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] =
     resolveWithSchema(single, executeSubqueries = true)
 
-  /** [[resolveWithSchema]] 's ONE body (SCHEMA-2, D14): `executeSubqueries = false` -- what
-    * `GatewayApi.describe` runs -- replaces phase one's execution by its pre-execution checks
+  /** [[resolveWithSchema]] over its ONE body, below (SCHEMA-2, D14): `executeSubqueries = false` --
+    * what `GatewayApi.describe` runs -- replaces phase one's execution by its pre-execution checks
     * (`SubqueryResolver.resolve(_, _, executes = false)`), every other step -- the attach, the
-    * explicit path's reload (D10), every refusal -- unchanged.
+    * explicit path's reload (D10), every refusal -- unchanged. No memo.
     */
   private[client] def resolveWithSchema(
     single: SingleSearch,
     executeSubqueries: Boolean
-  ): ElasticResult[SingleSearch] = {
+  ): ElasticResult[SingleSearch] =
+    resolveWithSchema(single, executeSubqueries, Option.empty[StatementAnswers[SingleSearch]])(
+      identity
+    )
+
+  /** SCHEMA-17 (R-159, A-191) -- the answers `describe(statement)` computed, per statement instance
+    * and schema instance ([[StatementAnswers]]); bounded as the schema cache is.
+    */
+  private[client] lazy val describeAnswers: StatementAnswers[Option[ResultSchema]] =
+    new StatementAnswers[Option[ResultSchema]](256)
+
+  /** Current size of [[describeAnswers]] (tests). */
+  private[client] def describeAnswerCount: Int = describeAnswers.size
+
+  /** [[resolveWithSchema]] 's ONE body, followed by `next` over the resolved statement.
+    *
+    * `answers` (`describe(statement)` alone, A-191): on the cached-schema arm, the answer stored
+    * for this very statement over the very schema instance the lookup -- and an explicit path's
+    * reload (D10), which still runs on every call -- returned is answered without the attach; any
+    * other stored answer is a miss, recomputed and stored in its place. Never for a statement with
+    * a WHERE subquery, never a refusal (A-192), never under a TTL of 0 (each lookup reads a new
+    * schema, so it could never hit). The key is every input of the answer: the statement, the
+    * schema attached, and this client's fixed date dialect; an extension's routing runs before.
+    */
+  private[client] def resolveWithSchema[A](
+    single: SingleSearch,
+    executeSubqueries: Boolean,
+    answers: Option[StatementAnswers[A]]
+  )(next: SingleSearch => A): ElasticResult[A] = {
     // Story 22.1 (epic 22 AD-5) — THE seam. Every direct-API path crosses it BEFORE routing
     // (`search`, `searchAsync`, `searchWithInnerHits`, `ScrollApi.scroll`, and `IndicesApi`'s
     // by-query DELETE/UPDATE bodies through `resolveDmlWithSchema`), and none of them passes
@@ -197,9 +236,95 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     // field (`IndicesApi.loadPatternSchema`), one mapping read per list, cached. Before, it attached
     // NO schema, so `FROM zwild_*` typed every column `Any` and answered `MAX(d) - MIN(d)` in
     // milliseconds where the single index answered days.
-    phaseOne.sources.distinct match {
+    // SCHEMA-17 (A-191) -- the schema instance the answer is stored under, on a memo miss
+    var storeUnder: Option[Schema] = None
+    val typed: ElasticResult[SingleSearch] = phaseOne.sources.distinct match {
       case sources if sources.nonEmpty =>
         val source = sources.mkString(",")
+        // the statement typed by `schema`: the temporal literals resolved, the schema attached,
+        // the resolved statement's rules checked
+        def attach(schema: Schema): ElasticResult[SingleSearch] =
+          TemporalLiterals(phaseOne, schema) match {
+            case Right(literalsResolved) =>
+              // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
+              // `col.map(_.dataType)` and `col` is populated only here, inside `update`, from
+              // `request.schema`; until this call existed the ONLY production caller of
+              // `update(Some(schema))` was `Table.mergeWithSearch` (CTAS column inference,
+              // which returns a Table rather than a statement to execute), so every executing
+              // query reached `SQLTypeUtils.coerce` with `baseType = SQLTypes.Any` and NO cast
+              // over a column ever emitted a conversion -- for any source type.
+              //
+              // Unconditional within this method's precondition, deliberately NOT scoped to
+              // statements that contain a cast: `coerce` also serves `FunctionN` argument
+              // coercion and CASE branch coercion, so a cast-scoped attach would make
+              // `UPPER(col)` emit differently depending on whether the SAME statement
+              // happened to carry a cast elsewhere -- a #205-family inconsistency that
+              // depends on incidental statement content.
+              //
+              // Idempotent by necessity, not by luck: `SearchApi.search` resolves and then
+              // routes a row query through `scrollRows` -> `ScrollApi.scroll`, which resolves
+              // AGAIN, so this runs twice on that path (pinned in SchemaAttachSpec).
+              val resolved = literalsResolved.update(Some(schema))
+              if (resolved ne phaseOne)
+                logger.debug(
+                  s"Temporal literals resolved against the mapping of '$source':${resolved.where
+                    .map(_.sql)
+                    .getOrElse("")}"
+                )
+              // 🔴 Issue #384 — the rules that need the SCHEMA are checked HERE, because this
+              // is the only place a resolved statement exists. `Parser.apply` validates the
+              // statement it parsed, where every column is `Any`, so a TIME compared with a
+              // TIMESTAMP is indistinguishable from a legal comparison at parse time. Without
+              // this the mismatch reaches Elasticsearch and fails the shard with
+              // `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`, naming neither
+              // the column nor the SQL. NOT a second `validate()` — see `validateResolved`.
+              resolved.validateResolved() match {
+                case Left(reason) =>
+                  logger.error(s"❌ $reason")
+                  ElasticResult.failure(
+                    ElasticError(
+                      message = reason,
+                      statusCode = Some(400),
+                      index = Some(source),
+                      operation = Some("search")
+                    )
+                  )
+                case Right(_) => ElasticResult.success(resolved)
+              }
+            case Left(reason) =>
+              logger.error(s"❌ $reason")
+              ElasticResult.failure(
+                ElasticError(
+                  message = reason,
+                  statusCode = Some(400),
+                  index = Some(source),
+                  operation = Some("search")
+                )
+              )
+          }
+        // SCHEMA-17 (A-163) -- no schema found: what `run` does with the statement, decided here
+        def noSchema(error: ElasticError): ElasticResult[SingleSearch] =
+          if (
+            error.statusCode.contains(404) && IndicesApi.wildcardsOnly(source) &&
+            source.split(",").forall(part => validateIndexName(part.trim, pattern = true).isEmpty)
+          )
+            // (b) a source of `*` parts only that matches no index (Elasticsearch's
+            // `allow_no_indices`: 0 rows, never a 404) is typed as an EMPTY table, in both modes:
+            // `*` has no column, a named column no type
+            attach(app.softnetwork.elastic.sql.schema.Table(source, columns = Nil).update())
+          else if (!executeSubqueries)
+            // (a) / (c) describe answers what run would: a concrete source Elasticsearch does not
+            // know is its 404; any other lookup failure keeps its status -- a transient 5xx is no
+            // reason to type a column ANY, the consumer retries
+            ElasticResult.failure(
+              error.copy(
+                message =
+                  if (error.statusCode.contains(404)) s"no such index [$source]" else error.message,
+                index = error.index.orElse(Some(source)),
+                operation = Some("describe")
+              )
+            )
+          else unresolved(phaseOne, Some(source))
         lookupSchema(sources) match {
           case Some(lookup) =>
             lookup match {
@@ -208,80 +333,52 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 // SCHEMA-2 (D10) -- an explicitly selected path the cached mapping lacks reloads it
                 // ONCE per TTL (memoized), so a field mapped since is read by its type
                 val schema = reloadedFor(phaseOne, sources, cached)
-                TemporalLiterals(phaseOne, schema) match {
-                  case Right(literalsResolved) =>
-                    // #306 -- ATTACH the schema to the AST. `GenericIdentifier.baseType` is
-                    // `col.map(_.dataType)` and `col` is populated only here, inside `update`, from
-                    // `request.schema`; until this call existed the ONLY production caller of
-                    // `update(Some(schema))` was `Table.mergeWithSearch` (CTAS column inference,
-                    // which returns a Table rather than a statement to execute), so every executing
-                    // query reached `SQLTypeUtils.coerce` with `baseType = SQLTypes.Any` and NO cast
-                    // over a column ever emitted a conversion -- for any source type.
-                    //
-                    // Unconditional within this method's precondition, deliberately NOT scoped to
-                    // statements that contain a cast: `coerce` also serves `FunctionN` argument
-                    // coercion and CASE branch coercion, so a cast-scoped attach would make
-                    // `UPPER(col)` emit differently depending on whether the SAME statement
-                    // happened to carry a cast elsewhere -- a #205-family inconsistency that
-                    // depends on incidental statement content.
-                    //
-                    // Idempotent by necessity, not by luck: `SearchApi.search` resolves and then
-                    // routes a row query through `scrollRows` -> `ScrollApi.scroll`, which resolves
-                    // AGAIN, so this runs twice on that path (pinned in SchemaAttachSpec).
-                    val resolved = literalsResolved.update(Some(schema))
-                    if (resolved ne phaseOne)
-                      logger.debug(
-                        s"Temporal literals resolved against the mapping of '$source':${resolved.where
-                          .map(_.sql)
-                          .getOrElse("")}"
-                      )
-                    // 🔴 Issue #384 — the rules that need the SCHEMA are checked HERE, because this
-                    // is the only place a resolved statement exists. `Parser.apply` validates the
-                    // statement it parsed, where every column is `Any`, so a TIME compared with a
-                    // TIMESTAMP is indistinguishable from a legal comparison at parse time. Without
-                    // this the mismatch reaches Elasticsearch and fails the shard with
-                    // `Cannot cast java.time.ZonedDateTime to java.time.LocalTime`, naming neither
-                    // the column nor the SQL. NOT a second `validate()` — see `validateResolved`.
-                    resolved.validateResolved() match {
-                      case Left(reason) =>
-                        logger.error(s"❌ $reason")
-                        ElasticResult.failure(
-                          ElasticError(
-                            message = reason,
-                            statusCode = Some(400),
-                            index = Some(source),
-                            operation = Some("search")
-                          )
-                        )
-                      case Right(_) => ElasticResult.success(resolved)
+                // SCHEMA-17 (A-191) -- this statement over this very schema: answered from memory
+                answers match {
+                  case Some(memo) if !single.hasWhereSubqueries =>
+                    memo.get(single, schema) match {
+                      case Some(answer) => return ElasticResult.success(answer)
+                      case None => if (schemaCacheTtlMsFor(source) > 0) storeUnder = Some(schema)
                     }
-                  case Left(reason) =>
-                    logger.error(s"❌ $reason")
-                    ElasticResult.failure(
-                      ElasticError(
-                        message = reason,
-                        statusCode = Some(400),
-                        index = Some(source),
-                        operation = Some("search")
-                      )
-                    )
+                  case _ =>
                 }
+                attach(schema)
               case Success(ElasticFailure(error)) =>
                 if (error.statusCode.contains(404)) rememberSchemaMiss(source)
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
-                unresolved(phaseOne, Some(source))
+                noSchema(error)
               case Failure(e) =>
                 logger.debug(
                   s"Schema lookup for '$source' failed with ${e.getClass.getName} - temporal literals forwarded verbatim"
                 )
-                unresolved(phaseOne, Some(source))
+                noSchema(
+                  ElasticError(
+                    message = s"Schema lookup for '$source' failed: ${e.getMessage}",
+                    cause = Some(e),
+                    statusCode = Some(500),
+                    index = Some(source)
+                  )
+                )
             }
+          // a remembered miss: the 404 it remembers
+          case None if schemaMissed(source) =>
+            noSchema(ElasticError.notFound(index = source, operation = "describe"))
           case None => unresolved(phaseOne, Some(source))
         }
       case _ => unresolved(phaseOne, None)
     }
+    val answered = typed.map(next)
+    // `storeUnder` is set only with `answers`; a success only (A-192): a refusal is recomputed, and
+    // keeps its log line
+    storeUnder.foreach { schema =>
+      answered match {
+        case ElasticSuccess(answer) => answers.foreach(_.put(single, schema, answer))
+        case _                      =>
+      }
+    }
+    answered
   }
 
   /** The ONE exit of [[resolveWithSchema]] that sends a statement WITHOUT a resolved schema: a
@@ -767,8 +864,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         // too, typed over the operator tree (only `UNION ALL` reaches this line today). It refuses
         // only what fails when the statement runs: a date beside a number, a nested type beside
         // another.
+        //
+        // SCHEMA-17 (A-165): the `SELECT *` legs typed from their mappings, as their rows are built,
+        // are typed by the same lattice -- a date beside a number under one name refused (#420)
         (if (resolved.exists(_.schema.isDefined))
-           MultiSearch.branchTypes(resolved, multiple.resolvedOperators)
+           MultiSearch.branchTypes(resolved, multiple.resolvedOperators).flatMap { _ =>
+             MultiSearch.starUnion(resolved) match {
+               case Some(Left(reason)) => Left(reason)
+               case _                  => Right(())
+             }
+           }
          else Right(())) match {
           case Left(reason) =>
             ElasticResult.failure(
@@ -2863,7 +2968,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     multiple: MultiSearch
   )(implicit context: ConversionContext): Seq[ListMap[String, Any] => ListMap[String, Any]] = {
     val outputFields = unionAllOutputFieldNames(multiple)
-    if (outputFields.isEmpty) multiple.requests.map(_ => identity[ListMap[String, Any]] _)
+    if (outputFields.isEmpty)
+      // SCHEMA-17 (A-165 N): rows by name, each leg's own, each value of a column whose legs
+      // disagree converted to the column's type (`SetOperationValues.byNameConverters`)
+      SetOperationValues
+        .byNameConverters(multiple, setOperationVersion)
+        .map(_.getOrElse(identity[ListMap[String, Any]] _))
     else {
       // ...and each column in the ONE type the result gives it, converted as the row is rebuilt
       // (`SetOperationValues`); `None` for every leg of a statement whose columns agree
@@ -2920,7 +3030,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     val converters =
       if (outputFields.isEmpty) multiple.requests.map(_ => None)
       else SetOperationValues.converters(multiple, setOperationVersion)
-    multiple.requests.zip(converters).map { case (leg, convert) =>
+    // SCHEMA-17 (A-165 N): with no declared names, the rows by name, converted per name
+    val byName =
+      if (outputFields.isEmpty) SetOperationValues.byNameConverters(multiple, setOperationVersion)
+      else multiple.requests.map(_ => None)
+    multiple.requests.zip(converters).zip(byName).map { case ((leg, convert), rows) =>
       LegProjection(
         leg.fieldAliases,
         unionAllLegFieldNames(leg, outputFields),
@@ -2929,7 +3043,8 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         toClientAggregations(leg.sqlAggregations),
         convert,
         // ...read as THIS leg reads its rows on its own: each value by its declared type
-        Some(SchemaColumns.of(leg, context, setOperationVersion))
+        Some(SchemaColumns.of(leg, context, setOperationVersion)),
+        rows
       )
     }
   }

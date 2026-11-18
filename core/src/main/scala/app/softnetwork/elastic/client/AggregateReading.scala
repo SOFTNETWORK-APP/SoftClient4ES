@@ -101,9 +101,11 @@ private[client] object AggregateReading {
         new HitReading.Readers(
           single.fieldAliases,
           dates,
-          HitReading.multiValuedFor(single),
+          HitReading.multiValuedFor(single, dates.elasticVersion),
           single.sources.headOption.getOrElse(""),
-          HitReading.remedyOf(single.schema)
+          HitReading.remedyOf(single.schema),
+          // SCHEMA-17 fix R-150 (A-184): a top hit's leaf no index declares to a read-only user
+          stored = HitReading.storedLeaves(single.schema)
         )
       val keys = new java.util.HashMap[String, KeyReader]()
       single.buckets.foreach { b =>

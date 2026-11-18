@@ -65,8 +65,8 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
   private val dmlIndex = "temporal_literal_dml"
 
   /** Second custom-format index: the multi-index alias spans two members whose `date` format
-    * AGREES, so the ambiguous-alias query reaches Elasticsearch and its emitted body can be
-    * asserted verbatim (review R4-20).
+    * AGREES, so the alias is typed by their merge exactly as the list of both is (SCHEMA-17 A-161;
+    * main forwarded it verbatim, review R4-20).
     */
   private val customIndex2 = "temporal_literal_custom_b"
 
@@ -261,28 +261,27 @@ trait TemporalLiteralSpec extends AnyFlatSpecLike with ElasticDockerTestKit with
     fromJune4
   }
 
-  "a query through an alias over several indices" should "forward the literal verbatim" in {
-    // Both members carry `format: "yyyy-MM-dd HH:mm:ss"`, so Elasticsearch itself accepts the space
-    // form and the emitted body can be asserted: an ambiguous alias must reach ES UNCHANGED --
-    // neither rewritten to the `T` form nor rejected by us (review R4-20).
+  "a query through an alias over several indices" should "be typed as the list of its members" in {
+    // SCHEMA-17 (A-161): an alias over several indices is typed by its members' merge, exactly as
+    // the comma list of those members is -- the same body, the same rows, the same answer to an
+    // unparseable literal (main forwarded it verbatim, review R4-20). Both members carry
+    // `format: "yyyy-MM-dd HH:mm:ss"`, so the merge keeps that format.
     client.addAlias(customIndex, multiAlias).get shouldBe true
     client.addAlias(customIndex2, multiAlias).get shouldBe true
     searchIds(s"SELECT id FROM $multiAlias WHERE amount = 8") shouldBe Set("e8") // the alias works
 
-    val response = searchResponse(
-      s"SELECT id FROM $multiAlias WHERE event_ts >= '2026-06-04 00:00:00'"
-    )
-    response.query should include("2026-06-04 00:00:00")
-    response.query should not include "2026-06-04T00:00:00"
+    val members = s"$customIndex,$customIndex2"
+    val where = "WHERE event_ts >= '2026-06-04 00:00:00'"
+    val response = searchResponse(s"SELECT id FROM $multiAlias $where")
+    response.query shouldBe searchResponse(s"SELECT id FROM $members $where").query
     ids(response.results) shouldBe fromJune4
 
-    // and an unparseable literal is Elasticsearch's to judge there, never our named 400
-    client.search(
-      SelectStatement(s"SELECT id FROM $multiAlias WHERE event_ts >= 'not-a-date'")
-    ) match {
-      case ElasticFailure(error) => error.message should not include "Cannot parse '"
-      case ElasticSuccess(_)     => // a lenient member may match nothing; the point is no named 400
-    }
+    def unparseable(from: String): Either[Option[Int], Set[String]] =
+      client.search(SelectStatement(s"SELECT id FROM $from WHERE event_ts >= 'not-a-date'")) match {
+        case ElasticFailure(error)    => Left(error.statusCode)
+        case ElasticSuccess(answered) => Right(ids(answered.results))
+      }
+    unparseable(multiAlias) shouldBe unparseable(members)
   }
 
   // ---- DML: the same WHERE, the same rows (review R4-4) --------------------------------------------

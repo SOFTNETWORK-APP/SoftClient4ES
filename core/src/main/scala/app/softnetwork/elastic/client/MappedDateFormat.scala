@@ -1120,8 +1120,26 @@ private[client] object MappedDateFormat {
 
   /** The format of a field, as `dialect` reads it: its `||` alternatives, each a built-in name or a
     * custom pattern. `clock` dates Joda's two-digit years.
+    *
+    * SCHEMA-17 (R-159, A-193) -- parsed ONCE per (format, dialect) at the default clock, and
+    * shared: the parse is a pure function of both (the clock is read per value, the per-shape memo
+    * is concurrent, the pattern registries are construction-only). A format built with any other
+    * clock -- injected, fixed, a test's -- is never stored nor handed out: Joda's two-digit years
+    * read it. Bounded: past the cap a format is parsed on each call.
     */
-  def apply(spec: String, dialect: Dialect, clock: Clock = Clock.systemUTC()): MappedDateFormat = {
+  def apply(spec: String, dialect: Dialect, clock: Clock = Clock.systemUTC()): MappedDateFormat =
+    // `DefaultClock` is the receiver: `SystemClock.equals` (same zone), never an injected clock's.
+    // JDK 8 builds a new system clock per `Clock.systemUTC()` call, so identity would never match.
+    if (DefaultClock == clock) parsed((spec, dialect))(build(spec, dialect, DefaultClock))
+    else build(spec, dialect, clock)
+
+  private[this] lazy val DefaultClock: Clock = Clock.systemUTC()
+
+  /** The formats parsed at the default clock, by (format, dialect). */
+  private[this] lazy val parsed =
+    new app.softnetwork.elastic.utils.BoundedMemo[(String, Dialect), MappedDateFormat](1024)
+
+  private def build(spec: String, dialect: Dialect, clock: Clock): MappedDateFormat = {
     // Elasticsearch 6.8 reads a format with a leading `8` -- every alternative -- with `java.time`
     val java6 = dialect == Dialect.Joda && spec.length > 1 && spec.charAt(0) == '8'
     MappedDateFormat(

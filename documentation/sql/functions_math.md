@@ -22,7 +22,8 @@ ABS(x)
 
 **Output:**
 - The type of `x`, as PostgreSQL's `abs`: `ABS` of an `INT` is an `INT` (a whole number), of a
-  `DOUBLE` a `DOUBLE`
+  `DOUBLE` a `DOUBLE`. Over a column of no known type it is `ANY`, over `NULL` a `BIGINT`, over a
+  text, a boolean or a date a `DOUBLE`, the class its script answers (*since `0.25.0`*: `NUMERIC`)
 
 **Examples:**
 ```sql
@@ -131,7 +132,10 @@ ROUND(x, n)
 **Output:**
 - the type of `x`, as DuckDB types it: a `TINYINT`, `SMALLINT`, `INT` or `BIGINT` operand gives
   that type, a `REAL` a `REAL`, a `DOUBLE` (or a `DECIMAL` cast, a `DOUBLE` here) a `DOUBLE`; an
-  operand of no known number type gives `NUMERIC` (*since `0.25.0`*: `NUMERIC` for every operand).
+  operand that is a column of no known type gives `ANY`, `NULL` a `BIGINT`, and a text, a boolean,
+  a date or a time the class its script answers, a `BIGINT`, with an `n` other than 0 a `DOUBLE` (*since
+  `0.25.0`*: `NUMERIC` for every operand). No result column reports `NUMERIC` (`describe`, JDBC,
+  Arrow): an operand known to be a number, but not which one, gives `ANY` there.
   To a negative `n` a `TINYINT`, `SMALLINT` or `INT` operand gives a `BIGINT`, which its rounded
   value always fits (`ROUND(CAST(2147483647 AS INT), -1)` is the `BIGINT` `2147483650`), where
   DuckDB keeps the operand's type and wraps the value. A `GROUP BY ROUND(n)` key over an integer

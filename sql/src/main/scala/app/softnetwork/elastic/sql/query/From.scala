@@ -16,7 +16,6 @@
 
 package app.softnetwork.elastic.sql.query
 
-import app.softnetwork.elastic.sql.`type`.SQLTypeUtils
 import app.softnetwork.elastic.sql.operator.{AND, EQ}
 import app.softnetwork.elastic.sql.schema.Schema
 import app.softnetwork.elastic.sql.{
@@ -1155,9 +1154,14 @@ object NestedElements {
     * maps it otherwise; an index that does not map it holds no element, and its nested query may
     * then tolerate it (`ignore_unmapped`). Without a schema, or for a path no index maps as nested,
     * `false`: the statement fails as before.
+    *
+    * SCHEMA-17 (A-167): the field's REAL Elasticsearch type (`Column.mappingType`, #292), never the
+    * one its SQL type would write: a list of objects declared over an `object` field
+    * (`ARRAY<STRUCT> OPTIONS (type = 'object')`) is no nested field, and a field mapped `nested` is
+    * one whatever it is declared.
     */
   def mappedAsNested(schema: Option[Schema], path: String): Boolean =
-    schema.flatMap(_.find(path)).exists(c => SQLTypeUtils.elasticType(c.dataType) == "nested")
+    schema.flatMap(_.find(path)).exists(_.mappingType == "nested")
 
   def buildNestedTrees(nestedElements: Seq[NestedElement]): Seq[NestedElement] = {
     if (nestedElements.isEmpty) return Nil

@@ -235,18 +235,20 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     flooding.schemaMissCount should be <= 1024
   }
 
-  it should "resolve the schema through an alias over one index, and treat an alias over several as unknown" in {
+  it should "resolve the schema through an alias over one index, and through an alias over several by their merge" in {
     val events =
       """{"aliases":{"events_alias":{},"multi_alias":{}},"mappings":{"properties":{
         |  "id":{"type":"keyword"},"event_ts":{"type":"date"}}},
         |"settings":{"index":{"number_of_shards":"1","number_of_replicas":"0"}}}""".stripMargin
     val archive = events.replace("\"events_alias\":{},", "")
+    var multiGets = 0
     val client = new RecordingClient {
       // what `GET /<alias>` answers: the concrete index documents keyed by THEIR names
       override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
         index match {
           case "events_alias" => ElasticResult.success(Some(s"""{"events":$events}"""))
           case "multi_alias" =>
+            multiGets += 1
             ElasticResult.success(Some(s"""{"events":$events,"archive":$archive}"""))
           case _ => ElasticResult.success(None)
         }
@@ -256,20 +258,23 @@ class TemporalLiteralSearchSpec extends AnyFlatSpec with Matchers with BeforeAnd
     )
     client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
     client.schemaMissCount shouldBe 0 // a resolved alias is never a miss
-    client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // ambiguous: not found
-    val before = client.schemaLookups
+    client.getIndex("multi_alias") shouldBe ElasticSuccess(None) // DDL's reading: not ONE index
+    val before = multiGets
     client.search(
       SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts >= '$spaceForm' LIMIT 5")
     )
-    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
-    client.schemaLookups shouldBe (before + 1)
-    client.schemaMissCount shouldBe 1
-    // R4-19: the ambiguous alias is BOUNDED -- a second statement costs no further lookup
+    // SCHEMA-17 (A-161): a query reads an alias over several indices as their merge, as it reads
+    // a pattern -- typed, never a miss -- from ONE `GET <alias>`
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
+    multiGets shouldBe (before + 1)
+    client.schemaMissCount shouldBe 0
+    // R4-19: the alias over several indices is BOUNDED -- a second statement is served by the
+    // cached merge, with no further `GET <alias>`
     client.search(
       SelectStatement(s"SELECT id FROM multi_alias WHERE event_ts < '$spaceForm' LIMIT 5")
     )
-    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(spaceForm)
-    client.schemaLookups shouldBe (before + 1)
+    client.lastQuery.getOrElse(fail("no query was rendered")).query should include(isoForm)
+    multiGets shouldBe (before + 1)
   }
 
   it should "drop a cached alias schema when the concrete index it resolved from is invalidated" in {

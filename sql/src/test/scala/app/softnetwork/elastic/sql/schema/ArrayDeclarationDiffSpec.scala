@@ -18,9 +18,10 @@ package app.softnetwork.elastic.sql.schema
 
 import app.softnetwork.elastic.schema.Index
 import app.softnetwork.elastic.sql.parser.Parser
-import app.softnetwork.elastic.sql.query.{AlterTable, CreateTable}
+import app.softnetwork.elastic.sql.query.{AlterTable, CreateTable, SingleSearch}
 import app.softnetwork.elastic.sql.`type`.SQLTypes
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.node.ObjectNode
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -34,6 +35,32 @@ import org.scalatest.matchers.should.Matchers
   * change of X itself on a list column stays `Impossible`, as on 0.24.0 where every list read ANY.
   */
 class ArrayDeclarationDiffSpec extends AnyFlatSpec with Matchers {
+
+  /** `table`'s mapping `properties` without core's field `meta` keys (SCHEMA-17 A-169, `sql_*`):
+    * the Elasticsearch-side bytes a list declaration leaves unchanged -- the declaration itself is
+    * copied into each leaf's `meta`, which an in-place mapping update writes.
+    */
+  private def esSide(table: Table): String = {
+    val copy = table.indexMappings.path("properties").deepCopy[JsonNode]()
+    def strip(fields: JsonNode): Unit =
+      if (fields != null && fields.isObject)
+        fields.elements().forEachRemaining { field =>
+          field match {
+            case node: ObjectNode =>
+              node.get("meta") match {
+                case meta: ObjectNode =>
+                  Seq("sql_type", "sql_format", "sql_list_depths").foreach(k => meta.remove(k))
+                  if (meta.size() == 0) node.remove("meta")
+                case _ =>
+              }
+              strip(node.get("properties"))
+              strip(node.get("fields"))
+            case _ =>
+          }
+        }
+    strip(copy)
+    copy.toString
+  }
 
   private val mapper = new ObjectMapper()
 
@@ -122,8 +149,7 @@ class ArrayDeclarationDiffSpec extends AnyFlatSpec with Matchers {
         desired.find(path).map(_.dataType.typeId).getOrElse("") should startWith("ARRAY<")
         // the Elasticsearch mapping is the same bytes: only `_meta` changes (a sub-field whose
         // options re-parse as another number class reports a no-op `FieldAltered`, Safe)
-        desired.indexMappings.path("properties").toString shouldBe
-        rawMapping.indexMappings.path("properties").toString
+        esSide(desired) shouldBe esSide(rawMapping)
         diff.columns.filterNot(_.isInstanceOf[FieldAltered]) shouldBe empty
         diff.mappings.collect { case MappingSet(k, _) => k } shouldBe List(key)
         diff.safety shouldBe Safe
@@ -147,8 +173,7 @@ class ArrayDeclarationDiffSpec extends AnyFlatSpec with Matchers {
     val desired = alter(declared, statement)
     val diff = declared.diff(desired)
     withClue(s"$statement: columns=${diff.columns} mappings=${diff.mappings}: ") {
-      desired.indexMappings.path("properties").toString shouldBe
-      declared.indexMappings.path("properties").toString
+      esSide(desired) shouldBe esSide(declared)
       diff.columns.filterNot(_.isInstanceOf[FieldAltered]) shouldBe empty
       diff.mappings.collect { case MappingSet(k, _) => k } shouldBe
       List("_meta.columns.obj.multi_fields.f.data_type")
@@ -196,5 +221,101 @@ class ArrayDeclarationDiffSpec extends AnyFlatSpec with Matchers {
       }
     }
     ColumnTypeChanged("c", SQLTypes.Int, SQLTypes.BigInt)().safety shouldBe UnsafeReindex
+  }
+
+  behavior of "declaring an object column a list of objects in place (SCHEMA-17 A-166)"
+
+  it should "keep the object mapping: ONE Safe _meta data_type key, the field still object" in {
+    val desired =
+      alter(rawMapping, "ALTER TABLE zs_ext ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>")
+    val obj = desired.find("obj").getOrElse(fail("no obj"))
+    obj.dataType shouldBe SQLTypes.Array(SQLTypes.Struct)
+    obj.mappingType shouldBe "object"
+    obj.node.get("type").asText() shouldBe "object"
+    obj.multiFields.map(_.name) shouldBe List("a", "f", "x")
+    val diff = rawMapping.diff(desired)
+    diff.columns shouldBe empty
+    diff.mappings.collect { case MappingSet(key, value) => key -> value.value } shouldBe
+    List("_meta.columns.obj.data_type" -> "ARRAY<STRUCT>")
+    diff.safety shouldBe Safe
+  }
+
+  it should "render ARRAY<STRUCT> OPTIONS (type = 'object') in SHOW CREATE TABLE, which re-parses to the same table" in {
+    val desired =
+      alter(rawMapping, "ALTER TABLE zs_ext ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>")
+    val text = desired.sql
+    // the renderer quotes an option's text with double quotes, as every other option it renders
+    text should include("""ARRAY<STRUCT> FIELDS (""")
+    text should include(""") OPTIONS (type = "object")""")
+    val recreated = Parser(text) match {
+      case Right(ct: CreateTable) => ct.schema
+      case other                  => fail(s"[$text] does not re-parse: $other")
+    }
+    val obj = recreated.find("obj").getOrElse(fail("no obj"))
+    obj.dataType shouldBe SQLTypes.Array(SQLTypes.Struct)
+    obj.mappingType shouldBe "object"
+    recreated.indexMappings.get("properties").get("obj").get("type").asText() shouldBe "object"
+  }
+
+  it should "keep CREATE TABLE ... ARRAY<STRUCT> meaning nested, and OPTIONS (type = 'object') the list over object" in {
+    val created = Parser(
+      "CREATE TABLE t (id KEYWORD, nst ARRAY<STRUCT> FIELDS (p INT), " +
+      "lst ARRAY<STRUCT> FIELDS (q INT) OPTIONS (type = 'object'))"
+    ) match {
+      case Right(ct: CreateTable) => ct.schema
+      case other                  => fail(s"$other")
+    }
+    created.find("nst").map(_.mappingType) shouldBe Some("nested")
+    created.find("lst").map(_.mappingType) shouldBe Some("object")
+    created.find("lst").map(_.dataType) shouldBe Some(SQLTypes.Array(SQLTypes.Struct))
+  }
+
+  /** The target `CREATE TABLE … AS SELECT` builds from its source. */
+  private def copyOf(source: Table, sql: String): Table =
+    Parser(sql) match {
+      case Right(s: SingleSearch) => source.mergeWithSearch(s)
+      case other                  => fail(s"[$sql] is not a single search: $other")
+    }
+
+  it should "write a copy (CREATE TABLE ... AS SELECT) of a list over object as nested, at any depth (A-167)" in {
+    // declared in place: the source stays `object`, the copy is `nested`, its sub-fields kept
+    val declared =
+      alter(rawMapping, "ALTER TABLE zs_ext ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>")
+    val copied = copyOf(declared, "SELECT id, obj FROM zs_ext")
+    val obj = copied.find("obj").getOrElse(fail("no obj in the copy"))
+    obj.dataType shouldBe SQLTypes.Array(SQLTypes.Struct)
+    obj.mappingType shouldBe "nested"
+    obj.options.contains("type") shouldBe false
+    obj.multiFields.map(_.name) shouldBe List("a", "f", "x")
+    copied.find("obj.f").map(_.options.contains("ignore_above")) shouldBe Some(true)
+    copied.indexMappings.get("properties").get("obj").get("type").asText() shouldBe "nested"
+    declared.find("obj").map(_.mappingType) shouldBe Some("object")
+    // created with the option, under a struct too; a `nested` list and every other kept `type`
+    // (SCHEMA-7: `ip`, a CREATE's `keyword` over VARCHAR) are copied as they are
+    val created = Parser(
+      "CREATE TABLE t (id KEYWORD, c VARCHAR OPTIONS (type = 'keyword'), " +
+      "i KEYWORD OPTIONS (type = 'ip'), nst ARRAY<STRUCT> FIELDS (p INT), " +
+      "lst ARRAY<STRUCT> FIELDS (q INT) OPTIONS (type = 'object'), " +
+      "st STRUCT FIELDS (sub ARRAY<STRUCT> FIELDS (r INT) OPTIONS (type = 'object')))"
+    ) match {
+      case Right(ct: CreateTable) => ct.schema
+      case other                  => fail(s"$other")
+    }
+    created.find("st.sub").map(_.mappingType) shouldBe Some("object")
+    val copy = copyOf(created, "SELECT id, c, i, nst, lst, st FROM t")
+    Seq(
+      "c"      -> "keyword",
+      "i"      -> "ip",
+      "nst"    -> "nested",
+      "lst"    -> "nested",
+      "st"     -> "object",
+      "st.sub" -> "nested"
+    ).foreach { case (path, esType) =>
+      withClue(s"$path: ")(copy.find(path).map(_.mappingType) shouldBe Some(esType))
+    }
+    val properties = copy.indexMappings.get("properties")
+    properties.get("lst").get("type").asText() shouldBe "nested"
+    properties.get("st").get("properties").get("sub").get("type").asText() shouldBe "nested"
+    copy.find("st.sub.r").flatMap(_.struct).map(_.path) shouldBe Some("st.sub")
   }
 }

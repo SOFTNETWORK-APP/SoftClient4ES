@@ -218,7 +218,8 @@ trait ElasticConversion {
             // AS y …` kept ONE of the two and BOTH branches' rows came back as `y`, with the `x`
             // the analyst asked for null-filled — branch 1's own rows included.
             val leg0 = legProjections.lift(leg)
-            jsonToRows(
+            val byName = leg0.flatMap(_.rows)
+            val legRows = jsonToRows(
               response,
               leg0.map(_.fieldAliases).getOrElse(fieldAliases),
               // and from ITS OWN aggregation plan: the merged one keeps the LAST branch's
@@ -233,6 +234,8 @@ trait ElasticConversion {
               // ...and in the type the result gives each column (`SetOperationValues`)
               converters = leg0.flatMap(_.converters).orNull
             )(leg0.flatMap(_.context).getOrElse(context))
+            // SCHEMA-17 (A-165 N): rows matched by name, converted per name
+            byName.fold(legRows)(convert => legRows.map(convert))
           } else {
             Seq.empty
           }
@@ -789,6 +792,15 @@ trait ElasticConversion {
               Option(hit.get("_index")).map(_.asText())
             )
           )
+        // SCHEMA-17 (LEAD-Q1 b): a read-only user's date of no declared format, not ISO 8601
+        case cell: HitReading.UnreadableDateCell =>
+          throw new IllegalArgumentException(
+            HitReading.unreadableDateMessage(
+              cell,
+              Option(hit.get("_id")).map(_.asText()),
+              Option(hit.get("_index")).map(_.asText())
+            )
+          )
       }
     }
 
@@ -835,13 +847,20 @@ trait ElasticConversion {
           val asReadKey = reading.asReadKeys.get(key)
           if (asReadKey ne null) entries += asReadKey -> jsonNodeToAny(e.getValue, fieldAliases)
         }
-        if (!listPaths.isEmpty && e.getValue.isArray) {
+        // SCHEMA-17 (A-181): a path under a declared list of objects is collected whatever the
+        // parent's value is -- one object holds a list of one value --, a point as one value
+        if (!listPaths.isEmpty && (e.getValue.isArray || reading.collectsAlways)) {
           val selected = listPaths.get(key)
           if (selected ne null) {
-            if (collectedPaths eq null) collectedPaths = ListBuffer.empty
+            val list = e.getValue.isArray
             selected.foreach { path =>
-              val values = HitReading.collected(e.getValue, path.segments)
-              collectedPaths += path.key -> (if (values eq null) null else path.reader(values))
+              if (list || path.always) {
+                if (collectedPaths eq null) collectedPaths = ListBuffer.empty
+                val values = HitReading.collected(e.getValue, path.segments, path.points)
+                // R-150 (A-183): the cause of a several-valued cell picks its rule (`read`)
+                collectedPaths += path.key -> (if (values eq null) null
+                                               else path.read(e.getValue, values))
+              }
             }
           }
         }
@@ -947,11 +966,17 @@ trait ElasticConversion {
     * never a copy — without any rebuild. Degenerate duplicate requested names fall back to the
     * legacy per-row scan (with the name set still hoisted), trading speed for the exact
     * [[normalizeRow]] semantics on that shape.
+    *
+    * The `*` item of `SELECT *, col` is never requested: `*` is no column (issue #43), as
+    * [[jsonToRows]] drops it, so a stream row carries no `*` key its schema does not name.
     */
   protected def rowNormalizer(
     requestedFields: Seq[String]
-  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] =
-    rowProjector(requestedFields, requestedFields)
+  )(implicit context: ConversionContext): ListMap[String, Any] => ListMap[String, Any] = {
+    val requested =
+      if (requestedFields.contains("*")) requestedFields.filterNot(_ == "*") else requestedFields
+    rowProjector(requested, requested)
+  }
 
   /** [[rowNormalizer]] with the OUTPUT names decoupled from the names LOOKED UP in the row — the
     * mechanism SQL-92 §7.10 positional matching needs (issue #354).
@@ -2094,6 +2119,14 @@ trait ElasticConversion {
                   case cell: HitReading.MultiValuedCell =>
                     throw new IllegalArgumentException(
                       HitReading.multiValuedMessage(
+                        cell,
+                        Option(hit.get("_id")).map(_.asText()),
+                        Option(hit.get("_index")).map(_.asText())
+                      )
+                    )
+                  case cell: HitReading.UnreadableDateCell =>
+                    throw new IllegalArgumentException(
+                      HitReading.unreadableDateMessage(
                         cell,
                         Option(hit.get("_id")).map(_.asText()),
                         Option(hit.get("_index")).map(_.asText())

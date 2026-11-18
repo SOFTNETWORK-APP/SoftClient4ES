@@ -402,4 +402,61 @@ class MergedSchemaSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-162) -- a list declared on one member beside its scalar on another
+  // ---------------------------------------------------------------------------------------------
+
+  private def declared(name: String, meta: String, properties: String): (String, Table) =
+    name -> Index(
+      name,
+      s"""{"mappings":{"_meta":{"columns":{$meta}},"properties":{$properties}},"settings":{}}"""
+    ).schema
+
+  "a list declared on one index beside its scalar on another" should "merge to the list, in either order (A-162)" in {
+    val listed = declared(
+      "logs-2",
+      """"tags":{"data_type":"ARRAY<KEYWORD>"}""",
+      """"tags":{"type":"keyword"}"""
+    )
+    val scalar = index("logs-1", """"tags":{"type":"keyword"}""")
+    Seq(Seq(scalar, listed), Seq(listed, scalar)).foreach { members =>
+      withClue(s"${members.map(_._1)}: ") {
+        val (merged, disagreements) = mergedSchema("logs-*", members)
+        disagreements shouldBe empty
+        merged.find("tags").map(_.dataType) shouldBe Some(SQLTypes.Array(SQLTypes.Keyword))
+      }
+    }
+  }
+
+  it should "merge an ARRAY<STRUCT> over object beside a STRUCT to the list, its fields merged" in {
+    val listed = declared(
+      "logs-2",
+      """"obj":{"data_type":"ARRAY<STRUCT>"}""",
+      """"obj":{"properties":{"a":{"type":"integer"}}}"""
+    )
+    val scalar =
+      index("logs-1", """"obj":{"properties":{"a":{"type":"integer"},"b":{"type":"keyword"}}}""")
+    Seq(Seq(scalar, listed), Seq(listed, scalar)).foreach { members =>
+      withClue(s"${members.map(_._1)}: ") {
+        val (merged, disagreements) = mergedSchema("logs-*", members)
+        disagreements shouldBe empty
+        val obj = merged.find("obj").getOrElse(fail("no obj"))
+        obj.dataType shouldBe SQLTypes.Array(SQLTypes.Struct)
+        obj.mappingType shouldBe "object"
+        obj.multiFields.map(_.name) should contain theSameElementsAs Seq("a", "b")
+      }
+    }
+  }
+
+  it should "not merge a list beside a scalar of another Elasticsearch type or date format" in {
+    val listedDate = declared(
+      "logs-2",
+      """"d":{"data_type":"ARRAY<TIMESTAMP>"}""",
+      """"d":{"type":"date","format":"yyyy/MM/dd"}"""
+    )
+    val scalarDate = index("logs-1", """"d":{"type":"date"}""")
+    val (merged, _) = mergedSchema("logs-*", Seq(scalarDate, listedDate))
+    merged.find("d").map(_.dataType) should not be Some(SQLTypes.Array(SQLTypes.Timestamp))
+  }
 }

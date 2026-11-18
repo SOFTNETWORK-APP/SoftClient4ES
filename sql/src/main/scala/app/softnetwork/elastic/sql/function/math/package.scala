@@ -29,6 +29,7 @@ import app.softnetwork.elastic.sql.{
   Updateable
 }
 import app.softnetwork.elastic.sql.`type`.{
+  SQLArray,
   SQLBigInt,
   SQLDouble,
   SQLInt,
@@ -89,6 +90,26 @@ package object math {
     override def painless(context: Option[PainlessContext] = None): String = "Math.toRadians"
   }
 
+  /** SCHEMA-17 (A-175) -- the type `ABS` / `ROUND` report, in a QUERY, over an operand of no number
+    * type, never the internal NUMERIC (DuckDB 1.5.5, measured: `abs(NULL)` / `round(NULL, s)` are
+    * BIGINT; an operand of no known type, `ANY`, makes the item `ANY`). Any other operand (a date,
+    * a time, a text, a boolean) is a binder error to DuckDB; core answers the class its script
+    * answers when it runs, `rendered`, so the declared type is the cells' one.
+    *
+    * Outside a query ([[SQLTypeUtils.readsWholeValues]]: an ingest processor, a transform, the
+    * validation of a computed column, SCHEMA-6 R-66) the operand keeps NUMERIC, as on 0.24.0: no
+    * result column is typed in that scope.
+    */
+  private[math] def nonNumberOperand(operand: SQLType, rendered: SQLType): SQLType =
+    if (SQLTypeUtils.readsWholeValues) SQLTypes.Numeric
+    else
+      operand match {
+        case SQLTypes.Any                     => SQLTypes.Any
+        case SQLTypes.Null                    => SQLTypes.BigInt
+        case SQLTypes.Numeric | (_: SQLArray) => SQLTypes.Numeric
+        case _                                => rendered
+      }
+
   sealed trait MathematicalFunction extends TransformFunction[SQLNumeric, SQLNumeric] {
     override def inputType: SQLNumeric = SQLTypes.Numeric
 
@@ -127,7 +148,8 @@ package object math {
       case Abs =>
         SQLTypeUtils.operandType(arg.reportedType) match {
           case n: SQLNumeric => n
-          case _             => super.reportedType
+          // SCHEMA-17 (A-175): never NUMERIC -- the script answers a `Double`
+          case other => nonNumberOperand(other, SQLTypes.Double)
         }
       // `EXP`, `LN` / `LOG`, `LOG10` and `SQRT` are DOUBLE whatever the argument, schema-less
       // included, as DuckDB 1.5.5 types them (`numeric.cpp`): their Painless already answers a
@@ -361,7 +383,14 @@ package object math {
       case whole @ (_: SQLTinyInt | _: SQLSmallInt | _: SQLInt | _: SQLBigInt) => whole
       case _: SQLReal                                                          => SQLTypes.Real
       case _: SQLDouble                                                        => SQLTypes.Double
-      case _                                                                   => super.reportedType
+      case SQLTypes.Numeric                                                    => SQLTypes.Numeric
+      // SCHEMA-17 (A-175): never NUMERIC -- to decimal places the script answers a `Double`, to
+      // none a `Long` ([[toPainlessCall]])
+      case other =>
+        nonNumberOperand(
+          other,
+          if (scale.exists(_ != 0)) SQLTypes.Double else SQLTypes.BigInt
+        )
     }
 
     override def sql: String = {

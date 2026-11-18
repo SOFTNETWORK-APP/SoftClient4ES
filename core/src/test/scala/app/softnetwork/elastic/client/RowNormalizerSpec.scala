@@ -136,6 +136,17 @@ class RowNormalizerSpec extends AnyFlatSpec with Matchers with ElasticConversion
     normalized.last should be theSameInstanceAs shaped
   }
 
+  it should "never request the `*` item of `SELECT *, col` (#43, SCHEMA-17 AC1)" in {
+    // the stream route of `SELECT *, items.loc`: the star's columns are the row's own entries
+    val row = ListMap[String, Any]("k" -> "one", "items" -> List(1), "items.loc" -> List(2))
+    normalize(row, Seq("*", "items.loc"))(NativeContext).toList shouldBe
+    List("items.loc" -> List(2), "k" -> "one", "items" -> List(1))
+    normalize(row, Seq("*", "items.loc"))(EntityContext).keySet should not contain "*"
+    // `*` alone, or twice: nothing requested, the row as it is
+    normalize(row, Seq("*")) should be theSameInstanceAs row
+    normalize(row, Seq("*", "*")) should be theSameInstanceAs row
+  }
+
   it should "fall back to the legacy semantics when requested fields contain duplicates" in {
     val duplicated = Seq("a", "b", "a")
     val rows = Seq(

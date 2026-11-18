@@ -69,9 +69,20 @@ private[client] trait CacheEntry {
 
 /** A cached schema and the TTL resolved for it when it was fetched — see
   * [[SchemaCacheTtlApi.schemaCacheTtlMsFor]].
+  *
+  * @param members
+  *   SCHEMA-17 (A-161): the indices an alias or a data stream over SEVERAL indices merged into this
+  *   entry (more than one = the merge of a query's source, which types a query and never DDL);
+  *   empty for every other entry. A change of any of them drops the entry
+  *   (`IndicesApi.invalidateAliasesOf`): the target travels ON the entry, so there is no second map
+  *   to keep in sync for it.
   */
-private[client] case class CachedSchema(schema: Schema, cachedAt: Long, ttlMs: Long)
-    extends CacheEntry
+private[client] case class CachedSchema(
+  schema: Schema,
+  cachedAt: Long,
+  ttlMs: Long,
+  members: Set[String] = Set.empty
+) extends CacheEntry
 
 /** A cached primary-shard count (#238) on the schema's clock: the shortest TTL among the indices
   * the cache key names.

@@ -245,7 +245,12 @@ object TemplateConverter {
       }
 
       if (root.has("mappings")) {
-        val mappingsNode = root.get("mappings")
+        // SCHEMA-17 (A-170): core's field `meta` keys left out below 7.6, as every writer does
+        val mappingsNode = root.get("mappings") match {
+          case mappings: ObjectNode =>
+            MappingConverter.withoutCoreFieldMeta(mappings, elasticVersion)
+          case other => other
+        }
 
         // Check if we need to wrap in _doc for ES 6.x
         if (

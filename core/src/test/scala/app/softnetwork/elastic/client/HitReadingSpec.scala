@@ -287,6 +287,23 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     both("obj.zz") shouldBe 1
   }
 
+  it should "fail a STRUCT cell holding several objects, naming the ALTER that declares the list (SCHEMA-17 A-168)" in {
+    val failure = intercept[Exception] {
+      rows("SELECT obj FROM s2_t", """{"_id": "doc9", "_source": {"obj": [{"a": 1}, {"a": 2}]}}""")
+    }
+    val message = Option(failure.getCause).fold(failure.getMessage)(_.getMessage)
+    message should include("Column obj")
+    message should include("doc9")
+    val remedy = "ALTER TABLE s2_t ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>"
+    message should include(remedy)
+    Parser(remedy).isRight shouldBe true
+    // one object, a list of one, an empty list: main's answers
+    def a(value: Any): Any = value.asInstanceOf[scala.collection.Map[String, Any]].get("a").orNull
+    a(row("SELECT obj FROM s2_t", """{"obj": {"a": 1}}""")("obj")) shouldBe 1
+    a(row("SELECT obj FROM s2_t", """{"obj": [{"a": 1}]}""")("obj")) shouldBe 1
+    row("SELECT obj FROM s2_t", """{"obj": []}""")("obj") shouldBe (null: Any)
+  }
+
   it should "answer a value its typed reader cannot read as stored, never a failure (unreadable)" in {
     row("SELECT n FROM s2_t", """{"n": "abc"}""")("n") shouldBe "abc"
     row("SELECT g FROM s2_t", """{"g": "not a point"}""")("g") shouldBe "not a point"
@@ -615,27 +632,35 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
       | }}, "settings": {"index": {"number_of_shards": "1"}}}}""".stripMargin
   ).schema
 
-  /** `s7_t` as a `read`-only user is typed (`_field_caps`: no `_meta`, no format). */
-  private val s7Caps: Schema = {
-    val document = app.softnetwork.elastic.schema.FieldCaps
-      .members(
-        "s7_t",
-        new com.fasterxml.jackson.databind.ObjectMapper().readTree(
-          """{"indices": ["s7_t"], "fields": {
-            | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
-            | "d": {"date": {"type": "date", "metadata_field": false}},
-            | "dn": {"date_nanos": {"type": "date_nanos", "metadata_field": false}},
-            | "ck": {"keyword": {"type": "keyword", "metadata_field": false}},
-            | "tags": {"keyword": {"type": "keyword", "metadata_field": false}}
-            |}}""".stripMargin
-        )
-      )
-      .head
-      ._2
-    Index("s7_t", document).schema.copy(
-      tableType = app.softnetwork.elastic.sql.schema.TableType.FieldCapabilities
-    )
+  /** `s7_t` as a `read`-only user is typed from `fieldCaps`, as the client types it
+    * (`FieldCaps.table`).
+    */
+  private def capsSchema(fieldCaps: String): Schema = {
+    val answer = app.softnetwork.elastic.schema.FieldCaps
+      .read("s7_t", new com.fasterxml.jackson.databind.ObjectMapper().readTree(fieldCaps))
+    app.softnetwork.elastic.schema.FieldCaps
+      .table(answer, Index("s7_t", answer.members.head._2).schema)
   }
+
+  /** `s7_t` as a `read`-only user is typed (`_field_caps`: no `_meta`, no format). */
+  private val s7Caps: Schema = capsSchema(
+    """{"indices": ["s7_t"], "fields": {
+      | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "d": {"date": {"type": "date", "metadata_field": false}},
+      | "dn": {"date_nanos": {"type": "date_nanos", "metadata_field": false}},
+      | "ck": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "tags": {"keyword": {"type": "keyword", "metadata_field": false}}
+      |}}""".stripMargin
+  )
+
+  /** [[s7Caps]] where core declared `tags` (its field `meta`, SCHEMA-17 A-169). */
+  private val s7CapsDeclared: Schema = capsSchema(
+    """{"indices": ["s7_t"], "fields": {
+      | "id": {"keyword": {"type": "keyword", "metadata_field": false}},
+      | "tags": {"keyword": {"type": "keyword", "metadata_field": false,
+      |   "meta": {"sql_type": ["KEYWORD"]}}}
+      |}}""".stripMargin
+  )
 
   private def on(table: Schema, sql: String): SingleSearch = Parser(sql) match {
     case Right(s: SingleSearch) => s.update(Some(table))
@@ -645,10 +670,15 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
   /** The rows `sql` over `table` answers for `hits`, read as the client reads them (the
     * several-valued cell mode `HitReading.multiValuedFor` gives the statement).
     */
-  private def rowsOn(table: Schema, sql: String, hits: String): Seq[ListMap[String, Any]] = {
+  private def rowsOn(
+    table: Schema,
+    sql: String,
+    hits: String,
+    version: Option[String] = Some("6.8.23")
+  ): Seq[ListMap[String, Any]] = {
     val single = on(table, sql)
     implicit val context: ConversionContext =
-      contextOf(single, multiValued = HitReading.multiValuedFor(single))
+      contextOf(single, multiValued = HitReading.multiValuedFor(single, version))
     val response = s"""{"hits": {"total": {"value": 1, "relation": "eq"}, "hits": [$hits]}}"""
     ElasticConversion
       .parseResponse(response, single.fieldAliases, ListMap.empty, outputs(single))
@@ -706,9 +736,13 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  "HitReading.multiValuedFor" should "read a several-valued cell as its list for a _field_caps schema only (A-41)" in {
-    HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t")) shouldBe MultiValued.AsRead
-    HitReading.multiValuedFor(on(s7, "SELECT ip FROM s7_t")) shouldBe HitReading.Default
+  "HitReading.multiValuedFor" should "read a several-valued cell as its list for a _field_caps schema on ES 6.8 or an unknown version only (A-41, LEAD-Q2)" in {
+    HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t"), Some("6.8.23")) shouldBe
+    MultiValued.AsRead
+    HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t"), None) shouldBe
+    MultiValued.AsRead
+    HitReading.multiValuedFor(on(s7, "SELECT ip FROM s7_t"), Some("6.8.23")) shouldBe
+    HitReading.Default
     rowsOn(
       s7Caps,
       "SELECT tags FROM s7_t",
@@ -716,16 +750,63 @@ class HitReadingSpec extends AnyFlatSpec with Matchers {
     ).head("tags") shouldBe List("a", "b")
   }
 
-  "A date typed from _field_caps" should "read ISO text as an instant, any other value as stored (A-40)" in {
+  it should "take the default rule from ES 7.6, where a field's meta declares it (SCHEMA-17 A-173)" in {
+    Seq("7.6.0", "7.17.29", "8.18.3", "9.0.3").foreach { v =>
+      withClue(v) {
+        HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t"), Some(v)) shouldBe
+        HitReading.Default
+      }
+    }
+    HitReading.multiValuedFor(on(s7Caps, "SELECT tags FROM s7_t"), Some("7.5.2")) shouldBe
+    MultiValued.AsRead
+    // a several-valued cell of a field core declared fails as a mapping reader's does, naming the
+    // ALTER
+    val failure = intercept[Exception] {
+      rowsOn(
+        s7CapsDeclared,
+        "SELECT tags FROM s7_t",
+        """{"_id": "a1", "_source": {"tags": ["a", "b"]}}""",
+        Some("8.18.3")
+      )
+    }
+    val message = Option(failure.getCause).fold(failure.getMessage)(_.getMessage)
+    message should include("tags")
+    message should include("SET DATA TYPE ARRAY<")
+    // SCHEMA-17 fix R-150 (A-184): a field with no core meta answers its values as stored, as on
+    // 6.8 -- the statement's rule stays the default, for its objects
+    rowsOn(
+      s7Caps,
+      "SELECT tags FROM s7_t",
+      """{"_id": "a1", "_source": {"tags": ["a", "b"]}}""",
+      Some("8.18.3")
+    ).head("tags") shouldBe List("a", "b")
+    // one value: answered
+    Seq(s7Caps, s7CapsDeclared).foreach { table =>
+      rowsOn(
+        table,
+        "SELECT tags FROM s7_t",
+        """{"_id": "a1", "_source": {"tags": "a"}}""",
+        Some("8.18.3")
+      ).head("tags") shouldBe "a"
+    }
+  }
+
+  "A date typed from _field_caps" should "read ISO text as an instant, and fail any other spelling loudly (A-40; SCHEMA-17 LEAD-Q1 b)" in {
     def d(value: String): Any =
       rowsOn(s7Caps, "SELECT d FROM s7_t", s"""{"_id": "a1", "_source": {"d": $value}}""").head("d")
     d("\"2024-01-31T10:30:00Z\"") shouldBe utc(2024, 1, 31, 10, 30)
     d("\"2024-01-31\"") shouldBe utc(2024, 1, 31)
-    // a custom format's text (Q6) and an epoch: the field's own format is not known
-    d("\"2024/01/31\"") shouldBe "2024/01/31"
-    val epoch = d("1706697000123")
-    epoch should not be a[ZonedDateTime]
-    epoch.toString shouldBe "1706697000123"
+    // a custom format's text (Q6) and an epoch: the field's own format is not known -- refused,
+    // naming the column, the document and the remedy, where 0.24.0 answered them as stored
+    Seq("\"2024/01/31\"", "1706697000123").foreach { value =>
+      withClue(value) {
+        val failure = intercept[Exception](d(value))
+        val message = Option(failure.getCause).fold(failure.getMessage)(_.getMessage)
+        message should include("Column d")
+        message should include("a1")
+        message should include("view_index_metadata")
+      }
+    }
     // a date_nanos field typed from `_field_caps` keeps its nanoseconds
     rowsOn(
       s7Caps,

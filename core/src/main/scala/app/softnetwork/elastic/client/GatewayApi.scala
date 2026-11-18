@@ -2277,18 +2277,32 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
 
   /** SCHEMA-2 (D14, A-19) -- the result schema `run(sql)` would carry, running NOTHING: no search,
     * no subquery; a mapping may be read (the attach, and an explicit path's reload, D10). ONE query
-    * -- a SELECT, a set operation, a FROM-less SELECT -- else a 400. A statement another extension
-    * than core's handles answers `None` (its layer types it); a statement `run` refuses before
-    * executing anything is refused with `run`'s status and message, through the SAME resolve body
-    * (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's values
-    * or Elasticsearch surfaces at `run` only. `None` where no schema is known. A JOIN body's types
-    * per table, which `run` refuses here: [[describePerTable]].
+    * -- a SELECT, a set operation, a FROM-less SELECT -- else a 400. A statement `run` refuses
+    * before executing anything is refused with `run`'s status and message, through the SAME resolve
+    * body (`resolveWithSchema(_, executeSubqueries = false)`). A refusal that needs a subquery's
+    * values or Elasticsearch surfaces at `run` only. A JOIN body's types per table, which `run`
+    * refuses here: [[describePerTable]].
+    *
+    * SCHEMA-17 (A-160) -- the contract, one rule for every consumer:
+    *   - `ElasticSuccess(Some(schema))`: every column typed, at every depth, before any row -- an
+    *     alias or a data stream over several indices by its members' merge, a `SELECT *` leg of a
+    *     `UNION ALL` by its mapping, a source of `*` parts matching no index as an empty table;
+    *   - a failure: refused, with the status `run` would answer -- an unknown index is its 404, a
+    *     lookup that failed otherwise keeps its status (`operation = "describe"`);
+    *   - `ElasticSuccess(None)`: ONLY for a statement another extension than core's handles, whose
+    *     own layer types it.
+    *
+    * SCHEMA-17 (R-159, A-190) -- the same answers, computed less often: `describe(statement)` of
+    * the SAME statement instance over the same cached schema answers from memory (by identity; a
+    * success only; never a statement with a WHERE subquery, nor a scored one); a consumer that
+    * describes repeatedly keeps its parsed statement. `describe(sql)` parses again on each call, so
+    * it neither reads nor stores that memo.
     */
   def describe(sql: String): ElasticResult[Option[ResultSchema]] =
     GatewayApi.splitStatements(sql) match {
       case statement :: Nil =>
         Parser(statement) match {
-          case Right(parsed) => describe(parsed)
+          case Right(parsed) => describeStatement(parsed, memoized = false)
           case Left(l) =>
             ElasticResult.failure(
               ElasticError(
@@ -2302,14 +2316,25 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
       case _ => describeRefusal("DESCRIBE answers exactly one query")
     }
 
-  /** [[describe]] over a parsed statement. */
+  /** [[describe]] over a parsed statement; a repeat over the same cached schema answers from
+    * memory.
+    */
   def describe(statement: Statement): ElasticResult[Option[ResultSchema]] =
+    describeStatement(statement, memoized = true)
+
+  /** [[describe]] 's ONE body. `memoized`: the statement is the caller's own, so its answer may be
+    * read from and stored in `describeAnswers` (A-190); `describe(sql)`'s fresh parse never is.
+    */
+  private def describeStatement(
+    statement: Statement,
+    memoized: Boolean
+  ): ElasticResult[Option[ResultSchema]] =
     statement match {
       case _: SelectStatement | _: SingleSearch | _: MultiSearch | _: FromlessSelect =>
         extensionRegistry.findHandler(statement) match {
           case Some(extension) if !extension.isInstanceOf[CoreDqlExtension] =>
             ElasticResult.success(None)
-          case _ => describeQuery(statement)
+          case _ => describeQuery(statement, memoized)
         }
       case _ =>
         describeRefusal(
@@ -2352,12 +2377,19 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
   }
 
   /** [[describe]] over a query core's own handler runs. */
-  private def describeQuery(statement: Statement): ElasticResult[Option[ResultSchema]] =
+  private def describeQuery(
+    statement: Statement,
+    memoized: Boolean
+  ): ElasticResult[Option[ResultSchema]] =
     statement match {
       case select: SelectStatement =>
         select.statement match {
-          case Some(single: SingleSearch)  => describeQuery(single.copy(score = select.score))
-          case Some(multiple: MultiSearch) => describeQuery(multiple)
+          // the statement itself where the score is its own (the same instance on every call); a
+          // scored copy is a new instance per call, which could never hit
+          case Some(single: SingleSearch) =>
+            if (single.score == select.score) describeQuery(single, memoized)
+            else describeQuery(single.copy(score = select.score), memoized = false)
+          case Some(multiple: MultiSearch) => describeQuery(multiple, memoized)
           case _ =>
             describeRefusal(
               select.parseError.getOrElse(
@@ -2366,7 +2398,12 @@ trait GatewayApi extends IndicesApi with ElasticClientHelpers {
             )
         }
       case single: SingleSearch =>
-        resolveWithSchema(single, executeSubqueries = false).map(statementSchema)
+        resolveWithSchema(
+          single,
+          executeSubqueries = false,
+          answers = if (memoized) Some(describeAnswers) else None
+        )(statementSchema)
+      // a UNION ALL's legs are resolved without the memo
       case multiple: MultiSearch =>
         resolveWithSchema(multiple, executeSubqueries = false).map(unionAllSchema)
       case fromless: FromlessSelect =>

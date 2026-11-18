@@ -308,4 +308,55 @@ class FieldCapsSpec extends AnyFlatSpec with Matchers {
       }
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // SCHEMA-17 (A-172) -- core's keys in a field's `meta` declare it to a read-only user
+  // ---------------------------------------------------------------------------------------------
+
+  /** ES 8 shape: `_field_caps` returns a field's `meta` merged per key, each value an array. */
+  private def withMeta(indices: String): String =
+    s"""{"indices":$indices,"fields":{
+       |"id":{"keyword":{"type":"keyword","metadata_field":false,"meta":{"sql_type":["keyword"]}}},
+       |"tags":{"keyword":{"type":"keyword","metadata_field":false,"meta":{"sql_type":["array<keyword>"]}}},
+       |"d":{"date":{"type":"date","metadata_field":false,"meta":{"sql_type":["date"],"sql_format":["dd/MM/yyyy"]}}},
+       |"tm":{"date":{"type":"date","metadata_field":false,"meta":{"sql_type":["time"],"sql_format":["HH:mm:ss"]}}},
+       |"n":{"long":{"type":"long","metadata_field":false,"meta":{"sql_type":["int"]}}},
+       |"obj":{"object":{"type":"object","metadata_field":false}},
+       |"obj.a":{"integer":{"type":"integer","metadata_field":false,"meta":{"sql_type":["int"],"sql_list_depths":["1"]}}},
+       |"_id":{"_id":{"type":"_id","metadata_field":true}}
+       |}}""".stripMargin
+
+  "A _field_caps answer over ONE index carrying core's field meta" should "declare each field as its mapping reader reads it (A-172)" in {
+    val Seq((_, table)) = members("t", withMeta("""["t"]"""))
+    def tpe(c: String) = table.find(c).map(_.dataType)
+    tpe("tags") shouldBe Some(SQLTypes.Array(SQLTypes.Keyword))
+    tpe("d") shouldBe Some(SQLTypes.Date)
+    table.find("d").flatMap(_.options.get("format")).map(_.value) shouldBe Some("dd/MM/yyyy")
+    tpe("tm") shouldBe Some(SQLTypes.Time)
+    tpe("n") shouldBe Some(SQLTypes.Int)
+    tpe("obj") shouldBe Some(SQLTypes.Array(SQLTypes.Struct))
+    table.find("obj").map(_.mappingType) shouldBe Some("object")
+    tpe("obj.a") shouldBe Some(SQLTypes.Int)
+    // core's keys never surface as the column's `meta` option
+    table.columns.flatMap(_.options.get("meta")) shouldBe empty
+  }
+
+  "A _field_caps answer over SEVERAL indices carrying core's field meta" should "apply list-ness only (A-172, A-179)" in {
+    val described = members("t1,t2", withMeta("""["t1","t2"]"""))
+    described.map(_._1) shouldBe Seq("t1", "t2")
+    described.foreach { case (name, table) =>
+      withClue(s"$name: ") {
+        def tpe(c: String) = table.find(c).map(_.dataType)
+        tpe("tags") shouldBe Some(SQLTypes.Array(SQLTypes.Keyword))
+        tpe("obj") shouldBe Some(SQLTypes.Array(SQLTypes.Struct))
+        table.find("obj").map(_.mappingType) shouldBe Some("object")
+        // every other declaration is dropped: the field reads undeclared
+        tpe("d") shouldBe Some(SQLTypes.Timestamp)
+        table.find("d").flatMap(_.options.get("format")).map(_.value) shouldBe
+        Some(TemporalLiterals.FieldCapsDateFormat)
+        tpe("tm") shouldBe Some(SQLTypes.Timestamp)
+        tpe("n") shouldBe Some(SQLTypes.BigInt)
+      }
+    }
+  }
 }

@@ -175,6 +175,43 @@ class SchemaCacheTtlApiSpec extends AnyFlatSpec with Matchers {
     client.getIndexCalls.get() shouldBe 1
   }
 
+  /** `GET <alias>` answers its TWO members' documents, each declaring `memberTtl` (SCHEMA-17). */
+  private class MembersClient(hocon: String, memberTtl: Option[String] = None)
+      extends NopeClientApi {
+    override protected def logger: Logger = testLogger
+    override def config: Config = ConfigFactory.parseString(hocon)
+
+    val gets = new AtomicInteger(0)
+
+    override private[client] def executeVersion(): ElasticResult[String] =
+      ElasticSuccess("8.18.3")
+
+    override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] = {
+      gets.incrementAndGet()
+      val body = mappingJson(memberTtl)
+      ElasticSuccess(Some(s"""{"logs-1":$body,"logs-2":$body}"""))
+    }
+
+    def ttlFor(index: String): Long = schemaCacheTtlMsFor(index)
+  }
+
+  "an alias over several indices" should "take the DEFAULT TTL, never a member's, and be read again once it expires (SCHEMA-17 A-161)" in {
+    // a rollover done outside elasticsql is seen when the entry's TTL expires
+    val client = new MembersClient("elastic.schema-cache.ttl = 1ms", memberTtl = Some("1h"))
+    client.loadQuerySchema("logs") shouldBe a[ElasticSuccess[_]]
+    client.ttlFor("logs") shouldBe 1L
+    Thread.sleep(20)
+    client.loadQuerySchema("logs") shouldBe a[ElasticSuccess[_]]
+    client.gets.get() shouldBe 2
+  }
+
+  it should "be served from its entry within the TTL" in {
+    val client = new MembersClient("elastic.schema-cache.ttl = 1h")
+    client.loadQuerySchema("logs") shouldBe a[ElasticSuccess[_]]
+    client.loadQuerySchema("logs") shouldBe a[ElasticSuccess[_]]
+    client.gets.get() shouldBe 1
+  }
+
   // -- the coupled caches ------------------------------------------------------
 
   "the shard-count cache" should "follow the TTL the index declares" in {

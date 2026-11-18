@@ -354,6 +354,8 @@ class WindowPartitionKeySpec extends AnyFlatSpec with Matchers {
     )
     projected("pz") shouldBe "2024-01-31 10:30 UTC"
     projected.keySet should not contain instant
+    // `*` is no column (#43): the window route's projection requests `s`, never `*`
+    projected.keySet should not contain "*"
   }
 
   behavior of "the base query of a window statement"

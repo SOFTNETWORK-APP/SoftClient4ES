@@ -197,18 +197,24 @@ object TemporalLiterals {
 
   object FieldFormat {
 
+    /** Each resolved format's [[FieldFormat]], built once (SCHEMA-17 R-159, A-193): a pure function
+      * of the format string, immutable (its formatters are `java.time`'s), so every column of that
+      * format shares it. Bounded: past the cap a format is built on each call.
+      */
+    private val built = new app.softnetwork.elastic.utils.BoundedMemo[String, FieldFormat](1024)
+
     /** The column's explicit `format` option, else Elasticsearch's default for its type: a
       * `date_nanos` field's (SCHEMA-7 D3, [[DefaultDateNanosFormat]]), any other date's
       * ([[DefaultDateFormat]]). THE format function (#292): the hit reader and the literal
-      * normaliser both read it.
+      * normaliser both read it. Built once per resolved format.
       */
     def of(column: Column): FieldFormat = {
       val default = if (column.dateNanos) DefaultDateNanosFormat else DefaultDateFormat
-      column.options.get("format") match {
-        case Some(value) =>
-          FieldFormat(Option(value.value).map(_.toString).getOrElse(default))
-        case None => FieldFormat(default)
+      val spec = column.options.get("format") match {
+        case Some(value) => Option(value.value).map(_.toString).getOrElse(default)
+        case None        => default
       }
+      built(spec)(FieldFormat(spec))
     }
   }
 

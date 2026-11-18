@@ -326,9 +326,13 @@ class MappingTypeRoundTripSpec extends AnyFlatSpec with Matchers {
     ).foreach { case (definition, written) =>
       withClue(s"[$definition] ") {
         val ct = created(s"CREATE TABLE t (id KEYWORD, $definition)")
-        ct.columns.find(_.name == "c").map(_.node.toString) shouldBe Some(
-          s"""{"type":"$written"}"""
+        val node = ct.columns.find(_.name == "c").map(_.node).getOrElse(fail("no column c"))
+        // SCHEMA-17 (A-169): core's declaration rides in the field's `meta`, beside the type
+        // written -- nothing else of the field moved
+        Option(node.remove("meta")).map(_.toString) shouldBe Some(
+          s"""{"sql_type":"${column(ct.schema, "c").dataType.typeId}"}"""
         )
+        node.toString shouldBe s"""{"type":"$written"}"""
         ct.schema.indexMappings.get("properties").get("c").get("type").asText() shouldBe written
         column(ct.schema, "c").mappingType shouldBe written
       }

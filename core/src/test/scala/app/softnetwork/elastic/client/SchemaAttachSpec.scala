@@ -55,6 +55,22 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
     client
   }
 
+  /** [[seeded]], whose mapping read of a PATTERN fails with a 5xx: no schema and no 404, so `run`
+    * sends the statement as parsed (SCHEMA-17 A-163) -- a ONE-resolution venue.
+    */
+  private def failingPatterns(): SchemaClient = {
+    val client = new SchemaClient {
+      override private[client] def executeGetIndex(index: String): ElasticResult[Option[String]] =
+        if (index.contains("*"))
+          ElasticFailure(
+            ElasticError(message = "unavailable", statusCode = Some(503), index = Some(index))
+          )
+        else super.executeGetIndex(index)
+    }
+    client.updateSchema("events", schema)
+    client
+  }
+
   private def parse(sql: String): SingleSearch =
     Parser(sql) match {
       case Right(s: SingleSearch) => s
@@ -191,27 +207,33 @@ class SchemaAttachSpec extends AnyFlatSpec with Matchers {
   // -- 3. story IDENT-4: how many times each venue resolves ---------------------------------------
   "a qualified GROUP BY key" should
   "reach the client with its metrics on its level -- whether the FROM is resolved twice or once" in {
-    // `events e` is resolved AGAIN against the mapping; `events* e` is NOT -- here. Since #412 a
-    // client that can read a pattern's mappings resolves a pattern twice too
-    // (`IndicesApi.loadPatternSchema`); this double cannot (`NopeClientApi` answers no pattern), so
-    // it stands for every ONE-resolution venue: a remembered schema miss, a failed or denied mapping
-    // read, a client that is not an `IndicesApi`. The body such a venue sends is the PARSE-time one
-    // and must already be right. For the pattern the metric's path used to be `e.code`, the
-    // level's `code`.
-    val client = seeded()
-    val wrong = Seq("events e" -> true, "events* e" -> false).flatMap { case (from, again) =>
+    // `events e` is resolved AGAIN against the mapping. Since #412 a client that can read a
+    // pattern's mappings resolves a pattern twice too (`IndicesApi.loadPatternSchema`), and since
+    // SCHEMA-17 (A-163 (b)) a pattern that matches NO index -- this double answers none -- is typed
+    // as an EMPTY table, so it is resolved again as well. A ONE-resolution venue -- a failed or
+    // denied mapping read, a client that is not an `IndicesApi` -- sends the PARSE-time body, which
+    // must already be right: here a pattern whose mapping read fails (a 5xx). For the pattern the
+    // metric's path used to be `e.code`, the level's `code`.
+    val venues = Seq(
+      ("events e", "mapped", seeded(), true),
+      ("events* e", "no index matches", seeded(), true),
+      ("events* e", "mapping read fails", failingPatterns(), false)
+    )
+    val wrong = venues.flatMap { case (from, venue, client, again) =>
       val parsed = parse(s"SELECT COUNT(*) AS c, MAX(amount) AS mx FROM $from GROUP BY e.code")
       client.resolveWithSchema(parsed) match {
         case ElasticSuccess(sent) =>
           val level = sent.bucketTree.allTrees.flatten.head.bucketPath
           val metricPaths = sent.select.fields.map(_.identifier.bucketPath).distinct
           Seq(
-            if ((sent ne parsed) != again) Some(s"[$from] resolved again: ${sent ne parsed}")
+            if ((sent ne parsed) != again)
+              Some(s"[$from, $venue] resolved again: ${sent ne parsed}")
             else None,
-            if (metricPaths != Seq(level)) Some(s"[$from] metric paths $metricPaths, level $level")
+            if (metricPaths != Seq(level))
+              Some(s"[$from, $venue] metric paths $metricPaths, level $level")
             else None
           ).flatten
-        case ElasticFailure(error) => Seq(s"[$from] ${error.message}")
+        case ElasticFailure(error) => Seq(s"[$from, $venue] ${error.message}")
       }
     }
     withClue(wrong.mkString("\n")) { wrong shouldBe empty }

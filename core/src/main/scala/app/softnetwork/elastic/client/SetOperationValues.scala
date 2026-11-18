@@ -85,13 +85,93 @@ private[elastic] object SetOperationValues {
     version: => Option[String]
   ): Seq[Option[Array[Any => Any]]] = {
     val dates = DateReading(version)
-    // SCHEMA-2 (D12) -- the ONE typing the result schema reads too (`ResultSchemas.of`)
-    routedColumns(multiple.requests, multiple.resolvedOperators, dates) match {
-      case Right(columns) if columns.exists(c => c.converts || readsMappedDates(c)) =>
-        val names = columnNames(multiple.requests, columns.size)
-        multiple.requests.indices.map(leg =>
-          legConverters(multiple.requests(leg), leg, columns, names, dates)
-        )
+    // SCHEMA-17 (A-165 P) -- a `SELECT *` leg after a declaring first branch: its rows are read by
+    // the first branch's names, and its values converted as every other leg's, from the type its
+    // mapping gives each of them (`starUnionColumns`, the typing the result schema reads too)
+    starUnionColumns(multiple, dates) match {
+      case Some(Right(star)) if !star.byName =>
+        if (star.columns.exists(c => c.converts || readsMappedDates(c)))
+          multiple.requests.indices.map(leg =>
+            legConverters(multiple.requests(leg), leg, star.columns, star.names, dates)
+          )
+        else multiple.requests.map(_ => None)
+      // N: matched by name ([[byNameConverters]]); refused: nothing runs
+      case Some(_) => multiple.requests.map(_ => None)
+      case None    =>
+        // SCHEMA-2 (D12) -- the ONE typing the result schema reads too (`ResultSchemas.of`)
+        routedColumns(multiple.requests, multiple.resolvedOperators, dates) match {
+          case Right(columns) if columns.exists(c => c.converts || readsMappedDates(c)) =>
+            val names = columnNames(multiple.requests, columns.size)
+            multiple.requests.indices.map(leg =>
+              legConverters(multiple.requests(leg), leg, columns, names, dates)
+            )
+          case _ => multiple.requests.map(_ => None)
+        }
+    }
+  }
+
+  /** SCHEMA-17 (A-165) -- core's `UNION ALL` with its `SELECT *` legs typed from their mappings
+    * (`MultiSearch.starUnion`), every date position [[routed]] as [[routedColumns]] routes it: the
+    * typing the result schema (`ResultSchemas.of`) and the converters ([[converters]],
+    * [[byNameConverters]]) read alike, so they cannot drift (#292). `None` where it does not apply
+    * (no bare `*` leg, a `*` leg of no known schema, another operator than `UNION ALL`): the
+    * statement is typed by [[routedColumns]], as before.
+    */
+  private[client] def starUnionColumns(
+    multiple: MultiSearch,
+    dates: DateReading
+  ): Option[Either[String, MultiSearch.StarUnion]] =
+    if (!multiple.isUnionAllOnly) None
+    else
+      MultiSearch
+        .starUnion(multiple.requests)
+        .map(_.map(star => star.copy(columns = star.columns.map(routed(_, dates)))))
+
+  /** SCHEMA-17 (A-165 N) -- each leg of a `UNION ALL` whose first branch is `SELECT *`, its rows
+    * matched by NAME (each leg keeps its own keys): the function converting each value of a column
+    * whose legs disagree to the column's type, per name -- `None` for a leg with nothing to
+    * convert, and for every leg of any other statement. Decided once per leg; a row is rebuilt only
+    * by a leg that converts.
+    */
+  private[client] def byNameConverters(
+    multiple: MultiSearch,
+    version: => Option[String]
+  ): Seq[Option[ListMap[String, Any] => ListMap[String, Any]]] = {
+    val dates = DateReading(version)
+    starUnionColumns(multiple, dates) match {
+      case Some(Right(star)) if star.byName =>
+        multiple.requests.indices.map { leg =>
+          val nanos = nanosOf(multiple.requests(leg))
+          val functions = new java.util.HashMap[String, Any => Any]()
+          star.names.zip(star.columns).foreach { case (name, column) =>
+            column.branches.lift(leg).flatten match {
+              case Some(_) if SetOperationColumn.converts(column.result, column.branches.flatten) =>
+                functions.put(
+                  name,
+                  positionConverter(
+                    column.result,
+                    column.branches,
+                    leg,
+                    name,
+                    name,
+                    dates,
+                    nanos = nanos
+                  )
+                )
+              case _ =>
+            }
+          }
+          if (functions.isEmpty) None
+          else
+            Some { (row: ListMap[String, Any]) =>
+              val out = ListMap.newBuilder[String, Any]
+              row.foreach { case (key, value) =>
+                val convert = functions.get(key)
+                out += (key -> (if (convert eq null) value else convert(value)))
+              }
+              out.result()
+            }
+        }
       case _ => multiple.requests.map(_ => None)
     }
   }
@@ -110,16 +190,21 @@ private[elastic] object SetOperationValues {
   ): Either[String, Seq[SetOperationColumn]] =
     MultiSearch
       .columnTypes(requests, operators)
-      .map(_.map { column =>
-        val branches = column.branches.map(_.map { branch =>
-          DateRoute.of(branch.sqlType, branch.format, dates) match {
-            case DateRoute.Typed       => branch
-            case DateRoute.AsStored(_) => SetOperationType(SQLTypes.Varchar)
-          }
-        })
-        if (branches == column.branches) column
-        else column.copy(result = SetOperationType(SQLTypes.Varchar), branches = branches)
-      })
+      .map(_.map(routed(_, dates)))
+
+  /** One column, every TOP-LEVEL date position of a branch [[DateRoute.of]] answers as stored made
+    * `VARCHAR` -- and the column with it ([[routedColumns]]).
+    */
+  private def routed(column: SetOperationColumn, dates: DateReading): SetOperationColumn = {
+    val branches = column.branches.map(_.map { branch =>
+      DateRoute.of(branch.sqlType, branch.format, dates) match {
+        case DateRoute.Typed       => branch
+        case DateRoute.AsStored(_) => SetOperationType(SQLTypes.Varchar)
+      }
+    })
+    if (branches == column.branches) column
+    else column.copy(result = SetOperationType(SQLTypes.Varchar), branches = branches)
+  }
 
   /** THE READER of each leg of a set operation, column by column -- in leg order, `None` for a leg
     * with nothing to read -- or, `Left`, the statement's refusal (`MultiSearch.branchTypes`'
@@ -520,12 +605,17 @@ private[elastic] object SetOperationValues {
     columns: Seq[SetOperationColumn],
     names: Seq[String],
     dates: DateReading
-  ): Option[Array[Any => Any]] =
+  ): Option[Array[Any => Any]] = {
     // a leg's rows are built from its declared projection, position by position (issue #354); a
-    // projection of another width -- an opaque `SELECT *` -- has no position to convert at
-    if (leg.select.fieldsWithComputedAliases.size != columns.size) None
+    // projection of another width -- an opaque `SELECT *` -- has no position to convert at, unless
+    // its columns were typed from its mapping (SCHEMA-17 A-165 P): its rows are then read by the
+    // result's names, position by position, the field at each being the column of that name
+    val opaque = MultiSearch.projectionTypes(leg).isEmpty &&
+      columns.exists(_.branches.lift(index).flatten.isDefined)
+    if (!opaque && leg.select.fieldsWithComputedAliases.size != columns.size) None
     else {
       val nanos = nanosOf(leg)
+      def fieldAt(position: Int): String = if (opaque) names(position) else fieldOf(leg, position)
       val functions: Array[Any => Any] = columns.zipWithIndex.map { case (column, position) =>
         // a NULL literal's branch too: its value is Elasticsearch's `[null]`, read as NULL
         if (column.branches.lift(index).flatten.isEmpty) null
@@ -535,7 +625,7 @@ private[elastic] object SetOperationValues {
             column.branches,
             index,
             names(position),
-            fieldOf(leg, position),
+            fieldAt(position),
             dates,
             nanos = nanos
           )
@@ -545,7 +635,7 @@ private[elastic] object SetOperationValues {
             column.branches,
             index,
             names(position),
-            fieldOf(leg, position),
+            fieldAt(position),
             dates,
             nanos
           ).orNull
@@ -553,6 +643,7 @@ private[elastic] object SetOperationValues {
       }.toArray
       if (functions.forall(_ == null)) None else Some(functions)
     }
+  }
 
   /** Core's own `UNION ALL` at a position whose branches AGREE ([[readsMappedDates]]): the reading
     * of the dates of a mapping format of their own at it, at every depth -- `None` where it holds

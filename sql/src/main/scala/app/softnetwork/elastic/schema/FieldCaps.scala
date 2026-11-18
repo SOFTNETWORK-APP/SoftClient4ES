@@ -16,10 +16,14 @@
 
 package app.softnetwork.elastic.schema
 
+import app.softnetwork.elastic.sql.{ObjectValue, StringValue, StringValues, Value}
+import app.softnetwork.elastic.sql.`type`.SQLTypes
 import app.softnetwork.elastic.sql.query.TemporalLiterals
+import app.softnetwork.elastic.sql.schema.{Table, TableType}
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.{JsonNodeFactory, ObjectNode}
 
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters._
 
 /** SCHEMA-7 (D7) -- the indices a `GET <source>/_field_caps?fields=*` answer describes, each as the
@@ -41,6 +45,11 @@ import scala.jdk.CollectionConverters._
   *   - no `_meta`, no option, no date `format`: a `date` / `date_nanos` field is given the ISO
   *     format ([[TemporalLiterals.FieldCapsDateFormat]], A-40), the one spelling read as an instant
   *     without knowing the field's own;
+  *   - each field's mapping `meta`, merged per key across the indices that hold it (an array of
+  *     values per key; 7.6+): core's copy of its declaration ([[FieldMeta]], SCHEMA-17 A-172) is
+  *     turned into the document's `_meta.columns`, exactly for ONE index, list-ness only over
+  *     several -- a leaf it does not declare there is read as stored by a read-only user (R-150,
+  *     [[Answer]]);
   *   - a `constant_keyword` field as `keyword`, a runtime field as a mapped one: neither can be
   *     told apart (recorded).
   *
@@ -50,11 +59,25 @@ object FieldCaps {
 
   private val factory = JsonNodeFactory.instance
 
+  /** SCHEMA-17 fix R-150 (A-184) -- what a `_field_caps` answer describes: each index it lists, as
+    * the document `GET <index>` would answer ([[members]]), and the LEAVES (every field but an
+    * `object` / `nested` one, which takes no `meta`) that no index declares -- whose path none of
+    * the documents' `_meta.columns` declares ([[declarationsOf]], the one seam `IndexField.apply`
+    * reads): a field with no core meta, or, over several indices, a field core's meta does not
+    * declare a list (A-179 reads list-ness only there). A read-only user reads such a leaf's own
+    * several values as stored ([[table]], [[undeclared]]).
+    */
+  final case class Answer(members: Seq[(String, JsonNode)], undeclared: Set[String])
+
   /** One `(index, document)` per index the answer describes, in the order it lists them; empty when
     * it describes none (a pattern matching no index).
     */
-  def members(source: String, response: JsonNode): Seq[(String, JsonNode)] = {
-    val fields: Seq[(String, Seq[(String, Option[Set[String]])])] =
+  def members(source: String, response: JsonNode): Seq[(String, JsonNode)] =
+    read(source, response).members
+
+  /** [[members]], and the leaves no index declares ([[Answer]]), from ONE read of the answer. */
+  def read(source: String, response: JsonNode): Answer = {
+    val fields: Seq[(String, Seq[Caps])] =
       Option(response)
         .map(_.path("fields"))
         .filter(_.isObject)
@@ -68,7 +91,13 @@ object FieldCaps {
               Option(caps.get("metadata_field")).exists(_.asBoolean()) || tpe.startsWith("_")
             if (metadata || tpe == "unmapped") None
             else
-              Some(tpe -> Option(caps.get("indices")).filter(_.isArray).map(indicesOf))
+              Some(
+                Caps(
+                  tpe,
+                  Option(caps.get("indices")).filter(_.isArray).map(indicesOf),
+                  FieldMeta.declarations(caps.get("meta"))
+                )
+              )
           }
           if (types.isEmpty) None else Some(field.getKey -> types)
         }
@@ -78,22 +107,136 @@ object FieldCaps {
         .filter(_.isArray)
         .map(indicesOf(_).toSeq)
     val members: Seq[String] = listed.getOrElse {
-      val named = fields.flatMap(_._2.flatMap(_._2.toSeq.flatten)).distinct.sorted
+      val named = fields.flatMap(_._2.flatMap(_.indices.toSeq.flatten)).distinct.sorted
       if (named.nonEmpty) named else if (fields.nonEmpty) Seq(source) else Nil
     }
-    members.map { index =>
+    // SCHEMA-17 (A-172): core's keys declare a field exactly where ONE index answers; over several,
+    // Elasticsearch merges only the keys an index HAS, so a member without them is invisible: list-
+    // ness alone applies there (A-179)
+    val exact = members.size == 1
+    // SCHEMA-17 fix R-150 (A-184): the leaves, and the paths `_meta.columns` declares, of every
+    // member -- the declarations each document is built from, computed once
+    val leaves = scala.collection.mutable.Set.empty[String]
+    val declared = scala.collection.mutable.Set.empty[String]
+    val documents = members.map { index =>
       val typed = fields.flatMap { case (path, types) =>
         types
-          .find(_._2.exists(_.contains(index)))
-          .orElse(types.find(_._2.isEmpty))
-          .map(path -> _._1)
+          .find(_.indices.exists(_.contains(index)))
+          .orElse(types.find(_.indices.isEmpty))
+          .map(path -> _)
       }
-      index -> document(typed)
+      val declarations = declarationsOf(typed, exact)
+      typed.foreach { case (path, caps) => if (FieldMeta.takesMeta(caps.tpe)) leaves += path }
+      declared ++= declarations._1.map(_._1)
+      index -> document(typed, declarations)
     }
+    Answer(documents, leaves.toSet -- declared)
   }
+
+  /** R-150 (A-184) -- the key of a `_field_caps` table's `_meta` naming the leaves no index
+    * declares ([[table]]): written and read here only.
+    */
+  private val UndeclaredKey: String = "field_caps_undeclared"
+
+  /** SCHEMA-7 (D7), SCHEMA-17 fix R-150 (A-184) -- the table `answer` types: `merged`, its members'
+    * schemas merged (`mergedSchema`), marked `TableType.FieldCapabilities`, carrying the leaves no
+    * index declares ([[Answer.undeclared]]) for [[undeclared]]. The ONE place such a table is made:
+    * a table marked so another way carries none, and each of its several-valued leaves fails as a
+    * declared one does (A-173) -- never read as stored by accident.
+    */
+  def table(answer: Answer, merged: Table): Table = {
+    val meta: ListMap[String, Value[_]] = merged.mappings.get("_meta") match {
+      case Some(ObjectValue(value)) => value
+      case _                        => ListMap.empty
+    }
+    val undeclared: Value[_] = StringValues(answer.undeclared.toSeq.sorted.map(StringValue))
+    merged.copy(
+      tableType = TableType.FieldCapabilities,
+      mappings = merged.mappings + ("_meta" -> (ObjectValue(
+        meta + (UndeclaredKey -> undeclared)
+      ): Value[_]))
+    )
+  }
+
+  /** SCHEMA-17 fix R-150 (A-184) -- THE answer to "does this leaf carry no declaration a read-only
+    * user can read?": the leaves of a table typed from `_field_caps` ([[table]]) that none of its
+    * indices declares, by path; none for any other table -- a mapping reader's undeclared field
+    * keeps failing (SCHEMA-6 Q1).
+    */
+  def undeclared(table: Table): Set[String] =
+    if (table.tableType != TableType.FieldCapabilities) Set.empty
+    else
+      table.mappings.get("_meta") match {
+        case Some(ObjectValue(meta)) =>
+          meta.get(UndeclaredKey) match {
+            case Some(StringValues(values)) => values.map(_.value).toSet
+            case _                          => Set.empty
+          }
+        case _ => Set.empty
+      }
+
+  /** One field's capabilities under one Elasticsearch type: the `indices` mapping it so when the
+    * indices disagree, and core's keys of its `meta` ([[FieldMeta.declarations]]).
+    */
+  private final case class Caps(
+    tpe: String,
+    indices: Option[Set[String]],
+    declarations: ListMap[String, Seq[String]]
+  )
 
   private def indicesOf(node: JsonNode): Set[String] =
     node.elements().asScala.map(_.asText()).toSet
+
+  /** SCHEMA-17 (A-172) -- the `_meta.columns` declarations core's keys make, by path, and the date
+    * formats they name, by path.
+    *
+    *   - `exact` (ONE index): [[FieldMeta.TypeKey]] declares the field, [[FieldMeta.FormatKey]] its
+    *     date format (in place of [[TemporalLiterals.FieldCapsDateFormat]]), [[FieldMeta.ListsKey]]
+    *     the ancestors it names `ARRAY<STRUCT>`;
+    *   - several indices: a [[FieldMeta.TypeKey]] value `array<…>` declares ARRAY of the field's
+    *     undeclared reading, [[FieldMeta.ListsKey]] 's depths (every member's) the ancestors; every
+    *     other declaration is dropped -- another index's format read into a member that lacks the
+    *     key would be silently wrong.
+    *
+    * SCHEMA-17 fix R-155 (A-188): the declarations in their order (a path keeps its first position
+    * and its last declaration), with no `ListMap`: built once per member, in one pass.
+    */
+  private def declarationsOf(
+    fields: Seq[(String, Caps)],
+    exact: Boolean
+  ): (Seq[(String, String)], Map[String, String]) = {
+    val types = scala.collection.mutable.LinkedHashMap.empty[String, String]
+    val formats = scala.collection.mutable.Map.empty[String, String]
+    fields.foreach { case (path, caps) =>
+      val keys = caps.declarations
+      def single(key: String): Option[String] = keys.get(key).collect { case Seq(one) => one }
+      val segments = path.split("\\.")
+      val depths = keys
+        .getOrElse(FieldMeta.ListsKey, Nil)
+        .flatMap(_.split(",").map(_.trim))
+        .flatMap(d => scala.util.Try(d.toInt).toOption)
+        .filter(d => d > 0 && d < segments.length)
+        .distinct
+      depths.foreach { d =>
+        types.put(segments.dropRight(d).mkString("."), SQLTypes.Array(SQLTypes.Struct).typeId)
+      }
+      if (exact) {
+        single(FieldMeta.TypeKey).foreach(declared => types.put(path, declared))
+        caps.tpe match {
+          case "date" | "date_nanos" => single(FieldMeta.FormatKey).foreach(formats.put(path, _))
+          case _                     =>
+        }
+      } else if (
+        keys.getOrElse(FieldMeta.TypeKey, Nil).exists(_.toLowerCase.startsWith("array<"))
+      ) {
+        SQLTypes(IndexField.undeclaredType(caps.tpe)) match {
+          case SQLTypes.Any | SQLTypes.Struct | SQLTypes.Array(_) =>
+          case undeclared => types.put(path, SQLTypes.Array(undeclared).typeId)
+        }
+      }
+    }
+    (types.toList, formats.toMap)
+  }
 
   private def child(parent: ObjectNode, name: String): ObjectNode =
     parent.get(name) match {
@@ -101,11 +244,32 @@ object FieldCaps {
       case _                    => parent.putObject(name)
     }
 
-  /** The `GET <index>` document of one index, from its fields' paths and types. */
-  private def document(fields: Seq[(String, String)]): JsonNode = {
+  /** The `GET <index>` document of one index, from its fields' paths and types, and the
+    * declarations core's keys of their `meta` make ([[declarationsOf]]) as its `_meta.columns`: the
+    * mapping reader's ONE declaration seam (`IndexField.apply`) then reads them.
+    */
+  private def document(
+    caps: Seq[(String, Caps)],
+    declarations: (Seq[(String, String)], Map[String, String])
+  ): JsonNode = {
     val root = factory.objectNode()
-    val properties = root.putObject("mappings").putObject("properties")
+    val mappings = root.putObject("mappings")
+    val properties = mappings.putObject("properties")
+    val fields: Seq[(String, String)] = caps.map { case (path, c) => path -> c.tpe }
     val typeOf = fields.toMap
+    val (declared, formats) = declarations
+    if (declared.nonEmpty) {
+      val columns = mappings.putObject("_meta").putObject("columns")
+      declared.foreach { case (path, dataType) =>
+        val segments = path.split("\\.")
+        var container = columns
+        segments.init.foreach { segment =>
+          container = child(child(container, segment), "multi_fields")
+        }
+        child(container, segments.last).put("data_type", dataType)
+        ()
+      }
+    }
     // in path order, so that a parent is placed before its properties and multi-fields
     fields.sortBy(_._1).foreach { case (path, tpe) =>
       val segments = path.split("\\.")
@@ -122,9 +286,11 @@ object FieldCaps {
       val leaf = child(container, segments.last)
       leaf.put("type", tpe)
       tpe match {
-        case "date"       => leaf.put("format", TemporalLiterals.FieldCapsDateFormat)
-        case "date_nanos" => leaf.put("format", TemporalLiterals.FieldCapsDateNanosFormat)
-        case _            => leaf
+        case "date" =>
+          leaf.put("format", formats.getOrElse(path, TemporalLiterals.FieldCapsDateFormat))
+        case "date_nanos" =>
+          leaf.put("format", formats.getOrElse(path, TemporalLiterals.FieldCapsDateNanosFormat))
+        case _ => leaf
       }
       ()
     }

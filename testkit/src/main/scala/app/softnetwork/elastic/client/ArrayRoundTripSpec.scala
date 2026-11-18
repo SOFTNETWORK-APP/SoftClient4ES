@@ -265,11 +265,6 @@ trait ArrayRoundTripSpec extends GatewayIntegrationTestKit {
   it should "fail naming the ALTER, which runs in place, then read the list" in {
     drop(ext)
     load(ext, extMapping, extDocs)
-    // the STRUCT column holding a list of objects answers it (A-26)
-    byId(rows(s"SELECT id, obj FROM $ext"))("e1")("obj") shouldBe List(
-      ListMap("a" -> 5),
-      ListMap("a" -> 50)
-    )
     Seq(
       ("tags", "KEYWORD", "keyword", List("a", "b")),
       ("n", "INT", "integer", List(1, 2)),
@@ -300,21 +295,29 @@ trait ArrayRoundTripSpec extends GatewayIntegrationTestKit {
         read("e3").getOrElse(c, null) shouldBe (null: Any)
       }
     }
-    // a scalar sub-field under the list of objects: SET FIELD
+    // a scalar sub-field under the list of objects: its several values come from the list
+    // (SCHEMA-17 A-181), so the failure names the in-place ALTER that declares the list of
+    // objects, as the STRUCT column read whole does (A-168; A-26 answered it as read)
     val message = failureOf(s"SELECT id, obj.a FROM $ext")
-    message should include("Column obj.a holds several values in document e1")
+    message should include("Column obj holds several values in document e1")
     val remedy = message.substring(message.indexOf("ALTER TABLE"))
-    remedy shouldBe s"ALTER TABLE $ext ALTER COLUMN obj SET FIELD a ARRAY<INT>"
+    remedy shouldBe s"ALTER TABLE $ext ALTER COLUMN obj SET DATA TYPE ARRAY<STRUCT>"
+    val listMessage = failureOf(s"SELECT id, obj FROM $ext")
+    listMessage should include("Column obj holds several values in document e1")
+    listMessage.substring(listMessage.indexOf("ALTER TABLE")) shouldBe remedy
     val uuid = uuidOf(ext)
     runOk(remedy) shouldBe DdlResult(true)
     uuidOf(ext) shouldBe uuid
+    mappingOf(ext).path("properties").path("obj").path("type").asText("object") shouldBe "object"
+    // the path holds its objects' values, a list -- one object a list of one --; the field stays
+    // `object`, and each object keeps `a` one value
     val paths = byId(rows(s"SELECT id, obj.a FROM $ext"))
     paths("e1")("obj.a") shouldBe List(5, 50)
     paths("e2")("obj.a") shouldBe List(7)
-    byId(rows(s"SELECT id, obj FROM $ext"))("e1")("obj") shouldBe List(
-      ListMap("a" -> List(5)),
-      ListMap("a" -> List(50))
-    )
+    val objects = byId(rows(s"SELECT id, obj FROM $ext"))
+    objects("e1")("obj") shouldBe List(ListMap("a" -> 5), ListMap("a" -> 50))
+    // one object: a list of one
+    objects("e2")("obj").asInstanceOf[Seq[_]].size shouldBe 1
     drop(ext)
   }
 

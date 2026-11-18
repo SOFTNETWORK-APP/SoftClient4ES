@@ -941,6 +941,23 @@ package object schema {
           } else None
         }
       }
+    // SCHEMA-17 (A-162): a list declared on some members beside its scalar on the others -- the same
+    // element type, Elasticsearch type and date format -- is the list (a scalar reads into it as a
+    // list of one): `ARRAY<X>` beside X, `ARRAY<STRUCT>` over `object` beside a STRUCT, whose
+    // fields merge by the rule below. A list declared in place on the newest index of a rolling
+    // series must not leave the whole column with no type
+    def listed(columns: Seq[Column]): Option[Column] = {
+      def element(c: Column): SQLType = c.dataType match {
+        case list: SQLArray => list.elementType
+        case scalar         => scalar
+      }
+      columns.find(_.dataType.isInstanceOf[SQLArray]).filter { list =>
+        columns.forall(c =>
+          element(c) == element(list) && format(c) == format(list) &&
+          c.mappingType == list.mappingType
+        )
+      }
+    }
     def merge(perMember: Seq[List[Column]], parent: String): List[Column] = {
       // each member's columns by name, built once: a lookup per field and member is linear in the
       // pattern's width (a `find` per field and member was quadratic: 2 s for 200 indices of 2,000
@@ -956,7 +973,7 @@ package object schema {
           val multiFields = merge(mapped.map(_.multiFields), s"$path.")
           if (mapped.tail.forall(sameMapping(first, _))) first.copy(multiFields = multiFields)
           else
-            latticeColumn(mapped) match {
+            listed(mapped).orElse(latticeColumn(mapped)) match {
               case Some(decided) => decided.copy(multiFields = multiFields)
               case None =>
                 conflicts.put(path, mapped.map(_.dataType.typeId).toSet)
@@ -2095,12 +2112,11 @@ package object schema {
         }
         .map("script" -> _) ++ (if (multiFields.nonEmpty)
                                   ListMap(
+                                    // SCHEMA-17 fix R-155 (A-188): built in one pass
                                     "multi_fields" -> ObjectValue(
-                                      ListMap(
-                                        multiFields.map(field =>
-                                          field.name -> ObjectValue(field._meta)
-                                        ): _*
-                                      )
+                                      listMapOf[String, Value[_]](multiFields.iterator.map {
+                                        field => field.name -> ObjectValue(field._meta)
+                                      })
                                     ),
                                     // SCHEMA-6 (D9): the sub-fields in their DECLARED order --
                                     // Elasticsearch returns `properties` sorted and a `_meta`
@@ -2265,7 +2281,66 @@ package object schema {
       */
     lazy val foreignMapping: Boolean = mappingType != SQLTypeUtils.elasticType(dataType)
 
-    def node: ObjectNode = {
+    def node: ObjectNode = node(Nil)
+
+    /** SCHEMA-17 (A-181) -- whether this column is a list of objects: its SQL type is
+      * `ARRAY<STRUCT>`, whatever field Elasticsearch maps it as (`object` or `nested`). The ONE
+      * predicate of a list of objects, read by the field `meta` core writes ([[listOverObject]])
+      * and by the typing of a sub-path under it ([[underListOfObjects]]); never [[mappingType]].
+      */
+    def listOfObjects: Boolean = dataType == SQLTypes.Array(SQLTypes.Struct)
+
+    /** SCHEMA-17 (A-181) -- whether some ancestor of this column is a list of objects
+      * ([[listOfObjects]], `object` or `nested` alike): a sub-path under it holds the values its
+      * objects hold, so a projection of it is a list (`MultiSearch.listedPath`). Read through the
+      * ancestors `update` links ([[struct]]), as [[path]] is.
+      */
+    def underListOfObjects: Boolean =
+      struct.exists(parent => parent.listOfObjects || parent.underListOfObjects)
+
+    /** SCHEMA-17 (A-169) -- whether this column is a list of objects declared over an `object`
+      * field (`ARRAY<STRUCT> OPTIONS (type = 'object')`, A-166): Elasticsearch refuses a `meta` on
+      * the object, so its leaves carry the declaration ([[FieldMeta.ListsKey]]); a copy of it
+      * writes the SQL type's own mapping, `nested` (A-167, [[Table.mergeWithSearch]]).
+      */
+    private[schema] def listOverObject: Boolean = listOfObjects && mappingType == "object"
+
+    /** The ancestors' list depths of this column's sub-fields: each of this column's own one level
+      * further up, and this column itself, one level up, when it is a list over `object`.
+      */
+    private def childListDepths(listDepths: Seq[Int]): Seq[Int] =
+      (if (listOverObject) Seq(1) else Nil) ++ listDepths.map(_ + 1)
+
+    /** The user's own `meta` keys of this field (the read side removed core's). */
+    private def userMeta: Option[ListMap[String, Value[_]]] =
+      options.get("meta") match {
+        case Some(meta: ObjectValue) => Some(meta.value)
+        case _                       => None
+      }
+
+    /** SCHEMA-17 (A-169) -- the paths, this column's and its sub-fields', whose core keys were left
+      * out of the field's `meta`: with the user's own keys they would exceed Elasticsearch's
+      * limits.
+      */
+    private[schema] def fieldMetaDropped(listDepths: Seq[Int]): Seq[String] = {
+      val core = app.softnetwork.elastic.schema.FieldMeta.of(this, listDepths)
+      val own =
+        userMeta match {
+          case Some(user)
+              if core.nonEmpty &&
+                app.softnetwork.elastic.schema.FieldMeta.merged(user, core).isEmpty =>
+            Seq(path)
+          case _ => Nil
+        }
+      own ++ multiFields.flatMap(_.fieldMetaDropped(childListDepths(listDepths)))
+    }
+
+    /** [[node]] of a column whose ancestors declared `ARRAY<STRUCT>` over an `object` field are
+      * `listDepths` levels up: [[Table.indexMappings]] passes them down, the ONE mapping writer
+      * every DDL path goes through (createIndex, `setMapping`, templates, migrations), so every
+      * writer emits core's field `meta` (SCHEMA-17 A-169, [[FieldMeta]]).
+      */
+    private[schema] def node(listDepths: Seq[Int]): ObjectNode = {
       val root = mapper.createObjectNode()
       val esType = mappingType
       root.put("type", esType)
@@ -2290,14 +2365,30 @@ package object schema {
             case _                   => "fields"
           }
         val fieldsNode = mapper.createObjectNode()
+        val depths = childListDepths(listDepths)
         multiFields.foreach { field =>
-          fieldsNode.replace(field.name, field.node)
+          fieldsNode.replace(field.name, field.node(depths))
         }
         root.set(name, fieldsNode)
       }
       // the kept `type` is [[mappingType]]'s to write: applied last, a stale one would undo a type
       // change (SCHEMA-7 D2)
-      updateNode(root, options - "type")
+      //
+      // SCHEMA-17 (A-169): the field's `meta` is core's keys beside the user's own, all or none --
+      // Elasticsearch REPLACES a field's `meta` on every mapping update, so the user's keys are sent
+      // again each time, and core's are left out where together they would exceed its limits
+      val core = app.softnetwork.elastic.schema.FieldMeta.of(this, listDepths)
+      if (core.isEmpty) updateNode(root, options - "type")
+      else
+        options.get("meta") match {
+          case Some(_: ObjectValue) | None =>
+            updateNode(root, options - "type" - "meta")
+            val user = userMeta.getOrElse(ListMap.empty[String, Value[_]])
+            val meta = app.softnetwork.elastic.schema.FieldMeta.merged(user, core).getOrElse(user)
+            if (meta.nonEmpty) updateNode(root, ListMap("meta" -> ObjectValue(meta)))
+          // a `meta` that is no object is written as it is, as it always was
+          case Some(_) => updateNode(root, options - "type")
+        }
       root
     }
 
@@ -2801,9 +2892,9 @@ package object schema {
       * `IndexNameProbeRefusalSpec` pins the outcome; this member must not pre-empt either.
       */
     lazy val indexName: String = name.toLowerCase
-    private[schema] lazy val cols: ListMap[String, Column] = ListMap(
-      columns.map(c => c.name -> c): _*
-    )
+    // SCHEMA-17 fix R-155 (A-188): built in one pass (`listMapOf`)
+    private[schema] lazy val cols: ListMap[String, Column] =
+      listMapOf(columns.iterator.map(c => c.name -> c))
 
     def find(path: String): Option[Column] = {
       if (path.contains(".")) {
@@ -2832,7 +2923,13 @@ package object schema {
       )
       .getOrElse(ListMap.empty) ++
       ListMap(
-        "columns" -> ObjectValue(cols.map { case (name, col) => name -> ObjectValue(col._meta) })
+        // SCHEMA-17 fix R-155 (A-188): `cols`' entries, in their order, into a ListMap built in
+        // one pass (`listMapOf`), where `cols.map` checked each key against every earlier one
+        "columns" -> ObjectValue(
+          listMapOf[String, Value[_]](cols.iterator.map { case (name, col) =>
+            name -> ObjectValue(col._meta)
+          })
+        )
       ) ++ ListMap(
         "type" -> StringValue(tableType.name)
       ) ++ (if (materializedViews.nonEmpty)
@@ -2967,7 +3064,22 @@ package object schema {
                             element(newType) == SQLTypes(kept)
                         case _ => false
                       }
-                      if (keeps || !col.options.contains("type")) retyped
+                      // SCHEMA-17 (A-166): a retype to ARRAY of its own type keeps the field's
+                      // Elasticsearch type -- a list declaration is no type change (SCHEMA-6 D4) --
+                      // which, for a STRUCT, is `type = 'object'`: the `object` field becomes a list
+                      // of objects in place, where its SQL type alone would write `nested`
+                      val listOfItself = newType match {
+                        case list: SQLArray => list.elementType == col.dataType
+                        case _              => false
+                      }
+                      if (
+                        listOfItself && !col.options.contains("type") &&
+                        SQLTypeUtils.elasticType(newType) != col.mappingType
+                      )
+                        retyped.copy(options =
+                          col.options + ("type" -> (StringValue(col.mappingType): Value[_]))
+                        )
+                      else if (keeps || !col.options.contains("type")) retyped
                       else retyped.copy(options = col.options - "type")
                     } else col
                   }
@@ -3225,7 +3337,7 @@ package object schema {
         fields.foldLeft(List.empty[Column]) { (cols, field) =>
           val colName = field.fieldAlias.map(_.alias).getOrElse(field.sourceField)
           val col = this.find(colName) match {
-            case Some(c) if field.functions.isEmpty => c
+            case Some(c) if field.functions.isEmpty => copiedColumn(c)
             case _ =>
               Column(
                 name = colName,
@@ -3287,6 +3399,20 @@ package object schema {
           materializedViews = Nil
         )
         .update()
+    }
+
+    /** SCHEMA-17 (A-167) -- `c` as a CTAS target carries it: a list of objects declared over an
+      * `object` field ([[Column.listOverObject]], at any depth) is written as its SQL type's own
+      * mapping, `nested`, so its `type = 'object'` option (A-166) -- the source field's, not the
+      * copy's -- is left out. Every other kept `type` (`ip`, `scaled_float`, a CREATE's `type =
+      * 'keyword'`) is copied as it is (SCHEMA-7). The sub-fields' `struct` links are re-derived by
+      * the `update()` that ends [[mergeWithSearch]].
+      */
+    private def copiedColumn(c: Column): Column = {
+      val fields = c.multiFields.map(copiedColumn)
+      if (c.listOverObject) c.copy(options = c.options - "type", multiFields = fields)
+      else if (fields.corresponds(c.multiFields)(_ eq _)) c
+      else c.copy(multiFields = fields)
     }
 
     /** The TABLE-level processors (`Table.processors`, i.e. the ones a pipeline declares rather
@@ -3513,6 +3639,16 @@ package object schema {
       columns.foreach { column =>
         fields.replace(column.name, column.node)
       }
+      // SCHEMA-17 (A-169): ONE warning per mapping written, naming every field whose own `meta`
+      // left no room for core's keys
+      val dropped = columns.flatMap(_.fieldMetaDropped(Nil))
+      if (dropped.nonEmpty)
+        logger.warn(
+          s"⚠️ Table '$name': the SQL declaration of ${dropped.mkString(", ")} is not copied into " +
+          s"the field's mapping `meta`: with the field's own `meta` keys it would exceed " +
+          s"Elasticsearch's limits (${app.softnetwork.elastic.schema.FieldMeta.MaxEntries} " +
+          "entries). A user who may not read the mapping reads these fields undeclared."
+        )
       node.set("properties", fields)
       updateNode(node, mappings)
       node
