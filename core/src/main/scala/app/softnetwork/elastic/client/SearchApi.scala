@@ -142,6 +142,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * latency — under 0.1%. That is why resolution is UNCONDITIONAL rather than filtered on
     * statement content. Documented for operators in `documentation/client/search.md`.
     *
+    * SCHEMA-17 (R-159, A-191) -- `describe(statement)` alone skips the attach on a repeat: the SAME
+    * statement instance over the SAME cached schema instance answers from [[describeAnswers]]
+    * (successes only, never a statement with a WHERE subquery, never `describe(sql)`). `run` never
+    * reads it.
+    *
     * 🔴 If a filter is ever revisited, the predicate must NOT be "the statement contains a cast":
     * `coerce` also serves FunctionN argument and CASE branch coercion, so a cast-scoped attach
     * would make `UPPER(col)` emit differently depending on whether a cast happened to appear
@@ -152,15 +157,43 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
   private[client] def resolveWithSchema(single: SingleSearch): ElasticResult[SingleSearch] =
     resolveWithSchema(single, executeSubqueries = true)
 
-  /** [[resolveWithSchema]] 's ONE body (SCHEMA-2, D14): `executeSubqueries = false` -- what
-    * `GatewayApi.describe` runs -- replaces phase one's execution by its pre-execution checks
+  /** [[resolveWithSchema]] over its ONE body, below (SCHEMA-2, D14): `executeSubqueries = false` --
+    * what `GatewayApi.describe` runs -- replaces phase one's execution by its pre-execution checks
     * (`SubqueryResolver.resolve(_, _, executes = false)`), every other step -- the attach, the
-    * explicit path's reload (D10), every refusal -- unchanged.
+    * explicit path's reload (D10), every refusal -- unchanged. No memo.
     */
   private[client] def resolveWithSchema(
     single: SingleSearch,
     executeSubqueries: Boolean
-  ): ElasticResult[SingleSearch] = {
+  ): ElasticResult[SingleSearch] =
+    resolveWithSchema(single, executeSubqueries, Option.empty[StatementAnswers[SingleSearch]])(
+      identity
+    )
+
+  /** SCHEMA-17 (R-159, A-191) -- the answers `describe(statement)` computed, per statement instance
+    * and schema instance ([[StatementAnswers]]); bounded as the schema cache is.
+    */
+  private[client] lazy val describeAnswers: StatementAnswers[Option[ResultSchema]] =
+    new StatementAnswers[Option[ResultSchema]](256)
+
+  /** Current size of [[describeAnswers]] (tests). */
+  private[client] def describeAnswerCount: Int = describeAnswers.size
+
+  /** [[resolveWithSchema]] 's ONE body, followed by `next` over the resolved statement.
+    *
+    * `answers` (`describe(statement)` alone, A-191): on the cached-schema arm, the answer stored
+    * for this very statement over the very schema instance the lookup -- and an explicit path's
+    * reload (D10), which still runs on every call -- returned is answered without the attach; any
+    * other stored answer is a miss, recomputed and stored in its place. Never for a statement with
+    * a WHERE subquery, never a refusal (A-192), never under a TTL of 0 (each lookup reads a new
+    * schema, so it could never hit). The key is every input of the answer: the statement, the
+    * schema attached, and this client's fixed date dialect; an extension's routing runs before.
+    */
+  private[client] def resolveWithSchema[A](
+    single: SingleSearch,
+    executeSubqueries: Boolean,
+    answers: Option[StatementAnswers[A]]
+  )(next: SingleSearch => A): ElasticResult[A] = {
     // Story 22.1 (epic 22 AD-5) — THE seam. Every direct-API path crosses it BEFORE routing
     // (`search`, `searchAsync`, `searchWithInnerHits`, `ScrollApi.scroll`, and `IndicesApi`'s
     // by-query DELETE/UPDATE bodies through `resolveDmlWithSchema`), and none of them passes
@@ -203,7 +236,9 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     // field (`IndicesApi.loadPatternSchema`), one mapping read per list, cached. Before, it attached
     // NO schema, so `FROM zwild_*` typed every column `Any` and answered `MAX(d) - MIN(d)` in
     // milliseconds where the single index answered days.
-    phaseOne.sources.distinct match {
+    // SCHEMA-17 (A-191) -- the schema instance the answer is stored under, on a memo miss
+    var storeUnder: Option[Schema] = None
+    val typed: ElasticResult[SingleSearch] = phaseOne.sources.distinct match {
       case sources if sources.nonEmpty =>
         val source = sources.mkString(",")
         // the statement typed by `schema`: the temporal literals resolved, the schema attached,
@@ -297,7 +332,17 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 schemaMisses.remove(source)
                 // SCHEMA-2 (D10) -- an explicitly selected path the cached mapping lacks reloads it
                 // ONCE per TTL (memoized), so a field mapped since is read by its type
-                attach(reloadedFor(phaseOne, sources, cached))
+                val schema = reloadedFor(phaseOne, sources, cached)
+                // SCHEMA-17 (A-191) -- this statement over this very schema: answered from memory
+                answers match {
+                  case Some(memo) if !single.hasWhereSubqueries =>
+                    memo.get(single, schema) match {
+                      case Some(answer) => return ElasticResult.success(answer)
+                      case None => if (schemaCacheTtlMsFor(source) > 0) storeUnder = Some(schema)
+                    }
+                  case _ =>
+                }
+                attach(schema)
               case Success(ElasticFailure(error)) =>
                 if (error.statusCode.contains(404)) rememberSchemaMiss(source)
                 logger.debug(
@@ -324,6 +369,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
         }
       case _ => unresolved(phaseOne, None)
     }
+    val answered = typed.map(next)
+    // `storeUnder` is set only with `answers`; a success only (A-192): a refusal is recomputed, and
+    // keeps its log line
+    storeUnder.foreach { schema =>
+      answered match {
+        case ElasticSuccess(answer) => answers.foreach(_.put(single, schema, answer))
+        case _                      =>
+      }
+    }
+    answered
   }
 
   /** The ONE exit of [[resolveWithSchema]] that sends a statement WITHOUT a resolved schema: a
