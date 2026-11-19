@@ -235,7 +235,7 @@ count (an explicit ceiling below it is still a whole-shard split on the Elastics
 
 **Limitations:**
 - ❌ Not supported with aggregations
-- ❌ Requires sort fields
+- ⚠️ Needs a total order: the client pages on `_id` (see below)
 - ⚠️ No consistent snapshot (data can change between pages)
 
 ```scala
@@ -252,6 +252,16 @@ val query = SQLQuery(
 // Will use search_after strategy
 client.scroll(query).runWith(Sink.seq)
 ```
+
+**The `_id` order.** A statement needs no `ORDER BY` to be paged with `search_after`: without one,
+the client pages in `_id` order (ascending); with one, it appends `_id` as the tie-breaker unless
+the sort already names it. Since **0.24.0** that `_id` sort carries `unmapped_type: keyword`. On
+Elasticsearch 6 an index created without any mapping has no type, hence no `_id` to sort on, so
+every shard of such an index failed the page, and a statement without `LIMIT` over a pattern that
+includes one failed even when that index was empty; it is now read like the others. `_id` is
+mapped in every other index, where the key changes nothing. The Elasticsearch 7 client pages the
+same way below 7.12 and carries the same key; whether 7.0 – 7.11 failed such an index is not
+measured.
 
 ---
 
@@ -317,6 +327,10 @@ case class ScrollConfig(
   // Retry configuration
   retryConfig: RetryConfig = RetryConfig(),
 
+  // A statement without LIMIT whose window values cannot be computed:
+  // None or Some(true) fails the stream; Some(false) answers the rows without them
+  failOnWindowError: Option[Boolean] = None,
+
   // Ceiling on concurrent PIT slices for a no-ORDER-BY extraction (ES 7.15+, 0.21.0+).
   // None = inherit the client's `elastic.scroll.max-slices`; Some(n) explicit, n <= 1 sequential
   maxSlices: Option[Int] = None,
@@ -341,8 +355,17 @@ explicit fields but still inherits the configured ceiling through `maxSlices = N
 | `preferSearchAfter` | `Boolean`       | `true`            | Prefer search_after when available           |
 | `logEvery`          | `Int`           | `10`              | Log progress every N batches                 |
 | `metrics`           | `ScrollMetrics` | `ScrollMetrics()` | Initial metrics state                        |
+| `failOnWindowError` | `Option[Boolean]` | `None`          | When the window values of a statement without `LIMIT` cannot be computed: `None` or `Some(true)` fails the stream, `Some(false)` answers the rows without them (see below) |
 | `maxSlices`         | `Option[Int]`   | `None`            | Ceiling on concurrent PIT slices; `None` inherits `elastic.scroll.max-slices` (default 8), `Some(1)` pages sequentially |
 | `slices`            | `Int`           | `1`               | Internal — the resolved slice count (read it on `ScrollMetrics.slices`) |
+
+**Window functions: `failOnWindowError`.** A statement without `LIMIT` that carries a window
+function first computes its window values with an aggregation, then pages its rows and adds the
+values to each one. When those values cannot be computed — for instance because some shards of the
+window aggregation fail — the stream fails with `Window function computation failed: …`. That is
+the default since **0.24.0** (`None`), and what `Some(true)` asks for. `Some(false)` answers the rows
+**without** their window values, a wrong answer for every projected window column, so it is an
+explicit opt-in only. Before 0.24.0 the default was that fallback.
 
 ---
 
@@ -706,6 +729,18 @@ is the right place to decide what a partial read means for your application.
 
 The failure is deliberately **not** retried: a scroll cursor that has already advanced cannot be
 re-polled without skipping rows.
+
+### A page on which some shards fail fails the stream
+
+Elasticsearch answers a page on which **some** shards fail with HTTP 200 and the hits of the
+shards that succeeded. Every paging path reads the page's `_shards` section, and a page with a
+failed shard fails the stream with the shards' reasons — `Initial scroll failed: …`,
+`Scroll continuation failed: …` (the scroll context is released and the page is not retried),
+`Search after failed: …` or
+`PIT search_after failed: …` — instead of handing over the other shards' rows as if they were the
+whole page. The Elasticsearch 6 Jest client does so since **0.24.0**; before it, its three paging
+doors judged a page by its HTTP status only. A one-shot search answers the same condition with an
+error too — see [Search: a search whose shards fail](search.md#a-search-whose-shards-fail).
 
 ```scala
 // Automatic error handling is built-in

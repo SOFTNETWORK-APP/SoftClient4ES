@@ -539,11 +539,13 @@ ran without error before:
 - **A cast of a string column now COMPUTES.** `SCRIPT AS (CAST(amount_str AS BIGINT) + fee)` sums
   the two. Before 0.24.0 it concatenated the two renderings — `'125'` and `7` stored `1257` rather
   than `132`, with no error.
-- **A cast of a NUMERIC column to a different numeric type now decides the result type.**
-  `CAST(price AS INTEGER) / 2` over `price = 5.0` is `2`, because `CAST(price AS INTEGER)` really is
-  an integer; before 0.24.0 the column's own type won and it was `2.5`. The widening direction moves
-  the same way: `CAST(qty AS DOUBLE) / 2` over an `INTEGER` column is now `2.5` where it was `2`.
-  `WHERE` clauses over such an expression therefore match a different set of rows.
+- **A cast of a NUMERIC column to a different numeric type now decides the OPERAND's type** in
+  the arithmetic around it: `CAST(price AS INTEGER)` really is an integer. It does not decide a
+  division: `/` always yields a `DOUBLE` whatever its operands are, so `CAST(price AS INTEGER) / 2`
+  over `price = 5.0` is `2.5` — the cast narrows the operand, it does not make the division
+  integral — and `CAST(qty AS DOUBLE) / 2` over an `INTEGER` column is `2.5` where it was `2`.
+  Write `(a / b)::INTEGER` for a truncated quotient. `WHERE` clauses over such an expression
+  therefore match a different set of rows.
 - **A numeric column cast to a string now CONCATENATES.** `CAST(qty AS KEYWORD) + 2` yields
   `'42'`-style text; before 0.24.0 the string was silently parsed back to a number and the
   expression computed. Under `-`, `*` and `/` the same shape is now a runtime failure rather than a
@@ -1057,7 +1059,7 @@ FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
 >
 > Pre-join the sources with a [`MATERIALIZED VIEW`](materialized_views.md) and point the watcher
 > at the view instead.
->
+
 A table alias may be used and is resolved in the `WHERE`, so `FROM orders o WHERE o.status =
 'FAILED'` searches index `orders` for documents whose **`status`** field is `FAILED`.
 

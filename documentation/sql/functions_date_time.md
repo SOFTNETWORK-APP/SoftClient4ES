@@ -12,7 +12,7 @@ This page documents TEMPORAL functions.
 
 ### Current Date/Time Functions
 
-#### CURRENT_TIMESTAMP / NOW / CURRENT_DATETIME
+#### CURRENT_TIMESTAMP / NOW
 
 Returns current datetime (ZonedDateTime) in UTC.
 
@@ -20,8 +20,9 @@ Returns current datetime (ZonedDateTime) in UTC.
 ```sql
 CURRENT_TIMESTAMP
 NOW()
-CURRENT_DATETIME
 ```
+
+`CURRENT_DATETIME` is a reserved word, not a function: `SELECT CURRENT_DATETIME` does not parse.
 
 **Inputs:**
 - None
@@ -31,14 +32,12 @@ CURRENT_DATETIME
 
 **Examples:**
 ```sql
-SELECT CURRENT_TIMESTAMP AS now;
+SELECT CURRENT_TIMESTAMP AS ts_now;
 -- Result: 2025-09-26T12:34:56Z
 
-SELECT NOW() AS current_time;
+SELECT NOW() AS t_now;
 -- Result: 2025-09-26T12:34:56Z
 
-SELECT CURRENT_DATETIME AS dt;
--- Result: 2025-09-26T12:34:56Z
 ```
 
 ---
@@ -62,13 +61,13 @@ TODAY()
 
 **Examples:**
 ```sql
-SELECT CURRENT_DATE AS today;
+SELECT CURRENT_DATE AS d_today;
 -- Result: 2025-09-26
 
-SELECT CURDATE() AS today;
+SELECT CURDATE() AS d_today;
 -- Result: 2025-09-26
 
-SELECT TODAY() AS today;
+SELECT TODAY() AS d_today;
 -- Result: 2025-09-26
 ```
 
@@ -95,7 +94,7 @@ CURTIME()
 SELECT CURRENT_TIME AS t;
 -- Result: 12:34:56
 
-SELECT CURTIME() AS current_time;
+SELECT CURTIME() AS t_now;
 -- Result: 12:34:56
 ```
 
@@ -860,7 +859,7 @@ SELECT EXTRACT(HOUR FROM '2025-01-10T12:34:56Z'::TIMESTAMP) AS h;
 -- Result: 12
 
 -- Extract minute
-SELECT EXTRACT(MINUTE FROM '2025-01-10T12:34:56Z'::TIMESTAMP) AS min;
+SELECT EXTRACT(MINUTE FROM '2025-01-10T12:34:56Z'::TIMESTAMP) AS minute_value;
 -- Result: 34
 
 -- Extract second

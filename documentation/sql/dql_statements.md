@@ -461,9 +461,13 @@ The `WHERE` clause supports:
 >   those 5 rows as the whole result, with no error.
 >
 > A statement without `LIMIT` is read page by page and fails the same way
-> (`PIT search_after failed: …`). To sort such a column, sort by the bare column, or keep the field
-> present on every document. The same applies to `ORDER BY` over a `CASE … END` with no `ELSE`,
-> which is NULL-valued for the rows no branch matches.
+> (`PIT search_after failed: …`). This is not specific to sorting: since **0.24.0**, a search on
+> which some shards fail answers an error — `n of m shards failed`, then the first failure's type
+> and reason — never the rows of the shards that succeeded (see
+> [Search: a search whose shards fail](../client/search.md#a-search-whose-shards-fail)). To sort
+> such a column, sort by the bare column, or keep the field present on every document. The same
+> applies to `ORDER BY` over a `CASE … END` with no `ELSE`, which is NULL-valued for the rows no
+> branch matches.
 >
 > Since **0.24.0**, a sort by the bare column over an index pattern or list also answers the
 > documents of an index that does not map that column, sorted as `NULL`, when the other indices map
@@ -1542,8 +1546,8 @@ ORDER BY COUNT(*) DESC;
 ```
 
 - `GROUP BY` supports nested fields (`profile.city`).
-- A key over a date column, or over a function of any column, groups by the key's own value from
-  a single index, an index pattern or a list of indices:
+- Since **0.24.0**, a key over a date column, or over a function of any column, groups by the key's
+  own value from a single index, an index pattern or a list of indices:
   - `DATE_TRUNC(created_at, MONTH)` is one Elasticsearch `date_histogram` level with that calendar
     interval;
   - a bare date column (`GROUP BY created_at`) is a `terms` level on the field: one group per
@@ -1644,21 +1648,24 @@ ORDER BY COUNT(*) DESC;
 
 #### Comparing a DATE aggregate
 
-⚠️ **A comparison between a date aggregate and a date literal is refused**, function or not:
-`HAVING MAX(created) > '2019-01-01'` and `HAVING MIN(created) < '2020-01-01'` are rejected at parse
-time. A group filter reads every metric as a number — a date as epoch milliseconds — so the
-generated comparison is text against a number and Elasticsearch fails the whole search with a
-`class_cast_exception`. Compare in `WHERE` instead, or filter the result outside the query.
+A date aggregate compares with a date literal as a date column does: `HAVING MAX(created) >
+'2019-01-01'` keeps the groups whose latest `created` falls after that day, and
+`HAVING MIN(created) < '2020-01-01'` those whose earliest falls before it (*since `0.24.0`*:
+Elasticsearch failed the whole search, the comparison reading the date as text against a number).
 
 ### Conditions on the GROUP BY key
 
 A `HAVING` condition over the grouping key filters GROUPS, and it is applied by the `terms` filter —
-so it is correct for a multi-valued field, where one document belongs to several groups.
+so it is correct for a multi-valued field, where one document belongs to several groups. Since **0.24.0**, a
+condition the `terms` filter cannot apply as written is refused (see the combinations below); before
+it, several of them returned a plausible-looking but wrong set of groups, without an error.
 
 ```sql
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city = 'Paris';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city LIKE 'P%';
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city <> 'Lyon';
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city IN ('Paris', 'Lyon');
+SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city NOT IN ('Pau', 'Pise');
 ```
 
 - Supported: a direct comparison of the key — `=`, `<>`, `IN`, `LIKE` / `RLIKE` — whether the key
@@ -1979,6 +1986,11 @@ FROM dql_sales
 ORDER BY product, ts;
 ```
 
+Since **0.24.0**, a statement without `LIMIT` whose window values cannot be computed — for instance
+because shards of the window aggregation fail — answers an error,
+`Window function computation failed: …`. Before 0.24.0 it answered its rows without their window
+values (see [`failOnWindowError`](../client/scroll.md#scrollconfig)).
+
 #### ROW_NUMBER / RANK / DENSE_RANK (ranking windows)
 
 `ORDER BY` is REQUIRED inside `OVER` for ranking functions (ANSI). `PARTITION BY`
@@ -2065,11 +2077,11 @@ All functions operate on Elasticsearch documents and are evaluated by the SQL en
 | Function      | Description          |
 |---------------|----------------------|
 | `ABS(x)`      | Absolute value       |
-| `CEIL(x)`     | Round up             |
+| `CEIL(x)` / `CEILING(x)` | Round up  |
 | `FLOOR(x)`    | Round down           |
 | `ROUND(x, n)` | Round to n decimals  |
 | `SQRT(x)`     | Square root          |
-| `POW(x, y)`   | Power                |
+| `POW(x, y)` / `POWER(x, y)` | Power  |
 | `EXP(x)`      | Exponential          |
 | `LOG(x)`      | Natural logarithm    |
 | `LOG10(x)`    | Base-10 logarithm    |
@@ -2096,7 +2108,7 @@ number: `ROUND(423789293, -5)` is `423800000`. See
 | `ACOS(x)`     | Arc-cosine                       |
 | `ATAN(x)`     | Arc-tangent                      |
 | `ATAN2(y, x)` | Arc-tangent of y/x with quadrant |
-| `PI()`        | π constant                       |
+| `PI`          | π constant (no parentheses)      |
 | `RADIANS(x)`  | Degrees → radians                |
 | `DEGREES(x)`  | Radians → degrees                |
 
@@ -2124,12 +2136,12 @@ FROM dql_users;
 |------------------------------|-------------------------------|
 | `CONCAT(a, b, ...)`          | Concatenate strings           |
 | `SUBSTRING(str, start, len)` | Extract substring             |
-| `LOWER(str)`                 | Lowercase                     |
-| `UPPER(str)`                 | Uppercase                     |
+| `LOWER(str)` / `LCASE(str)`  | Lowercase                     |
+| `UPPER(str)` / `UCASE(str)`  | Uppercase                     |
 | `TRIM(str)`                  | Trim both sides               |
 | `LTRIM(str)`                 | Trim left                     |
 | `RTRIM(str)`                 | Trim right                    |
-| `LENGTH(str)`                | String length                 |
+| `LENGTH(str)` / `LEN(str)`   | String length                 |
 | `REPLACE(str, from, to)`     | Replace substring             |
 | `LEFT(str, n)`               | Left n chars                  |
 | `RIGHT(str, n)`              | Right n chars                 |
@@ -2165,11 +2177,11 @@ ORDER BY id ASC;
 
 | Function                                  | Description                 |
 |-------------------------------------------|-----------------------------|
-| `CURRENT_DATE`                            | Current date (UTC)          |
+| `CURRENT_DATE` / `CURDATE()`              | Current date (UTC)          |
 | `TODAY()`                                 | Alias for CURRENT_DATE      |
-| `CURRENT_TIMESTAMP` \| `CURRENT_DATETIME` | Current timestamp (UTC)     |
+| `CURRENT_TIMESTAMP`                       | Current timestamp (UTC)     |
 | `NOW()`                                   | Alias for CURRENT_TIMESTAMP |
-| `CURRENT_TIME`                            | Current time (UTC)          |
+| `CURRENT_TIME` / `CURTIME()`              | Current time (UTC)          |
 
 ##### **Extraction:**
 
@@ -2334,6 +2346,15 @@ Returns NULL if `a = b`, otherwise `a`.
 `NULLIF(status, 0)` over a `KEYWORD` reads `status` as a `BIGINT`, and a `status` that spells no
 number fails the query. A computed column keeps refusing a text against a number.
 
+##### ISNULL / ISNOTNULL
+
+```sql
+ISNULL(expr)
+ISNOTNULL(expr)
+```
+
+`ISNULL` is TRUE when `expr` is NULL, `ISNOTNULL` when it is not.
+
 ##### GREATEST / LEAST
 
 ```sql
@@ -2444,6 +2465,7 @@ Notes:
   paged in `_id` order, and with one `_id` is the tie-breaker. Since `0.24.0`, on Elasticsearch 6,
   a statement without `LIMIT` over a pattern that includes an index created without any mapping is
   read in full, even when that index is empty: the `_id` order no longer fails that index's shards
+  (see [The `_id` order](../client/scroll.md#search_after))
 - Without `ORDER BY`, result ordering is not guaranteed
 
 ### When some shards fail
@@ -2494,6 +2516,12 @@ that version. It is not a statement about the venue: derived tables, CTEs, corre
 the set operators other than `UNION ALL` need the relational engine wherever they run, on every one
 of these versions alike. See
 [Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine).
+
+On Elasticsearch 6.8, two forms still fail: a `GROUP BY` key that formats a bare date column
+(`GROUP BY DATE_FORMAT(created_at, '%Y-%m')`) is refused by name, so truncate the column first; and a
+boolean literal cast to a number (`CAST(TRUE AS INT)`) fails to compile in Elasticsearch. The same
+formats in a `SELECT` or a `WHERE`, and a date column compared with another, run on 6.8. See
+[Known Limitations & Roadmap](known_limitations.md).
 
 ---
 

@@ -545,7 +545,8 @@ SELECT order_date * 2 FROM orders;
   client, or a field a bulk load added to a table elasticsql created — is a `TIMESTAMP`: `DESCRIBE
   TABLE` reports it so, a `CREATE TABLE ... AS SELECT` declares it so, and it follows the
   `TIMESTAMP` rules (`created_at + 1` keeps the time of day, `closed_at - opened_at` is
-  fractional). A column declared `DATE` through elasticsql stays a `DATE`.
+  fractional) (*since `0.24.0`*; it was a `DATE`). A column declared `DATE` through elasticsql stays
+  a `DATE`.
 - A string literal is read by what it is combined or compared with, as PostgreSQL reads one:
   `order_date - '2024-01-01'` is the days between two dates, `qty + '1'` adds the number 1, and in
   a comparison — `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `CASE x WHEN v`, `NULLIF`, a
@@ -579,21 +580,21 @@ SELECT order_date * 2 FROM orders;
   `SELECT order_date * 2` is refused. With no type to read (a field the indices of a pattern map
   with types a `UNION ALL` gives no common type), nothing is refused on types; a user who may not
   read the mapping is typed from `_field_caps` (*since `0.25.0`*).
-- In a per-group calculation, a date result comes back as milliseconds since the epoch, the number
-  Elasticsearch computes it as; a date aggregate on its own (`MAX(order_date)`) answers its date or
-  timestamp. `CURRENT_DATE` and `NOW()` there are the time
-  the statement runs (`CURRENT_DATE - MAX(order_date)`); a materialized view refuses them.
+- In a calculation over aggregates, per group or over the whole table, a date result answers its
+  date or timestamp, as a date aggregate on its own (`MAX(order_date)`) does: `MAX(order_date) + 1`
+  is a `DATE`, `MAX(created_at) + 1` a `TIMESTAMP` (*since `0.25.0`*: it came back as milliseconds
+  since the epoch, the number Elasticsearch computes it as). `CURRENT_DATE` and `NOW()` there are
+  the time the statement runs (`CURRENT_DATE - MAX(order_date)`); a materialized view refuses them.
 - An explicit cast applies to the result, and a `NULL` stays `NULL`:
   `(ship_date - order_date)::TIMESTAMP` converts the number of days as any number is converted to a
   `TIMESTAMP` — as milliseconds since the epoch — and `(quantity + ratio)::BIGINT` truncates, as
   `CAST(3.25 AS BIGINT)` does.
 - `INTERVAL` arithmetic (`order_date - INTERVAL 7 DAY`) and `DATEDIFF` / `TIMESTAMPDIFF` are
   unchanged.
-- ⚠️ On Elasticsearch 6.8, a `date` column compared with another `date` column
-  (`WHERE ship_date > order_date`), or with a date function of one
-  (`WHERE ship_date > DATE_TRUNC(order_date, MONTH)`), fails with a 400 (`failed to parse date
-  field`); date arithmetic on one side runs: `WHERE ship_date > order_date + 0`. Elasticsearch 8
-  answers all three.
+- On Elasticsearch 6.8, a `date` column compared with another `date` column
+  (`WHERE ship_date > order_date`), with a date function of one
+  (`WHERE ship_date > DATE_TRUNC(order_date, MONTH)`) or with date arithmetic on one
+  (`WHERE ship_date > order_date + 0`) runs, as on Elasticsearch 8.
 
 **Before `0.24.0`:** `MAX(d) - MIN(d)` answered milliseconds and was typed `NUMERIC`; `+` and `-`
 with a date failed in Elasticsearch at row level — except a date plus a string, which concatenated
