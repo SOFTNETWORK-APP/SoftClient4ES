@@ -226,6 +226,8 @@ END
 
 **Output:**  
 - Type coerced from result expressions (THEN/ELSE).
+- Used as an operand, a `CASE` is one value: `CASE WHEN n > 0 THEN n ELSE 0 END + 1` adds 1 on every
+  branch, `4` for `n = 3` (*since `0.24.0`*: the operator applied to the last branch only, `3`).
 
 **Examples:**
 
@@ -305,6 +307,8 @@ END
 
 **Output:**  
 - Type coerced from result expressions.
+- The values keep their own type: `CASE k WHEN 'a' THEN 0 ELSE 1 END` answers the numbers `0` and `1`
+  (*since `0.24.0`*: the text `"0"` and `"1"`).
 
 **Implementation notes:**  
 The simple form evaluates by comparing `expr = value` for each WHEN. 
@@ -442,6 +446,8 @@ NULLIF(expr1, expr2)
 **Output:**
 - Type of `expr1` — a quoted literal first is the value it is read as beside `expr2`, and has its
   type: `NULLIF('2024-01-31', ts)` is a `TIMESTAMP`, `NULLIF('3', n)` a number — or NULL if equal
+- A quoted date compares with a `DATE` in either shape: `NULLIF(d, '2024-01-31')` and
+  `NULLIF(d, '2024-01-31T00:00:00Z')` are both NULL on that day
 
 **Examples:**
 

@@ -1648,18 +1648,17 @@ ORDER BY COUNT(*) DESC;
 
 #### Comparing a DATE aggregate
 
-⚠️ **A comparison between a date aggregate and a date literal is refused**, function or not:
-`HAVING MAX(created) > '2019-01-01'` and `HAVING MIN(created) < '2020-01-01'` are rejected at parse
-time. A group filter reads every metric as a number — a date as epoch milliseconds — so the
-generated comparison is text against a number and Elasticsearch fails the whole search with a
-`class_cast_exception`. Compare in `WHERE` instead, or filter the result outside the query.
+A date aggregate compares with a date literal as a date column does: `HAVING MAX(created) >
+'2019-01-01'` keeps the groups whose latest `created` falls after that day, and
+`HAVING MIN(created) < '2020-01-01'` those whose earliest falls before it (*since `0.24.0`*:
+Elasticsearch failed the whole search, the comparison reading the date as text against a number).
 
 ### Conditions on the GROUP BY key
 
 A `HAVING` condition over the grouping key filters GROUPS, and it is applied by the `terms` filter —
-so it is correct for a multi-valued field, where one document belongs to several groups. The rules
-below hold since **0.24.0**; before it, several of the conditions now refused returned a
-plausible-looking but wrong set of groups, without an error.
+so it is correct for a multi-valued field, where one document belongs to several groups. Since **0.24.0**, a
+condition the `terms` filter cannot apply as written is refused (see the combinations below); before
+it, several of them returned a plausible-looking but wrong set of groups, without an error.
 
 ```sql
 SELECT city, COUNT(*) AS cnt FROM dql_users GROUP BY city HAVING city = 'Paris';
@@ -2147,7 +2146,7 @@ FROM dql_users;
 | `LEFT(str, n)`               | Left n chars                  |
 | `RIGHT(str, n)`              | Right n chars                 |
 | `REVERSE(str)`               | Reverse string                |
-| `POSITION(substr IN str)` / `STRPOS(str, substr)` | 1-based position of substring |
+| `POSITION(substr IN str)`    | 1-based position of substring |
 
 ##### **Pattern matching:**
 
@@ -2517,6 +2516,12 @@ that version. It is not a statement about the venue: derived tables, CTEs, corre
 the set operators other than `UNION ALL` need the relational engine wherever they run, on every one
 of these versions alike. See
 [Known Limitations & Roadmap](known_limitations.md#which-forms-need-the-relational-engine).
+
+On Elasticsearch 6.8, two forms still fail: a `GROUP BY` key that formats a bare date column
+(`GROUP BY DATE_FORMAT(created_at, '%Y-%m')`) is refused by name, so truncate the column first; and a
+boolean literal cast to a number (`CAST(TRUE AS INT)`) fails to compile in Elasticsearch. The same
+formats in a `SELECT` or a `WHERE`, and a date column compared with another, run on 6.8. See
+[Known Limitations & Roadmap](known_limitations.md).
 
 ---
 

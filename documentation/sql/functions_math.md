@@ -47,12 +47,11 @@ SELECT ABS(-123.456) AS a;
 SELECT * FROM transactions
 WHERE ABS(amount) > 1000;
 
--- Calculate absolute difference
-SELECT 
+-- Absolute difference, over price_gap DOUBLE SCRIPT AS (estimated_price - actual_price): an
+-- arithmetic expression is not accepted as a function argument
+SELECT
   order_id,
-  estimated_price,
-  actual_price,
-  ABS(estimated_price - actual_price) AS price_difference
+  ABS(price_gap) AS price_difference
 FROM orders;
 ```
 
@@ -177,18 +176,11 @@ SELECT ROUND(123.456, -1) AS r;
 -- Result: 120.0 (a DOUBLE operand gives a DOUBLE)
 
 -- Round prices
-SELECT 
+SELECT
   product_id,
   price,
-  ROUND(price * 1.2, 2) AS price_with_tax
+  ROUND(price, 1) AS rounded_price
 FROM products;
-
--- Round averages
-SELECT 
-  category,
-  ROUND(AVG(price), 2) AS avg_price
-FROM products
-GROUP BY category;
 ```
 
 ---
@@ -225,21 +217,6 @@ SELECT FLOOR(5) AS f;
 -- Floor with decimals
 SELECT FLOOR(123.999) AS f;
 -- Result: 123
-
--- Calculate age in complete years
-SELECT 
-  user_id,
-  name,
-  FLOOR(DATEDIFF(CURRENT_DATE, birth_date, DAY) / 365.25) AS age
-FROM users;
-
--- Bucket values
-SELECT 
-  FLOOR(price / 10) * 10 AS price_bucket,
-  COUNT(*) AS count
-FROM products
-GROUP BY price_bucket
-ORDER BY price_bucket;
 ```
 
 ---
@@ -277,13 +254,6 @@ SELECT CEILING(2.001) AS c;
 -- Ceiling of integer
 SELECT CEIL(5) AS c;
 -- Result: 5
-
--- Calculate required packages
-SELECT 
-  order_id,
-  total_items,
-  CEIL(total_items / 10.0) AS packages_needed
-FROM orders;
 
 -- Round up prices
 SELECT 
@@ -332,25 +302,9 @@ SELECT POWER(5, 2) AS square;
 SELECT POWER(3, 3) AS cube;
 -- Result: 27
 
--- Fractional exponent (root)
-SELECT POWER(16, 0.5) AS p;
--- Result: 4 (square root)
-
 -- Negative exponent
 SELECT POWER(2, -3) AS p;
 -- Result: 0.125 (1/8)
-
--- Calculate compound interest
-SELECT 
-  initial_amount,
-  ROUND(initial_amount * POWER(1 + interest_rate, years), 2) AS final_amount
-FROM investments;
-
--- Exponential growth
-SELECT 
-  day,
-  POWER(1.05, day) AS growth_factor
-FROM generate_series(0, 10) AS day;
 ```
 
 ---
@@ -385,29 +339,11 @@ SELECT SQRT(2) AS s;
 SELECT SQRT(0) AS s;
 -- Result: 0
 
--- Calculate standard deviation component
-SELECT 
-  category,
-  SQRT(AVG(POWER(price - avg_price, 2))) AS std_dev
+-- Standard deviation per category: SQRT(AVG(POWER(price - avg_price, 2))) does not parse (an
+-- arithmetic expression is not accepted as a function argument), so use the aggregate itself
+SELECT category, STDDEV_POP(price) AS std_dev
 FROM products
-CROSS JOIN (
-  SELECT AVG(price) AS avg_price FROM products
-) AS avg_calc
 GROUP BY category;
-
--- Squared Euclidean distance (2D), over dx DOUBLE SCRIPT AS (x2 - x1) and
--- dy DOUBLE SCRIPT AS (y2 - y1): an arithmetic expression is not accepted as a function argument,
--- so neither POWER(x2 - x1, 2) nor a SQRT over the sum parses
-SELECT 
-  POWER(dx, 2) + POWER(dy, 2) AS dist_squared
-FROM coordinates;
-
--- Calculate hypotenuse
-SELECT 
-  side_a,
-  side_b,
-  SQRT(POWER(side_a, 2) + POWER(side_b, 2)) AS hypotenuse
-FROM triangles;
 ```
 
 ---
@@ -453,13 +389,6 @@ SELECT LOG(10) AS l;
 -- Natural log of 1
 SELECT LOG(1) AS l;
 -- Result: 0
-
--- Calculate log returns
-SELECT 
-  date,
-  price,
-  LOG(price / LAG(price) OVER (ORDER BY date)) AS log_return
-FROM stock_prices;
 
 -- Logarithmic scale
 SELECT 
@@ -511,15 +440,6 @@ SELECT
   FLOOR(LOG10(ABS(value))) AS magnitude
 FROM measurements
 WHERE value != 0;
-
--- Logarithmic binning
-SELECT 
-  FLOOR(LOG10(population)) AS log_bucket,
-  COUNT(*) AS city_count
-FROM cities
-WHERE population > 0
-GROUP BY log_bucket
-ORDER BY log_bucket;
 ```
 
 ---
@@ -557,19 +477,6 @@ SELECT EXP(2) AS e;
 -- Negative exponent
 SELECT EXP(-1) AS e;
 -- Result: 0.367879...
-
--- Calculate exponential growth
-SELECT 
-  time_period,
-  initial_value * EXP(growth_rate * time_period) AS projected_value
-FROM projections;
-
--- Inverse of natural log
-SELECT 
-  x,
-  LOG(x) AS log_x,
-  EXP(LOG(x)) AS back_to_x
-FROM values_table;
 ```
 
 ---
@@ -597,7 +504,7 @@ COS(x)
 ```sql
 -- Cosine of π/3 (60 degrees)
 SELECT COS(RADIANS(60)) AS c;
--- Result: 0.5
+-- Result: 0.5000000000000001 (0.5, to floating-point rounding)
 
 -- Cosine of 0
 SELECT COS(0) AS c;
@@ -613,7 +520,7 @@ SELECT COS(PI) AS c;
 
 -- Convert degrees to radians and calculate
 SELECT COS(RADIANS(60)) AS c;
--- Result: 0.5
+-- Result: 0.5000000000000001 (0.5, to floating-point rounding)
 ```
 
 ---
@@ -653,7 +560,7 @@ SELECT ACOS(0) AS ac;
 
 -- Convert result to degrees
 SELECT DEGREES(ACOS(0.5)) AS angle_degrees;
--- Result: 60
+-- Result: 60.00000000000001 (60, to floating-point rounding)
 ```
 
 ---
@@ -677,7 +584,7 @@ SIN(x)
 ```sql
 -- Sine of π/6 (30 degrees)
 SELECT SIN(RADIANS(30)) AS s;
--- Result: 0.5
+-- Result: 0.49999999999999994 (0.5, to floating-point rounding)
 
 -- Sine of 0
 SELECT SIN(0) AS s;
@@ -693,7 +600,7 @@ SELECT SIN(PI) AS s;
 
 -- Convert degrees to radians
 SELECT SIN(RADIANS(30)) AS s;
--- Result: 0.5
+-- Result: 0.49999999999999994 (0.5, to floating-point rounding)
 ```
 
 ---
@@ -733,7 +640,7 @@ SELECT ASIN(0) AS a_sin;
 
 -- Convert to degrees
 SELECT DEGREES(ASIN(0.5)) AS angle_degrees;
--- Result: 30
+-- Result: 30.000000000000004 (30, to floating-point rounding)
 ```
 
 ---
@@ -757,7 +664,7 @@ TAN(x)
 ```sql
 -- Tangent of π/4 (45 degrees)
 SELECT TAN(RADIANS(45)) AS t;
--- Result: 1
+-- Result: 0.9999999999999999 (1, to floating-point rounding)
 
 -- Tangent of 0
 SELECT TAN(0) AS t;
@@ -769,14 +676,7 @@ SELECT TAN(RADIANS(30)) AS t;
 
 -- Convert degrees to radians
 SELECT TAN(RADIANS(45)) AS t;
--- Result: 1
-
--- Calculate slope
-SELECT 
-  rise,
-  run,
-  TAN(ATAN(rise / run)) AS slope_verified
-FROM slopes;
+-- Result: 0.9999999999999999 (1, to floating-point rounding)
 ```
 
 ---
@@ -813,13 +713,6 @@ SELECT ATAN(SQRT(3)) AS a_tan;
 -- Convert to degrees
 SELECT DEGREES(ATAN(1)) AS angle_degrees;
 -- Result: 45
-
--- Calculate angle from slope
-SELECT 
-  rise,
-  run,
-  DEGREES(ATAN(rise / run)) AS angle_degrees
-FROM slopes;
 ```
 
 ---
@@ -861,17 +754,6 @@ SELECT ATAN2(-1, -1) AS angle;
 -- Convert to degrees
 SELECT DEGREES(ATAN2(1, 1)) AS angle_degrees;
 -- Result: 45
-
--- Calculate bearing/azimuth
-SELECT 
-  point_id,
-  DEGREES(ATAN2(delta_y, delta_x)) AS bearing_degrees
-FROM coordinates;
-
--- Calculate angle between two points
-SELECT 
-  DEGREES(ATAN2(y2 - y1, x2 - x1)) AS angle
-FROM point_pairs;
 ```
 
 ---
@@ -899,9 +781,9 @@ SELECT PI AS pi_value;
 -- Result: 3.141592653589793
 
 -- Calculate circle area
-SELECT 
+SELECT
   radius,
-  PI * POWER(radius, 2) AS area
+  PI * radius * radius AS area
 FROM circles;
 
 -- Calculate circle circumference
@@ -950,7 +832,7 @@ SELECT RADIANS(45) AS rad;
 
 -- Use in trigonometric functions
 SELECT SIN(RADIANS(30)) AS sine_30_degrees;
--- Result: 0.5
+-- Result: 0.49999999999999994 (0.5, to floating-point rounding)
 ```
 
 ---
@@ -986,105 +868,38 @@ SELECT DEGREES(RADIANS(45)) AS deg;
 
 -- Convert result of ACOS to degrees
 SELECT DEGREES(ACOS(0.5)) AS angle_degrees;
--- Result: 60
+-- Result: 60.00000000000001 (60, to floating-point rounding)
 ```
 
 ---
 
 ### Practical Mathematical Examples
 
-**1. Calculate Distance Using Pythagorean Theorem:**
+**1. Standard Deviation:**
 ```sql
--- dx DOUBLE SCRIPT AS (x2 - x1), dy DOUBLE SCRIPT AS (y2 - y1) in the table definition: an
--- arithmetic expression is not accepted as a function argument (see Known Limitations), so the
--- query answers the squared distance and its square root is taken from the returned rows
-SELECT 
-  point_id,
-  POWER(dx, 2) + POWER(dy, 2) AS dist_squared
-FROM coordinates;
-```
-
-**2. Compound Interest Calculation:**
-```sql
-SELECT 
-  account_id,
-  principal,
-  rate,
-  years,
-  ROUND(principal * POWER(1 + rate, years), 2) AS final_amount
-FROM investments;
-```
-
-**3. Standard Deviation:**
-```sql
-SELECT 
+SELECT
   category,
-  ROUND(SQRT(AVG(POWER(value - avg_value, 2))), 2) AS std_dev
-FROM (
-  SELECT 
-    category,
-    value,
-    AVG(value) OVER (PARTITION BY category) AS avg_value
-  FROM measurements
-) AS calc
+  STDDEV_POP(value) AS std_dev
+FROM measurements
 GROUP BY category;
 ```
 
-**4. Normalize Values (0-1 range):**
+**2. Calculate Circle Properties:**
 ```sql
-SELECT 
-  id,
-  value,
-  ROUND(
-    (value - MIN(value) OVER ()) / 
-    (MAX(value) OVER () - MIN(value) OVER ()),
-    4
-  ) AS normalized_value
-FROM data_table;
-```
-
-**5. Calculate Angle Between Vectors:**
-```sql
-SELECT 
-  vector_id,
-  DEGREES(ATAN2(y, x)) AS angle_degrees,
-  SQRT(POWER(x, 2) + POWER(y, 2)) AS magnitude
-FROM vectors;
-```
-
-**6. Exponential Moving Average:**
-```sql
-SELECT 
-  date,
-  value,
-  ROUND(
-    value * EXP(-1 * days_diff / smoothing_factor),
-    2
-  ) AS ema_weight
-FROM time_series;
-```
-
-**7. Price Buckets (Logarithmic):**
-```sql
-SELECT 
-  POWER(10, FLOOR(LOG10(price))) AS price_bucket_start,
-  POWER(10, CEIL(LOG10(price))) AS price_bucket_end,
-  COUNT(*) AS product_count
-FROM products
-WHERE price > 0
-GROUP BY FLOOR(LOG10(price)), CEIL(LOG10(price))
-ORDER BY price_bucket_start;
-```
-
-**8. Calculate Circle Properties:**
-```sql
-SELECT 
+SELECT
   circle_id,
   radius,
   2 * PI * radius AS circumference,
-  PI * POWER(radius, 2) AS area
+  PI * radius * radius AS area
 FROM circles;
 ```
+
+An arithmetic expression is not accepted as a function argument (`SQRT(POWER(x, 2) + POWER(y, 2))`
+does not parse), and today a `POWER` or `ROUND` result under an arithmetic operator
+(`POWER(dx, 2) + POWER(dy, 2)`, `PI * POWER(radius, 2)`, `ROUND(x, 1) * 2`) and some functions nested
+over a column (`DEGREES(ATAN2(y, x))`, `EXP(LOG(x))`, `FLOOR(LOG10(x))`) fail in Elasticsearch: select
+the parts and combine them from the returned rows. See
+[Known Limitations](known_limitations.md#arithmetic-is-not-accepted-inside-a-function-a-cast-or-a-case-branch).
 
 ---
 

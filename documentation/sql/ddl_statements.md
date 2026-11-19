@@ -1059,12 +1059,6 @@ FROM logs-*, metrics-* WHERE level = 'ERROR' WITHIN 5 MINUTES
 >
 > Pre-join the sources with a [`MATERIALIZED VIEW`](materialized_views.md) and point the watcher
 > at the view instead.
->
-> **Table-qualified columns over a multi-index `FROM`** are rejected at parse time too: one search
-> applies one query to *every* index it names, so it can neither join them
-> (`FROM orders o, customers c WHERE o.id = c.order_id`) nor scope a predicate to one of them
-> (`FROM orders, refunds WHERE orders.status = 'FAILED'`). `FROM logs-2025, logs-2024 WHERE
-> level = 'ERROR'` is fine: no qualifier.
 
 A table alias may be used and is resolved in the `WHERE`, so `FROM orders o WHERE o.status =
 'FAILED'` searches index `orders` for documents whose **`status`** field is `FAILED`.

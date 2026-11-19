@@ -297,9 +297,8 @@ Quoted column names, aliases and **table names** work in both spellings, in ever
 (``INSERT INTO `prod_eu`.dest``, ``UPDATE `orders` SET "a" = 1``,
 `CREATE TABLE "dest" ("c" INTEGER)`) — see
 [Quoted identifiers](dql_statements.md#quoted-identifiers) and
-[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names), in every
-statement — `INSERT`, `UPDATE`, `CREATE`, `DROP` and `ALTER` included. Five things they do **not**
-cover yet:
+[Qualified and quoted table names](dql_statements.md#qualified-and-quoted-table-names). Five things
+they do **not** cover yet:
 
 - **Quoting each part of a dotted index name splits it.** ``FROM `logs-2025`.`03` `` reads index
   `03` under the qualifier `logs-2025`, because a quoted part followed by a dot is a qualifier by
@@ -489,6 +488,13 @@ As a **`GROUP BY` key**, such a format is refused by name on 6.8. Wrap the colum
 `GROUP BY DATE_FORMAT(CAST(created_at AS DATE), '%Y-%m-%d')` returns exactly what the bare column
 returns on 7+. See [DATE_FORMAT](functions_date_time.md#date_format) and
 [DATETIME_FORMAT](functions_date_time.md#datetime_format).
+
+## A boolean literal cast to a number — Elasticsearch 6.8 fails it
+
+`CAST(TRUE AS INT)` fails on **Elasticsearch 6.8**, in a `SELECT` over an index and in a FROM-less
+`SELECT` alike: Elasticsearch cannot compile the script it becomes (`(true ? 1 : 0)`), and the search
+answers a `script_exception`. A boolean **column** cast to a number (`CAST(active AS INT)`) runs on
+6.8, and so does `CASE WHEN active THEN 1 ELSE 0 END`. Elasticsearch 8 answers `1`.
 
 ## Arithmetic is not accepted inside a function, a `CAST` or a `CASE` branch
 
