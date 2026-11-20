@@ -247,6 +247,12 @@ Each value is read by its column's declared type, where it is first read:
 | GEO_POINT | `ListMap("lat" -> Double, "lon" -> Double)`, whatever spelling was indexed |
 | ARRAY | `List` of its elements |
 
+A value's text (the JDBC driver's `getString`, an Arrow `VARCHAR` cell) spells a list `[1, 2]` and a
+map `{x: 1, y: 2}`, its entries in their own order, at every depth: `{x: 1, y: {z: 2}}`,
+`[1, [2, 3]]`, `[{a: 1}, {a: 2}]`; a text unquoted, bytes as their base64, a NULL as `null`.
+*Since `0.25.0`*: a list or a map inside another read as its Scala class before (`{y: ListMap(z -> 2)}`),
+and bytes inside one as an object hash; a value with no list, map or bytes inside is spelled as before.
+
 #### Elasticsearch mapping types
 
 *Since `0.25.0`* (they read `ANY` before, and `constant_keyword` answered NULL), the mapping types

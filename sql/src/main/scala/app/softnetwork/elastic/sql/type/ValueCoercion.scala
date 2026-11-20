@@ -60,15 +60,77 @@ object ValueCoercion {
 
   // ─── Coercions ───────────────────────────────────────────────────────────────
 
+  /** A value's text: JDBC's `getString`, arrow's VARCHAR writer.
+    *
+    * A list is `[e1, e2]`, a map `{k1: v1, k2: v2}` -- its entries in its own iteration order,
+    * never sorted --, a text unquoted, bytes their base64, a `null` element `null`; any other value
+    * its `toString`, a key its `String.valueOf`. SCHEMA-17 fix R-171: the rule holds at EVERY depth
+    * -- an element or an entry's value is spelled by this same rule -- so a nested object reads
+    * `{x: 1, y: {z: 2}}`, a list of lists `[1, [2, 3]]`, nested bytes their base64, where they read
+    * a Scala class (`{y: ListMap(z -> 2)}`, `List(2, 3)`) or an object hash (`[B@1b6d3586`). A
+    * value with no list, map or bytes inside is spelled as before, byte for byte.
+    *
+    * Cost: a flat value takes the arms it always took, in the same order (`null`, a text as itself,
+    * bytes, `toString`), and allocates nothing more. A list or a map is written into ONE builder
+    * per call, whatever its depth: no string per level, per element or per entry.
+    *
+    * The containers are Scala's (`Seq`, `Map`): the classes core hands a consumer (`List`,
+    * `ListMap`, `Vector`, the immutable maps). A Java collection is no core value and stays its
+    * `toString`.
+    */
   def coerceToString(value: Any): String = value match {
     case null      => null
     case s: String => s
     // SCHEMA-2 (D2) -- core reads a VARBINARY as its decoded bytes; its TEXT stays the base64
     // Elasticsearch holds, as in 0.24.0 (JDBC `getString`, arrow's VARCHAR writer)
     case b: Array[Byte] => java.util.Base64.getEncoder.encodeToString(b)
-    case seq: Seq[_]    => seq.mkString("[", ", ", "]")
-    case map: Map[_, _] => map.map { case (k, v) => s"$k: $v" }.mkString("{", ", ", "}")
-    case other          => other.toString
+    case seq: Seq[_] =>
+      val out = new java.lang.StringBuilder
+      appendSeq(out, seq)
+      out.toString
+    case map: Map[_, _] =>
+      val out = new java.lang.StringBuilder
+      appendMap(out, map)
+      out.toString
+    case other => other.toString
+  }
+
+  /** [[coerceToString]]'s text of a value nested in a list or a map, appended to `out` (R-171). */
+  private def appendText(out: java.lang.StringBuilder, value: Any): Unit = value match {
+    case null           => out.append("null")
+    case s: String      => out.append(s)
+    case b: Array[Byte] => out.append(java.util.Base64.getEncoder.encodeToString(b))
+    case seq: Seq[_]    => appendSeq(out, seq)
+    case map: Map[_, _] => appendMap(out, map)
+    case other          => out.append(other.toString)
+  }
+
+  /** `[e1, e2]`, each element by [[appendText]]. */
+  private def appendSeq(out: java.lang.StringBuilder, seq: Seq[_]): Unit = {
+    out.append('[')
+    val it = seq.iterator
+    if (it.hasNext) {
+      appendText(out, it.next())
+      while (it.hasNext) {
+        out.append(", ")
+        appendText(out, it.next())
+      }
+    }
+    out.append(']')
+  }
+
+  /** `{k1: v1, k2: v2}` in the map's own iteration order, each value by [[appendText]]. */
+  private def appendMap(out: java.lang.StringBuilder, map: Map[_, _]): Unit = {
+    out.append('{')
+    val it = map.iterator
+    var first = true
+    while (it.hasNext) {
+      val entry = it.next()
+      if (first) first = false else out.append(", ")
+      out.append(String.valueOf(entry._1)).append(": ")
+      appendText(out, entry._2)
+    }
+    out.append('}')
   }
 
   def coerceToInt(value: Any): java.lang.Integer = value match {
