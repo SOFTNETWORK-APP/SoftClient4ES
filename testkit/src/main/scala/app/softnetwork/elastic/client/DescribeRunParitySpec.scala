@@ -32,6 +32,7 @@ import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
 import app.softnetwork.elastic.sql.`type`.{SQLType, SQLTypes}
 import app.softnetwork.elastic.sql.parser.Parser
+import app.softnetwork.elastic.sql.query.SingleSearch
 import app.softnetwork.persistence.generateUUID
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.apache.http.entity.ContentType
@@ -98,8 +99,10 @@ trait DescribeRunParitySpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
   private val al1 = "p17al1"
   private val al2 = "p17al2"
   private val alc = "p17alc"
+  // R-169: created by another client after its 404 was remembered
+  private val late = "p17late"
 
-  private def indices: Seq[String] = Seq(idxA, idxB, idxC, dn, s, sc, f, g)
+  private def indices: Seq[String] = Seq(idxA, idxB, idxC, dn, s, sc, f, g, late)
 
   private val abMapping =
     """{"_meta": {"columns": {"tags": {"data_type": "ARRAY<KEYWORD>"}}},
@@ -394,6 +397,85 @@ trait DescribeRunParitySpec extends AnyFlatSpecLike with ElasticDockerTestKit wi
     described("SELECT * FROM p17nomatch_*") shouldBe ResultSchema(Nil)
     rowsOf(run("SELECT * FROM p17nomatch_*").get) shouldBe empty
     parity("SELECT * FROM p17nomatch_*,p17gone")
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // R-169 -- a remembered 404: describe looks the source up again, run keeps its negative cache
+  // -------------------------------------------------------------------------------------------
+
+  @scala.annotation.tailrec
+  private def baseClientOf(c: ElasticClientApi): ElasticClientApi = c match {
+    case delegator: ElasticClientDelegator => baseClientOf(delegator.delegate)
+    case other                             => other
+  }
+
+  /** Whether `run`'s resolution attaches a schema with columns (on the base client, whose map of
+    * remembered misses it reads); false while a miss stands, since `run` makes no lookup then.
+    */
+  private def typedByRun(sql: String): Boolean =
+    Parser(sql) match {
+      case Right(single: SingleSearch) =>
+        baseClientOf(client).resolveWithSchema(single) match {
+          case ElasticSuccess(sent) => sent.schema.exists(_.columns.nonEmpty)
+          case other                => fail(s"run's resolution of [$sql]: $other")
+        }
+      case other => fail(s"[$sql] is not a single search: $other")
+    }
+
+  it should "type an index another client created after its 404 was remembered, as run then answers (R-169)" in {
+    val sql = s"SELECT k, n FROM $late"
+    // the 404, remembered by the lookup
+    client.describe(sql) match {
+      case ElasticFailure(error) => error.statusCode shouldBe Some(404)
+      case other                 => fail(s"expected the 404, got $other")
+    }
+    // another client creates it: an ingest that auto-creates the index, no DDL through this client
+    val created = raw("POST", s"/$late/_doc?refresh=true", Some("""{"k":"l1","n":7}"""))._1
+    created should (be(200) or be(201))
+    // run, while the miss stands, makes no lookup: untyped
+    typedByRun(sql) shouldBe false
+    // describe looks it up again, by text and by statement
+    val declared = described(sql)
+    declared.columns.map(_.name) shouldBe Seq("k", "n")
+    declared.columns.find(_.name == "n").map(_.sqlType) shouldBe Some(SQLTypes.BigInt)
+    Parser(sql) match {
+      case Right(statement) => client.describe(statement) shouldBe ElasticSuccess(Some(declared))
+      case Left(error)      => fail(s"[$sql] does not parse: ${error.msg}")
+    }
+    // its success forgot the miss: run is typed, and answers what describe declared
+    typedByRun(sql) shouldBe true
+    parity(sql)
+  }
+
+  it should "type an alias, a pattern and a list whose miss is remembered over their cached schema (R-169)" in {
+    Seq(al1, al2, "p17x_*", s"$idxA,$idxC").foreach { source =>
+      val sql = s"SELECT k, n FROM $source"
+      withClue(s"[$sql] ") {
+        val expected = described(sql)
+        baseClientOf(client).rememberSchemaMiss(source)
+        typedByRun(sql) shouldBe false
+        described(sql) shouldBe expected
+        typedByRun(sql) shouldBe true
+        parity(sql)
+      }
+    }
+  }
+
+  it should "keep a source still absent a 404 on every describe, and a pattern matching none an empty table (R-169)" in {
+    val gone = "p17never"
+    (1 to 2).foreach { _ =>
+      client.describe(s"SELECT k FROM $gone") match {
+        case ElasticFailure(error) =>
+          error.statusCode shouldBe Some(404)
+          error.operation shouldBe Some("describe")
+          error.message shouldBe s"no such index [$gone]"
+        case other => fail(s"expected the 404, got $other")
+      }
+    }
+    parity(s"SELECT k FROM $gone")
+    baseClientOf(client).rememberSchemaMiss("p17nomatch_*")
+    described("SELECT * FROM p17nomatch_*") shouldBe ResultSchema(Nil)
+    parity("SELECT * FROM p17nomatch_*")
   }
 
   // -------------------------------------------------------------------------------------------

@@ -113,14 +113,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * SCHEMA-17 (A-163) -- where no schema is found, the answer is decided here, in the mode of the
     * call: a source of `*` parts only that matches no index is typed as an EMPTY table in both
     * modes (`run` answers 0 rows); in `describe`'s mode (`executeSubqueries = false`) an unknown
-    * concrete source, or a remembered miss, is its 404 and any other lookup failure keeps its
-    * status (`operation = "describe"`); `run` sends the statement verbatim.
+    * concrete source is its 404 and any other lookup failure keeps its status (`operation =
+    * "describe"`); `run` sends the statement verbatim.
     *
     * The cache keeps successes only, so a source it cannot resolve -- an unknown index without a
     * template -- would otherwise cost one failed lookup (two round trips + WARN lines) per
-    * statement. [[schemaMisses]] remembers a 404 miss for [[schemaMissTtlMs]] and skips the lookup;
-    * the literal is verbatim either way. A NON-404 failure (a transient 5xx, a thrown lookup) is
-    * never remembered, so a cluster blip cannot disable the resolution for the TTL.
+    * statement. [[schemaMisses]] remembers a 404 miss for [[schemaMissTtlMs]] and `run` skips the
+    * lookup while it stands; the literal is verbatim either way. `describe` reads the source again
+    * (R-169, [[lookupSchema]]): another client may have created it since. A NON-404 failure (a
+    * transient 5xx, a thrown lookup) is never remembered, so a cluster blip cannot disable the
+    * resolution for the TTL.
     *
     * `private[client]`: `IndicesApi` reuses it for the DELETE / UPDATE by-query search bodies.
     *
@@ -325,14 +327,18 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
               )
             )
           else unresolved(phaseOne, Some(source))
-        lookupSchema(sources) match {
+        // R-169 -- the lookup in the mode of the call ([[lookupSchema]]): `describe` reads a
+        // remembered miss again, `run` skips it
+        val describing = !executeSubqueries
+        lookupSchema(sources, describing) match {
           case Some(lookup) =>
+            // `run` records what it read here; `describe`'s lookup recorded itself
+            if (!describing) recordLookup(source, lookup)
             lookup match {
               case Success(ElasticSuccess(cached)) =>
-                schemaMisses.remove(source)
                 // SCHEMA-2 (D10) -- an explicitly selected path the cached mapping lacks reloads it
                 // ONCE per TTL (memoized), so a field mapped since is read by its type
-                val schema = reloadedFor(phaseOne, sources, cached)
+                val schema = reloadedFor(phaseOne, sources, cached, describing)
                 // SCHEMA-17 (A-191) -- this statement over this very schema: answered from memory
                 answers match {
                   case Some(memo) if !single.hasWhereSubqueries =>
@@ -344,7 +350,6 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                 }
                 attach(schema)
               case Success(ElasticFailure(error)) =>
-                if (error.statusCode.contains(404)) rememberSchemaMiss(source)
                 logger.debug(
                   s"Schema of '$source' unavailable (${error.message}) - temporal literals forwarded verbatim"
                 )
@@ -362,7 +367,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
                   )
                 )
             }
-          // a remembered miss: the 404 it remembers
+          // `run`'s remembered miss: the 404 it remembers (`describe` never skips its lookup)
           case None if schemaMissed(source) =>
             noSchema(ElasticError.notFound(index = source, operation = "describe"))
           case None => unresolved(phaseOne, Some(source))
@@ -454,15 +459,25 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }.distinct
 
   /** [[reloadedFor]] over the paths `statement` selects explicitly. */
-  private def reloadedFor(statement: SingleSearch, sources: Seq[String], schema: Schema): Schema =
-    reloadedFor(explicitPaths(statement), sources, schema)
+  private def reloadedFor(
+    statement: SingleSearch,
+    sources: Seq[String],
+    schema: Schema,
+    describing: Boolean
+  ): Schema =
+    reloadedFor(explicitPaths(statement), sources, schema, describing)
 
   /** `schema`, or -- when `paths` holds a path it lacks on ONE concrete source, not reloaded for
     * that path within the source's TTL -- the source's mapping read again
-    * (`IndicesApi.invalidateSchema`, then [[lookupSchema]]); `schema` when the reload fails.
-    * `paths` is by name: read only for a concrete source.
+    * (`IndicesApi.invalidateSchema`, then [[lookupSchema]] in the caller's mode); `schema` when the
+    * reload fails. `paths` is by name: read only for a concrete source.
     */
-  private def reloadedFor(paths: => Seq[String], sources: Seq[String], schema: Schema): Schema =
+  private def reloadedFor(
+    paths: => Seq[String],
+    sources: Seq[String],
+    schema: Schema,
+    describing: Boolean
+  ): Schema =
     this match {
       case indices: IndicesApi
           if sources.size == 1 && !sources.head.contains("*") && !sources.head.contains(",") =>
@@ -482,7 +497,7 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
               s"Mapping of '$source' reloaded for ${fresh.mkString(", ")}, absent from its cached schema"
             )
             indices.invalidateSchema(source)
-            lookupSchema(sources) match {
+            lookupSchema(sources, describing) match {
               case Some(Success(ElasticSuccess(reloaded))) => reloaded
               case _                                       => schema
             }
@@ -498,18 +513,51 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * remembered by -- the sources joined with commas; a user who may not read a mapping is typed
     * from `_field_caps` ([[IndicesApi.loadQuerySchema]], SCHEMA-7 D7).
     *
-    * `None` when no lookup is made: a client that is not an [[IndicesApi]], or a remembered miss.
+    * R-169 -- and THE rule every reader of a remembered miss ([[schemaMisses]]) applies, in the
+    * mode of its call (#292):
+    *   - `run` (`describing = false`: the attach of an executing statement, a subquery's scope
+    *     check and its inner column's type while it executes): a remembered miss skips the lookup,
+    *     so the statement runs untyped while it stands; the caller records what it reads, as
+    *     before;
+    *   - `describe` (`describing = true`: `describe`'s attach, its pre-execution scope check,
+    *     [[resolvePerTable]] 's legs, [[attachDerived]] 's sources): the source is read AGAIN,
+    *     since another client may have created it since (an ingest that auto-creates it, a raw
+    *     `PUT`), and the outcome is recorded here ([[recordLookup]]): found, the miss is forgotten,
+    *     so the next `run` is typed; a 404, it is remembered afresh. `describe` answers what `run`
+    *     answers once it reads the mapping.
+    *
+    * Cost: no negative caching on `describe`'s path -- a source that is still absent is looked up
+    * on every describe that reads it (an error path); `run`'s negative cache is unchanged.
+    *
+    * `None` when no lookup is made: a client that is not an [[IndicesApi]], or a remembered miss in
+    * `run`'s mode.
     */
-  private def lookupSchema(sources: Seq[String]): Option[Try[ElasticResult[Schema]]] = {
+  private def lookupSchema(
+    sources: Seq[String],
+    describing: Boolean
+  ): Option[Try[ElasticResult[Schema]]] = {
     val source = sources.mkString(",")
     this match {
       // SCHEMA-7 (D7): ONE seam for both origins -- the mapping, or `_field_caps` where the mapping
       // is refused (`IndicesApi.loadQuerySchema`)
-      case indices: IndicesApi if !schemaMissed(source) =>
-        Some(Try(indices.loadQuerySchema(source)))
+      case indices: IndicesApi if describing || !schemaMissed(source) =>
+        val lookup = Try(indices.loadQuerySchema(source))
+        if (describing) recordLookup(source, lookup)
+        Some(lookup)
       case _ => None
     }
   }
+
+  /** What a lookup of `source` -- [[lookupSchema]] 's key -- tells [[schemaMisses]]: found, the
+    * miss is forgotten; a 404, it is remembered from now; any other failure is never remembered.
+    */
+  private def recordLookup(source: String, lookup: Try[ElasticResult[Schema]]): Unit =
+    lookup match {
+      case Success(ElasticSuccess(_)) => forgetSchemaMiss(source)
+      case Success(ElasticFailure(error)) if error.statusCode.contains(404) =>
+        rememberSchemaMiss(source)
+      case _ =>
+    }
 
   /** SCHEMA-6 (D11) -- `single` with each derived table and CTE reference typed from its body
     * (`DerivedTable.attach`), every index source by [[lookupSchema]] (cached: one read per index
@@ -536,9 +584,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       }
       .map(branches => multiple.copy(requests = branches))
 
-  /** The schema of an index source for [[attachDerived]]: [[lookupSchema]]'s, `None` on a miss. */
+  /** The schema of an index source for [[attachDerived]], a typing API that runs nothing:
+    * [[lookupSchema]] 's in `describe`'s mode (R-169), `None` when unknown.
+    */
   private def derivedLookup(sources: Seq[String]): Option[Schema] =
-    lookupSchema(sources) match {
+    lookupSchema(sources, describing = true) match {
       case Some(Success(ElasticSuccess(schema))) => Some(schema)
       case _                                     => None
     }
@@ -598,18 +648,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     }
   }
 
-  /** One leg of [[resolvePerTable]]: [[lookupSchema]] 's schema (a 404 remembered as the attach of
-    * [[resolveWithSchema]] remembers it), reloaded for the `paths` it lacks ([[reloadedFor]]);
-    * `None` when unknown.
+  /** One leg of [[resolvePerTable]]: [[lookupSchema]] 's schema in `describe`'s mode (a remembered
+    * miss read again, the outcome recorded there, R-169), reloaded for the `paths` it lacks
+    * ([[reloadedFor]]); `None` when unknown.
     */
   private def legSchema(leg: String, paths: => Seq[String]): Option[Schema] =
-    lookupSchema(Seq(leg)) match {
+    lookupSchema(Seq(leg), describing = true) match {
       case Some(Success(ElasticSuccess(cached))) =>
-        schemaMisses.remove(leg)
-        Some(reloadedFor(paths, Seq(leg), cached))
-      case Some(Success(ElasticFailure(error))) =>
-        if (error.statusCode.contains(404)) rememberSchemaMiss(leg)
-        None
+        Some(reloadedFor(paths, Seq(leg), cached, describing = true))
       case _ => None
     }
 
@@ -622,10 +668,11 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * nothing). The caller (`SubqueryResolver`) reads it for ONE decision: a `text` column cannot
     * carry a terms aggregation, so mode P is declined for it. An unknown mapping therefore keeps
     * the cheap default, and an Elasticsearch refusal propagates loudly with the inner statement's
-    * own message.
+    * own message. Read by `run` alone -- mode P is chosen only for a subquery that executes -- so
+    * in `run`'s mode ([[lookupSchema]]).
     */
   private[client] def innerColumnType(inner: SingleSearch, name: String): Option[SQLType] =
-    resolvedSchema(inner).flatMap(_.find(name).map(_.dataType))
+    resolvedSchema(inner, describing = false).flatMap(_.find(name).map(_.dataType))
 
   /** Story 22.3 (AD-3) — the SCHEMA-aware SCOPE check, generalised from story 22.2's
     * `bareNameCorrelation`. Reached only for a statement the closure guard did NOT already route to
@@ -650,21 +697,34 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     outer: SingleSearch,
     inner: SingleSearch
   ): Option[String] =
-    bareNameCorrelation(outer, inner).orElse(unresolvedQualifier(outer, inner))
+    scopeCorrelation(outer, inner, describing = false)
+
+  /** [[scopeCorrelation]] in the mode of the call (R-169, [[lookupSchema]]): `describing` --
+    * `GatewayApi.describe`'s pre-execution checks (`SubqueryResolver.resolve(_, _, executes =
+    * false)`) -- reads a remembered miss again, as describe's attach does; `run` skips it.
+    */
+  private[client] def scopeCorrelation(
+    outer: SingleSearch,
+    inner: SingleSearch,
+    describing: Boolean
+  ): Option[String] =
+    bareNameCorrelation(outer, inner, describing)
+      .orElse(unresolvedQualifier(outer, inner, describing))
 
   /** Question 2 of [[scopeCorrelation]]. `Schema.find(head)` answers for an OBJECT field too (it
     * returns the object column itself), so one lookup separates `address.city` from a typo.
     */
   private def unresolvedQualifier(
     outer: SingleSearch,
-    inner: SingleSearch
+    inner: SingleSearch,
+    describing: Boolean
   ): Option[String] =
     // 🔴 An EMPTY mapping is a mapping GAP, never evidence that a name does not exist: an index
     // created but not yet written to, or one whose dynamic mapping has not caught up, would
     // otherwise turn every dotted object path in a subquery body into a 400. Same posture as the
     // schema-absent conditions in `resolvedSchema` — a mapping we do not have must never become a
     // rejection.
-    resolvedSchema(inner).filter(_.columns.nonEmpty).flatMap { innerMapping =>
+    resolvedSchema(inner, describing).filter(_.columns.nonEmpty).flatMap { innerMapping =>
       val chain = SubqueryScope.chain(inner, Seq(outer))
       inner.referencedIdentifiers.iterator
         .filter(id =>
@@ -698,11 +758,12 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
 
   private def bareNameCorrelation(
     outer: SingleSearch,
-    inner: SingleSearch
+    inner: SingleSearch,
+    describing: Boolean
   ): Option[String] =
     for {
-      innerMapping <- resolvedSchema(inner)
-      outerMapping <- resolvedSchema(outer)
+      innerMapping <- resolvedSchema(inner, describing)
+      outerMapping <- resolvedSchema(outer, describing)
       // 🔴 A name the INNER SELECT list defines as an alias is an inner name, whatever the mappings
       // say: `IN (SELECT id AS cid FROM customers ORDER BY cid)` references `cid`, which no mapping
       // carries — and rejecting it because the OUTER index happens to have a `cid` column would
@@ -721,14 +782,14 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
       outerMapping.name
     )
 
-  /** The schema of a statement's sources, when it can be read: [[lookupSchema]], the one the attach
-    * reads -- an index pattern or a list of sources included (their merged schema), so a subquery
-    * over `logs-*` is scoped as one over a single index is.
+  /** The schema of a statement's sources, when it can be read: [[lookupSchema]] in the caller's
+    * mode, the one the attach reads -- an index pattern or a list of sources included (their merged
+    * schema), so a subquery over `logs-*` is scoped as one over a single index is.
     */
-  private def resolvedSchema(s: SingleSearch): Option[Schema] =
+  private def resolvedSchema(s: SingleSearch, describing: Boolean): Option[Schema] =
     s.sources.distinct match {
       case sources if sources.nonEmpty =>
-        lookupSchema(sources).flatMap {
+        lookupSchema(sources, describing).flatMap {
           case Success(ElasticSuccess(schema)) => Some(schema)
           case _                               => None
         }
@@ -758,13 +819,16 @@ trait SearchApi extends ElasticConversion with ElasticClientHelpers with SchemaC
     * does not exist cannot ask to be forgotten sooner.
     *
     * 🔴 And deliberately CAPPED, which the two positive caches are not. A miss is cleared by a
-    * later successful load, which `resolveWithSchema` does not even attempt while one stands, or by
-    * an elasticsql DDL statement through THIS client ([[forgetSchemaMissesOf]]). An index created
-    * any other way — another client, a raw `PUT`, an ingest that auto-creates it — is not seen, so
-    * a miss remembered for an operator-chosen hour would leave every statement against it running
-    * with NO schema attached for that hour — no `SQLTypeUtils.coerce`, no temporal-literal
-    * resolution, silently (#306's skip conditions). Shortening the TTL still shortens this; making
-    * the knob able to LENGTHEN it would turn a five-minute nuisance into an unbounded one.
+    * later successful load, which `run` does not even attempt while one stands, or by an elasticsql
+    * DDL statement through THIS client ([[forgetSchemaMissesOf]]). An index created any other way —
+    * another client, a raw `PUT`, an ingest that auto-creates it — is not seen by `run`, so a miss
+    * remembered for an operator-chosen hour would leave every statement against it running with NO
+    * schema attached for that hour — no `SQLTypeUtils.coerce`, no temporal-literal resolution,
+    * silently (#306's skip conditions). Shortening the TTL still shortens this; making the knob
+    * able to LENGTHEN it would turn a five-minute nuisance into an unbounded one.
+    *
+    * R-169 -- `describe` never reads this TTL: it looks a remembered miss up again on every call
+    * ([[lookupSchema]]), and its successful lookup clears the miss, so the next `run` is typed.
     */
   protected def schemaMissTtlMs: Long =
     math.min(schemaCacheTtlMs, SchemaCacheSettings.DefaultTtlMs)

@@ -98,7 +98,9 @@ object SubqueryResolver {
     resolve(
       single,
       s => api.search(s)(EntityContext), // an absent key stays ABSENT — never null-filled
-      api.scopeCorrelation(single, _),
+      // R-169 -- the scope check reads the mappings in the mode of the call: `describe` looks a
+      // remembered miss up again, `run` skips it (`SearchApi.lookupSchema`)
+      inner => api.scopeCorrelation(single, inner, describing = !executes),
       api.innerColumnType,
       executes
     )
