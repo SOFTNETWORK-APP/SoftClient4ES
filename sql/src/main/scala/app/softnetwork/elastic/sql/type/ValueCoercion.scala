@@ -72,7 +72,8 @@ object ValueCoercion {
     *
     * Cost: a flat value takes the arms it always took, in the same order (`null`, a text as itself,
     * bytes, `toString`), and allocates nothing more. A list or a map is written into ONE builder
-    * per call, whatever its depth: no string per level, per element or per entry.
+    * per call, whatever its depth: no intermediate string per level or per entry (a non-text leaf's
+    * or key's own `toString`, nested bytes' base64, aside).
     *
     * The containers are Scala's (`Seq`, `Map`): the classes core hands a consumer (`List`,
     * `ListMap`, `Vector`, the immutable maps). A Java collection is no core value and stays its
