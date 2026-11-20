@@ -72,19 +72,22 @@ object ValueCoercion {
   }
 
   def coerceToInt(value: Any): java.lang.Integer = value match {
-    case null       => null
-    case n: Number  => n.intValue()
-    case s: String  => java.lang.Integer.valueOf(s)
-    case b: Boolean => if (b) 1 else 0
+    case null => null
+    // SCHEMA-17 fix R-177: the canonical class as it is, any other number within INT's range
+    case i: java.lang.Integer => i
+    case n: Number            => java.lang.Integer.valueOf(whole(n, IntRange).toInt)
+    case s: String            => java.lang.Integer.valueOf(s)
+    case b: Boolean           => if (b) 1 else 0
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to INT")
   }
 
   def coerceToLong(value: Any): java.lang.Long = value match {
-    case null       => null
-    case n: Number  => n.longValue()
-    case s: String  => java.lang.Long.valueOf(s)
-    case b: Boolean => if (b) 1L else 0L
+    case null              => null
+    case l: java.lang.Long => l
+    case n: Number         => java.lang.Long.valueOf(whole(n, BigIntRange))
+    case s: String         => java.lang.Long.valueOf(s)
+    case b: Boolean        => if (b) 1L else 0L
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to BIGINT")
   }
@@ -98,9 +101,10 @@ object ValueCoercion {
   }
 
   def coerceToFloat(value: Any): java.lang.Float = value match {
-    case null      => null
-    case n: Number => n.floatValue()
-    case s: String => java.lang.Float.valueOf(s)
+    case null               => null
+    case f: java.lang.Float => f
+    case n: Number          => java.lang.Float.valueOf(real(n))
+    case s: String          => java.lang.Float.valueOf(s)
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to REAL")
   }
@@ -115,17 +119,19 @@ object ValueCoercion {
   }
 
   def coerceToByte(value: Any): java.lang.Byte = value match {
-    case null      => null
-    case n: Number => n.byteValue()
-    case s: String => java.lang.Byte.valueOf(s)
+    case null              => null
+    case b: java.lang.Byte => b
+    case n: Number         => java.lang.Byte.valueOf(whole(n, TinyIntRange).toByte)
+    case s: String         => java.lang.Byte.valueOf(s)
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to TINYINT")
   }
 
   def coerceToShort(value: Any): java.lang.Short = value match {
-    case null      => null
-    case n: Number => n.shortValue()
-    case s: String => java.lang.Short.valueOf(s)
+    case null               => null
+    case s: java.lang.Short => s
+    case n: Number          => java.lang.Short.valueOf(whole(n, SmallIntRange).toShort)
+    case s: String          => java.lang.Short.valueOf(s)
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to SMALLINT")
   }
@@ -223,5 +229,90 @@ object ValueCoercion {
     case n: Number => new java.sql.Timestamp(n.longValue())
     case _ =>
       throw new java.sql.SQLException(s"Cannot convert ${value.getClass.getName} to TIMESTAMP")
+  }
+
+  // ─── Range guard (SCHEMA-17 fix R-177) ──────────────────────────────────────
+  //
+  // [[coerceToByte]], [[coerceToShort]], [[coerceToInt]], [[coerceToLong]] and [[coerceToFloat]]
+  // never narrow a number silently: one outside the target type's range throws
+  // `SQLException("Value <v> is out of range for <TYPE>")`, as DuckDB's conversion does, where
+  // `intValue()` & co. wrapped it (JDBC `getInt`, arrow's `Int32` cell: 3000000000 read
+  // -1294967296). A value within the range converts as it always did, its canonical class first
+  // and as it is (no new allocation); a fractional value is truncated toward zero as before, and
+  // it is the truncated value that must fit (2147483647.9 is 2147483647 for INT).
+
+  /** The range of an integral SQL type, for [[whole]]: `bits` the most a two's-complement value of
+    * it holds besides its sign; `below` / `above` the double values strictly between which a number
+    * truncated toward zero is in range (below `Long.MinValue`, the next double down).
+    */
+  private final class IntegralRange(val name: String, val min: Long, val max: Long, val bits: Int) {
+    val below: Double = if (min == Long.MinValue) Math.nextDown(min.toDouble) else min - 1d
+    val above: Double = max + 1d
+    val belowDecimal: java.math.BigDecimal =
+      java.math.BigDecimal.valueOf(min).subtract(java.math.BigDecimal.ONE)
+    val aboveDecimal: java.math.BigDecimal =
+      java.math.BigDecimal.valueOf(max).add(java.math.BigDecimal.ONE)
+  }
+
+  private val TinyIntRange = new IntegralRange("TINYINT", Byte.MinValue, Byte.MaxValue, 7)
+  private val SmallIntRange = new IntegralRange("SMALLINT", Short.MinValue, Short.MaxValue, 15)
+  private val IntRange = new IntegralRange("INT", Int.MinValue, Int.MaxValue, 31)
+  private val BigIntRange = new IntegralRange("BIGINT", Long.MinValue, Long.MaxValue, 63)
+
+  /** The largest REAL, exactly, as a decimal and as an integer (it is a whole number). */
+  private val RealMaxDecimal: java.math.BigDecimal =
+    new java.math.BigDecimal(Float.MaxValue.toDouble)
+  private val RealMinDecimal: java.math.BigDecimal = RealMaxDecimal.negate()
+  private val RealMaxInteger: java.math.BigInteger = RealMaxDecimal.toBigInteger
+  private val RealMinInteger: java.math.BigInteger = RealMaxInteger.negate()
+
+  private def outOfRange(value: Number, sqlType: String): java.sql.SQLException =
+    new java.sql.SQLException(s"Value $value is out of range for $sqlType")
+
+  /** `n` truncated toward zero, where that is within `range`; else the out-of-range failure. A
+    * whole number of the JDK is judged exactly, a `BigInteger` by its bit length, a `BigDecimal`
+    * against the bounds (a fraction of magnitude below 1 is 0, never divided by its scale's power
+    * of ten); a `Double`, a `Float` and any other number by its double value, so NaN and the
+    * infinities are out of range.
+    */
+  private def whole(n: Number, range: IntegralRange): Long = n match {
+    case _: java.lang.Integer | _: java.lang.Long | _: java.lang.Short | _: java.lang.Byte |
+        _: java.util.concurrent.atomic.AtomicInteger | _: java.util.concurrent.atomic.AtomicLong |
+        _: java.util.concurrent.atomic.LongAdder | _: java.util.concurrent.atomic.LongAccumulator =>
+      val l = n.longValue()
+      if (l < range.min || l > range.max) throw outOfRange(n, range.name) else l
+    case b: java.math.BigInteger =>
+      if (b.bitLength() > range.bits) throw outOfRange(n, range.name) else b.longValue()
+    case b: scala.math.BigInt => whole(b.bigInteger, range)
+    case d: java.math.BigDecimal =>
+      if (d.compareTo(range.belowDecimal) <= 0 || d.compareTo(range.aboveDecimal) >= 0)
+        throw outOfRange(n, range.name)
+      else if (d.precision().toLong - d.scale() <= 0) 0L
+      else d.longValue()
+    case d: scala.math.BigDecimal => whole(d.bigDecimal, range)
+    case _ =>
+      val d = n.doubleValue()
+      if (d > range.below && d < range.above) n.longValue() else throw outOfRange(n, range.name)
+  }
+
+  /** `n` as a REAL, where it is within ±`Float.MaxValue`; else the out-of-range failure. NaN and
+    * the infinities of a floating number stay what they are; a whole number or a decimal beyond the
+    * bounds, which `floatValue()` turned into an infinity, fails.
+    */
+  private def real(n: Number): Float = n match {
+    case b: java.math.BigInteger =>
+      if (b.compareTo(RealMaxInteger) > 0 || b.compareTo(RealMinInteger) < 0)
+        throw outOfRange(n, "REAL")
+      else b.floatValue()
+    case b: scala.math.BigInt => real(b.bigInteger)
+    case d: java.math.BigDecimal =>
+      if (d.compareTo(RealMaxDecimal) > 0 || d.compareTo(RealMinDecimal) < 0)
+        throw outOfRange(n, "REAL")
+      else d.floatValue()
+    case d: scala.math.BigDecimal => real(d.bigDecimal)
+    case _ =>
+      val d = n.doubleValue()
+      if (java.lang.Double.isFinite(d) && Math.abs(d) > Float.MaxValue) throw outOfRange(n, "REAL")
+      else n.floatValue()
   }
 }

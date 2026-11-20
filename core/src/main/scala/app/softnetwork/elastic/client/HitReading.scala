@@ -55,10 +55,11 @@ private[client] object MultiValued {
   *   - `scripted`: a computed column's hit `fields` entry, by output name (one-element array
   *     unwrapped);
   *   - `inner`: an UNNEST inner hit's element fields, by inner-hit name then field;
-  *   - `ignoredDates`: the `_source` keys read as dates by their format, each with the reader of
-  *     its cell where the hit's `_ignored` names it (D8): Elasticsearch's verdict is per VALUE, so
-  *     a cell of one value is NULL and an array keeps the elements the format reads, the others
-  *     NULL;
+  *   - `ignoredReaders`: the top-level `_source` keys of a kind Elasticsearch may ignore a value of
+  *     (`ignore_malformed`) -- a date read by its format, and every kind of
+  *     [[HitReading.IgnoredKinds]] (SCHEMA-17 fix R-172) --, each with the reader of its cell where
+  *     the hit's `_ignored` names it (D8): Elasticsearch's verdict is per VALUE, so a cell of one
+  *     value is NULL and an array keeps the elements the kind's own parse accepts, the others NULL;
   *   - `strict` / `keep`: the projection drops every undeclared key, but `keep` (D9);
   *   - `star`: a bare `SELECT *` -- unmapped top-level keys dropped, a flat dotted key folded into
   *     its mapped parent (A-3);
@@ -75,7 +76,7 @@ private[client] final class HitReading(
   private[client] val source: java.util.HashMap[String, JsonNode => Any],
   private[client] val scripted: java.util.HashMap[String, JsonNode => Any],
   private[client] val inner: Map[String, java.util.HashMap[String, JsonNode => Any]],
-  private[client] val ignoredDates: java.util.HashMap[String, JsonNode => Any],
+  private[client] val ignoredReaders: java.util.HashMap[String, JsonNode => Any],
   val strict: Boolean,
   val keep: Set[String],
   private[client] val star: Boolean,
@@ -87,8 +88,11 @@ private[client] final class HitReading(
     new java.util.HashMap[String, String]()
 ) {
 
-  /** Whether a hit's `_ignored` must be read (D8): the plan reads some `_source` key as a date. */
-  private[client] val readsIgnored: Boolean = !ignoredDates.isEmpty
+  /** Whether a hit's `_ignored` must be read (D8): the plan reads some top-level `_source` key of a
+    * kind Elasticsearch may ignore a value of. One lookup per hit, which allocates nothing when the
+    * hit has no `_ignored` (`ElasticConversion.ignoredOf`).
+    */
+  private[client] val readsIgnored: Boolean = !ignoredReaders.isEmpty
 
   /** Whether some selected path is collected whatever its parent's value is (SCHEMA-17 A-181,
     * [[HitReading.ListPath.always]]): decided once per statement, so a row of a statement with none
@@ -101,10 +105,12 @@ private[client] final class HitReading(
     found
   }
 
-  /** The reader of `key`'s cell when the hit's `_ignored` names it (D8); `null` for a key that is
-    * not read as a date, which keeps its own reader (a keyword keeps its stored text).
+  /** The reader of `key`'s cell when the hit's `_ignored` names it (D8): THE lookup (#292) of every
+    * hit-reading path (search hits, scroll / PIT / search_after pages, `*`), built with the plan.
+    * `null` for a key of no such kind, which keeps its own reader: a keyword or a wildcard over
+    * `ignore_above` keeps its stored text, an object its own reader (a top-level key only).
     */
-  private[client] def onIgnored(key: String): JsonNode => Any = ignoredDates.get(key)
+  private[client] def onIgnored(key: String): JsonNode => Any = ignoredReaders.get(key)
 
   /** Whether a (non-plan) top-level key is folded into its mapped parent under `*` (A-3). */
   private[client] def foldsUnder(key: String): String = {
@@ -180,6 +186,93 @@ private[client] object HitReading {
       (if (readsNanos(c)) Set(path) else Set.empty[String]) ++
       nanosPaths(c.multiFields, s"$path.")
     }.toSet
+
+  /** SCHEMA-17 fix R-172 (A-201) -- the Elasticsearch kinds, beside the dates (read by their
+    * format), that take `ignore_malformed`: a value of them the hit's `_ignored` names was refused
+    * by Elasticsearch, which holds it in `_source` only. `boolean` takes it only on the majors that
+    * map the option (not 6.8 nor 7.x): elsewhere `_ignored` never names it. A refused
+    * `scaled_float` is named only from 8.6: before, its value keeps its reading as stored, as any
+    * value `_ignored` does not name. The strings (`keyword`, `wildcard`, ...) are not here:
+    * `_ignored` names them over `ignore_above`, a value Elasticsearch keeps.
+    */
+  private[client] val IgnoredKinds: Set[String] = Set(
+    "byte",
+    "short",
+    "integer",
+    "long",
+    "unsigned_long",
+    "float",
+    "half_float",
+    "double",
+    "scaled_float",
+    "ip",
+    "geo_point",
+    "boolean"
+  )
+
+  /** SCHEMA-17 fix R-172 (A-201) -- each top-level column of `columns` of a kind of
+    * [[IgnoredKinds]], with that kind: its `Column.mappingType` (#292: a table typed from its
+    * mappings and one typed from `_field_caps` both carry the field's own type). Built once per
+    * plan, so a reader knows its kind when it is built, never per row.
+    */
+  private[client] def ignoredKinds(columns: Seq[Column]): Map[String, String] =
+    columns.flatMap { c =>
+      val kind = c.mappingType
+      if (IgnoredKinds.contains(kind)) Some(c.name -> kind) else None
+    }.toMap
+
+  /** The smallest magnitude a `half_float` refuses: Lucene's `HalfFloatPoint` rounds it (ties to
+    * even) to infinity, which Elasticsearch refuses (the largest half float is 65504).
+    */
+  private val HalfFloatLimit: Float = 65520f
+
+  /** SCHEMA-17 fix R-172 (A-201) -- whether `text` may be an address an `ip` field indexes: an IPv4
+    * literal (four decimal parts of at most three digits, each at most 255), or a text holding a
+    * `:` made only of hex digits, `:` and `.` -- an IPv6 literal, an embedded IPv4 one included --,
+    * optionally followed by `%` and a zone. Written by hand, never `InetAddress.getByName`, which
+    * resolves host names; lenient where Elasticsearch's own parse is stricter (a leading zero, an
+    * IPv6 group count), so an address Elasticsearch indexed is never NULL.
+    */
+  private[client] def ipLiteral(text: String): Boolean =
+    if (text.indexOf(':') < 0) ipv4(text)
+    else {
+      val zone = text.indexOf('%')
+      val end = if (zone < 0) text.length else zone
+      if (end == 0 || zone == text.length - 1) false
+      else {
+        var ok = true
+        var i = 0
+        while (ok && i < end) {
+          val c = text.charAt(i)
+          ok = c == ':' || c == '.' || Character.digit(c, 16) >= 0
+          i += 1
+        }
+        ok
+      }
+    }
+
+  private def ipv4(text: String): Boolean = {
+    var parts = 0
+    var digits = 0
+    var value = 0
+    var ok = true
+    var i = 0
+    while (ok && i < text.length) {
+      val c = text.charAt(i)
+      if (c == '.') {
+        ok = digits > 0
+        parts += 1
+        digits = 0
+        value = 0
+      } else if (c >= '0' && c <= '9') {
+        digits += 1
+        value = value * 10 + (c - '0')
+        ok = digits <= 3 && value <= 255
+      } else ok = false
+      i += 1
+    }
+    ok && digits > 0 && parts == 3
+  }
 
   /** SCHEMA-6 (A-26) -- a selected dotted column under a parent the plan reads WHOLE (`SELECT obj,
     * obj.a`, `SELECT *, obj.a`): where the parent's `_source` value is a list of objects, the row
@@ -491,7 +584,8 @@ private[client] object HitReading {
       remedyOf(single.schema),
       single.schema.fold(Set.empty[String])(t => nanosPaths(t.columns)),
       fieldCapsDates(single),
-      storedLeaves(single.schema)
+      storedLeaves(single.schema),
+      single.schema.fold(Map.empty[String, String])(t => ignoredKinds(t.columns))
     )
     val fields = single.select.fieldsWithComputedAliases
     val star = fields.exists(isStar)
@@ -499,7 +593,7 @@ private[client] object HitReading {
     val indexed = single.indexedColumns.toSet
     val source = new java.util.HashMap[String, JsonNode => Any]()
     val scripted = new java.util.HashMap[String, JsonNode => Any]()
-    val ignoredDates = new java.util.HashMap[String, JsonNode => Any]()
+    val ignoredReaders = new java.util.HashMap[String, JsonNode => Any]()
     // the dotted paths the projection selects, relative to their parent (D4)
     val selectedPaths: Map[String, Seq[String]] = fields
       .filterNot(f => isStar(f) || f.identifier.nested || f.identifier.functions.nonEmpty)
@@ -519,7 +613,7 @@ private[client] object HitReading {
     def put(key: String, t: SetOperationType, keepKeys: Set[String]): Unit = {
       val (reader, onIgnored) = readers.column(key, t, keepKeys)
       source.put(key, reader)
-      onIgnored.foreach(ignoredDates.put(key, _))
+      onIgnored.foreach(ignoredReaders.put(key, _))
     }
     single.schema.foreach { table =>
       if (star)
@@ -689,7 +783,7 @@ private[client] object HitReading {
       source,
       scripted,
       inner,
-      ignoredDates,
+      ignoredReaders,
       strict,
       keep,
       star && schema.isDefined && fields.forall(isStar),
@@ -702,6 +796,9 @@ private[client] object HitReading {
 
   /** The readers of one statement (D5), built once: `JsonNode => Any`, a node never `null` (the
     * caller hands `null` / a JSON `null` to none of them but the scalar wrapper).
+    *
+    * `kinds`: SCHEMA-17 fix R-172 (A-201) -- each top-level column of a kind of [[IgnoredKinds]],
+    * with that kind ([[ignoredKinds]]): its cell gets a reader for the hit's `_ignored` (D8).
     */
   private[client] final class Readers(
     aliases: ListMap[String, String],
@@ -711,7 +808,8 @@ private[client] object HitReading {
     remedy: String => Option[String] = _ => None,
     nanos: Set[String] = Set.empty,
     isoOnlyDates: Boolean = false,
-    stored: Set[String] = Set.empty
+    stored: Set[String] = Set.empty,
+    kinds: Map[String, String] = Map.empty
   ) {
 
     /** The failure of a several-element cell of `name` (SCHEMA-6 D6). */
@@ -775,11 +873,14 @@ private[client] object HitReading {
         case _               => true
       }
 
-    /** A `_source` column of type `t`, and -- for a date read by its format -- the reader of its
-      * cell when the hit's `_ignored` names it (D8): Elasticsearch refused some value of it, and
-      * its verdict is per VALUE. A cell of one value is NULL (the value refused); an array keeps
-      * each element the format reads -- a value Elasticsearch indexed -- and answers the others
-      * NULL.
+    /** A `_source` column of type `t`, and -- for a date read by its format, and a top-level column
+      * of a kind of [[IgnoredKinds]] (SCHEMA-17 fix R-172, A-201) -- the reader of its cell when
+      * the hit's `_ignored` names it (D8): Elasticsearch refused some value of it, and its verdict
+      * is per VALUE. A cell of one value is NULL (the value refused); an array keeps each element
+      * the kind's own Elasticsearch parse accepts -- a value Elasticsearch indexed, read by the
+      * column's reader -- and answers the others NULL, under the scalar column's rule of several
+      * values. A column declared `ARRAY<X>` reads its elements the same way (A-202), a scalar cell
+      * a list of its one value, NULL.
       */
     def column(
       name: String,
@@ -809,7 +910,8 @@ private[client] object HitReading {
     ): (JsonNode => Any, Option[JsonNode => Any]) =
       t.sqlType match {
         case SQLTypes.Array(_) =>
-          (list(name, t.element.getOrElse(SetOperationType(SQLTypes.Any))), None)
+          val element = t.element.getOrElse(SetOperationType(SQLTypes.Any))
+          (list(name, element), ignoredList(name, element))
         // SCHEMA-17 (A-168): a list of objects in a column declared STRUCT takes the default rule
         // (`multiValued`, [[multiValuedFor]]) -- the in-place ALTER that declares an `object` field
         // `ARRAY<STRUCT>` ships in the same release (A-166), so the failure names a remedy that
@@ -817,8 +919,9 @@ private[client] object HitReading {
         // list of one. An object is no leaf: the statement's rule, whatever `mode` (R-150, A-183)
         case SQLTypes.Struct if t.fields.nonEmpty =>
           (scalar(name, struct(name, t, keepKeys), multiValued), None)
-        case SQLTypes.GeoPoint => (geo(name, mode), None)
-        case _ if !typed(t)    => (asRead, None)
+        case SQLTypes.GeoPoint =>
+          (geo(name, mode), if (pointsOf(name)) Some(ignoredGeo(name, mode)) else None)
+        case _ if !typed(t) => (asRead, None)
         case scalarType =>
           val (one, ignoredOne) = scalarOne(name, scalarType, t.format)
           (
@@ -1110,10 +1213,228 @@ private[client] object HitReading {
     private def point(name: String, node: JsonNode): Any =
       SetOperationValues.geoPoint(HitReading.plain(node), name)
 
-    /** ONE non-null, non-array value of a scalar type, and -- for a date read by its format -- the
-      * same read answering NULL where the format does not read the value (D8).
+    /** SCHEMA-17 fix R-172 (A-201) -- whether `name` is a top-level `geo_point` field. */
+    private def pointsOf(name: String): Boolean = kinds.get(name).contains("geo_point")
+
+    /** SCHEMA-17 fix R-172 (A-201) -- ONE element of a `geo_point` cell the hit's `_ignored` names:
+      * the point Elasticsearch indexed, or NULL for a value that is no point, which it refused.
+      */
+    private def ignoredPoint(name: String): JsonNode => Any =
+      node =>
+        try point(name, node)
+        catch { case _: IllegalArgumentException => null }
+
+    /** SCHEMA-17 fix R-172 (A-201) -- a `GEO_POINT` cell the hit's `_ignored` names (D8): one value
+      * -- `[lon, lat]` is one point -- is NULL, the value Elasticsearch refused; several are each a
+      * point or NULL ([[ignoredPoint]]), per `mode`.
+      */
+    private def ignoredGeo(name: String, mode: MultiValued): JsonNode => Any = {
+      val one = ignoredPoint(name)
+      node =>
+        if (node == null || !node.isArray || coordinates(node)) null
+        else {
+          val size = node.size()
+          if (size == 0) null
+          else if (size == 1) element(one)(node.get(0))
+          else
+            mode match {
+              case MultiValued.AsRead =>
+                val values = ListBuffer.empty[Any]
+                val it = node.elements()
+                while (it.hasNext) values += element(one)(it.next())
+                values.toList
+              case MultiValued.Fail => throw several(name)
+            }
+        }
+    }
+
+    /** SCHEMA-17 fix R-172 (A-202) -- the cell of a column declared `ARRAY<X>` the hit's `_ignored`
+      * names (D8), for an element read by its format (a date) or of a kind of [[IgnoredKinds]]: a
+      * `List` of its elements, each the kind's own Elasticsearch parse accepts read by the column's
+      * element reader, the others NULL; a scalar cell -- one value, the one Elasticsearch refused
+      * -- a list of one NULL. `None` for any other element: a string keeps its text, a `STRUCT` or
+      * a nested list its own reader.
+      */
+    private def ignoredList(
+      name: String,
+      elementType: SetOperationType
+    ): Option[JsonNode => Any] = {
+      val points = elementType.sqlType == SQLTypes.GeoPoint
+      val read: Option[JsonNode => Any] = elementType.sqlType match {
+        case SQLTypes.GeoPoint => if (pointsOf(name)) Some(ignoredPoint(name)) else None
+        case SQLTypes.Struct | SQLTypes.Array(_) => None
+        case _ if !typed(elementType)            => None
+        case scalarType => scalarOne(name, scalarType, elementType.format)._2
+      }
+      read.map { one => (node: JsonNode) =>
+        if (node == null || node.isNull) null
+        // SCHEMA-6: `[lon, lat]` in an `ARRAY<GEO_POINT>` is ONE point (R-34)
+        else if (node.isArray && !(points && coordinates(node))) {
+          val values = ListBuffer.empty[Any]
+          val it = node.elements()
+          while (it.hasNext) values += element(one)(it.next())
+          values.toList
+        } else List(null)
+      }
+    }
+
+    /** ONE non-null, non-array value of a scalar type, and -- for a date read by its format, and a
+      * top-level column of a kind of [[IgnoredKinds]] (SCHEMA-17 fix R-172, A-201) -- the same read
+      * answering NULL where the kind's own Elasticsearch parse refuses the value (D8): the format
+      * for a date, [[acceptance]] for the others.
       */
     def scalarOne(
+      name: String,
+      sqlType: app.softnetwork.elastic.sql.`type`.SQLType,
+      format: Option[String]
+    ): (JsonNode => Any, Option[JsonNode => Any]) = {
+      val read = scalarRead(name, sqlType, format)
+      if (read._2.isDefined) read
+      else
+        kinds.get(name) match {
+          case Some(kind) =>
+            val one = read._1
+            val accepts = acceptance(name, kind)
+            (one, Some((node: JsonNode) => if (accepts(node)) one(node) else null))
+          case None => read
+        }
+    }
+
+    /** SCHEMA-17 fix R-172 (A-201) -- whether Elasticsearch's own parse of the field kind `kind`
+      * (`ignore_malformed` on, `coerce` on) accepts a node, ONE element of a cell the hit's
+      * `_ignored` names: an element it accepts is a value it indexed, kept and read by the column's
+      * reader; one it refuses is NULL. Chosen once per reader, never per row. Where core is not
+      * sure of the verdict (an object or a nested list, an `ip` spelling beyond the plain literals)
+      * the element is KEPT: never NULL a value Elasticsearch indexed. An empty text is no value
+      * (Elasticsearch indexes nothing for it, and names nothing): kept, read as the column reads
+      * it.
+      *
+      *   - `byte` / `short` / `integer` / `long`: [[WholeRange]] reads it, as Elasticsearch does;
+      *   - `unsigned_long`: an integral number within `[0, 2^64 - 1]`; a whole floating number `>=
+      *     0`, whatever its size (Elasticsearch saturates one `>= 2^63` to `2^63 - 1` and indexes
+      *     it); a text (not trimmed) holding a whole number within `[0, 2^64 - 1]`
+      *     ([[unsignedLong]]);
+      *   - `float` / `half_float` / `double` / `scaled_float`: a number, or a text `parseFloat` /
+      *     `parseDouble` reads, that is finite in the kind (`half_float`: below 65520 in magnitude,
+      *     which Lucene's half-float rounding, ties to even, keeps finite);
+      *   - `boolean`: a JSON boolean, or the text `true`, `false` or empty;
+      *   - `ip`: a text that is an IPv4 literal, or an IPv6 one ([[ipLiteral]]): never resolved;
+      *   - `geo_point`: a point core reads.
+      */
+    private def acceptance(name: String, kind: String): JsonNode => Boolean = {
+      val accepts: JsonNode => Boolean = kind match {
+        case "byte"          => node => wholeAccepted(WholeRange.ForTinyInt.read(node))
+        case "short"         => node => wholeAccepted(WholeRange.ForSmallInt.read(node))
+        case "integer"       => node => wholeAccepted(WholeRange.ForInt.read(node))
+        case "long"          => node => wholeAccepted(WholeRange.ForBigInt.read(node))
+        case "unsigned_long" => node => unsignedLong(node)
+        case "float"         => node => finiteFloat(node, Float.PositiveInfinity)
+        case "half_float"    => node => finiteFloat(node, HalfFloatLimit)
+        case "double" | "scaled_float" =>
+          node =>
+            if (node.isNumber) java.lang.Double.isFinite(node.doubleValue())
+            else if (node.isTextual) {
+              val text = node.asText()
+              text.isEmpty || {
+                try java.lang.Double.isFinite(java.lang.Double.parseDouble(text))
+                catch { case _: NumberFormatException => false }
+              }
+            } else !node.isBoolean
+        case "boolean" =>
+          node =>
+            if (node.isBoolean) true
+            else if (node.isTextual) {
+              val text = node.asText()
+              text.isEmpty || text == "true" || text == "false"
+            } else !node.isNumber
+        case "ip" =>
+          node =>
+            if (node.isTextual) ipLiteral(node.asText())
+            else !(node.isNumber || node.isBoolean)
+        case "geo_point" =>
+          node =>
+            try {
+              point(name, node)
+              true
+            } catch { case _: IllegalArgumentException => false }
+        case _ => _ => true
+      }
+      if (kind == "geo_point") accepts
+      else node => node.isContainerNode || accepts(node)
+    }
+
+    private def wholeAccepted(read: Any): Boolean =
+      read match {
+        case null | _: java.lang.Integer | _: java.lang.Long => true
+        case _                                               => false
+      }
+
+    /** `float` (`limit` the float infinity) and `half_float` (`limit` 65520): Elasticsearch's
+      * `parser.floatValue(coerce)` -- `Float.parseFloat` on a text, which trims --, then finite.
+      */
+    private def finiteFloat(node: JsonNode, limit: Float): Boolean =
+      if (node.isNumber) Math.abs(node.floatValue()) < limit
+      else if (node.isTextual) {
+        val text = node.asText()
+        text.isEmpty || {
+          try Math.abs(java.lang.Float.parseFloat(text)) < limit
+          catch { case _: NumberFormatException => false }
+        }
+      } else !node.isBoolean
+
+    /** `unsigned_long`: Elasticsearch's `parseUnsignedLong` (7.17 / 8.18), which refuses a decimal
+      * part ("has a decimal part") and a negative value, never truncating one:
+      *
+      *   - an integral number within `[0, 2^64 - 1]`;
+      *   - a floating number -- a double, a float or a big decimal: Elasticsearch's parser reads
+      *     every JSON float token as a `Double` -- equal to its floor (`Double.compare`) and not
+      *     negative, whatever its size: Elasticsearch saturates a whole floating number `>= 2^63`
+      *     (an infinity included) to `2^63 - 1` and indexes it;
+      *   - a text (not trimmed, read by `parseUnsignedLong`, else `new BigDecimal`) that is exact
+      *     ([[unsignedDecimal]]). No value is materialised beyond the digits it holds: a text of a
+      *     large exponent is judged by its digit count.
+      */
+    private def unsignedLong(node: JsonNode): Boolean =
+      if (node.isIntegralNumber) {
+        val b = node.bigIntegerValue()
+        b.signum() >= 0 && b.bitLength() <= 64
+      } else if (node.isNumber) {
+        // Elasticsearch: `Double.compare(v, Math.floor(v)) != 0` refuses, then `longValue() < 0`
+        val d = node.doubleValue()
+        java.lang.Double.compare(d, Math.floor(d)) == 0 && !(d < 0.0d)
+      } else if (node.isTextual) {
+        val text = node.asText()
+        text.isEmpty || {
+          val unsigned =
+            try {
+              java.lang.Long.parseUnsignedLong(text)
+              true
+            } catch { case _: NumberFormatException => false }
+          unsigned || {
+            val d =
+              try new java.math.BigDecimal(text)
+              catch { case _: NumberFormatException => null }
+            (d ne null) && unsignedDecimal(d)
+          }
+        }
+      } else !node.isBoolean
+
+    /** A big decimal an `unsigned_long` takes: zero, or a positive whole number -- no non-zero
+      * digit after the point (`toBigIntegerExact`) -- below 2^64. The digits before the point are
+      * counted in Long arithmetic, off the scale (trailing zeros change none of them), before any
+      * value is built.
+      */
+    private def unsignedDecimal(d: java.math.BigDecimal): Boolean =
+      d.signum() == 0 || {
+        val integerDigits = d.precision().toLong - d.scale()
+        d.signum() > 0 && integerDigits > 0 && integerDigits <= 20 && {
+          val whole = if (d.scale() <= 0) d else d.stripTrailingZeros()
+          whole.scale() <= 0 && whole.toBigInteger.bitLength() <= 64
+        }
+      }
+
+    /** The scalar read of [[scalarOne]], before any D8 reader of a kind of [[IgnoredKinds]]. */
+    private def scalarRead(
       name: String,
       sqlType: app.softnetwork.elastic.sql.`type`.SQLType,
       format: Option[String]
@@ -1325,7 +1646,8 @@ private[client] object HitReading {
     *
     * A value Elasticsearch refuses is no value of the type -- it holds it in `_source` only
     * (`ignore_malformed`) -- so `read` answers [[OutOfType]] and the column keeps it as stored
-    * (`Unreadable.KeepAsStored`): narrowing it would wrap it. So is a `long` text where the majors
+    * (`Unreadable.KeepAsStored`): narrowing it would wrap it; where the hit's `_ignored` names the
+    * field, the value is NULL (D8, SCHEMA-17 fix R-172). So is a `long` text where the majors
     * disagree: 7.17 and 8.18 refuse a scale below -19 and read 0 above 19, where 6.8 reads the
     * truncated value -- except a non-zero value with a scale of 2^29 + 8 (536,870,920) or more,
     * which 6.8 refuses: its `toBigInteger` divides by `BigInteger.TEN.pow(scale)`, which reports an

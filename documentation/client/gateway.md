@@ -355,11 +355,21 @@ In a column not declared a list, a one-element array is its element and an empty
 several values fail the statement (*since `0.25.0`*, see
 [Columns holding several values](../sql/dql_statements.md#columns-holding-several-values)); a column declared
 `ARRAY<X>` reads a single value as a list of one. A date field whose format core cannot read
-for sure (a zone name, a region id) is a VARCHAR, its text as stored; a date value Elasticsearch
-ignored (`ignore_malformed`) is NULL, and the other values of the same array keep theirs. An
-integral column reads a fractional number or a numeric text as Elasticsearch indexed it, truncated
-toward zero. A value a typed column cannot read is answered as stored: a value Elasticsearch did not
-index (a number outside its type's range, a `long` text with surrounding spaces) is never narrowed.
+for sure (a zone name, a region id) is a VARCHAR, its text as stored. A value Elasticsearch ignored
+as malformed (`ignore_malformed`: the hit's `_ignored` names the field) in a top-level field is
+NULL: a date, and *since `0.25.0`* a number, an `ip`, a `geo_point` and a `boolean` (where the
+Elasticsearch version accepts the option on it), verified on Elasticsearch 7.17 and later; a
+`scaled_float` from 8.6, the first version that names it in `_ignored` (before 8.6 its value is
+answered as stored). In an array, and in a column declared `ARRAY<X>`, the values Elasticsearch
+indexed keep theirs and only the ones it ignored are NULL. A `keyword` or a `wildcard` over its
+`ignore_above`, which `_ignored` names too, keeps its text. An integral column reads a fractional
+number or a numeric text as Elasticsearch indexed it, truncated toward zero. A value a typed column
+cannot read is answered as stored, never narrowed: a value this rule does not reach (an object's
+sub-field, though `_ignored` names it; a value Elasticsearch refused without naming it, such as a
+`scaled_float` before 8.6), and a number outside a column declared narrower than its field (an
+`INT` over a `long`). *Since `0.25.0`*, the JDBC driver's
+getters and an Arrow cell of a narrower type fail on such a number, naming it (`Value 3000000000 is
+out of range for INT`), where they answered a wrapped value (see [JDBC](jdbc.md#supported-sql)).
 
 Aggregation values follow the same table:
 

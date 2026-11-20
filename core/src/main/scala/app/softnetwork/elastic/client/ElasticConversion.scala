@@ -746,10 +746,13 @@ trait ElasticConversion {
   /** SCHEMA-2 (D4, D6-D8) -- the hits of a statement read through its plan ([[HitReading]]): each
     * `_source` key the projection touches, each computed column's `fields` entry and each UNNEST
     * element field by its column's reader, before any re-read as a temporal; every other key as it
-    * always was. A date column the hit's `_ignored` names follows Elasticsearch's verdict, per
-    * value: a cell of one value is NULL, an array keeps the elements its format reads and answers
-    * the others NULL ([[HitReading.onIgnored]]). A several-element cell a scalar column refuses
-    * ([[MultiValued.Fail]]) fails the statement, naming the document.
+    * always was. A top-level column the hit's `_ignored` names follows Elasticsearch's verdict, per
+    * value, for every kind that takes `ignore_malformed` -- a date, a number, an `ip`, a
+    * `geo_point`, a `boolean` (SCHEMA-17 fix R-172) --: a cell of one value is NULL, an array keeps
+    * the elements the kind's own parse accepts and answers the others NULL
+    * ([[HitReading.onIgnored]], the one lookup); a keyword or a wildcard over `ignore_above` keeps
+    * its text. A several-element cell a scalar column refuses ([[MultiValued.Fail]]) fails the
+    * statement, naming the document.
     */
   private def parseHitsByPlan(
     hits: List[JsonNode],

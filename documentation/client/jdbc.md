@@ -269,6 +269,13 @@ computed column the engine declares `DOUBLE` (`x * 2` over a `DOUBLE` column) is
 `Integer`s, is reported as `INTEGER`. A value the engine answers as stored keeps its own class (see
 [Value classes](gateway.md#value-classes)), and a column of no known type (`ANY`) can carry whole
 and decimal numbers alike: there, the column is reported as the type of its first value.
+`getByte`, `getShort`, `getInt`, `getLong` and `getFloat` throw `SQLException` on a number outside
+their type (*since engine `0.25.0`*: `Value 3000000000 is out of range for INT`) instead of
+answering a wrapped value: `getInt` of a `BIGINT` past the integer range, a value answered as stored
+in a column declared narrower than its field (an `INT` over a `long`), an `INT` sum past the
+integer range, an `unsigned_long` above 2^63 - 1 through `getLong`, a `DOUBLE` beyond the largest
+`REAL` through `getFloat`. A fractional number is still truncated toward zero (`getInt` of `42.9` is
+`42`), and NaN or an infinity is no integer.
 A set operation's columns follow the declared types. On a JOIN result (*since
 arrow-extensions `0.3.4`*) the columns carry DuckDB's types, an integer getter throws `SQLException`
 on a value outside its type's range instead of answering a wrapped value, `getBigDecimal` of a
