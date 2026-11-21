@@ -1593,7 +1593,11 @@ creates, alters or drops a table (`CREATE TABLE`, a partitioned `CREATE TABLE`'s
 TABLE`, `DROP TABLE`, `createIndex`, `deleteIndex`, the REPL `refresh`) forgets the misses it makes
 stale at once — the table's own and those of every pattern or list it matches — so a table created
 after a query found it missing is typed by the next statement. An index created any other way
-(another client, a raw `PUT`, an ingest that creates it) is seen when the miss expires.
+(another client, a raw `PUT`, an ingest that creates it) is seen when the miss expires — or at the
+next `describe` (*since `0.25.0`*): `describe` never skips a lookup for a remembered miss, so it
+answers what `run` will answer, and its successful lookup forgets the miss. A `describe` of an index
+that is still absent therefore repeats the failed lookup on every call: a `GET <index>` and a lookup
+of the template of that name, two round trips logged as several WARN lines.
 
 
 ## Performance Optimization

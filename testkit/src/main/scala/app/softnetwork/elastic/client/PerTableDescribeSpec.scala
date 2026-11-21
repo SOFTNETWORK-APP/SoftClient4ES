@@ -24,6 +24,8 @@ import app.softnetwork.elastic.sql.parser.Parser
 import app.softnetwork.elastic.sql.query.Statement
 import app.softnetwork.persistence.generateUUID
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.apache.http.entity.ContentType
+import org.apache.http.nio.entity.NStringEntity
 import org.apache.http.util.EntityUtils
 import org.elasticsearch.client.Request
 import org.scalatest.flatspec.AnyFlatSpecLike
@@ -63,6 +65,11 @@ trait PerTableDescribeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
   protected val ptAB = "pt_ab"
 
   private def indices: Seq[String] = Seq(ptA, ptB, ptAB)
+
+  /** R-169: a leg created by another client after its 404 was remembered (never in [[indices]],
+    * whose `_stats` it would fail while absent).
+    */
+  protected val ptLate = "pt_late"
 
   protected def ptAColumns: Seq[(String, String)] = Seq(
     "aid"   -> """{"type": "keyword"}""",
@@ -130,7 +137,7 @@ trait PerTableDescribeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    indices.foreach(drop)
+    (indices :+ ptLate).foreach(drop)
     load(
       ptA,
       mappingOf(ptAColumns, withMeta = true),
@@ -158,7 +165,7 @@ trait PerTableDescribeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
   }
 
   override def afterAll(): Unit = {
-    indices.foreach(drop)
+    (indices :+ ptLate).foreach(drop)
     super.afterAll()
   }
 
@@ -294,5 +301,20 @@ trait PerTableDescribeSpec extends AnyFlatSpecLike with ElasticDockerTestKit wit
       case ElasticFailure(error) => fail(s"positive control: ${error.message}")
     }
     queryTotal() should be > before
+  }
+
+  it should "type a leg another client created after its 404 was remembered (R-169)" in {
+    val body = parsed(s"SELECT a.aid, l.w FROM $ptA a JOIN $ptLate l ON a.bid = l.bid")
+    // the leg's 404, remembered by the lookup: no schema
+    client.describePerTable(body) shouldBe ElasticSuccess(None)
+    // another client creates it: an ingest that auto-creates the index, no DDL through this client
+    val request = new Request("POST", s"/$ptLate/_doc?refresh=true")
+    request.setEntity(new NStringEntity("""{"bid":"b1","w":1}""", ContentType.APPLICATION_JSON))
+    restClient.performRequest(request).getStatusLine.getStatusCode should (be(200) or be(201))
+    // describePerTable reads the leg again: typed, each column as over its own table
+    val typed = columnsOf(client.describePerTable(body))
+    typed shouldBe columnsOf(client.describe(s"SELECT aid FROM $ptA")) ++
+    columnsOf(client.describe(s"SELECT w FROM $ptLate"))
+    typed.map(_._2) should not contain "ANY"
   }
 }

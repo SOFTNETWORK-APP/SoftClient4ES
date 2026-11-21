@@ -219,7 +219,9 @@ message. *Since `0.25.0`*, one rule for every consumer:
   name typed over the legs that carry it), an alias or a data stream over several indices from its
   members;
 - a failure: refused with the status `run` answers -- an unknown index is a `404`, a mapping read
-  that fails otherwise keeps its status (`operation = "describe"`; it answered `None` before);
+  that fails otherwise keeps its status (`operation = "describe"`; it answered `None` before). An
+  index found missing is read again on every `describe`, so one another client creates afterwards
+  (an ingest that auto-creates it, a raw `PUT`) is typed at once, and the next `run` with it;
 - `ElasticSuccess(None)`: only for a statement another extension than core's handles (a
   cross-index JOIN under the arrow extension), whose own layer types it.
 
