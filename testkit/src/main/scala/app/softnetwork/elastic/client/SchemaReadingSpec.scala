@@ -460,16 +460,31 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
       "n1" -> "{x: 1, y: {z: 2}}",
       "n2" -> "[{a: 1}, {a: 2}]",
       "n3" -> "[1, [2, 3]]",
-      "n4" -> "{k: [1, 2], n: null, s: text}",
       "n5" -> "{l: [[{d: [true, false]}]]}"
     )
+    // n4's entries come in the map's own iteration order: the Elasticsearch 6 / 7 clients read
+    // `_source` without the document's key order, 8 / 9 keep it; the text follows the map it gets
+    val n4Entries = Map("k" -> "[1, 2]", "n" -> "null", "s" -> "text")
     Seq("", " LIMIT 100").foreach { limit =>
       val sql = s"SELECT id, o FROM $asStored$limit"
       withClue(s"[$sql] ") {
-        rowsOf(sql).map { row =>
+        val rows = rowsOf(sql)
+        val texts = rows.map { row =>
           String.valueOf(row.getOrElse("id", null)) ->
           ValueCoercion.coerceToString(row.getOrElse("o", null))
-        }.toMap shouldBe expected
+        }.toMap
+        (texts - "n4") shouldBe expected
+        rows
+          .find(row => String.valueOf(row.getOrElse("id", null)) == "n4")
+          .flatMap(_.get("o")) match {
+          case Some(map: Map[_, _]) =>
+            val keys = map.keys.map(_.toString).toList
+            keys.toSet shouldBe n4Entries.keySet
+            texts.get("n4") shouldBe Some(
+              keys.map(k => s"$k: ${n4Entries(k)}").mkString("{", ", ", "}")
+            )
+          case other => fail(s"n4's object is not read as a map: $other")
+        }
       }
     }
   }
