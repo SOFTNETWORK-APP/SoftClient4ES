@@ -29,7 +29,7 @@ import app.softnetwork.elastic.client.result.{
 }
 import app.softnetwork.elastic.client.spi.ElasticClientFactory
 import app.softnetwork.elastic.scalatest.ElasticDockerTestKit
-import app.softnetwork.elastic.sql.`type`.SQLTypes
+import app.softnetwork.elastic.sql.`type`.{SQLTypes, ValueCoercion}
 import app.softnetwork.elastic.sql.query.SelectStatement
 import app.softnetwork.persistence.generateUUID
 import org.apache.http.entity.ContentType
@@ -54,6 +54,10 @@ import scala.util.Try
   *   - "q4": `SELECT *` = the cached mapping, an unmapped path read as ANY, an explicit path's one
   *     reload (AC6, Elasticsearch 7+);
   *   - "describe": `describe(sql)` = `run(sql)`'s schema (AC1).
+  *
+  * SCHEMA-17 fix R-171 -- "an object read as stored": the text of an object column core reads as
+  * stored (a disabled `object`, a field-less STRUCT) whose documents hold a nested object, a list
+  * of objects and a list of lists, on fixture `r171_t` (AC4).
   *
   * SCHEMA-2b -- aggregation values and window statements by type, on fixtures `s2b_t` / `s2b_w`:
   *
@@ -80,6 +84,7 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   protected val table = "s2_t"
   protected val q4 = "q4_t"
   protected val q4d = "q4d_t"
+  protected val asStored = "r171_t"
 
   protected lazy val major: Int = Try(elasticVersion.takeWhile(_ != '.').toInt).getOrElse(8)
 
@@ -186,7 +191,7 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    Seq(table, q4, q4d, aggTable, windowTable).foreach(drop)
+    Seq(table, q4, q4d, asStored, aggTable, windowTable).foreach(drop)
     load(table, mapping, docs)
     load(aggTable, aggMapping, aggDocs)
     load(windowTable, windowMapping, windowDocs)
@@ -194,7 +199,7 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
   }
 
   override def afterAll(): Unit = {
-    Seq(table, q4, q4d, aggTable, windowTable).foreach(drop)
+    Seq(table, q4, q4d, asStored, aggTable, windowTable).foreach(drop)
     super.afterAll()
   }
 
@@ -430,6 +435,58 @@ trait SchemaReadingSpec extends AnyFlatSpecLike with ElasticDockerTestKit with M
     val nf = runOk(s"SELECT nf FROM $q4d")
     typeOf(nf, "nf") shouldBe Some("BIGINT")
     answer(runOk(s"SELECT * FROM $q4d"))._2.map(_.names.toSet) shouldBe Some(Set("id", "nf"))
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // SCHEMA-17 fix R-171 -- an object read as stored, as its text (AC4)
+  // -------------------------------------------------------------------------------------------
+
+  "An object read as stored" should "spell its nested values recursively as text (R-171 AC4)" in {
+    // a disabled object: no field of its own (a field-less STRUCT, read as stored), any JSON kept
+    load(
+      asStored,
+      """{"properties": {"id": {"type": "keyword"},
+        | "o": {"type": "object", "enabled": false}}}""".stripMargin,
+      Seq(
+        "n1" -> """{"id":"n1","o":{"x":1,"y":{"z":2}}}""",
+        "n2" -> """{"id":"n2","o":[{"a":1},{"a":2}]}""",
+        "n3" -> """{"id":"n3","o":[1,[2,3]]}""",
+        "n4" -> """{"id":"n4","o":{"k":[1,2],"n":null,"s":"text"}}""",
+        "n5" -> """{"id":"n5","o":{"l":[[{"d":[true,false]}]]}}"""
+      )
+    )
+    // JDBC's `getString` and arrow's VARCHAR writer: `ValueCoercion.coerceToString`
+    val expected = Map(
+      "n1" -> "{x: 1, y: {z: 2}}",
+      "n2" -> "[{a: 1}, {a: 2}]",
+      "n3" -> "[1, [2, 3]]",
+      "n5" -> "{l: [[{d: [true, false]}]]}"
+    )
+    // n4's entries come in the map's own iteration order: the Elasticsearch 6 / 7 clients read
+    // `_source` without the document's key order, 8 / 9 keep it; the text follows the map it gets
+    val n4Entries = Map("k" -> "[1, 2]", "n" -> "null", "s" -> "text")
+    Seq("", " LIMIT 100").foreach { limit =>
+      val sql = s"SELECT id, o FROM $asStored$limit"
+      withClue(s"[$sql] ") {
+        val rows = rowsOf(sql)
+        val texts = rows.map { row =>
+          String.valueOf(row.getOrElse("id", null)) ->
+          ValueCoercion.coerceToString(row.getOrElse("o", null))
+        }.toMap
+        (texts - "n4") shouldBe expected
+        rows
+          .find(row => String.valueOf(row.getOrElse("id", null)) == "n4")
+          .flatMap(_.get("o")) match {
+          case Some(map: Map[_, _]) =>
+            val keys = map.keys.map(_.toString).toList
+            keys.toSet shouldBe n4Entries.keySet
+            texts.get("n4") shouldBe Some(
+              keys.map(k => s"$k: ${n4Entries(k)}").mkString("{", ", ", "}")
+            )
+          case other => fail(s"n4's object is not read as a map: $other")
+        }
+      }
+    }
   }
 
   // -------------------------------------------------------------------------------------------
