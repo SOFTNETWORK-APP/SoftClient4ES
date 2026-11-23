@@ -284,10 +284,11 @@ private[elastic] object SetOperationValues {
     *
     * @param sqlType
     *   the type the leg's values have there, at every depth: the branch's declared type, a date
-    *   position whose format core cannot read for sure `VARCHAR` ([[DateRoute.AsStored]])
+    *   position whose format core cannot read for sure `VARCHAR` ([[DateRoute.AsStored]]); at a
+    *   `NULL` literal, the column's type ([[MultiSearch.columnTypes]]' result)
     * @param read
     *   the reader of one raw value there, answering `sqlType`'s class ([[legReaders]]' classes;
-    *   `VARCHAR` a `String`, the text as stored)
+    *   `VARCHAR` a `String`, the text as stored); at a `NULL` literal, `null` for every value
     * @param asStored
     *   the date positions answered as stored -- their path (`tsz`, `oz.z`) and why
     */
@@ -324,12 +325,16 @@ private[elastic] object SetOperationValues {
     *     known, `VARCHAR`, the text as stored, every row -- at the column, in a struct's field and
     *     in a list's element, where the branches agree or not. The routed type is read by the SAME
     *     reader as every other position ([[legReader]]): a `VARCHAR` position is the text leg's.
+    *   - A `NULL` literal declares no type of its own: its slot is the column's type, the type the
+    *     relational engine gives it ([[MultiSearch.columnTypes]]' result, which carries no date
+    *     format, so no version is asked for it), every value read as NULL -- `None` where that type
+    *     is `NULL` (every branch a `NULL`), holds a type not known at some depth
+    *     ([[unknownInside]]) or one of unknown width (`NUMERIC`, `TEMPORAL`) ([[nullSlot]]).
     *   - `None` where [[legReader]] reads nothing (a column whose type is not known, `ANY` -- a
-    *     `WITH` or a derived table aliasing the column --, a `NULL` literal); where the leg's OR
-    *     the column's type holds, at any depth, a type not known (`ANY`, a `STRUCT` whose fields
-    *     are not known) ([[unknownInside]]); and where the leg's type holds, at any depth, one read
-    *     as it comes until the engine types it (`NUMERIC`, `TEMPORAL`, `VARBINARY`, `REAL`)
-    *     ([[valueTyped]]).
+    *     `WITH` or a derived table aliasing the column); where the leg's OR the column's type
+    *     holds, at any depth, a type not known (`ANY`, a `STRUCT` whose fields are not known)
+    *     ([[unknownInside]]); and where the leg's type holds, at any depth, one read as it comes
+    *     until the engine types it (`NUMERIC`, `TEMPORAL`, `VARBINARY`, `REAL`) ([[valueTyped]]).
     *
     * Built ONCE per statement; no decision is made per row.
     */
@@ -368,7 +373,8 @@ private[elastic] object SetOperationValues {
   /** Leg `index`'s slot at ONE column ([[legSchemas]]): its branch's type routed ([[routed]]), read
     * by [[legReader]] over the column whose branch `index` is the routed type -- `None` where
     * [[legReader]] reads nothing, where the branch's type is read as it comes ([[valueTyped]]), or
-    * where the column's type is not known at some depth ([[unknownInside]]).
+    * where the column's type is not known at some depth ([[unknownInside]]). A `NULL` literal's
+    * slot is the column's type, read as NULL ([[nullSlot]]).
     */
   private[client] def legSlot(
     column: SetOperationColumn,
@@ -378,34 +384,60 @@ private[elastic] object SetOperationValues {
     dates: DateReading,
     nanos: Set[String] = Set.empty
   ): Option[LegSlot] =
-    column.branches
-      .lift(index)
-      .flatten
-      .filterNot(branch => valueTyped(branch) || unknownInside(column.result))
-      .flatMap { branch =>
-        // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before any
-        // date is routed (routing asks the version): routing makes a date `VARCHAR`, never `NULL`,
-        // and leaves the column's type alone, so [[legReader]] answers the same over the routed one
-        val reader = legReader(column, index, name, field, dates, Unreadable.Fail, nanos)
-        Option(reader).flatMap { declared =>
-          val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
-          // routing changed nothing (every readable date): the routed column IS the declared one,
-          // so its reader is the one just built -- built once, not twice per slot
-          if (slotType == branch) Some(LegSlot(slotType, declared, asStored))
-          else
-            Option(
-              legReader(
-                column.copy(branches = column.branches.updated(index, Some(slotType))),
-                index,
-                name,
-                field,
-                dates,
-                Unreadable.Fail,
-                nanos
-              )
-            ).map(LegSlot(slotType, _, asStored))
-        }
+    column.branches.lift(index).flatten match {
+      // SCHEMA-18 (R-199) -- a NULL literal declares no type of its own
+      case Some(branch) if branch.sqlType == SQLTypes.Null => nullSlot(column)
+      case declared =>
+        declared
+          .filterNot(branch => valueTyped(branch) || unknownInside(column.result))
+          .flatMap { branch =>
+            // whether the slot exists is [[legReader]]'s to say over the column AS DECLARED, before
+            // any date is routed (routing asks the version): routing makes a date `VARCHAR`, never
+            // `NULL`, and leaves the column's type alone, so [[legReader]] answers the same over the
+            // routed one
+            val reader = legReader(column, index, name, field, dates, Unreadable.Fail, nanos)
+            Option(reader).flatMap { declared =>
+              val (slotType, asStored) = routed(branch, if (field.isEmpty) name else field, dates)
+              // routing changed nothing (every readable date): the routed column IS the declared
+              // one, so its reader is the one just built -- built once, not twice per slot
+              if (slotType == branch) Some(LegSlot(slotType, declared, asStored))
+              else
+                Option(
+                  legReader(
+                    column.copy(branches = column.branches.updated(index, Some(slotType))),
+                    index,
+                    name,
+                    field,
+                    dates,
+                    Unreadable.Fail,
+                    nanos
+                  )
+                ).map(LegSlot(slotType, _, asStored))
+            }
+          }
+    }
+
+  /** SCHEMA-18 (R-199) -- a `NULL` literal's slot: its column's set-operation type
+    * ([[MultiSearch.columnTypes]]' result -- the type the relational engine gives the column, which
+    * a `NULL` takes there), read as NULL every row; `None` where that type is `NULL` (every branch
+    * a `NULL`), not known at some depth ([[unknownInside]]), or of unknown width (`NUMERIC`,
+    * `TEMPORAL`). The result carries no date format at any depth: nothing is routed, no version is
+    * asked.
+    */
+  private def nullSlot(column: SetOperationColumn): Option[LegSlot] =
+    if (
+      column.resultType == SQLTypes.Null || unknownInside(column.result) ||
+      holds(column.result) {
+        case SQLTypes.Numeric | SQLTypes.Temporal => true
+        case _                                    => false
       }
+    ) None
+    else Some(LegSlot(column.result, readsNull, Nil))
+
+  /** The reader of a `NULL` literal's values: NULL, whatever Elasticsearch answers (`null`, its
+    * one-element `[null]`). ONE function, so two slots of the same column are equal.
+    */
+  private val readsNull: Any => Any = _ => null
 
   /** A branch's type with every date position [[DateRoute.of]] answers as stored made `VARCHAR`, at
     * every depth -- a struct's field (`path.field`), a list's element (the list's path) -- and

@@ -81,4 +81,14 @@ class LegSchemasConsumerSmokeSpec extends AnyFlatSpec with Matchers {
     tsz.asStored.map((p: LegSlot.AsStored) => p.path) shouldBe Seq("tsz")
     tsz.read("2024-01-31 10:30 CET") shouldBe "2024-01-31 10:30 CET"
   }
+
+  they should "type a NULL literal as its column, read as NULL (SCHEMA-18)" in {
+    val sql = "SELECT NULL AS k FROM t UNION SELECT n AS k FROM t"
+    slotTypes(sql) shouldBe Seq(Seq(Some("INT")), Seq(Some("INT")))
+    val nullSlot: LegSlot = legs(sql).head.flatMap(_.slots.head).getOrElse(fail("no NULL slot"))
+    Seq[Any](null, List(null), 3, "3").foreach { cell =>
+      assert(nullSlot.read(cell) == null, s"$cell read")
+    }
+    nullSlot.asStored shouldBe Nil
+  }
 }
