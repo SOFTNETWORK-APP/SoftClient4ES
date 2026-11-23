@@ -444,7 +444,7 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
 
   "A position typed as its values come" should "have no slot where legReaders reads nothing" in {
     // a column whose type is not known: a WITH aliasing inside its CTE, every derived table, in
-    // every leg; a column of type ANY; a NULL literal
+    // every leg; a column of type ANY
     val anyColumns = Seq(
       "WITH a AS (SELECT tsz AS k FROM t) SELECT k FROM a UNION SELECT ts AS k FROM t",
       "SELECT k FROM (SELECT tsz AS k FROM t) dd UNION SELECT ts AS k FROM t",
@@ -459,8 +459,16 @@ class SetOperationLegSchemasSpec extends AnyFlatSpec with Matchers {
       slots(sql) shouldBe Seq(Some(Seq(None)), Some(Seq(None)))
       Seq(0, 1).foreach(leg => legReader(sql, leg) shouldBe null)
     }
+    // SCHEMA-18 (R-199) -- legReaders reads nothing at a NULL literal, but its slot is its
+    // column's type, every value read as NULL
     slots(union("n", "NULL")).map(_.map(_.map(_.map(_.sqlType)))) shouldBe
-    Seq(Some(Seq(Some(SetOperationType(SQLTypes.Int)))), Some(Seq(None)))
+    Seq(
+      Some(Seq(Some(SetOperationType(SQLTypes.Int)))),
+      Some(Seq(Some(SetOperationType(SQLTypes.Int))))
+    )
+    Seq("null", "[null]", "3").foreach { json =>
+      assert(slot(union("n", "NULL"), leg = 1).read(received(json)) == null, s"$json read")
+    }
     legReader(union("n", "NULL"), 1) shouldBe null
     // a SELECT * leg: no schema, whatever the width of the others
     slots("SELECT n FROM t UNION ALL SELECT * FROM t").map(_.isDefined) shouldBe Seq(true, false)
