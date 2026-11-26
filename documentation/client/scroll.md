@@ -206,8 +206,9 @@ count (an explicit ceiling below it is still a whole-shard split on the Elastics
   `_doc`-ordered before). Add an `ORDER BY` when order matters — ordered statements stay sequential.
 - A licence-quota-capped result (`maxDocuments`) is now an **arbitrary subset** of the matching
   rows, not a stable prefix.
-- `SELECT *` column metadata derived from the first row (JDBC, Arrow) may vary between runs on
-  heterogeneous multi-shard indices.
+- With a JDBC driver or arrow-extensions older than `0.3.5`, `SELECT *` column metadata derived from
+  the first row may vary between runs on heterogeneous multi-shard indices (since `0.3.5` both
+  report the declared schema).
 - In-flight memory is bounded by about `2 × slices × scrollSize` rows plus `slices` raw page
   responses (each slice keeps one page in flight while the previous one drains).
 - The PIT is opened lazily (at materialization) and closed exactly once — on completion, failure

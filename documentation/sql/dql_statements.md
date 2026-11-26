@@ -899,7 +899,7 @@ position — a column, a field, an element — every branch's value there is con
 position holds ONE class: a `DOUBLE` a `Double`, a `BIGINT` a `Long`, a `TIMESTAMP` a
 `ZonedDateTime` (a date-only, zone-less or epoch-milliseconds value included), a `VARBINARY`
 bytes, a `VARCHAR` a string, a list a list of its element's type, an object a map of its fields
-in order — which is the type JDBC and Arrow report, since they read it from the first value. A
+in order — the type JDBC and Arrow report. A
 position whose branches already have one type is returned as each branch reads it, nothing
 converted, and a branch over an aggregate answers the class of the aggregate's type (*since
 `0.25.0`*: a `Double` before). So, `n` being an `INT` column, `SELECT MAX(n) AS k FROM t UNION ALL

@@ -92,6 +92,31 @@ Set this as the statement's SQL (`stmt.setSqlQuery(...)`) and read the Arrow str
 
 ---
 
+## The schema before the rows
+
+*Since arrow-extensions `0.3.5`*, `executeSchema()` answers the schema `executeQuery()` streams,
+without running anything. A `SELECT` the relational engine runs (a cross-index JOIN, a correlated
+subquery, a derived table, a `WITH`, a set operation other than `UNION ALL`) is typed from each
+leg's declared schema, then by DuckDB over legs holding no row; any other `SELECT` from the schema
+the engine declares for it (the index mapping, computed columns, aggregates). It answered
+`NOT_IMPLEMENTED` before.
+
+```scala
+stmt.setSqlQuery("""
+  SELECT e.name, e.salary, d.dept_name
+  FROM jdbc_join_emp e
+  JOIN jdbc_join_dept d ON e.dept_id = d.dept_id
+""")
+val schema = stmt.executeSchema()   // the schema executeQuery() streams; nothing is searched
+```
+
+A statement other than a `SELECT`, and a `SELECT` that cannot be typed before it runs (a text the
+parser refuses, a statement or a leg the engine refuses, more JOINs than your plan's `maxJoins`
+allows), still answers `NOT_IMPLEMENTED`, and nothing runs. `executeQuery()` runs it and returns its
+rows, or its error.
+
+---
+
 ## JDK 16 and later: one required flag
 
 The ADBC driver is Arrow-native in process, and Apache Arrow reaches into `java.nio` to address off-heap memory. **JDK 16 and later deny that access by default** ([JEP 396](https://openjdk.org/jeps/396)), so a modern JVM must be started with:
