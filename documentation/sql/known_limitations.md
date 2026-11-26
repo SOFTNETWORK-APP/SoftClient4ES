@@ -683,7 +683,10 @@ the column it aggregates, whatever the other rows answer.
   `MAX`), a `GREATEST` / `LEAST` and a window partition over it compute in milliseconds, as
   Elasticsearch's doc values and aggregations do, and so does a number of days added to a
   function's result over it (`DATE_TRUNC(dn, MONTH) + 1`), to a per-group value or in an ingest
-  script.
+  script. Over Arrow Flight SQL and ADBC, where a timestamp travels as `Timestamp(MS)`, a `date_nanos`
+  value arrives at millisecond precision (`…00.123456789Z` reads `…00.123`); through the relational
+  engine (a JOIN, for instance) it arrived as its text, nanoseconds included, before
+  arrow-extensions `0.3.5`. A plain query through the JDBC driver keeps the nanoseconds.
 - **An `unsigned_long` value above 2^63-1 is answered as stored**, a `java.math.BigInteger` in a
   `BIGINT` column (core has no unsigned type); every smaller value is a `Long`.
 - **A `flattened` field, an `alias`, a `wildcard`, a `match_only_text`, a `version` or a `geo_shape`
