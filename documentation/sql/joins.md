@@ -333,6 +333,22 @@ FROM `prod_us`.orders o
 JOIN `prod_fr`.customers c ON o.customer_id = c.id;
 ```
 
+**The result schema before the rows** (*since arrow-extensions `0.3.5`*). A JOIN,
+correlated-subquery, derived-table, `WITH` or set-operation `SELECT` sent to the coordinator is
+typed when it is prepared, whether it reads one cluster or several: each leg takes the schema its
+cluster's sidecar declares (within the coordinator's `query-timeout-seconds`, Helm
+`federation.queryTimeoutSeconds`), then DuckDB types the result, with no leg run on a `0.3.5`
+sidecar (see below for older ones). Its prepared statement and `GetSchema` carry that schema;
+before, such a prepared statement carried no schema, and `GetSchema` failed as unimplemented for
+every statement. For any other `SELECT`, which the coordinator forwards whole to one cluster,
+`GetSchema` returns that sidecar's answer. Among the statements the coordinator runs itself, one
+with a `?`, a write, and one that cannot be typed before it runs (a leg refused, a cluster that does
+not answer in time, more JOINs than `maxJoins` allows) carry no schema at prepare; a query among
+them is typed at execution. Against a sidecar older than `0.3.5`, declaring a leg's schema runs that
+leg's search on a sample of rows, and the declared types can differ from the streamed ones: the
+prepared schema is then only advisory, while `GetFlightInfo` always matches the stream. Upgrade the
+sidecars along with the coordinator.
+
 ---
 
 ## Performance characteristics

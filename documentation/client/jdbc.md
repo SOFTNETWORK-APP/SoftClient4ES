@@ -178,6 +178,18 @@ Elasticsearch has no server-side prepared statements, so the driver substitutes 
 - **Parameters are length-bounded.** A bound value may render to at most **8192 characters** (after escaping — an apostrophe or a backslash contributes two). Above that the driver raises a `SQLException` naming the limit rather than building a statement the engine's parser cannot read. Store long text in the document and filter on a shorter key, or narrow the value.
 - **A parameter you never set is an error**, not an implicit `NULL`, and an index with no matching placeholder is refused at set time. Use `setNull` to bind SQL `NULL` deliberately.
 
+**The metadata before execution.** `PreparedStatement.getMetaData()` answers the `ResultSetMetaData`
+its execution reports, without running anything (*since JDBC driver `0.3.5`*; it answered `null`).
+It reads the statement as bound so far: the engine's declared schema of it, or, for a statement the
+relational engine runs (a cross-index JOIN, a correlated subquery, a derived table, a `WITH`, a set
+operation other than `UNION ALL`), that engine's declared result. A `?` not bound yet reads as
+`NULL` there, so a column made of a bare `?` is reported as `NULL` until it is bound (the relational
+engine types it as DuckDB types a `NULL`); executing still refuses an unset parameter. A column of
+no known type is reported as `ANY` (`Types.OTHER`, `java.lang.Object`): there is no value yet to
+type it by. `getMetaData()` answers `null` where the result is not known before the statement runs:
+a statement that is not a query, a text the parser refuses, a statement or a leg the engine refuses,
+one with more JOINs than your plan's `maxJoins` allows.
+
 > **Known limitation, plain `Statement` only:** a multi-statement string executed through `Statement` (not `PreparedStatement`) with a very long literal typed directly into the SQL can still exhaust the parser's stack, and reports a timeout rather than a parse error. Bound parameters are not affected. Split such SQL into separate statements.
 
 ```java
@@ -260,15 +272,21 @@ The JDBC driver supports the full SQL Gateway syntax:
 - **DQL** — SELECT with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, set operators (`UNION [ALL]` / `INTERSECT` / `EXCEPT`), JOIN UNNEST, window functions
 - **SHOW/DESCRIBE** — Tables, pipelines, watchers, enrich policies
 
-**Column types.** A plain query's `ResultSetMetaData` is inferred from the first non-null value of
-each column. The engine answers every value it reads by type in the class of its column's declared
-type (*since engine `0.25.0`*), so the inferred type is the declared one: a `BIGINT` column is
-reported as `BIGINT`, its small values included, and `getObject` answers a `Long` on every row; a
-computed column the engine declares `DOUBLE` (`x * 2` over a `DOUBLE` column) is reported as
-`DOUBLE` and answers a `Double` on every row. A `TINYINT` or `SMALLINT` column, whose values are
-`Integer`s, is reported as `INTEGER`. A value the engine answers as stored keeps its own class (see
-[Value classes](gateway.md#value-classes)), and a column of no known type (`ANY`) can carry whole
-and decimal numbers alike: there, the column is reported as the type of its first value.
+**Column types.** A query's `ResultSetMetaData` is the engine's declared schema (*since JDBC driver
+`0.3.5`*; it was inferred from the first non-null value of each column): every column, in its order,
+typed by its declared type whatever the rows hold, so a column no row holds keeps its type and a
+result with no row keeps its columns. A `BIGINT` column is reported as `BIGINT`, a computed column
+the engine declares `DOUBLE` (`x * 2` over a `DOUBLE` column) as `DOUBLE`, and a `TINYINT` or
+`SMALLINT` column as itself, its values `Integer`s (JDBC 4.3, Table B-3). Only a column of no known
+type (`ANY`) is typed from its rows: it takes the type of its first non-null value. `SHOW` and
+`DESCRIBE` still report the types of their rows. `getObject` (*since JDBC driver `0.3.5`*) answers
+the class `getColumnClassName` names (`Integer` for `TINYINT`, `SMALLINT` and `INTEGER`, `Long` for
+`BIGINT`, `Float` for `REAL`, `Double` for the other numbers, `java.sql.Date`, `java.sql.Time` and
+`java.sql.Timestamp` for the dates and times, `List` for an array, `Map` for a `STRUCT`) wherever
+that class holds the value exactly; a value it cannot hold (a whole number beyond the column's type,
+a fraction in a whole-number column) comes back as stored (see [Value
+classes](gateway.md#value-classes)).
+
 `getByte`, `getShort`, `getInt`, `getLong` and `getFloat` throw `SQLException` on a number outside
 their type (*since engine `0.25.0`*: `Value 3000000000 is out of range for INT`) instead of
 answering a wrapped value: `getInt` of a `BIGINT` past the integer range, a value answered as stored
