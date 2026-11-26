@@ -174,16 +174,17 @@ before any row (*since arrow-extensions `0.3.5`*; it was inferred from the first
 advertised schema (`GetFlightInfo`, a prepared statement's schema, the ADBC result schema) and the
 stream always agree, and preparing a statement runs no search. A `BIGINT` column arrives as
 `Int(64)` whatever its values, and a computed column the engine declares `DOUBLE` (`x * 2` over a
-`DOUBLE` column) as `Float(DOUBLE)`. Each leg of a JOIN or of a derived table is typed the same
-way, from its own statement. A column of no known type (`ANY`, an object with no declared fields, a
-flattened or disabled object) is `Utf8`, its cells the engine's text (see
-[Value classes](gateway.md#value-classes)). A cell holding several values in a column
-declared as one value fails, naming the column, the row and how to declare the column a list,
+`DOUBLE` column) as `Float(DOUBLE)`. A timestamp travels in milliseconds: a `date_nanos` column (a
+`TIMESTAMP` the engine reads to the nanosecond) arrives at millisecond precision. Each leg of a JOIN
+or of a derived table is typed the same way, from its own statement. A column of no known type
+(`ANY`, an object with no declared fields, a flattened or disabled object) is `Utf8`, its cells the
+engine's text (see [Value classes](gateway.md#value-classes)). A cell holding several values in a
+column declared as one value fails, naming the column, the row and how to declare the column a list,
 instead of reading `NULL`; so does a value its column's type cannot hold. A set operation's branches
 are typed from the declared types above when the statement is planned, and a JOIN result carries
-DuckDB's types. A column the reader cannot answer — a dictionary-encoded column, an Arrow
-type it has no reader for — fails naming the column instead of reading `NULL` (*since
-arrow-extensions `0.3.4`*).
+DuckDB's types. A column the reader cannot answer — a dictionary-encoded column, an Arrow type it
+has no reader for — fails naming the column instead of reading `NULL` (*since arrow-extensions
+`0.3.4`*).
 
 *Since arrow-extensions `0.3.5`*, a statement the relational engine runs — a cross-index JOIN, a
 correlated subquery, a derived table, a `WITH`, a set operation other than `UNION ALL` — is typed
