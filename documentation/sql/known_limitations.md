@@ -773,4 +773,4 @@ We do not commit firm external dates. The **Not yet supported** list above carri
 
 ---
 
-*This page describes SoftClient4ES **as of engine `0.24.0`**. Availability lines name the release a feature landed in; the **Not yet supported** list shrinks as items ship — verify against your installed release.*
+*This page describes SoftClient4ES **as of engine `0.25.0`**. Availability lines name the release a feature landed in; the **Not yet supported** list shrinks as items ship — verify against your installed release.*
