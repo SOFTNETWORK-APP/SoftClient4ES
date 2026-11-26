@@ -245,13 +245,13 @@ Download the self-contained fat JAR (all dependencies included) for your Elastic
 
 | Elasticsearch Version | Download |
 |---|---|
-| ES 6.x | [`softclient4es6-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es6-jdbc-driver-0.3.4.jar) |
-| ES 7.x | [`softclient4es7-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es7-jdbc-driver-0.3.4.jar) |
-| ES 8.x | [`softclient4es8-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es8-jdbc-driver-0.3.4.jar) |
-| ES 9.x | [`softclient4es9-jdbc-driver-0.3.4.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.4/softclient4es9-jdbc-driver-0.3.4.jar) |
+| ES 6.x | [`softclient4es6-jdbc-driver-0.3.5.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.5/softclient4es6-jdbc-driver-0.3.5.jar) |
+| ES 7.x | [`softclient4es7-jdbc-driver-0.3.5.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.5/softclient4es7-jdbc-driver-0.3.5.jar) |
+| ES 8.x | [`softclient4es8-jdbc-driver-0.3.5.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.5/softclient4es8-jdbc-driver-0.3.5.jar) |
+| ES 9.x | [`softclient4es9-jdbc-driver-0.3.5.jar`](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/download/jdbc-v0.3.5/softclient4es9-jdbc-driver-0.3.5.jar) |
 
-Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.4); check a download with
-`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.4.jar.sha256`.
+Each jar has a `.sha256` file next to it on the [release page](https://github.com/SOFTNETWORK-APP/softclient4es-releases/releases/tag/jdbc-v0.3.5); check a download with
+`shasum -a 256 -c softclient4es8-jdbc-driver-0.3.5.jar.sha256`.
 
 > **Java 11+ required** (17+ for ES 9.x): the driver embeds the JOIN engine, built on Apache Arrow 18.x, which ships Java-11 bytecode.
 
@@ -351,13 +351,13 @@ For programmatic access, add SoftClient4ES to your project.
 resolvers += "Softnetwork" at "https://softnetwork.jfrog.io/artifactory/releases/"
 
 // Choose your Elasticsearch version
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.24.0"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es8-java-client" % "0.25.0"
 // Add the community extensions for materialized views (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.3"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-community-extensions" % "0.3.4"
 // Add the arrow extensions for cross-index JOIN (required for JOINs; Java 11+)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-arrow-extensions" % "0.3.5"
 // Add the JDBC driver if you want to use it from Scala (optional)
-libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.4"
+libraryDependencies += "app.softnetwork.elastic" %% "softclient4es-jdbc-driver" % "0.3.5"
 ```
 
 ```scala
